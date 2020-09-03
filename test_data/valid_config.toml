@@ -1,3 +1,8 @@
+unvault_csv = 18
+
+# We can set random values which'll get ignored
+wizard = "sardine"
+
 [bitcoind_config]
 network = "bitcoin"
 cookie_path = "/home/user/.bitcoin/.cookie"
@@ -26,6 +31,3 @@ cosigner_key = "026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c7
 [[non_managers]]
 xpub = "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
 cosigner_key = "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
-
-# And we can set random values which'll get ignored
-wizard = "sardine"

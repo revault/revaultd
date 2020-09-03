@@ -132,6 +132,8 @@ pub struct Config {
     pub managers: Vec<Manager>,
     /// The non-managers' xpubs
     pub non_managers: Vec<NonManager>,
+    /// The unvault output scripts relative timelock
+    pub unvault_csv: u32,
     /// An optional custom data directory
     pub data_dir: Option<PathBuf>,
     // TODO: sync server address
@@ -209,6 +211,10 @@ mod tests {
     fn deserialize_toml_config() {
         // A valid config
         let toml_str = r#"
+            unvault_csv = 42
+
+            data_dir = "/home/wizardsardine/custom/folder/"
+
             [bitcoind_config]
             network = "bitcoin"
             cookie_path = "/home/user/.bitcoin/.cookie"
@@ -235,8 +241,6 @@ mod tests {
             [[non_managers]]
             xpub = "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
             cosigner_key = "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
-
-            data_dir = "/home/wizardsardine/custom/folder/"
         "#;
         let _config: Config = toml::from_str(toml_str).expect("Deserializing toml_str");
 
@@ -251,9 +255,6 @@ mod tests {
             xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"
             [[managers]]
             xpub = "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
-
-            # This is valid!
-            a_random_param = "wizardsardine"
         "#;
         let config_res: Result<Config, toml::de::Error> = toml::from_str(toml_str);
         config_res.expect_err("Deserializing an invalid toml_str");

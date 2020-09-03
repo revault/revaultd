@@ -8,7 +8,7 @@ use bitcoin::util::bip32::ExtendedPubKey;
 use serde::{de, Deserialize, Deserializer};
 
 /// Everything we need to know for talking to bitcoind serenely
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct BitcoindConfig {
     /// The network we are operating on, one of "mainnet", "testnet", "regtest"
     pub network: String,
@@ -24,9 +24,9 @@ pub struct BitcoindConfig {
 #[derive(Debug)]
 pub struct NonManager {
     /// The master extended public key of this participant
-    xpub: ExtendedPubKey,
+    pub xpub: ExtendedPubKey,
     /// The cosigning server's static public key
-    cosigner_key: bitcoin::PublicKey,
+    pub cosigner_key: bitcoin::PublicKey,
     // TODO: cosigner's address
 }
 
@@ -64,7 +64,7 @@ impl<'de> Deserialize<'de> for NonManager {
 /// A participant taking part in day-to-day fund management.
 #[derive(Debug)]
 pub struct Manager {
-    xpub: ExtendedPubKey,
+    pub xpub: ExtendedPubKey,
 }
 
 impl<'de> Deserialize<'de> for Manager {
@@ -91,7 +91,7 @@ impl<'de> Deserialize<'de> for Manager {
 }
 
 /// Our own informations
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct OurSelves {
     /// Our own master extended key, used to retrieve for which keys we can sign
     xpub: ExtendedPubKey,
@@ -202,9 +202,7 @@ pub fn parse_config(custom_path: Option<PathBuf>) -> Result<Config, ConfigError>
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::{config_file_path, parse_config, Config};
+    use super::{config_file_path, Config};
 
     // Test the format of the configuration file
     #[test]
@@ -258,16 +256,6 @@ mod tests {
         "#;
         let config_res: Result<Config, toml::de::Error> = toml::from_str(toml_str);
         config_res.expect_err("Deserializing an invalid toml_str");
-    }
-
-    // Just a (hacky) sanity check. Most of the path handling will be testing with functional
-    // tests.
-    #[test]
-    fn parse_config_file() {
-        let mut path = PathBuf::from(file!());
-        path = path.parent().unwrap().to_path_buf();
-        path.push("../test_data/valid_config.toml");
-        parse_config(Some(path)).expect("Parsing valid config file");
     }
 
     #[test]

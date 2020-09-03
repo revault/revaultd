@@ -124,6 +124,7 @@ impl<'de> Deserialize<'de> for OurSelves {
 /// Static informations we require to operate
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
     /// Who am i, and where am i in all this mess ?
     pub ourselves: OurSelves,
@@ -131,6 +132,8 @@ pub struct Config {
     pub managers: Vec<Manager>,
     /// The non-managers' xpubs
     pub non_managers: Vec<NonManager>,
+    /// An optional custom data directory
+    pub data_dir: Option<PathBuf>,
     // TODO: sync server address
 }
 
@@ -232,6 +235,8 @@ mod tests {
             [[non_managers]]
             xpub = "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
             cosigner_key = "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
+
+            data_dir = "/home/wizardsardine/custom/folder/"
         "#;
         let _config: Config = toml::from_str(toml_str).expect("Deserializing toml_str");
 

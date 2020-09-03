@@ -5,7 +5,10 @@ authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 
 [dependencies]
-bitcoin = "0.23.0"
+bitcoin = { git = "https://github.com/darosior/rust-bitcoin", branch = "hack_sighashcache" }
+miniscript = { git = "https://github.com/darosior/rust-miniscript", branch = "hack_sighashcache", features = ["compiler"] }
+
+revault = { git = "https://github.com/re-vault/revault" }
 
 toml = "0.5.6"
 serde = { version = "1.0.97", features = ["derive"] }

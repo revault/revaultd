@@ -32,9 +32,8 @@ checksum = "cdcf67bb7ba7797a081cd19009948ab533af7c355d5caf1d08c777582d351e9c"
 
 [[package]]
 name = "bitcoin"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a32c9d2fa897cfbb0db45d71e3d2838666194abc4828c0f994e4b5c3bf85ba4"
+version = "0.24.0"
+source = "git+https://github.com/darosior/rust-bitcoin?branch=hack_sighashcache#84514e4627a91a46125130e344db39b7adb18d95"
 dependencies = [
  "bech32",
  "bitcoin_hashes",
@@ -46,6 +45,16 @@ name = "bitcoin_hashes"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b375d62f341cef9cd9e77793ec8f1db3fc9ce2e4d57e982c8fe697a2c16af3b6"
+
+[[package]]
+name = "bitcoinconsensus"
+version = "0.19.0-1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "301198804e13a7af4ece71639b11925a0e13c0ce050fea34d8ae4177939ddc5d"
+dependencies = [
+ "cc",
+ "libc",
+]
 
 [[package]]
 name = "blake2b_simd"
@@ -131,6 +140,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "755456fae044e6fa1ebbbd1b3e902ae19e73097ed4ed87bb79934a867c007bc3"
 
 [[package]]
+name = "miniscript"
+version = "1.0.0"
+source = "git+https://github.com/darosior/rust-miniscript?branch=hack_sighashcache#f76f2895b3da9d74c6d58071213177a61c17870f"
+dependencies = [
+ "bitcoin",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -166,11 +183,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "revault"
+version = "0.0.1"
+source = "git+https://github.com/re-vault/revault#a33b2cd1ec4fd807aacda4eb4da739e22fffa4f9"
+dependencies = [
+ "bitcoin",
+ "bitcoinconsensus",
+ "miniscript",
+ "secp256k1",
+]
+
+[[package]]
 name = "revaultd"
 version = "0.0.1"
 dependencies = [
  "bitcoin",
  "dirs",
+ "miniscript",
+ "revault",
  "serde",
  "toml",
 ]

@@ -143,22 +143,37 @@ impl std::fmt::Display for ConfigError {
     }
 }
 
-fn config_folder() -> Result<PathBuf, ConfigError> {
-    dirs::config_dir().map_or_else(
-        || {
-            Err(ConfigError(
-                "Could not locate the configuration directory.".to_owned(),
-            ))
-        },
-        |mut path| {
-            path.push("revault.toml");
-            Ok(path)
-        },
-    )
+/// Get the absolute path to the revault configuration folder.
+///
+/// This a "revault" directory in the XDG standard configuration directory for all OSes but
+/// Linux-based ones, for which it's `~/.revault`.
+/// Rationale: we want to have the database, RPC socket, etc.. in the same folder as the
+/// configuration file but for Linux the XDG specify a data directory (`~/.local/share/`) different
+/// from the configuration one (`~/.config/`).
+fn config_folder_path() -> Result<PathBuf, ConfigError> {
+    #[cfg(target_os = "linux")]
+    let configs_dir = dirs::home_dir();
+
+    #[cfg(not(target_os = "linux"))]
+    let configs_dir = dirs::config_dir();
+
+    if let Some(mut path) = configs_dir {
+        #[cfg(target_os = "linux")]
+        path.push(".revault");
+
+        #[cfg(not(target_os = "linux"))]
+        path.push("revault");
+
+        return Ok(path);
+    }
+
+    Err(ConfigError(
+        "Could not locate the configuration directory.".to_owned(),
+    ))
 }
 
-fn config_file() -> Result<PathBuf, ConfigError> {
-    config_folder().and_then(|mut path| {
+fn config_file_path() -> Result<PathBuf, ConfigError> {
+    config_folder_path().and_then(|mut path| {
         path.push("revault.toml");
         Ok(path)
     })
@@ -170,7 +185,7 @@ fn config_file() -> Result<PathBuf, ConfigError> {
 /// file. We don't allow to set them via the command line or environment variables to avoid a
 /// futile duplication.
 pub fn parse_config(custom_path: Option<PathBuf>) -> Result<Config, ConfigError> {
-    let config_file = custom_path.unwrap_or(config_file()?);
+    let config_file = custom_path.unwrap_or(config_file_path()?);
 
     std::fs::read(&config_file)
         .map_err(|e| ConfigError(format!("Reading configuration file: {}", e)))
@@ -184,7 +199,7 @@ pub fn parse_config(custom_path: Option<PathBuf>) -> Result<Config, ConfigError>
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse_config, Config};
+    use super::{config_file_path, parse_config, Config};
 
     // Test the format of the configuration file
     #[test]
@@ -247,5 +262,26 @@ mod tests {
         path = path.parent().unwrap().to_path_buf();
         path.push("../test_data/valid_config.toml");
         parse_config(Some(path)).expect("Parsing valid config file");
+    }
+
+    #[test]
+    fn config_directory() {
+        let filepath = config_file_path().expect("Getting config file path");
+
+        #[cfg(target_os = "linux")]
+        {
+            assert!(filepath.as_path().starts_with("/home/"));
+            assert!(filepath.as_path().ends_with(".revault/revault.toml"));
+        }
+
+        #[cfg(target_os = "macos")]
+        assert!(filepath
+            .as_path()
+            .ends_with("Library/Application Support/revault/revault.toml"));
+
+        #[cfg(target_os = "windows")]
+        assert!(filepath
+            .as_path()
+            .ends_with(r#"AppData\Roaming\revault\revault.toml"#));
     }
 }

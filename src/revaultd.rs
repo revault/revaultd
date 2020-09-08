@@ -1,5 +1,7 @@
-use crate::config::{BitcoindConfig, Config, OurSelves};
+use crate::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
 
+use std::fs;
+use std::path::PathBuf;
 use std::vec::Vec;
 
 use bitcoin::PublicKey;
@@ -8,6 +10,9 @@ use revault::scripts::{unvault_cpfp_descriptor, unvault_descriptor, vault_descri
 
 /// Our global state
 pub struct RevaultD {
+    /// We store all our data in one place, that's here.
+    pub data_dir: PathBuf,
+
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
 
@@ -58,10 +63,21 @@ impl RevaultD {
 
         let unvault_cpfp_descriptor = unvault_cpfp_descriptor(&managers_pubkeys)?;
 
+        let data_dir = config.data_dir.unwrap_or(config_folder_path()?);
+        if !data_dir.as_path().exists() {
+            if let Err(_) = fs::create_dir_all(&data_dir) {
+                return Err(Box::from(ConfigError(format!(
+                    "Could not create data dir: '{:?}'.",
+                    data_dir
+                ))));
+            }
+        }
+
         Ok(RevaultD {
             vault_descriptor,
             unvault_descriptor,
             unvault_cpfp_descriptor,
+            data_dir,
             bitcoind_config: config.bitcoind_config,
             ourselves: config.ourselves,
         })

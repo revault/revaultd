@@ -1,0 +1,19 @@
+[package]
+name = "revaultd"
+version = "0.0.1"
+authors = ["Antoine Poinsot <darosior@protonmail.com>"]
+edition = "2018"
+
+[dependencies]
+bitcoin = { git = "https://github.com/darosior/rust-bitcoin", branch = "hack_sighashcache" }
+miniscript = { git = "https://github.com/darosior/rust-miniscript", branch = "hack_sighashcache", features = ["compiler"] }
+
+revault = { git = "https://github.com/re-vault/revault" }
+
+toml = "0.5.6"
+# Yeah, it's redundant. Ask the Windows build.
+serde_derive = "1.0.115"
+serde = { version = "1.0.115", features = ["derive"] }
+
+# Don't reinvent the wheel
+dirs = "3.0.1"

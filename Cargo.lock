@@ -97,6 +97,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "daemonize-simple"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f63589f8aa0788aaaed72983bf2599a39d6fa5f749b4c4ff6d8689a7003abaa"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "dirs"
 version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -198,6 +207,7 @@ name = "revaultd"
 version = "0.0.1"
 dependencies = [
  "bitcoin",
+ "daemonize-simple",
  "dirs",
  "miniscript",
  "revault",

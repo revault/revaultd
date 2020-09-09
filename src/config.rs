@@ -169,7 +169,7 @@ pub fn config_folder_path() -> Result<PathBuf, ConfigError> {
         path.push(".revault");
 
         #[cfg(not(target_os = "linux"))]
-        path.push("revault");
+        path.push("Revault");
 
         return Ok(path);
     }
@@ -273,11 +273,11 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert!(filepath
             .as_path()
-            .ends_with("Library/Application Support/revault/revault.toml"));
+            .ends_with("Library/Application Support/Revault/revault.toml"));
 
         #[cfg(target_os = "windows")]
         assert!(filepath
             .as_path()
-            .ends_with(r#"AppData\Roaming\revault\revault.toml"#));
+            .ends_with(r#"AppData\Roaming\Revault\revault.toml"#));
     }
 }

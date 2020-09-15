@@ -17,3 +17,6 @@ serde = { version = "1.0.115", features = ["derive"] }
 
 # Don't reinvent the wheel
 dirs = "3.0.1"
+
+# It's concise, does the Right Thing, and even supports Windows !
+daemonize-simple = "0.1.4"

@@ -18,11 +18,12 @@ Display general information about the current daemon state.
 
 #### Response
 
-| Field         | Type    | Description                                                   |
-| ------------- | ------- | ------------------------------------------------------------- |
-| `blockheight` | integer | Current block height                                          |
-| `network`     | string  | Answer can be `mainnet`, `testnet`, `regtest`                 |
-| `version`     | string  | Version following the [SimVer](http://www.simver.org/) format |
+| Field         | Type    | Description                                                     |
+| ------------- | ------- | --------------------------------------------------------------- |
+| `blockheight` | integer | Current block height                                            |
+| `network`     | string  | Answer can be `mainnet`, `testnet`, `regtest`                   |
+| `sync`        | integer | The synchronization progress as percentage                      |
+| `version`     | string  | Version following the [SimVer](http://www.simver.org/) format   |
 
 ## Vault
 

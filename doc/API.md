@@ -3,10 +3,11 @@
 revaultd exposes a [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 interface over a Unix Domain socket.
 
-| Command                     | Description                        |
-| --------------------------- | ---------------------------------- |
-| [`getinfo`](#getinfo)       | Display general information        |
-| [`listvaults`](#listvaults) | Display a paginated list of vaults |
+| Command                     | Description                               |
+| --------------------------- | ----------------------------------------- |
+| [`getinfo`](#getinfo)       | Display general information               |
+| [`listvaults`](#listvaults) | Display a paginated list of vaults        |
+| [`signvault`](#signvault)   | Sign the Revault pre-signed transactions  |
 
 # Reference
 
@@ -47,7 +48,7 @@ Display general information about the current daemon state.
 | Field    | Type   | Description                                             |
 | -------- | ------ | ------------------------------------------------------- |
 | `amount` | int    | Amount of the vault in satoshis                         |
-| `txid`   | string | Unique ID of the vault transaction                      |
+| `txid`   | string | Unique ID of the vault deposit transaction              |
 | `status` | string | Status of the vault ([vault statuses](#vault-statuses)) |
 
 **TODO:** add more fields to vault resource.
@@ -61,10 +62,27 @@ filtered by an optional `status` parameter.
 
 | Parameter | Type         | Description                                                                                     |
 | --------- | ------------ | ----------------------------------------------------------------------------------------------- |
-| `status`  | string array | vault status -- optional, choices are [vault statuses](#vault-statuses)                         |
+| `status`  | string array | Vault status -- optional, choices are [vault statuses](#vault-statuses)                         |
+| `txid`    | string array | Vault IDs -- optional, filter the list with the given vault IDs                                 |
 
 #### Response
 
 | Field         | Type                                       | Description               |
 | ------------- | ------------------------------------------ | ------------------------- |
 | `vaults`      | array of [vault resource](#vault-resource) | Vaults filtered by status |
+
+### `signvault`
+
+The `signvault` RPC Command executes the signing process of the Revault
+pre-signed transactions.
+
+#### Request
+
+| Parameter        | Type    | Description                         |
+| ---------------- | ------- | ----------------------------------- |
+| `txid`           | string  | Unique ID of the vault to sign      |
+| `only_emergency` | boolean | Sign only the emergency transaction |
+
+#### Response
+
+TODO: specify response

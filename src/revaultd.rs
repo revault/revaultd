@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::vec::Vec;
 
 use revault_tx::{
-    bitcoin::PublicKey,
+    miniscript::descriptor::DescriptorPublicKey,
     scripts::{
         unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
         UnvaultDescriptor, VaultDescriptor,
@@ -22,13 +22,12 @@ pub struct RevaultD {
 
     /// Who am i, and where am i in all this mess ?
     pub ourselves: OurSelves,
-    // FIXME: Extended keys !
     /// The miniscript descriptor of vault outputs' scripts
-    pub vault_descriptor: VaultDescriptor<PublicKey>,
+    pub vault_descriptor: VaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of vault outputs' scripts
-    pub unvault_descriptor: UnvaultDescriptor<PublicKey>,
+    pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of vault outputs' scripts
-    pub unvault_cpfp_descriptor: CpfpDescriptor<PublicKey>,
+    pub unvault_cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
     // TODO: servers connection stuff
 
     // TODO: RPC server stuff
@@ -39,14 +38,13 @@ pub struct RevaultD {
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
-        // FIXME: Remove the .public_key to use xpubs....
-        let managers_pubkeys: Vec<PublicKey> =
-            config.managers.iter().map(|m| m.xpub.public_key).collect();
+        let managers_pubkeys: Vec<DescriptorPublicKey> =
+            config.managers.into_iter().map(|m| m.xpub).collect();
 
         let mut non_managers_pubkeys = Vec::with_capacity(config.non_managers.len());
         let mut cosigners_pubkeys = non_managers_pubkeys.clone();
-        for non_manager in config.non_managers.iter() {
-            non_managers_pubkeys.push(non_manager.xpub.public_key);
+        for non_manager in config.non_managers.into_iter() {
+            non_managers_pubkeys.push(non_manager.xpub);
             cosigners_pubkeys.push(non_manager.cosigner_key);
         }
 
@@ -54,8 +52,8 @@ impl RevaultD {
             managers_pubkeys
                 .iter()
                 .chain(non_managers_pubkeys.iter())
-                .copied()
-                .collect::<Vec<PublicKey>>(),
+                .cloned()
+                .collect::<Vec<DescriptorPublicKey>>(),
         )?;
 
         let unvault_descriptor = unvault_descriptor(

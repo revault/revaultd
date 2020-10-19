@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::vec::Vec;
 
-use revault_tx::bitcoin::{util::bip32::ExtendedPubKey, PublicKey};
+use revault_tx::miniscript::descriptor::DescriptorPublicKey;
 use serde::{de, Deserialize, Deserializer};
 
 /// Everything we need to know for talking to bitcoind serenely
@@ -24,9 +24,9 @@ pub struct BitcoindConfig {
 #[derive(Debug)]
 pub struct NonManager {
     /// The master extended public key of this participant
-    pub xpub: ExtendedPubKey,
+    pub xpub: DescriptorPublicKey,
     /// The cosigning server's static public key
-    pub cosigner_key: PublicKey,
+    pub cosigner_key: DescriptorPublicKey,
     // TODO: cosigner's address
 }
 
@@ -44,12 +44,12 @@ impl<'de> Deserialize<'de> for NonManager {
             ));
         }
 
-        let xpub = ExtendedPubKey::from_str(&xpub_str.unwrap());
+        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap());
         if let Err(ref e) = xpub {
             return Err(de::Error::custom(e.to_owned()));
         }
 
-        let cosigner_key = PublicKey::from_str(&cosigner_key_str.unwrap());
+        let cosigner_key = DescriptorPublicKey::from_str(&cosigner_key_str.unwrap());
         if let Err(ref e) = cosigner_key {
             return Err(de::Error::custom(e.to_owned()));
         }
@@ -64,7 +64,7 @@ impl<'de> Deserialize<'de> for NonManager {
 /// A participant taking part in day-to-day fund management.
 #[derive(Debug)]
 pub struct Manager {
-    pub xpub: ExtendedPubKey,
+    pub xpub: DescriptorPublicKey,
 }
 
 impl<'de> Deserialize<'de> for Manager {
@@ -79,7 +79,7 @@ impl<'de> Deserialize<'de> for Manager {
             return Err(de::Error::custom(r#"No "xpub" for manager entry."#));
         }
 
-        let xpub = ExtendedPubKey::from_str(&xpub_str.unwrap());
+        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap());
         if let Err(ref e) = xpub {
             return Err(de::Error::custom(e.to_owned()));
         }
@@ -91,10 +91,10 @@ impl<'de> Deserialize<'de> for Manager {
 }
 
 /// Our own informations
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct OurSelves {
     /// Our own master extended key, used to retrieve for which keys we can sign
-    xpub: ExtendedPubKey,
+    xpub: DescriptorPublicKey,
     // TODO: our watchtower's address
 }
 
@@ -110,7 +110,7 @@ impl<'de> Deserialize<'de> for OurSelves {
             return Err(de::Error::custom(r#"No "xpub" for "ourselves" entry."#));
         }
 
-        let xpub = ExtendedPubKey::from_str(&xpub_str.unwrap());
+        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap());
         if let Err(ref e) = xpub {
             return Err(de::Error::custom(e.to_owned()));
         }

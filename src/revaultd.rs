@@ -22,11 +22,11 @@ pub struct RevaultD {
 
     /// Who am i, and where am i in all this mess ?
     pub ourselves: OurSelves,
-    /// The miniscript descriptor of vault outputs' scripts
+    /// The miniscript descriptor of vault's outputs scripts
     pub vault_descriptor: VaultDescriptor<DescriptorPublicKey>,
-    /// The miniscript descriptor of vault outputs' scripts
+    /// The miniscript descriptor of unvault's outputs scripts
     pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
-    /// The miniscript descriptor of vault outputs' scripts
+    /// The miniscript descriptor of unvault's CPFP output scripts
     pub unvault_cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
     // TODO: servers connection stuff
 
@@ -41,23 +41,23 @@ impl RevaultD {
         let managers_pubkeys: Vec<DescriptorPublicKey> =
             config.managers.into_iter().map(|m| m.xpub).collect();
 
-        let mut non_managers_pubkeys = Vec::with_capacity(config.non_managers.len());
-        let mut cosigners_pubkeys = non_managers_pubkeys.clone();
-        for non_manager in config.non_managers.into_iter() {
-            non_managers_pubkeys.push(non_manager.xpub);
+        let mut stakeholders_pubkeys = Vec::with_capacity(config.stakeholders.len());
+        let mut cosigners_pubkeys = stakeholders_pubkeys.clone();
+        for non_manager in config.stakeholders.into_iter() {
+            stakeholders_pubkeys.push(non_manager.xpub);
             cosigners_pubkeys.push(non_manager.cosigner_key);
         }
 
         let vault_descriptor = vault_descriptor(
             managers_pubkeys
                 .iter()
-                .chain(non_managers_pubkeys.iter())
+                .chain(stakeholders_pubkeys.iter())
                 .cloned()
                 .collect::<Vec<DescriptorPublicKey>>(),
         )?;
 
         let unvault_descriptor = unvault_descriptor(
-            non_managers_pubkeys,
+            stakeholders_pubkeys,
             managers_pubkeys.clone(),
             managers_pubkeys.len(),
             cosigners_pubkeys,

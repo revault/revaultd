@@ -40,24 +40,24 @@ impl<'de> Deserialize<'de> for Stakeholder {
         let (xpub_str, cosigner_key_str) = (map.get("xpub"), map.get("cosigner_key"));
         if xpub_str == None || cosigner_key_str == None {
             return Err(de::Error::custom(
-                r#"Non-manager entries need both a "xpub" and a "cosigner_key""#,
+                r#"Stakeholder entries need both a "xpub" and a "cosigner_key""#,
             ));
         }
 
-        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap());
-        if let Err(ref e) = xpub {
-            return Err(de::Error::custom(e.to_owned()));
+        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap()).map_err(de::Error::custom)?;
+        // Check the xpub is an actual xpub
+        if let DescriptorPublicKey::SinglePub(_) = xpub {
+            return Err(de::Error::custom("Need an xpub, not a raw public key."));
         }
 
-        let cosigner_key = DescriptorPublicKey::from_str(&cosigner_key_str.unwrap());
-        if let Err(ref e) = cosigner_key {
-            return Err(de::Error::custom(e.to_owned()));
+        let cosigner_key =
+            DescriptorPublicKey::from_str(&cosigner_key_str.unwrap()).map_err(de::Error::custom)?;
+        // Check the static key is an actual static key
+        if let DescriptorPublicKey::XPub(_) = cosigner_key {
+            return Err(de::Error::custom("Need a raw public key, not an xpub."));
         }
 
-        Ok(Stakeholder {
-            xpub: xpub.unwrap(),
-            cosigner_key: cosigner_key.unwrap(),
-        })
+        Ok(Stakeholder { xpub, cosigner_key })
     }
 }
 
@@ -75,19 +75,13 @@ impl<'de> Deserialize<'de> for Manager {
     {
         let map = HashMap::<String, String>::deserialize(deserializer)?;
 
-        let xpub_str = map.get("xpub");
-        if xpub_str == None {
-            return Err(de::Error::custom(r#"No "xpub" for manager entry."#));
-        }
+        let xpub_str = map
+            .get("xpub")
+            .ok_or_else(|| de::Error::custom(r#"No "xpub" for manager entry."#))?;
 
-        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap());
-        if let Err(ref e) = xpub {
-            return Err(de::Error::custom(e.to_owned()));
-        }
+        let xpub = DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom)?;
 
-        Ok(Manager {
-            xpub: xpub.unwrap(),
-        })
+        Ok(Manager { xpub })
     }
 }
 
@@ -106,19 +100,13 @@ impl<'de> Deserialize<'de> for OurSelves {
     {
         let map = HashMap::<String, String>::deserialize(deserializer)?;
 
-        let xpub_str = map.get("xpub");
-        if xpub_str == None {
-            return Err(de::Error::custom(r#"No "xpub" for "ourselves" entry."#));
-        }
+        let xpub_str = map
+            .get("xpub")
+            .ok_or_else(|| de::Error::custom(r#"No "xpub" for manager entry."#))?;
 
-        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap());
-        if let Err(ref e) = xpub {
-            return Err(de::Error::custom(e.to_owned()));
-        }
+        let xpub = DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom)?;
 
-        Ok(OurSelves {
-            xpub: xpub.unwrap(),
-        })
+        Ok(OurSelves { xpub })
     }
 }
 

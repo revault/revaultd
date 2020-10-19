@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::vec::Vec;
 
-use bitcoin::util::bip32::ExtendedPubKey;
+use revault_tx::bitcoin::{util::bip32::ExtendedPubKey, PublicKey};
 use serde::{de, Deserialize, Deserializer};
 
 /// Everything we need to know for talking to bitcoind serenely
@@ -26,7 +26,7 @@ pub struct NonManager {
     /// The master extended public key of this participant
     pub xpub: ExtendedPubKey,
     /// The cosigning server's static public key
-    pub cosigner_key: bitcoin::PublicKey,
+    pub cosigner_key: PublicKey,
     // TODO: cosigner's address
 }
 
@@ -49,7 +49,7 @@ impl<'de> Deserialize<'de> for NonManager {
             return Err(de::Error::custom(e.to_owned()));
         }
 
-        let cosigner_key = bitcoin::PublicKey::from_str(&cosigner_key_str.unwrap());
+        let cosigner_key = PublicKey::from_str(&cosigner_key_str.unwrap());
         if let Err(ref e) = cosigner_key {
             return Err(de::Error::custom(e.to_owned()));
         }

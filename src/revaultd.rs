@@ -4,9 +4,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::vec::Vec;
 
-use bitcoin::PublicKey;
-use miniscript::Descriptor;
-use revault::scripts::{unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor};
+use revault_tx::{
+    bitcoin::PublicKey,
+    scripts::{
+        unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
+        UnvaultDescriptor, VaultDescriptor,
+    },
+};
 
 /// Our global state
 pub struct RevaultD {
@@ -20,11 +24,11 @@ pub struct RevaultD {
     pub ourselves: OurSelves,
     // FIXME: Extended keys !
     /// The miniscript descriptor of vault outputs' scripts
-    pub vault_descriptor: Descriptor<PublicKey>,
+    pub vault_descriptor: VaultDescriptor<PublicKey>,
     /// The miniscript descriptor of vault outputs' scripts
-    pub unvault_descriptor: Descriptor<PublicKey>,
+    pub unvault_descriptor: UnvaultDescriptor<PublicKey>,
     /// The miniscript descriptor of vault outputs' scripts
-    pub unvault_cpfp_descriptor: Descriptor<PublicKey>,
+    pub unvault_cpfp_descriptor: CpfpDescriptor<PublicKey>,
     // TODO: servers connection stuff
 
     // TODO: RPC server stuff
@@ -47,7 +51,7 @@ impl RevaultD {
         }
 
         let vault_descriptor = vault_descriptor(
-            &managers_pubkeys
+            managers_pubkeys
                 .iter()
                 .chain(non_managers_pubkeys.iter())
                 .copied()
@@ -55,13 +59,14 @@ impl RevaultD {
         )?;
 
         let unvault_descriptor = unvault_descriptor(
-            &non_managers_pubkeys,
-            &managers_pubkeys,
-            &cosigners_pubkeys,
+            non_managers_pubkeys,
+            managers_pubkeys.clone(),
+            managers_pubkeys.len(),
+            cosigners_pubkeys,
             config.unvault_csv,
         )?;
 
-        let unvault_cpfp_descriptor = unvault_cpfp_descriptor(&managers_pubkeys)?;
+        let unvault_cpfp_descriptor = unvault_cpfp_descriptor(managers_pubkeys)?;
 
         let data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         if !data_dir.as_path().exists() {

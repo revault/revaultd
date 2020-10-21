@@ -5,7 +5,10 @@ mod revaultd;
 use std::path::PathBuf;
 use std::{env, process};
 
-use bitcoind::interface::BitcoinD;
+use bitcoind::{
+    actions::{bitcoind_sanity_checks, wait_for_bitcoind_synced},
+    interface::BitcoinD,
+};
 use config::parse_config;
 use revaultd::RevaultD;
 
@@ -26,8 +29,20 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
 }
 
 fn daemon_main(revaultd: RevaultD) {
+    // FIXME Printing to stderr after daemonization is quite dumb. Who did that already ?
+
     let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).unwrap_or_else(|e| {
         eprintln!("Could not connect to bitcoind: {}", e.to_string());
+        process::exit(1);
+    });
+
+    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
+        eprintln!("Error checking bitcoind: {}", e.to_string());
+        process::exit(1);
+    });
+
+    wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
+        eprintln!("Error while updating tip: {}", e.to_string());
         process::exit(1);
     });
 }

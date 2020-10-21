@@ -1,9 +1,11 @@
+mod bitcoind;
 mod config;
 mod revaultd;
 
 use std::path::PathBuf;
 use std::{env, process};
 
+use bitcoind::interface::BitcoinD;
 use config::parse_config;
 use revaultd::RevaultD;
 
@@ -23,7 +25,12 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     Some(PathBuf::from(args[2].to_owned()))
 }
 
-fn daemon_main(revaultd: RevaultD) {}
+fn daemon_main(revaultd: RevaultD) {
+    let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).unwrap_or_else(|e| {
+        eprintln!("Could not connect to bitcoind: {}", e.to_string());
+        process::exit(1);
+    });
+}
 
 fn main() {
     let args = env::args().collect();

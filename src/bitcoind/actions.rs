@@ -80,13 +80,19 @@ pub fn wait_for_bitcoind_synced(
             // Ok, so we have some time. Let's try to avoid slowing it down by
             // spamming it with getblockchaininfo calls.
 
-            // FIXME: log here
+            if first {
+                log::info!(
+                    "Bitcoind is currently performing IBD, this is going to \
+                        take some time."
+                );
+            }
 
             // First: wait for it to gather all headers, if the current delta is
             // big enough. let's assume it won't take longer than 5min from now
             // for mainnet.
             // Then: get the number of blocks left to DL
             if first || delta > 1_000 {
+                log::info!("Waiting for bitcoind to gather enough headers..");
                 if bitcoind_config.network.eq("regtest") {
                     thread::sleep(time::Duration::from_secs(3));
                 } else {
@@ -118,14 +124,14 @@ pub fn wait_for_bitcoind_synced(
             return Ok(());
         }
 
-        // FIXME: log here
-
         // Sleeping a second per 20 blocks seems a good upper bound estimation
         // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
         // conservative. Eg if 10_000 are left to be downloaded we'll check back
         // in ~4min.
+        let sleep_duration = time::Duration::from_secs(delta / 20 / 2);
+        log::info!("We'll poll bitcoind again in {:?} seconds", sleep_duration);
         // FIXME: maybe Edouard will need more fine-grained updates eventually
-        thread::sleep(time::Duration::from_secs(delta / 20 / 2));
+        thread::sleep(sleep_duration);
 
         first = false;
     }

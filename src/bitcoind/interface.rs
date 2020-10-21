@@ -30,6 +30,7 @@ impl BitcoinD {
         params: &'b [serde_json::Value],
     ) -> Result<serde_json::Value, BitcoindError> {
         let req = self.client.build_request(method, params);
+        log::trace!("Sending to bitcoind: {:#?}", req);
         let resp = self
             .client
             .send_request(&req)
@@ -37,6 +38,7 @@ impl BitcoinD {
         let res = resp
             .into_result()
             .map_err(|e| BitcoindError(format!("Making request: {}", e.to_string())))?;
+        log::trace!("Got from bitcoind: {:#?}", res);
 
         Ok(res)
     }

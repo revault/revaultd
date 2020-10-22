@@ -33,7 +33,8 @@ checksum = "cdcf67bb7ba7797a081cd19009948ab533af7c355d5caf1d08c777582d351e9c"
 [[package]]
 name = "bitcoin"
 version = "0.24.0"
-source = "git+https://github.com/darosior/rust-bitcoin?branch=hack_sighashcache#84514e4627a91a46125130e344db39b7adb18d95"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6558aeb12c290cce541a222cba280387161f2bd180a7feb85f8f172cd8ba80e8"
 dependencies = [
  "bech32",
  "bitcoin_hashes",
@@ -42,15 +43,15 @@ dependencies = [
 
 [[package]]
 name = "bitcoin_hashes"
-version = "0.7.6"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b375d62f341cef9cd9e77793ec8f1db3fc9ce2e4d57e982c8fe697a2c16af3b6"
+checksum = "3b0ab784be052cc1e915a78b8aaf5101eebbc2d0ab2b6f5124985f3677ae2bea"
 
 [[package]]
 name = "bitcoinconsensus"
-version = "0.19.0-1"
+version = "0.19.0-2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301198804e13a7af4ece71639b11925a0e13c0ce050fea34d8ae4177939ddc5d"
+checksum = "fa73ba49cd637fcb607af797e737a064f2015a25ba55c3f48501978a8b3fc90e"
 dependencies = [
  "cc",
  "libc",
@@ -127,9 +128,9 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7abc8dd8451921606d809ba32e95b6111925cd2906060d2dcc29c070220503eb"
+checksum = "fc587bc0ec293155d5bfa6b9891ec18a1e330c234f896ea47fbada4cadbe47e6"
 dependencies = [
  "cfg-if",
  "libc",
@@ -144,23 +145,24 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.76"
+version = "0.2.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "755456fae044e6fa1ebbbd1b3e902ae19e73097ed4ed87bb79934a867c007bc3"
+checksum = "2448f6066e80e3bfc792e9c98bf705b4b0fc6e8ef5b43e5889aff0eaa9c58743"
 
 [[package]]
 name = "miniscript"
-version = "1.0.0"
-source = "git+https://github.com/darosior/rust-miniscript?branch=hack_sighashcache#f76f2895b3da9d74c6d58071213177a61c17870f"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8485bfee4af7349f635aab504fbc0e12d3a78bd05d946b02877e275639b9f304"
 dependencies = [
  "bitcoin",
 ]
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.20"
+version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175c513d55719db99da20232b06cda8bab6b83ec2d04e3283edf0213c37c1a29"
+checksum = "1e0704ee1a7e00d7bb417d0770ea303c1bccbabf0ef1667dae92b5967f5f8a71"
 dependencies = [
  "unicode-xid",
 ]
@@ -192,27 +194,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "revault"
+name = "revault_tx"
 version = "0.0.1"
-source = "git+https://github.com/re-vault/revault#a33b2cd1ec4fd807aacda4eb4da739e22fffa4f9"
+source = "git+https://github.com/re-vault/revault_tx#24a297167e571a11434ae137223b34735c33c597"
 dependencies = [
  "bitcoin",
  "bitcoinconsensus",
  "miniscript",
- "secp256k1",
 ]
 
 [[package]]
 name = "revaultd"
 version = "0.0.1"
 dependencies = [
- "bitcoin",
  "daemonize-simple",
  "dirs",
- "miniscript",
- "revault",
+ "revault_tx",
  "serde",
- "serde_derive",
  "toml",
 ]
 
@@ -230,18 +228,18 @@ dependencies = [
 
 [[package]]
 name = "secp256k1"
-version = "0.17.2"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2932dc07acd2066ff2e3921a4419606b220ba6cd03a9935123856cc534877056"
+checksum = "8f3f534ef4e9dfa6c4b2ccca131f791daddf9cc2123b4124615cb144ea91611a"
 dependencies = [
  "secp256k1-sys",
 ]
 
 [[package]]
 name = "secp256k1-sys"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ab2c26f0d3552a0f12e639ae8a64afc2e3db9c52fe32f5fc6c289d38519f220"
+checksum = "71453d9b088b19ae43a803d88ecaa876b11ed8999df024cca4becb6be9aee351"
 dependencies = [
  "cc",
 ]
@@ -268,9 +266,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.39"
+version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891d8d6567fe7c7f8835a3a98af4208f3846fba258c1bc3c31d6e506239f11f9"
+checksum = "ea9c5432ff16d6152371f808fb5a871cd67368171b09bb21b43df8e4a47a3556"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -279,9 +277,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.5.6"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffc92d160b1eef40665be3a05630d003936a3bc7da7421277846c2613e92c71a"
+checksum = "75cf45bb0bef80604d001caaec0d09da99611b3c0fd39d3080468875cdb65645"
 dependencies = [
  "serde",
 ]

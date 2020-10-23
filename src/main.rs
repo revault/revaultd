@@ -2,14 +2,7 @@ mod bitcoind;
 mod config;
 mod revaultd;
 
-use crate::{
-    bitcoind::{
-        actions::{bitcoind_sanity_checks, wait_for_bitcoind_synced},
-        interface::BitcoinD,
-    },
-    config::parse_config,
-    revaultd::RevaultD,
-};
+use crate::{bitcoind::actions::setup_bitcoind, config::parse_config, revaultd::RevaultD};
 
 use std::path::PathBuf;
 use std::{env, process};
@@ -31,21 +24,8 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
 }
 
 fn daemon_main(revaultd: RevaultD) {
-    let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).unwrap_or_else(|e| {
-        log::error!("Could not connect to bitcoind: {}", e.to_string());
-        process::exit(1);
-    });
-
-    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
-        // FIXME: handle warming up
-        log::error!("Error checking bitcoind: {}", e.to_string());
-        process::exit(1);
-    });
-
-    wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
-        log::error!("Error while updating tip: {}", e.to_string());
-        process::exit(1);
-    });
+    // This aborts on error
+    let bitcoind = setup_bitcoind(&revaultd);
 
     log::info!(
         "revaultd started on network {}",

@@ -85,20 +85,15 @@ fn main() {
         eprintln!("Error creating global state: {}", e);
         process::exit(1);
     });
-    let data_dir_str = revaultd
-        .data_dir
-        .to_str()
-        .expect("Impossible: the datadir path is valid unicode");
 
-    let log_file: PathBuf = [data_dir_str, "log"].iter().collect();
-    setup_logger(&log_file.to_str().expect("Valid unicode")).unwrap_or_else(|e| {
+    setup_logger(&revaultd.log_file().to_str().expect("Valid unicode")).unwrap_or_else(|e| {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });
 
     let mut daemon = Daemonize::default();
     // TODO: Make this configurable for inits
-    daemon.pid_file = Some([data_dir_str, "revaultd.pid"].iter().collect());
+    daemon.pid_file = Some(revaultd.pid_file());
     daemon.doit().unwrap_or_else(|e| {
         eprintln!("Error daemonizing: {}", e);
         process::exit(1);

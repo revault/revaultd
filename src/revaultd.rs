@@ -85,6 +85,23 @@ impl RevaultD {
             ourselves: config.ourselves,
         })
     }
+
+    fn file_from_datadir(&self, file_name: &str) -> PathBuf {
+        let data_dir_str = self
+            .data_dir
+            .to_str()
+            .expect("Impossible: the datadir path is valid unicode");
+
+        [data_dir_str, file_name].iter().collect()
+    }
+
+    pub fn log_file(&self) -> PathBuf {
+        self.file_from_datadir("log")
+    }
+
+    pub fn pid_file(&self) -> PathBuf {
+        self.file_from_datadir("revaultd.pid")
+    }
 }
 
 #[cfg(test)]

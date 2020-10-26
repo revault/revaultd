@@ -1,5 +1,6 @@
 mod bitcoind;
 mod config;
+mod database;
 mod revaultd;
 
 use crate::{bitcoind::actions::setup_bitcoind, config::parse_config, revaultd::RevaultD};

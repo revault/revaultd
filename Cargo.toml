@@ -29,3 +29,6 @@ serde_json = "1.0.59"
 log = "0.4"
 fern = "0.5"
 chrono = "0.4"
+
+# DB stuff
+rusqlite = { version = "0.24.1", features = ["bundled"] }

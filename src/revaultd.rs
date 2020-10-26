@@ -102,6 +102,10 @@ impl RevaultD {
     pub fn pid_file(&self) -> PathBuf {
         self.file_from_datadir("revaultd.pid")
     }
+
+    pub fn db_file(&self) -> PathBuf {
+        self.file_from_datadir("revaultd.sqlite3")
+    }
 }
 
 #[cfg(test)]

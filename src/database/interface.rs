@@ -68,10 +68,10 @@ pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
 /// A "wallet" as stored in the database
 #[derive(Clone)]
 pub struct DbWallet {
-    id: u32,
-    timestamp: u32,
-    vault_descriptor: String,
-    unvault_descriptor: String,
+    pub id: u32,
+    pub timestamp: u32,
+    pub vault_descriptor: String,
+    pub unvault_descriptor: String,
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.

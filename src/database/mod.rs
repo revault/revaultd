@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod interface;
 mod schema;
 

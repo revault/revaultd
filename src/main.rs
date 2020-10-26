@@ -3,7 +3,10 @@ mod config;
 mod database;
 mod revaultd;
 
-use crate::{bitcoind::actions::setup_bitcoind, config::parse_config, revaultd::RevaultD};
+use crate::{
+    bitcoind::actions::setup_bitcoind, config::parse_config, database::actions::setup_db,
+    revaultd::RevaultD,
+};
 
 use std::path::PathBuf;
 use std::{env, process};
@@ -24,7 +27,13 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     Some(PathBuf::from(args[2].to_owned()))
 }
 
-fn daemon_main(revaultd: RevaultD) {
+fn daemon_main(mut revaultd: RevaultD) {
+    // First and foremost
+    setup_db(&mut revaultd).unwrap_or_else(|e| {
+        log::error!("Error setting up database: '{}'", e.to_string());
+        process::exit(1)
+    });
+
     // This aborts on error
     let bitcoind = setup_bitcoind(&revaultd);
 

@@ -6,12 +6,7 @@ use crate::{
 
 use std::{process, thread, time};
 
-use log;
-
-fn check_bitcoind_network(
-    bitcoind: &BitcoinD,
-    config_network: &String,
-) -> Result<(), BitcoindError> {
+fn check_bitcoind_network(bitcoind: &BitcoinD, config_network: &str) -> Result<(), BitcoindError> {
     let chaininfo = bitcoind.getblockchaininfo()?;
     let chain = chaininfo
         .get("chain")

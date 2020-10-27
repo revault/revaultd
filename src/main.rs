@@ -44,7 +44,7 @@ fn daemon_main(mut revaultd: RevaultD) {
 }
 
 // This creates the log file automagically if it doesn't exist
-fn setup_logger<'a>(log_file: &'a str) -> Result<(), fern::InitError> {
+fn setup_logger(log_file: &str) -> Result<(), fern::InitError> {
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(

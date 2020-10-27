@@ -68,10 +68,11 @@ impl RevaultD {
 
         let data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         if !data_dir.as_path().exists() {
-            if let Err(_) = fs::create_dir_all(&data_dir) {
+            if let Err(e) = fs::create_dir_all(&data_dir) {
                 return Err(Box::from(ConfigError(format!(
-                    "Could not create data dir: '{:?}'.",
-                    data_dir
+                    "Could not create data dir '{:?}': {}.",
+                    data_dir,
+                    e.to_string()
                 ))));
             }
         }

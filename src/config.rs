@@ -85,11 +85,15 @@ impl<'de> Deserialize<'de> for Manager {
     }
 }
 
-/// Our own informations
+/// Our own informations, crucial to retrieve for which key we can sign or how to connect
+/// to our watchtower.
+/// We require Some(manager_xpub) || Some(stakeholder_xpub).
 #[derive(Debug, Clone)]
 pub struct OurSelves {
-    /// Our own master extended key, used to retrieve for which keys we can sign
-    xpub: DescriptorPublicKey,
+    /// Our own master extended key, if we are a manager.
+    manager_xpub: Option<DescriptorPublicKey>,
+    /// Our own master extended key, if we are a stakeholder.
+    stakeholder_xpub: Option<DescriptorPublicKey>,
     // TODO: our watchtower's address
 }
 
@@ -100,13 +104,33 @@ impl<'de> Deserialize<'de> for OurSelves {
     {
         let map = HashMap::<String, String>::deserialize(deserializer)?;
 
-        let xpub_str = map
-            .get("xpub")
-            .ok_or_else(|| de::Error::custom(r#"No "xpub" for manager entry."#))?;
+        let man_xpub = map
+            .get("manager_xpub")
+            .map(|xpub_str| DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom));
+        let stk_xpub = map
+            .get("stakeholder_xpub")
+            .map(|xpub_str| DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom));
 
-        let xpub = DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom)?;
-
-        Ok(OurSelves { xpub })
+        Ok(match (man_xpub, stk_xpub) {
+            (Some(man_xpub), Some(stk_xpub)) => OurSelves {
+                manager_xpub: Some(man_xpub?),
+                stakeholder_xpub: Some(stk_xpub?),
+            },
+            (Some(man_xpub), None) => OurSelves {
+                manager_xpub: Some(man_xpub?),
+                stakeholder_xpub: None,
+            },
+            (None, Some(stk_xpub)) => OurSelves {
+                manager_xpub: None,
+                stakeholder_xpub: Some(stk_xpub?),
+            },
+            (None, None) => {
+                return Err(de::Error::custom(
+                    "At least one of the \"manager_xpub\" or \"stakeholder_xpub\" entry
+                        must be specified in the ourselves entry",
+                ));
+            }
+        })
     }
 }
 
@@ -209,9 +233,9 @@ mod tests {
             cookie_path = "/home/user/.bitcoin/.cookie"
             addr = "127.0.0.1:8332"
 
-            # Our own informations
+            # Our own informations. We are one of the below managers.
             [ourselves]
-            xpub = "xpub6A662oAj5Kjk53U7GjfCGKCT6jJsChstkxbbWBVyVUyzYcayw7PLjJQk9H9g2pryTqhGDTNo8DRNZm1zGzZ7ywzbMgRHRYyfydCd4yjepHs"
+            manager_xpub = "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
 
             [[managers]]
             xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"

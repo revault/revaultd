@@ -207,12 +207,32 @@ fn config_file_path() -> Result<PathBuf, ConfigError> {
 pub fn parse_config(custom_path: Option<PathBuf>) -> Result<Config, ConfigError> {
     let config_file = custom_path.unwrap_or(config_file_path()?);
 
-    std::fs::read(&config_file)
+    let config = std::fs::read(&config_file)
         .map_err(|e| ConfigError(format!("Reading configuration file: {}", e)))
         .and_then(|file_content| {
             toml::from_slice::<Config>(&file_content)
                 .map_err(|e| ConfigError(format!("Parsing configuration file: {}", e)))
-        })
+        })?;
+
+    if let Some(ref our_stk_xpub) = config.ourselves.stakeholder_xpub {
+        if !config.stakeholders.iter().any(|x| &x.xpub == our_stk_xpub) {
+            return Err(ConfigError(format!(
+                r#"Our "stakeholder_xpub" is not part of the declared stakeholders' xpubs: {}"#,
+                our_stk_xpub
+            )));
+        }
+    }
+
+    if let Some(ref our_man_xpub) = config.ourselves.manager_xpub {
+        if !config.managers.iter().any(|x| &x.xpub == our_man_xpub) {
+            return Err(ConfigError(format!(
+                r#"Our "manager_xpub" is not part of the declared managers' xpubs: {}"#,
+                our_man_xpub
+            )));
+        }
+    }
+
+    Ok(config)
 }
 
 #[cfg(test)]

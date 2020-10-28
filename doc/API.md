@@ -45,13 +45,17 @@ Display general information about the current daemon state.
 
 ### Vault resource
 
-| Field    | Type   | Description                                             |
-| -------- | ------ | ------------------------------------------------------- |
-| `amount` | int    | Amount of the vault in satoshis                         |
-| `txid`   | string | Unique ID of the vault deposit transaction              |
-| `status` | string | Status of the vault ([vault statuses](#vault-statuses)) |
+| Field         | Type   | Description                                                                          |
+| ------------- | ------ | ------------------------------------------------------------------------------------ |
+| `amount`      | int    | Amount of the vault in satoshis                                                      |
+| `blockheight` | int    | Block height at which the vault deposit transaction was confirmed (0 if unconfirmed) |
+| `status`      | string | Status of the vault ([vault statuses](#vault-statuses))                              |
+| `txid`        | string | Unique ID of the vault deposit transaction                                           |
+| `vout`        | vout   | Index of the deposit output in the deposit transaction.                              |
 
-**TODO:** add more fields to vault resource.
+Note that the `scriptPubKey` is implicitly known as we have the vault output Miniscript descriptor.
+**TODO** Maybe we should store and give the xpub derivation index as well ?
+
 
 ### `listvaults`
 

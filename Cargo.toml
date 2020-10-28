@@ -5,7 +5,7 @@ authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 
 [dependencies]
-revault_tx = { git = "https://github.com/re-vault/revault_tx" }
+revault_tx = { git = "https://github.com/darosior/revault", branch = "update_latest_miniscript" }
 
 # Don't reinvent the wheel
 dirs = "3.0.1"

@@ -1,8 +1,9 @@
-use crate::database::DatabaseError;
+use crate::{config, database::DatabaseError};
+use revault_tx::miniscript::descriptor::DescriptorPublicKey;
 
-use std::path::PathBuf;
+use std::{boxed::Box, path::PathBuf, str::FromStr};
 
-use rusqlite::{Connection, Row, ToSql, Transaction, NO_PARAMS};
+use rusqlite::{types::FromSqlError, Connection, Row, ToSql, Transaction, NO_PARAMS};
 
 // Note that we don't share a global struct that would contain the connection here.
 // As the bundled sqlite is compiled with SQLITE_THREADSAFE, quoting sqlite.org:
@@ -72,16 +73,46 @@ pub struct DbWallet {
     pub timestamp: u32,
     pub vault_descriptor: String,
     pub unvault_descriptor: String,
+    pub ourselves: config::OurSelves,
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
 pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
     let rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
+        let our_man_xpub_str = row.get::<_, Option<String>>(4)?;
+        let our_man_xpub = if let Some(ref xpub_str) = our_man_xpub_str {
+            Some(
+                DescriptorPublicKey::from_str(&xpub_str)
+                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+            )
+        } else {
+            None
+        };
+
+        let our_stk_xpub_str = row.get::<_, Option<String>>(5)?;
+        let our_stk_xpub = if let Some(ref xpub_str) = our_stk_xpub_str {
+            Some(
+                DescriptorPublicKey::from_str(&xpub_str)
+                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+            )
+        } else {
+            None
+        };
+
+        assert!(
+            our_man_xpub.is_some() || our_stk_xpub.is_some(),
+            "The database is messed up, and we could not catch the error."
+        );
+
         Ok(DbWallet {
             id: row.get(0)?,
             timestamp: row.get(1)?,
             vault_descriptor: row.get(2)?,
             unvault_descriptor: row.get(3)?,
+            ourselves: config::OurSelves {
+                manager_xpub: our_man_xpub,
+                stakeholder_xpub: our_stk_xpub,
+            },
         })
     })?;
 

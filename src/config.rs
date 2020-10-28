@@ -91,9 +91,9 @@ impl<'de> Deserialize<'de> for Manager {
 #[derive(Debug, Clone)]
 pub struct OurSelves {
     /// Our own master extended key, if we are a manager.
-    manager_xpub: Option<DescriptorPublicKey>,
+    pub manager_xpub: Option<DescriptorPublicKey>,
     /// Our own master extended key, if we are a stakeholder.
-    stakeholder_xpub: Option<DescriptorPublicKey>,
+    pub stakeholder_xpub: Option<DescriptorPublicKey>,
     // TODO: our watchtower's address
 }
 

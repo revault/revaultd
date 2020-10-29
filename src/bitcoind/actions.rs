@@ -1,6 +1,7 @@
 use crate::{
     bitcoind::{interface::BitcoinD, BitcoindError},
     config::BitcoindConfig,
+    database::interface::{db_wallet, DbWallet},
     revaultd::RevaultD,
 };
 
@@ -135,6 +136,32 @@ fn wait_for_bitcoind_synced(
     }
 }
 
+// This creates the actual wallet file, and imports the descriptors
+fn create_wallet(
+    bitcoind: &BitcoinD,
+    bitcoind_wallet_path: String,
+    wallet: &DbWallet,
+) -> Result<(), BitcoindError> {
+    bitcoind.createwallet_startup(bitcoind_wallet_path)?;
+
+    // TODO: import descriptors
+
+    // TODO: maybe warn, depending on the timestamp, that it's going to take some time.
+
+    Ok(())
+}
+
+fn maybe_load_wallet(
+    bitcoind: &BitcoinD,
+    bitcoind_wallet_path: String,
+) -> Result<(), BitcoindError> {
+    if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
+        return bitcoind.loadwallet_startup(bitcoind_wallet_path.clone());
+    }
+
+    Ok(())
+}
+
 /// Connects to, sanity checks, and wait for bitcoind to be synced.
 /// Called at startup, will log and abort on error.
 pub fn setup_bitcoind(revaultd: &RevaultD) -> BitcoinD {
@@ -151,6 +178,26 @@ pub fn setup_bitcoind(revaultd: &RevaultD) -> BitcoinD {
 
     wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
         log::error!("Error while updating tip: {}", e.to_string());
+        process::exit(1);
+    });
+
+    let wallet = db_wallet(&revaultd.db_file()).unwrap_or_else(|e| {
+        log::error!("Error getting wallet from db: {}", e.to_string());
+        process::exit(1);
+    });
+    let watchonly_wallet_path = revaultd.watchonly_wallet_file(wallet.id);
+    let watchonly_wallet_str = watchonly_wallet_path
+        .to_str()
+        .expect("Path is valid unicode")
+        .to_string();
+    if !watchonly_wallet_path.exists() {
+        create_wallet(&bitcoind, watchonly_wallet_str.clone(), &wallet).unwrap_or_else(|e| {
+            log::error!("Error while creating wallet: {}", e.to_string());
+            process::exit(1);
+        });
+    }
+    maybe_load_wallet(&bitcoind, watchonly_wallet_str).unwrap_or_else(|e| {
+        log::error!("Error while loading wallet: {}", e.to_string());
         process::exit(1);
     });
 

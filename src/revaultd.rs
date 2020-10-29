@@ -107,6 +107,10 @@ impl RevaultD {
     pub fn db_file(&self) -> PathBuf {
         self.file_from_datadir("revaultd.sqlite3")
     }
+
+    pub fn watchonly_wallet_file(&self, wallet_id: u32) -> PathBuf {
+        self.file_from_datadir(&format!("revaultd-watchonly-wallet-{}", wallet_id))
+    }
 }
 
 #[cfg(test)]

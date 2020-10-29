@@ -46,4 +46,68 @@ impl BitcoinD {
     pub fn getblockchaininfo(&self) -> Result<serde_json::Value, BitcoindError> {
         self.make_request("getblockchaininfo", &[])
     }
+
+    pub fn createwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
+        let res = self.make_request(
+            "createwallet",
+            &[
+                serde_json::Value::String(wallet_path),
+                serde_json::Value::Bool(true),             // watchonly
+                serde_json::Value::Bool(false),            // blank
+                serde_json::Value::String("".to_string()), // passphrase,
+                serde_json::Value::Bool(false),            // avoid_reuse
+                serde_json::Value::Bool(true),             // descriptors
+                serde_json::Value::Bool(true),             // load_on_startup
+            ],
+        )?;
+
+        if res.get("name").is_some() {
+            return Ok(());
+        }
+
+        Err(BitcoindError(format!(
+            "Error creating wallet: '{:?}'",
+            res.get("warning")
+        )))
+    }
+
+    pub fn listwallets(&self) -> Result<Vec<String>, BitcoindError> {
+        self.make_request("listwallets", &[])?
+            .as_array()
+            .ok_or_else(|| {
+                BitcoindError("API break, 'listwallets' didn't return an array.".to_string())
+            })
+            .map(|vec| {
+                vec.iter()
+                    .map(|json_str| {
+                        json_str
+                            .as_str()
+                            .unwrap_or_else(|| {
+                                log::error!("'listwallets' contain a non-string value. Aborting.");
+                                panic!("API break: 'listwallets' contains a non-string value");
+                            })
+                            .to_string()
+                    })
+                    .collect()
+            })
+    }
+
+    pub fn loadwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
+        let res = self.make_request(
+            "loadwallet",
+            &[
+                serde_json::Value::String(wallet_path),
+                serde_json::Value::Bool(true), // load_on_startup
+            ],
+        )?;
+
+        if res.get("name").is_some() {
+            return Ok(());
+        }
+
+        Err(BitcoindError(format!(
+            "Error loading wallet: '{:?}'",
+            res.get("warning")
+        )))
+    }
 }

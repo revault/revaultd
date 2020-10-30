@@ -9,7 +9,8 @@ CREATE TABLE wallets (
     vault_descriptor TEXT NOT NULL,
     unvault_descriptor TEXT NOT NULL,
     our_manager_xpub TEXT,
-    our_stakeholder_xpub TEXT
+    our_stakeholder_xpub TEXT,
+    deposit_derivation_index INTEGER NOT NULL
 );
 
 CREATE TABLE vaults (

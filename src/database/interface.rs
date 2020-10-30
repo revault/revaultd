@@ -74,6 +74,7 @@ pub struct DbWallet {
     pub vault_descriptor: String,
     pub unvault_descriptor: String,
     pub ourselves: config::OurSelves,
+    pub deposit_derivation_index: u32,
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
@@ -113,6 +114,7 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
                 manager_xpub: our_man_xpub,
                 stakeholder_xpub: our_stk_xpub,
             },
+            deposit_derivation_index: row.get(6)?,
         })
     })?;
 

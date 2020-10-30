@@ -50,13 +50,15 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
         tx.execute(
             "INSERT INTO wallets (timestamp, vault_descriptor, unvault_descriptor,\
-            our_manager_xpub, our_stakeholder_xpub) VALUES (?1, ?2, ?3, ?4, ?5)",
+            our_manager_xpub, our_stakeholder_xpub, deposit_derivation_index) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 timestamp,
                 vault_descriptor,
                 unvault_descriptor,
                 our_man_xpub_str,
-                our_stk_xpub_str
+                our_stk_xpub_str,
+                revaultd.current_unused_index,
             ],
         )
         .map_err(|e| DatabaseError(format!("Inserting wallet: {}", e.to_string())))?;
@@ -98,6 +100,7 @@ fn check_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
             ))
         })?,
     );
+    revaultd.current_unused_index = wallet.deposit_derivation_index;
 
     Ok(())
 }

@@ -137,26 +137,64 @@ fn wait_for_bitcoind_synced(
 }
 
 // This creates the actual wallet file, and imports the descriptors
-fn create_wallet(
-    bitcoind: &BitcoinD,
-    bitcoind_wallet_path: String,
-    wallet: &DbWallet,
-) -> Result<(), BitcoindError> {
-    bitcoind.createwallet_startup(bitcoind_wallet_path)?;
+fn maybe_create_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    let wallet = db_wallet(&revaultd.db_file())
+        .map_err(|e| BitcoindError(format!("Error getting wallet from db: {}", e.to_string())))?;
+    let bitcoind_wallet_path = revaultd.watchonly_wallet_file(wallet.id);
+    let bitcoind_wallet_str = bitcoind_wallet_path
+        .to_str()
+        .expect("Path is valid unicode")
+        .to_string();
 
-    // TODO: import descriptors
+    if !bitcoind_wallet_path.exists() {
+        bitcoind.createwallet_startup(bitcoind_wallet_str)?;
 
-    // TODO: maybe warn, depending on the timestamp, that it's going to take some time.
+        // Now, import descriptors.
+        // TODO: maybe warn, depending on the timestamp, that it's going to take some time.
+        // In theory, we could just import the vault (deposit) descriptor expressed using xpubs, give a
+        // range to bitcoind as the gap limit, and be fine.
+        // Unfortunately we cannot just import descriptors as is, since bitcoind does not support
+        // Miniscript ones yet. Worse, we actually need to derive them to pass them to bitcoind since
+        // the vault one (which we are interested about) won't be expressed with a `multi()` statement (
+        // currently supported by bitcoind) if there are more than 15 stakeholders.
+        // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
+        // the derivation index mess ourselves :'(
+        for addr in revaultd.all_deposit_addresses() {
+            let addr_desc = bitcoind.addr_descriptor(&addr)?;
+            log::trace!("Importing deposit descriptor '{}'", addr_desc);
+            bitcoind.importdescriptor(
+                addr_desc,
+                wallet.timestamp,
+                "revault-deposit".to_string(),
+            )?;
+        }
+    }
 
     Ok(())
 }
 
-fn maybe_load_wallet(
-    bitcoind: &BitcoinD,
-    bitcoind_wallet_path: String,
-) -> Result<(), BitcoindError> {
+fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    let wallet = db_wallet(&revaultd.db_file())
+        .map_err(|e| BitcoindError(format!("Error getting wallet from db: {}", e.to_string())))?;
+    let bitcoind_wallet_path = revaultd
+        .watchonly_wallet_file(wallet.id)
+        .to_str()
+        .expect("Path is valid unicode")
+        .to_string();
+
     if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
-        return bitcoind.loadwallet_startup(bitcoind_wallet_path.clone());
+        log::info!("Loading wallet '{}'.", bitcoind_wallet_path);
+        bitcoind.loadwallet_startup(bitcoind_wallet_path.clone())?;
+    }
+
+    for wallet_name in bitcoind.listwallets()? {
+        if wallet_name != bitcoind_wallet_path {
+            log::info!(
+                "Too many wallets loaded on bitcoind! Unloading wallet '{}'.",
+                wallet_name
+            );
+            bitcoind.unloadwallet(wallet_name)?;
+        }
     }
 
     Ok(())
@@ -181,22 +219,11 @@ pub fn setup_bitcoind(revaultd: &RevaultD) -> BitcoinD {
         process::exit(1);
     });
 
-    let wallet = db_wallet(&revaultd.db_file()).unwrap_or_else(|e| {
-        log::error!("Error getting wallet from db: {}", e.to_string());
+    maybe_create_wallet(&revaultd, &bitcoind).unwrap_or_else(|e| {
+        log::error!("Error while creating wallet: {}", e.to_string());
         process::exit(1);
     });
-    let watchonly_wallet_path = revaultd.watchonly_wallet_file(wallet.id);
-    let watchonly_wallet_str = watchonly_wallet_path
-        .to_str()
-        .expect("Path is valid unicode")
-        .to_string();
-    if !watchonly_wallet_path.exists() {
-        create_wallet(&bitcoind, watchonly_wallet_str.clone(), &wallet).unwrap_or_else(|e| {
-            log::error!("Error while creating wallet: {}", e.to_string());
-            process::exit(1);
-        });
-    }
-    maybe_load_wallet(&bitcoind, watchonly_wallet_str).unwrap_or_else(|e| {
+    maybe_load_wallet(&revaultd, &bitcoind).unwrap_or_else(|e| {
         log::error!("Error while loading wallet: {}", e.to_string());
         process::exit(1);
     });

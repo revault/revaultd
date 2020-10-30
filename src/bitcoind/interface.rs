@@ -110,4 +110,71 @@ impl BitcoinD {
             res.get("warning")
         )))
     }
+
+    pub fn unloadwallet(&self, wallet_name: String) -> Result<(), BitcoindError> {
+        let res = self.make_request(
+            "unloadwallet",
+            &[
+                serde_json::Value::String(wallet_name),
+                serde_json::Value::Bool(false), // load_on_startup
+            ],
+        )?;
+
+        if let Some(warning) = res.get("warning") {
+            log::debug!("Warning unloading wallet: {}", warning);
+        }
+
+        Ok(())
+    }
+
+    /// Constructs an `addr()` descriptor out of an address
+    pub fn addr_descriptor(&self, address: &str) -> Result<String, BitcoindError> {
+        let desc_wo_checksum = format!("addr({})", address);
+
+        Ok(self
+            .make_request(
+                "getdescriptorinfo",
+                &[serde_json::Value::String(desc_wo_checksum)],
+            )?
+            .get("descriptor")
+            .ok_or_else(|| BitcoindError("No 'descriptor' in 'getdescriptorinfo'".to_string()))?
+            .as_str()
+            .ok_or_else(|| {
+                BitcoindError(
+                    "'descriptor' in 'getdescriptorinfo' isn't a string anymore".to_string(),
+                )
+            })?
+            .to_string())
+    }
+
+    pub fn importdescriptor(
+        &self,
+        desc: String,
+        timestamp: u32,
+        label: String,
+    ) -> Result<(), BitcoindError> {
+        let mut desc_map = serde_json::Map::with_capacity(3);
+        desc_map.insert("desc".to_string(), serde_json::Value::String(desc));
+        // FIXME: set to "now" for first import!
+        desc_map.insert(
+            "timestamp".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(timestamp)),
+        );
+        desc_map.insert("label".to_string(), serde_json::Value::String(label));
+
+        let res = self.make_request(
+            "importdescriptors",
+            &[serde_json::Value::Array(vec![serde_json::Value::Object(
+                desc_map,
+            )])],
+        )?;
+        if res.get(0).map(|x| x.get("success")) == Some(Some(&serde_json::Value::Bool(true))) {
+            return Ok(());
+        }
+
+        Err(BitcoindError(format!(
+            "Error returned from 'importdescriptor': {:?}",
+            res.get("error")
+        )))
+    }
 }

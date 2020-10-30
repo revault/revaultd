@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::vec::Vec;
 
 use revault_tx::{
+    bitcoin::{util::bip32::ChildNumber, Network},
     miniscript::descriptor::DescriptorPublicKey,
     scripts::{
         unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
@@ -28,6 +29,10 @@ pub struct RevaultD {
     pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of unvault's CPFP output scripts
     pub unvault_cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
+    /// We don't make an enormous deal of address reuse (we cancel to the same keys),
+    /// however we at least try to generate new addresses once they're used.
+    // FIXME: think more about desync reconciliation..
+    pub current_unused_index: u32,
     // TODO: servers connection stuff
 
     // TODO: RPC server stuff
@@ -84,6 +89,8 @@ impl RevaultD {
             data_dir,
             bitcoind_config: config.bitcoind_config,
             ourselves: config.ourselves,
+            // Will be updated by the database
+            current_unused_index: 0,
         })
     }
 
@@ -94,6 +101,22 @@ impl RevaultD {
             .expect("Impossible: the datadir path is valid unicode");
 
         [data_dir_str, file_name].iter().collect()
+    }
+
+    fn vault_address(&self, child_number: u32) -> String {
+        let network = match self.bitcoind_config.network.as_str() {
+            "main" => Network::Bitcoin,
+            "test" => Network::Testnet,
+            "regtest" => Network::Regtest,
+            _ => unreachable!("Network is checked at startup"),
+        };
+
+        self.vault_descriptor
+            .derive(ChildNumber::from(child_number))
+            .0
+            .address(network)
+            .expect("vault_descriptor is a wsh")
+            .to_string()
     }
 
     pub fn log_file(&self) -> PathBuf {
@@ -110,6 +133,17 @@ impl RevaultD {
 
     pub fn watchonly_wallet_file(&self, wallet_id: u32) -> PathBuf {
         self.file_from_datadir(&format!("revaultd-watchonly-wallet-{}", wallet_id))
+    }
+
+    pub fn deposit_address(&self) -> String {
+        self.vault_address(self.current_unused_index)
+    }
+
+    /// All deposit addresses up to the gap limit (100)
+    pub fn all_deposit_addresses(&self) -> Vec<String> {
+        (0..self.current_unused_index + 100)
+            .map(|index| self.vault_address(index))
+            .collect()
     }
 }
 

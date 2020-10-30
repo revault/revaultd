@@ -159,15 +159,17 @@ fn maybe_create_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), B
         // currently supported by bitcoind) if there are more than 15 stakeholders.
         // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
         // the derivation index mess ourselves :'(
-        for addr in revaultd.all_deposit_addresses() {
-            let addr_desc = bitcoind.addr_descriptor(&addr)?;
-            log::trace!("Importing deposit descriptor '{}'", addr_desc);
-            bitcoind.importdescriptor(
-                addr_desc,
-                wallet.timestamp,
-                "revault-deposit".to_string(),
-            )?;
+        let addresses = revaultd.all_deposit_addresses();
+        let mut descriptors = Vec::<String>::with_capacity(addresses.len());
+        for addr in addresses {
+            descriptors.push(bitcoind.addr_descriptor(&addr)?);
         }
+        log::trace!("Importing deposit descriptors '{:?}'", &descriptors);
+        bitcoind.startup_importdescriptors(
+            descriptors,
+            wallet.timestamp,
+            "revault-deposit".to_string(),
+        )?;
     }
 
     Ok(())

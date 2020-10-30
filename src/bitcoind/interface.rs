@@ -147,26 +147,34 @@ impl BitcoinD {
             .to_string())
     }
 
-    pub fn importdescriptor(
+    pub fn startup_importdescriptors(
         &self,
-        desc: String,
+        descriptors: Vec<String>,
         timestamp: u32,
         label: String,
     ) -> Result<(), BitcoindError> {
-        let mut desc_map = serde_json::Map::with_capacity(3);
-        desc_map.insert("desc".to_string(), serde_json::Value::String(desc));
-        // FIXME: set to "now" for first import!
-        desc_map.insert(
-            "timestamp".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(timestamp)),
-        );
-        desc_map.insert("label".to_string(), serde_json::Value::String(label));
+        let all_descriptors: Vec<serde_json::Value> = descriptors
+            .into_iter()
+            .map(|desc| {
+                let mut desc_map = serde_json::Map::with_capacity(3);
+                desc_map.insert("desc".to_string(), serde_json::Value::String(desc));
+                // FIXME: set to "now" for first import!
+                desc_map.insert(
+                    "timestamp".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(timestamp)),
+                );
+                desc_map.insert(
+                    "label".to_string(),
+                    serde_json::Value::String(label.clone()),
+                );
+
+                serde_json::Value::Object(desc_map)
+            })
+            .collect();
 
         let res = self.make_request(
             "importdescriptors",
-            &[serde_json::Value::Array(vec![serde_json::Value::Object(
-                desc_map,
-            )])],
+            &[serde_json::Value::Array(all_descriptors)],
         )?;
         if res.get(0).map(|x| x.get("success")) == Some(Some(&serde_json::Value::Bool(true))) {
             return Ok(());

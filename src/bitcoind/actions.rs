@@ -90,7 +90,7 @@ fn wait_for_bitcoind_synced(
             // big enough. let's assume it won't take longer than 5min from now
             // for mainnet.
             // Then: get the number of blocks left to DL
-            if first || delta > 1_000 {
+            if (first || delta > 1_000) && blocks < 100_000 {
                 log::info!("Waiting for bitcoind to gather enough headers..");
                 if bitcoind_config.network.eq("regtest") {
                     thread::sleep(time::Duration::from_secs(3));

@@ -3,7 +3,7 @@ use crate::config::{config_folder_path, BitcoindConfig, Config, ConfigError, Our
 use std::{collections::HashMap, fs, path::PathBuf, vec::Vec};
 
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Network, OutPoint, TxOut},
+    bitcoin::{util::bip32::ChildNumber, Network, OutPoint, Script, TxOut},
     miniscript::descriptor::DescriptorPublicKey,
     scripts::{
         unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
@@ -94,6 +94,15 @@ pub struct RevaultD {
 
     /// A cache of known vaults by txid
     pub vaults: HashMap<OutPoint, CachedVault>,
+    /// A hack, kind of the entire reason why we use Miniscript is to not use patterns
+    /// such as what will follow. If you stumble on this after expectations of seeing
+    /// revaultd a modern Bitcoin wallet, please just bypass this line. Otherwise, be
+    /// brave or help reviewing stuff on bitcoin-core so that we can have modern Bitcoin
+    /// stuff there too.
+    /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
+    /// keys used to generate a script from bitcoind while we cannot pass it xpub-expressed
+    /// Miniscript descriptors.
+    pub derivation_index_map: HashMap<Script, u32>,
     // TODO: servers connection stuff
 
     // TODO: RPC server stuff
@@ -150,7 +159,8 @@ impl RevaultD {
             ourselves: config.ourselves,
             // Will be updated by the database
             current_unused_index: 0,
-            // FIXME: we don't need SipHash, use a faster alternative
+            // FIXME: we don't need SipHash for those, use a faster alternative
+            derivation_index_map: HashMap::new(),
             vaults: HashMap::new(),
         })
     }
@@ -173,22 +183,32 @@ impl RevaultD {
         }
     }
 
-    fn vault_address(&self, child_number: u32) -> String {
-        self.vault_descriptor
+    fn vault_address(&mut self, child_number: u32) -> String {
+        let addr = self
+            .vault_descriptor
             .derive(ChildNumber::from(child_number))
             .0
             .address(self.network())
-            .expect("vault_descriptor is a wsh")
-            .to_string()
+            .expect("vault_descriptor is a wsh");
+        // So we can retrieve it later..
+        self.derivation_index_map
+            .insert(addr.script_pubkey(), child_number);
+
+        addr.to_string()
     }
 
-    fn unvault_address(&self, child_number: u32) -> String {
-        self.unvault_descriptor
+    fn unvault_address(&mut self, child_number: u32) -> String {
+        let addr = self
+            .unvault_descriptor
             .derive(ChildNumber::from(child_number))
             .0
             .address(self.network())
-            .expect("vault_descriptor is a wsh")
-            .to_string()
+            .expect("vault_descriptor is a wsh");
+        // So we can retrieve it later..
+        self.derivation_index_map
+            .insert(addr.script_pubkey(), child_number);
+
+        addr.to_string()
     }
 
     pub fn log_file(&self) -> PathBuf {
@@ -207,19 +227,19 @@ impl RevaultD {
         self.file_from_datadir(&format!("revaultd-watchonly-wallet-{}", wallet_id))
     }
 
-    pub fn deposit_address(&self) -> String {
+    pub fn deposit_address(&mut self) -> String {
         self.vault_address(self.current_unused_index)
     }
 
     /// All deposit addresses up to the gap limit (100)
-    pub fn all_deposit_addresses(&self) -> Vec<String> {
+    pub fn all_deposit_addresses(&mut self) -> Vec<String> {
         (0..self.current_unused_index + 100)
             .map(|index| self.vault_address(index))
             .collect()
     }
 
     /// All unvault addresses up to the gap limit (100)
-    pub fn all_unvault_addresses(&self) -> Vec<String> {
+    pub fn all_unvault_addresses(&mut self) -> Vec<String> {
         (0..self.current_unused_index + 100)
             .map(|index| self.unvault_address(index))
             .collect()

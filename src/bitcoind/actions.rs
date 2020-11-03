@@ -137,7 +137,7 @@ fn wait_for_bitcoind_synced(
 }
 
 // This creates the actual wallet file, and imports the descriptors
-fn maybe_create_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
     let wallet = db_wallet(&revaultd.db_file())
         .map_err(|e| BitcoindError(format!("Error getting wallet from db: {}", e.to_string())))?;
     let bitcoind_wallet_path = revaultd.watchonly_wallet_file(wallet.id);
@@ -209,7 +209,7 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
 
 /// Connects to, sanity checks, and wait for bitcoind to be synced.
 /// Called at startup, will log and abort on error.
-pub fn setup_bitcoind(revaultd: &RevaultD) -> BitcoinD {
+pub fn setup_bitcoind(revaultd: &mut RevaultD) -> BitcoinD {
     let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).unwrap_or_else(|e| {
         log::error!("Could not connect to bitcoind: {}", e.to_string());
         process::exit(1);
@@ -226,7 +226,7 @@ pub fn setup_bitcoind(revaultd: &RevaultD) -> BitcoinD {
         process::exit(1);
     });
 
-    maybe_create_wallet(&revaultd, &bitcoind).unwrap_or_else(|e| {
+    maybe_create_wallet(revaultd, &bitcoind).unwrap_or_else(|e| {
         log::error!("Error while creating wallet: {}", e.to_string());
         process::exit(1);
     });

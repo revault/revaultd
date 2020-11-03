@@ -37,7 +37,7 @@ fn daemon_main(mut revaultd: RevaultD) {
     });
 
     // This aborts on error
-    let bitcoind = setup_bitcoind(&revaultd);
+    let bitcoind = setup_bitcoind(&mut revaultd);
 
     log::info!(
         "revaultd started on network {}",

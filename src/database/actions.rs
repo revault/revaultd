@@ -102,6 +102,8 @@ fn check_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     );
     revaultd.current_unused_index = wallet.deposit_derivation_index;
 
+    // TODO: update the vaults cache from the database
+
     Ok(())
 }
 

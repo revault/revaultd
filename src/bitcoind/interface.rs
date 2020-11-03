@@ -1,11 +1,15 @@
-use crate::{bitcoind::BitcoindError, config::BitcoindConfig};
+use crate::{
+    bitcoind::BitcoindError,
+    config::BitcoindConfig,
+    revaultd::{CachedVault, VaultStatus},
+};
+use revault_tx::bitcoin::{Address, Amount, OutPoint, TxOut, Txid};
 
-use std::fs;
+use std::{collections::HashMap, fs, str::FromStr};
 
 use jsonrpc::{client::Client, simple_rtt::Tripper};
 
 pub struct BitcoinD {
-    // FIXME: do we need to persist the config here ?
     client: Client<Tripper>,
 }
 
@@ -22,6 +26,14 @@ impl BitcoinD {
         let client = Client::new(format!("{}", config.addr), user, pass);
 
         Ok(BitcoinD { client })
+    }
+
+    fn deposit_utxos_label(&self) -> String {
+        "revault-deposit".to_string()
+    }
+
+    fn unvault_utxos_label(&self) -> String {
+        "revault-unvault".to_string()
     }
 
     fn make_request<'a, 'b>(
@@ -147,7 +159,7 @@ impl BitcoinD {
             .to_string())
     }
 
-    pub fn startup_importdescriptors(
+    fn bulk_import_descriptors(
         &self,
         descriptors: Vec<String>,
         timestamp: u32,
@@ -184,5 +196,145 @@ impl BitcoinD {
             "Error returned from 'importdescriptor': {:?}",
             res.get("error")
         )))
+    }
+
+    pub fn startup_import_deposit_descriptors(
+        &self,
+        descriptors: Vec<String>,
+        timestamp: u32,
+    ) -> Result<(), BitcoindError> {
+        self.bulk_import_descriptors(descriptors, timestamp, self.deposit_utxos_label())
+    }
+
+    pub fn startup_import_unvault_descriptors(
+        &self,
+        descriptors: Vec<String>,
+        timestamp: u32,
+    ) -> Result<(), BitcoindError> {
+        self.bulk_import_descriptors(descriptors, timestamp, self.unvault_utxos_label())
+    }
+
+    pub fn new_deposits(
+        &self,
+        existing_utxos: &HashMap<OutPoint, CachedVault>,
+    ) -> Result<HashMap<OutPoint, CachedVault>, BitcoindError> {
+        let mut new_utxos = HashMap::new();
+
+        for utxo in self
+            .make_request("listunspent", &[])?
+            .as_array()
+            .ok_or_else(|| {
+                BitcoindError("API break, 'listunspent' didn't return an array.".to_string())
+            })?
+        {
+            if utxo.get("label") != Some(&serde_json::Value::String(self.deposit_utxos_label())) {
+                continue;
+            }
+
+            let txid = utxo
+                .get("txid")
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain a 'txid'.".to_string(),
+                    )
+                })?
+                .as_str()
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain a string 'txid'."
+                            .to_string(),
+                    )
+                })?;
+            let txid = Txid::from_str(txid).map_err(|e| {
+                BitcoindError(format!(
+                    "Converting txid from str in 'listunspent': {}.",
+                    e.to_string()
+                ))
+            })?;
+            let vout = utxo
+                .get("vout")
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain a 'vout'.".to_string(),
+                    )
+                })?
+                .as_u64()
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain a valid 'vout'.".to_string(),
+                    )
+                })?;
+            let outpoint = OutPoint {
+                txid,
+                vout: vout as u32, // Bitcoin makes this safe
+            };
+            if existing_utxos.contains_key(&outpoint) {
+                continue;
+            }
+
+            let address = utxo
+                .get("address")
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain an 'address'.".to_string(),
+                    )
+                })?
+                .as_str()
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain a string 'address'."
+                            .to_string(),
+                    )
+                })?;
+            let script_pubkey = Address::from_str(address)
+                .map_err(|e| {
+                    BitcoindError(format!(
+                        "Could not parse 'address' from 'listunspent' entry: {}",
+                        e.to_string()
+                    ))
+                })?
+                .script_pubkey();
+            let amount = utxo
+                .get("amount")
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain an 'amount'.".to_string(),
+                    )
+                })?
+                .as_f64()
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "API break, 'listunspent' entry didn't contain a valid 'amount'."
+                            .to_string(),
+                    )
+                })?;
+            let value = Amount::from_btc(amount)
+                .map_err(|e| {
+                    BitcoindError(format!(
+                        "Could not convert 'listunspent' entry's 'amount' to an Amount: {}",
+                        e.to_string()
+                    ))
+                })?
+                .as_sat();
+
+            log::trace!(
+                "Got a new deposit at {:#?} for address {} ({} sats)",
+                &outpoint,
+                &address,
+                &value
+            );
+            new_utxos.insert(
+                outpoint,
+                CachedVault {
+                    txo: TxOut {
+                        value,
+                        script_pubkey,
+                    },
+                    status: VaultStatus::Funded,
+                },
+            );
+        }
+
+        Ok(new_utxos)
     }
 }

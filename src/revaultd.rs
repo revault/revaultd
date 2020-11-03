@@ -1,17 +1,75 @@
 use crate::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
 
-use std::fs;
-use std::path::PathBuf;
-use std::vec::Vec;
+use std::{collections::HashMap, fs, path::PathBuf, vec::Vec};
 
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Network},
+    bitcoin::{util::bip32::ChildNumber, Network, OutPoint, TxOut},
     miniscript::descriptor::DescriptorPublicKey,
     scripts::{
         unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
         UnvaultDescriptor, VaultDescriptor,
     },
+    transactions::{
+        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
+        VaultTransaction,
+    },
 };
+
+/// The status of a [Vault], depends both on the block chain and the set of pre-signed
+/// transactions
+pub enum VaultStatus {
+    // FIXME: More formally analyze the impact of reorgs
+    // FIXME: Min confirms ?
+    /// The deposit transaction is confirmed
+    Funded,
+    /// The emergency transaction is signed
+    Secured,
+    /// The unvault transaction is signed (implies that the second emergency and the
+    /// cancel transaction are signed).
+    Active,
+    /// The unvault transaction has been broadcast
+    Unvaulting,
+    /// The unvault transaction is confirmed
+    Unvaulted,
+    /// The cancel transaction has been broadcast
+    Canceling,
+    /// The cancel transaction is confirmed
+    Canceled,
+    /// One of the emergency transactions has been broadcast
+    EmergencyVaulting,
+    /// One of the emergency transactions is confirmed
+    EmergencyVaulted,
+    /// The unvault transaction CSV is expired
+    Spendable,
+    /// The spend transaction has been broadcast
+    Spending,
+    // TODO: At what depth do we forget it ?
+    /// The spend transaction is confirmed
+    Spent,
+}
+
+/// We cache the known vault and their status to avoid too frequent lookups to the DB.
+/// This stores the deposit utxo and the status of the vault.
+pub struct CachedVault {
+    pub txo: TxOut,
+    pub status: VaultStatus,
+}
+
+/// A vault is defined as a confirmed utxo paying to the Vault Descriptor for which
+/// we have a set of pre-signed transaction (emergency, cancel, unvault).
+/// Depending on its status we may not yet be in possession of part -or the entirety-
+/// of the pre-signed transactions.
+/// Likewise, depending on our role (manager or stakeholder), we may not have the
+/// emergency transactions.
+pub struct Vault {
+    /// The deposit utxo and the status of the vault, that we keep in memory
+    pub cached_vault: CachedVault,
+    pub vault_tx: Option<VaultTransaction>,
+    pub emergency_tx: Option<EmergencyTransaction>,
+    pub unvault_tx: Option<UnvaultTransaction>,
+    pub cancel_tx: Option<CancelTransaction>,
+    pub unvault_emergency_tx: Option<UnvaultEmergencyTransaction>,
+}
 
 /// Our global state
 pub struct RevaultD {
@@ -33,11 +91,12 @@ pub struct RevaultD {
     /// however we at least try to generate new addresses once they're used.
     // FIXME: think more about desync reconciliation..
     pub current_unused_index: u32,
+
+    /// A cache of known vaults by txid
+    pub vaults: HashMap<OutPoint, CachedVault>,
     // TODO: servers connection stuff
 
     // TODO: RPC server stuff
-
-    // TODO: Coin tracking stuff
 }
 
 impl RevaultD {
@@ -91,6 +150,8 @@ impl RevaultD {
             ourselves: config.ourselves,
             // Will be updated by the database
             current_unused_index: 0,
+            // FIXME: we don't need SipHash, use a faster alternative
+            vaults: HashMap::new(),
         })
     }
 
@@ -103,18 +164,29 @@ impl RevaultD {
         [data_dir_str, file_name].iter().collect()
     }
 
-    fn vault_address(&self, child_number: u32) -> String {
-        let network = match self.bitcoind_config.network.as_str() {
+    fn network(&self) -> Network {
+        match self.bitcoind_config.network.as_str() {
             "main" => Network::Bitcoin,
             "test" => Network::Testnet,
             "regtest" => Network::Regtest,
             _ => unreachable!("Network is checked at startup"),
-        };
+        }
+    }
 
+    fn vault_address(&self, child_number: u32) -> String {
         self.vault_descriptor
             .derive(ChildNumber::from(child_number))
             .0
-            .address(network)
+            .address(self.network())
+            .expect("vault_descriptor is a wsh")
+            .to_string()
+    }
+
+    fn unvault_address(&self, child_number: u32) -> String {
+        self.unvault_descriptor
+            .derive(ChildNumber::from(child_number))
+            .0
+            .address(self.network())
             .expect("vault_descriptor is a wsh")
             .to_string()
     }
@@ -143,6 +215,13 @@ impl RevaultD {
     pub fn all_deposit_addresses(&self) -> Vec<String> {
         (0..self.current_unused_index + 100)
             .map(|index| self.vault_address(index))
+            .collect()
+    }
+
+    /// All unvault addresses up to the gap limit (100)
+    pub fn all_unvault_addresses(&self) -> Vec<String> {
+        (0..self.current_unused_index + 100)
+            .map(|index| self.unvault_address(index))
             .collect()
     }
 }

@@ -159,17 +159,22 @@ fn maybe_create_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), B
         // currently supported by bitcoind) if there are more than 15 stakeholders.
         // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
         // the derivation index mess ourselves :'(
-        let addresses = revaultd.all_deposit_addresses();
-        let mut descriptors = Vec::<String>::with_capacity(addresses.len());
-        for addr in addresses {
-            descriptors.push(bitcoind.addr_descriptor(&addr)?);
+        let mut addresses = revaultd.all_deposit_addresses();
+        for i in 0..addresses.len() {
+            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
         }
-        log::trace!("Importing deposit descriptors '{:?}'", &descriptors);
-        bitcoind.startup_importdescriptors(
-            descriptors,
-            wallet.timestamp,
-            "revault-deposit".to_string(),
-        )?;
+        log::trace!("Importing deposit descriptors '{:?}'", &addresses);
+        bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp)?;
+
+        // As a consequence, we don't have enough information to opportunistically import a
+        // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
+        // deposit and unvault descriptors..
+        let mut addresses = revaultd.all_unvault_addresses();
+        for i in 0..addresses.len() {
+            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
+        }
+        log::trace!("Importing unvault descriptors '{:?}'", &addresses);
+        bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp)?;
     }
 
     Ok(())
@@ -231,4 +236,26 @@ pub fn setup_bitcoind(revaultd: &RevaultD) -> BitcoinD {
     });
 
     bitcoind
+}
+
+fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    for (outpoint, utxo) in bitcoind.new_deposits(&revaultd.vaults)?.into_iter() {
+        // TODO: Updates here
+
+        revaultd.vaults.insert(outpoint, utxo);
+    }
+
+    Ok(())
+}
+
+/// The bitcoind event loop.
+/// Poll bitcoind every 30 seconds, and update our state accordingly.
+pub fn bitcoind_main_loop(
+    revaultd: &mut RevaultD,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    loop {
+        poll_bitcoind(revaultd, &bitcoind)?;
+        thread::sleep(time::Duration::from_secs(30));
+    }
 }

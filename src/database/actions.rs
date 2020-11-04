@@ -1,11 +1,17 @@
 use crate::{
     database::{interface::*, schema::SCHEMA, DatabaseError, VERSION},
-    revaultd::RevaultD,
+    revaultd::{RevaultD, VaultStatus},
 };
-use revault_tx::{miniscript::Descriptor, scripts::UnvaultDescriptor, scripts::VaultDescriptor};
+use revault_tx::{
+    bitcoin::consensus::encode,
+    miniscript::Descriptor,
+    scripts::{UnvaultDescriptor, VaultDescriptor},
+    transactions::VaultTransaction,
+};
 
 use std::{
     convert::TryInto,
+    path::PathBuf,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -101,6 +107,7 @@ fn check_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
         })?,
     );
     revaultd.current_unused_index = wallet.deposit_derivation_index;
+    revaultd.wallet_id = wallet.id;
 
     // TODO: update the vaults cache from the database
 
@@ -121,6 +128,52 @@ pub fn setup_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     check_db(revaultd)?;
 
     Ok(())
+}
+
+/// Insert a new deposit in the database (atomically record both the vault and the deposit
+/// transaction).
+pub fn db_insert_new_vault(
+    db_path: &PathBuf,
+    wallet_id: u32,
+    status: VaultStatus,
+    blockheight: u32,
+    deposit_txid: Vec<u8>,
+    deposit_vout: u32,
+    amount: u32,
+    derivation_index: u32,
+    vault_tx: VaultTransaction,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "INSERT INTO vaults (wallet_id, status, blockheight, deposit_txid, \
+             deposit_vout, amount, derivation_index) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                wallet_id,
+                status as u32,
+                blockheight,
+                deposit_txid,
+                deposit_vout,
+                amount,
+                derivation_index,
+            ],
+        )
+        .map_err(|e| DatabaseError(format!("Inserting vault: {}", e.to_string())))?;
+
+        let vault_id = tx.last_insert_rowid();
+
+        tx.execute(
+            "INSERT INTO transactions (vault_id, type, tx) VALUES (?1, ?2, ?3)",
+            params![
+                vault_id,
+                TransactionType::Deposit as u32,
+                encode::serialize(&vault_tx.0)
+            ],
+        )
+        .map_err(|e| DatabaseError(format!("Inserting vault transaction: {}", e.to_string())))?;
+
+        Ok(())
+    })
 }
 
 #[cfg(test)]

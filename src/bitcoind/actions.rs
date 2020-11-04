@@ -1,8 +1,12 @@
 use crate::{
     bitcoind::{interface::BitcoinD, BitcoindError},
     config::BitcoindConfig,
-    database::interface::{db_wallet, DbWallet},
+    database::{actions::db_insert_new_vault, interface::db_wallet},
     revaultd::RevaultD,
+};
+use revault_tx::{
+    bitcoin::{consensus::encode, hashes::hex::FromHex, Transaction},
+    transactions::VaultTransaction,
 };
 
 use std::{process, thread, time};
@@ -238,10 +242,43 @@ pub fn setup_bitcoind(revaultd: &mut RevaultD) -> BitcoinD {
     bitcoind
 }
 
+fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
+    let mut bytes = Vec::from_hex(hex)
+        .map_err(|e| BitcoindError(format!("Parsing tx hex: '{}'", e.to_string())))?;
+    encode::deserialize::<Transaction>(&mut bytes)
+        .map_err(|e| BitcoindError(format!("Deserializing tx hex: '{}'", e.to_string())))
+}
+
 fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
     for (outpoint, utxo) in bitcoind.new_deposits(&revaultd.vaults)?.into_iter() {
-        // TODO: Updates here
+        let derivation_index = *revaultd
+            .derivation_index_map
+            .get(&utxo.txo.script_pubkey)
+            .ok_or_else(|| BitcoindError(format!("Unknown derivation index for: {:#?}", &utxo)))?;
+        let wallet_tx = bitcoind.get_wallet_transaction(outpoint.txid)?;
+        let vault_tx = VaultTransaction(tx_from_hex(&wallet_tx.0).map_err(|e| {
+            BitcoindError(format!(
+                "Deserializing tx from hex: '{}'. Transaction: '{}'",
+                e.to_string(),
+                wallet_tx.0
+            ))
+        })?);
+        let blockheight = wallet_tx
+            .1
+            .ok_or_else(|| BitcoindError("Deposit transaction isn't confirmed!".to_string()))?;
 
+        db_insert_new_vault(
+            &revaultd.db_file(),
+            revaultd.wallet_id,
+            utxo.status,
+            blockheight,
+            outpoint.txid.to_vec(),
+            outpoint.vout,
+            utxo.txo.value as u32,
+            derivation_index,
+            vault_tx,
+        )
+        .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
         revaultd.vaults.insert(outpoint, utxo);
     }
 

@@ -1,5 +1,8 @@
 use crate::{config, database::DatabaseError};
-use revault_tx::miniscript::descriptor::DescriptorPublicKey;
+use revault_tx::{
+    bitcoin::{util::psbt::PartiallySignedTransaction as Psbt, Transaction as BitcoinTransaction},
+    miniscript::descriptor::DescriptorPublicKey,
+};
 
 use std::{boxed::Box, path::PathBuf, str::FromStr};
 
@@ -124,6 +127,27 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         .as_ref()
         .map_err(|e| DatabaseError(format!("Getting wallet: '{}'", e.to_string())))?
         .clone())
+}
+
+/// The type of the transaction, as stored in the "transactions" table
+pub enum TransactionType {
+    Deposit,
+    Unvault,
+    Spend,
+    Cancel,
+    Emergency,
+    UnvaultEmergency,
+}
+
+/// A row in the "transactions" table
+pub struct DbTransaction {
+    pub id: u32,
+    pub vault_id: u32,
+    pub tx_type: TransactionType,
+    /// Must not be NULL for RevaultTransactions, must be NULL for external ones
+    pub psbt: Option<Psbt>,
+    /// Must not be NULL for external transactions, must be NULL for RevaultTransactions
+    pub tx: Option<BitcoinTransaction>,
 }
 
 // Add more db_* method here!

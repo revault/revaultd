@@ -20,6 +20,8 @@ CREATE TABLE vaults (
     blockheight INTEGER NOT NULL,
     deposit_txid BLOB UNIQUE NOT NULL,
     deposit_vout INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    derivation_index INTEGER NOT NULL,
     FOREIGN KEY (wallet_id) REFERENCES wallets (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT
@@ -29,7 +31,8 @@ CREATE TABLE transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     vault_id INTEGER NOT NULL,
     type INTEGER NOT NULL,
-    psbt TEXT NOT NULL,
+    psbt TEXT UNIQUE,
+    tx BLOB UNIQUE,
     FOREIGN KEY (vault_id) REFERENCES vaults (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT

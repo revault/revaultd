@@ -17,6 +17,7 @@ use revault_tx::{
 
 /// The status of a [Vault], depends both on the block chain and the set of pre-signed
 /// transactions
+#[derive(Debug, Clone, Copy)]
 pub enum VaultStatus {
     // FIXME: More formally analyze the impact of reorgs
     // FIXME: Min confirms ?
@@ -50,6 +51,7 @@ pub enum VaultStatus {
 
 /// We cache the known vault and their status to avoid too frequent lookups to the DB.
 /// This stores the deposit utxo and the status of the vault.
+#[derive(Debug)]
 pub struct CachedVault {
     pub txo: TxOut,
     pub status: VaultStatus,
@@ -103,6 +105,9 @@ pub struct RevaultD {
     /// keys used to generate a script from bitcoind while we cannot pass it xpub-expressed
     /// Miniscript descriptors.
     pub derivation_index_map: HashMap<Script, u32>,
+
+    /// The id of the wallet used in the db
+    pub wallet_id: u32,
     // TODO: servers connection stuff
 
     // TODO: RPC server stuff
@@ -162,6 +167,8 @@ impl RevaultD {
             // FIXME: we don't need SipHash for those, use a faster alternative
             derivation_index_map: HashMap::new(),
             vaults: HashMap::new(),
+            // Will be updated soon (:tm:)
+            wallet_id: 0,
         })
     }
 

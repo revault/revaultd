@@ -337,4 +337,30 @@ impl BitcoinD {
 
         Ok(new_utxos)
     }
+
+    /// Get the raw transaction as hex, and the blockheight it was included in if
+    /// it's confirmed.
+    pub fn get_wallet_transaction(
+        &self,
+        txid: Txid,
+    ) -> Result<(String, Option<u32>), BitcoindError> {
+        let res = self.make_request(
+            "gettransaction",
+            &[serde_json::Value::String(txid.to_string())],
+        )?;
+        let tx_hex = res
+            .get("hex")
+            .ok_or_else(|| {
+                BitcoindError(format!(
+                    "API break: no 'hex' in 'gettransaction' result (txid: {})",
+                    txid
+                ))
+            })?
+            .as_str()
+            .ok_or_else(|| BitcoindError("API break: 'hex' is not a string ????".to_string()))?
+            .to_string();
+        let blockheight = res.get("blockheight").map(|bh| bh.as_u64().unwrap() as u32);
+
+        Ok((tx_hex, blockheight))
+    }
 }

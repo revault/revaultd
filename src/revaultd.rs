@@ -218,6 +218,10 @@ impl RevaultD {
         addr.to_string()
     }
 
+    fn gap_limit(&self) -> u32 {
+        100
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.file_from_datadir("log")
     }
@@ -238,16 +242,24 @@ impl RevaultD {
         self.vault_address(self.current_unused_index)
     }
 
+    pub fn last_deposit_address(&mut self) -> String {
+        self.vault_address(self.current_unused_index + self.gap_limit())
+    }
+
+    pub fn last_unvault_address(&mut self) -> String {
+        self.unvault_address(self.current_unused_index + self.gap_limit())
+    }
+
     /// All deposit addresses up to the gap limit (100)
     pub fn all_deposit_addresses(&mut self) -> Vec<String> {
-        (0..self.current_unused_index + 100)
+        (0..self.current_unused_index + self.gap_limit())
             .map(|index| self.vault_address(index))
             .collect()
     }
 
     /// All unvault addresses up to the gap limit (100)
     pub fn all_unvault_addresses(&mut self) -> Vec<String> {
-        (0..self.current_unused_index + 100)
+        (0..self.current_unused_index + self.gap_limit())
             .map(|index| self.unvault_address(index))
             .collect()
     }

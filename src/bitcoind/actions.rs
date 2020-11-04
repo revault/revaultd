@@ -280,6 +280,16 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
         )
         .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
         revaultd.vaults.insert(outpoint, utxo);
+
+        // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
+        // FIXME: of course, that's rudimentary
+        if derivation_index > revaultd.current_unused_index {
+            revaultd.current_unused_index += 1;
+            let next_addr = bitcoind.addr_descriptor(&revaultd.last_deposit_address())?;
+            bitcoind.import_fresh_deposit_descriptor(next_addr)?;
+            let next_addr = bitcoind.addr_descriptor(&revaultd.last_unvault_address())?;
+            bitcoind.import_fresh_unvault_descriptor(next_addr)?;
+        }
     }
 
     Ok(())

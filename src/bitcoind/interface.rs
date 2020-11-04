@@ -214,6 +214,46 @@ impl BitcoinD {
         self.bulk_import_descriptors(descriptors, timestamp, self.unvault_utxos_label())
     }
 
+    fn import_fresh_descriptor(
+        &self,
+        descriptor: String,
+        label: String,
+    ) -> Result<(), BitcoindError> {
+        let mut desc_map = serde_json::Map::with_capacity(3);
+        desc_map.insert("desc".to_string(), serde_json::Value::String(descriptor));
+        desc_map.insert(
+            "timestamp".to_string(),
+            serde_json::Value::String("now".to_string()),
+        );
+        desc_map.insert(
+            "label".to_string(),
+            serde_json::Value::String(label.clone()),
+        );
+
+        let res = self.make_request(
+            "importdescriptors",
+            &[serde_json::Value::Array(vec![serde_json::Value::Object(
+                desc_map,
+            )])],
+        )?;
+        if res.get(0).map(|x| x.get("success")) == Some(Some(&serde_json::Value::Bool(true))) {
+            return Ok(());
+        }
+
+        Err(BitcoindError(format!(
+            "In import_fresh descriptor, error returned from 'importdescriptor': {:?}",
+            res.get("error")
+        )))
+    }
+
+    pub fn import_fresh_deposit_descriptor(&self, descriptor: String) -> Result<(), BitcoindError> {
+        self.import_fresh_descriptor(descriptor, self.deposit_utxos_label())
+    }
+
+    pub fn import_fresh_unvault_descriptor(&self, descriptor: String) -> Result<(), BitcoindError> {
+        self.import_fresh_descriptor(descriptor, self.unvault_utxos_label())
+    }
+
     pub fn new_deposits(
         &self,
         existing_utxos: &HashMap<OutPoint, CachedVault>,

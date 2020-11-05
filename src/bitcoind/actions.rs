@@ -1,7 +1,10 @@
 use crate::{
     bitcoind::{interface::BitcoinD, BitcoindError},
     config::BitcoindConfig,
-    database::{actions::db_insert_new_vault, interface::db_wallet},
+    database::{
+        actions::{db_insert_new_vault, db_unvault_deposit},
+        interface::db_wallet,
+    },
     revaultd::RevaultD,
 };
 use revault_tx::{
@@ -250,7 +253,9 @@ fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
 }
 
 fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    for (outpoint, utxo) in bitcoind.new_deposits(&revaultd.vaults)?.into_iter() {
+    let (new_deposits, spent_deposits) = bitcoind.sync_deposits(&revaultd.vaults)?;
+
+    for (outpoint, utxo) in new_deposits.into_iter() {
         let derivation_index = *revaultd
             .derivation_index_map
             .get(&utxo.txo.script_pubkey)
@@ -291,6 +296,39 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
             bitcoind.import_fresh_unvault_descriptor(next_addr)?;
         }
     }
+
+    for (outpoint, utxo) in spent_deposits.into_iter() {
+        let deriv_index = *revaultd
+            .derivation_index_map
+            .get(&utxo.txo.script_pubkey)
+            .ok_or_else(|| BitcoindError(
+                    format!("A deposit was spent for which we don't know the corresponding xpub derivation. Outpoint: '{}'\nUtxo: '{:#?}'",
+                        &outpoint,
+                        &utxo)))?;
+        let unvault_addr = revaultd.unvault_address(deriv_index);
+
+        if let Some(unvault_outpoint) = bitcoind.unvault_from_vault(&outpoint, unvault_addr)? {
+            log::debug!(
+                "The deposit utxo created via '{}' was unvaulted via '{}'",
+                &outpoint,
+                &unvault_outpoint
+            );
+            // Note that it *might* have actually been confirmed during the last 30s, but it's not
+            // a big deal to have it marked as unconfirmed for the next 30s..
+            db_unvault_deposit(&revaultd.db_file(), outpoint.txid.to_vec(), outpoint.vout)
+                // TODO: something like From<DbError> for BitcoindError ?
+                .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
+        } else if false {
+            // TODO: handle bypass
+        } else {
+            log::warn!(
+                "The deposit utxo created via '{}' just vanished. Maybe a reorg is ongoing?",
+                &outpoint
+            );
+        }
+    }
+
+    // TODO: keep track of unconfirmed unvaults and eventually mark them as confirmed
 
     Ok(())
 }

@@ -51,7 +51,7 @@ pub enum VaultStatus {
 
 /// We cache the known vault and their status to avoid too frequent lookups to the DB.
 /// This stores the deposit utxo and the status of the vault.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CachedVault {
     pub txo: TxOut,
     pub status: VaultStatus,
@@ -204,7 +204,7 @@ impl RevaultD {
         addr.to_string()
     }
 
-    fn unvault_address(&mut self, child_number: u32) -> String {
+    pub fn unvault_address(&mut self, child_number: u32) -> String {
         let addr = self
             .unvault_descriptor
             .derive(ChildNumber::from(child_number))

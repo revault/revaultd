@@ -254,11 +254,57 @@ impl BitcoinD {
         self.import_fresh_descriptor(descriptor, self.unvault_utxos_label())
     }
 
-    pub fn new_deposits(
+    // A routine to get the txid,vout pair out of a listunspent entry
+    fn outpoint_from_utxo(&self, utxo: &serde_json::Value) -> Result<OutPoint, BitcoindError> {
+        let txid = utxo
+            .get("txid")
+            .ok_or_else(|| {
+                BitcoindError("API break, 'listunspent' entry didn't contain a 'txid'.".to_string())
+            })?
+            .as_str()
+            .ok_or_else(|| {
+                BitcoindError(
+                    "API break, 'listunspent' entry didn't contain a string 'txid'.".to_string(),
+                )
+            })?;
+        let txid = Txid::from_str(txid).map_err(|e| {
+            BitcoindError(format!(
+                "Converting txid from str in 'listunspent': {}.",
+                e.to_string()
+            ))
+        })?;
+        let vout = utxo
+            .get("vout")
+            .ok_or_else(|| {
+                BitcoindError("API break, 'listunspent' entry didn't contain a 'vout'.".to_string())
+            })?
+            .as_u64()
+            .ok_or_else(|| {
+                BitcoindError(
+                    "API break, 'listunspent' entry didn't contain a valid 'vout'.".to_string(),
+                )
+            })?;
+        Ok(OutPoint {
+            txid,
+            vout: vout as u32, // Bitcoin makes this safe
+        })
+    }
+
+    /// Repeatedly called by our main loop to stay in sync with bitcoind.
+    /// We take the currently known utxos, and return both the new deposits and the spent deposits.
+    pub fn sync_deposits(
         &self,
         existing_utxos: &HashMap<OutPoint, CachedVault>,
-    ) -> Result<HashMap<OutPoint, CachedVault>, BitcoindError> {
+    ) -> Result<
+        (
+            HashMap<OutPoint, CachedVault>,
+            HashMap<OutPoint, CachedVault>,
+        ),
+        BitcoindError,
+    > {
         let mut new_utxos = HashMap::new();
+        // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
+        let mut spent_utxos = existing_utxos.clone();
 
         for utxo in self
             .make_request("listunspent", &[])?
@@ -271,44 +317,12 @@ impl BitcoinD {
                 continue;
             }
 
-            let txid = utxo
-                .get("txid")
-                .ok_or_else(|| {
-                    BitcoindError(
-                        "API break, 'listunspent' entry didn't contain a 'txid'.".to_string(),
-                    )
-                })?
-                .as_str()
-                .ok_or_else(|| {
-                    BitcoindError(
-                        "API break, 'listunspent' entry didn't contain a string 'txid'."
-                            .to_string(),
-                    )
-                })?;
-            let txid = Txid::from_str(txid).map_err(|e| {
-                BitcoindError(format!(
-                    "Converting txid from str in 'listunspent': {}.",
-                    e.to_string()
-                ))
-            })?;
-            let vout = utxo
-                .get("vout")
-                .ok_or_else(|| {
-                    BitcoindError(
-                        "API break, 'listunspent' entry didn't contain a 'vout'.".to_string(),
-                    )
-                })?
-                .as_u64()
-                .ok_or_else(|| {
-                    BitcoindError(
-                        "API break, 'listunspent' entry didn't contain a valid 'vout'.".to_string(),
-                    )
-                })?;
-            let outpoint = OutPoint {
-                txid,
-                vout: vout as u32, // Bitcoin makes this safe
-            };
-            if existing_utxos.contains_key(&outpoint) {
+            let outpoint = self.outpoint_from_utxo(&utxo)?;
+            // Not obvious at first sight:
+            //  - spent_utxos == existing_utxos before the loop
+            //  - listunspent won't send duplicated entries
+            //  - remove() will return None if it was not present in the map, ie new deposit
+            if spent_utxos.remove(&outpoint).is_some() {
                 continue;
             }
 
@@ -375,7 +389,7 @@ impl BitcoinD {
             );
         }
 
-        Ok(new_utxos)
+        Ok((new_utxos, spent_utxos))
     }
 
     /// Get the raw transaction as hex, and the blockheight it was included in if
@@ -402,5 +416,70 @@ impl BitcoinD {
         let blockheight = res.get("blockheight").map(|bh| bh.as_u64().unwrap() as u32);
 
         Ok((tx_hex, blockheight))
+    }
+
+    // This assumes wallet transactions, will error otherwise !
+    fn previous_outpoints(&self, outpoint: &OutPoint) -> Result<Vec<OutPoint>, BitcoindError> {
+        Ok(self
+            .make_request(
+                "gettransaction",
+                &[
+                    serde_json::Value::String(outpoint.txid.to_string()),
+                    serde_json::Value::Bool(true), // include_watchonly
+                    serde_json::Value::Bool(true), // verbose
+                ],
+            )?
+            .get("decoded")
+            .ok_or_else(|| {
+                BitcoindError(
+                    "API break: 'gettransaction' has no 'hex' in verbose mode?".to_string(),
+                )
+            })?
+            .get("vin")
+            .ok_or_else(|| BitcoindError("API break: 'gettransaction' has no 'vin' ?".to_string()))?
+            .as_array()
+            .ok_or_else(|| {
+                BitcoindError("API break: 'gettransaction' 'vin' isn't an array?".to_string())
+            })?
+            .into_iter()
+            .filter_map(|txin| {
+                Some(OutPoint {
+                    txid: Txid::from_str(txin.get("txid")?.as_str()?).ok()?,
+                    vout: txin.get("vout")?.as_u64()? as u32,
+                })
+            })
+            .collect())
+    }
+
+    /// There is no good way to get the "spending transaction" from an utxo in bitcoind.
+    /// So here we workaround it leveraging the fact we know the unvault address. So we list
+    /// the unvault address transactions and check if one spent this outpoint to this address.
+    pub fn unvault_from_vault(
+        &self,
+        vault_outpoint: &OutPoint,
+        unvault_address: String,
+    ) -> Result<Option<OutPoint>, BitcoindError> {
+        let res = self.make_request(
+            "listunspent",
+            &[
+                serde_json::Value::Number(serde_json::Number::from(0)), // minconf
+                serde_json::Value::Number(serde_json::Number::from(9999999)), // maxconf (default)
+                serde_json::Value::Array(vec![serde_json::Value::String(unvault_address)]),
+            ],
+        )?;
+        let utxos = res.as_array().ok_or_else(|| {
+            BitcoindError("API break: 'listunspent' didn't return an array".to_string())
+        })?;
+
+        for utxo in utxos {
+            let outpoint = self.outpoint_from_utxo(&utxo)?;
+            for prev_outpoint in self.previous_outpoints(&outpoint)? {
+                if &prev_outpoint == vault_outpoint {
+                    return Ok(Some(outpoint));
+                }
+            }
+        }
+
+        Ok(None)
     }
 }

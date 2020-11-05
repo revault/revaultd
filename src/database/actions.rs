@@ -176,6 +176,28 @@ pub fn db_insert_new_vault(
     })
 }
 
+/// Mark an active vault as being in 'unvaulting' state
+pub fn db_unvault_deposit(
+    db_path: &PathBuf,
+    txid: Vec<u8>,
+    vout: u32,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1) WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
+            params![VaultStatus::Unvaulting as u32, txid, vout],
+        )
+        .map_err(|e| {
+            DatabaseError(format!(
+                "Updating vault transaction to 'unvaulting': {}",
+                e.to_string()
+            ))
+        })?;
+
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

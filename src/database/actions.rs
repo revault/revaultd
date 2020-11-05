@@ -73,12 +73,11 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
     })
 }
 
-// Called on startup to check database integrity and populate Miniscript descriptors
-fn check_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
-    let db_path = revaultd.db_file();
+// Called on startup to check database integrity
+fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
     // Check if their database is not from the future.
     // We'll eventually do migration here if version < VERSION, but be strict until then.
-    let version = db_version(&db_path)?;
+    let version = db_version(&revaultd.db_file())?;
     if version != VERSION {
         return Err(DatabaseError(format!(
             "Unexpected database version: got '{}', expected '{}'",
@@ -86,7 +85,13 @@ fn check_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
         )));
     }
 
-    let wallet = db_wallet(&db_path)?;
+    Ok(())
+}
+
+// Called on startup to populate our cache from the database
+fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
+    let wallet = db_wallet(&revaultd.db_file())?;
+
     //FIXME: Find a way to check if the policies described in the config files are equivalent
     // to the miniscript in the db.
     revaultd.vault_descriptor =
@@ -106,6 +111,7 @@ fn check_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
             ))
         })?,
     );
+
     revaultd.current_unused_index = wallet.deposit_derivation_index;
     revaultd.wallet_id = wallet.id;
 
@@ -125,7 +131,8 @@ pub fn setup_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
         create_db(&revaultd)?;
     }
 
-    check_db(revaultd)?;
+    check_db(&revaultd)?;
+    state_from_db(revaultd)?;
 
     Ok(())
 }

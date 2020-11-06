@@ -11,4 +11,6 @@ impl std::fmt::Display for DatabaseError {
     }
 }
 
+impl std::error::Error for DatabaseError {}
+
 pub const VERSION: u32 = 0;

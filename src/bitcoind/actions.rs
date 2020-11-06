@@ -290,9 +290,11 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
         // FIXME: of course, that's rudimentary
         if derivation_index > revaultd.current_unused_index {
             revaultd.current_unused_index += 1;
-            let next_addr = bitcoind.addr_descriptor(&revaultd.last_deposit_address())?;
+            let next_addr =
+                bitcoind.addr_descriptor(&revaultd.last_deposit_address().to_string())?;
             bitcoind.import_fresh_deposit_descriptor(next_addr)?;
-            let next_addr = bitcoind.addr_descriptor(&revaultd.last_unvault_address())?;
+            let next_addr =
+                bitcoind.addr_descriptor(&revaultd.last_unvault_address().to_string())?;
             bitcoind.import_fresh_unvault_descriptor(next_addr)?;
         }
     }
@@ -305,7 +307,7 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
                     format!("A deposit was spent for which we don't know the corresponding xpub derivation. Outpoint: '{}'\nUtxo: '{:#?}'",
                         &outpoint,
                         &utxo)))?;
-        let unvault_addr = revaultd.unvault_address(deriv_index);
+        let unvault_addr = revaultd.unvault_address(deriv_index).to_string();
 
         if let Some(unvault_outpoint) = bitcoind.unvault_from_vault(&outpoint, unvault_addr)? {
             log::debug!(

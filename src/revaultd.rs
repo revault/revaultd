@@ -1,9 +1,9 @@
 use crate::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
 
-use std::{collections::HashMap, fs, path::PathBuf, vec::Vec};
+use std::{collections::HashMap, convert::TryFrom, fs, path::PathBuf, vec::Vec};
 
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Network, OutPoint, Script, TxOut},
+    bitcoin::{util::bip32::ChildNumber, Address, Network, OutPoint, Script, TxOut},
     miniscript::descriptor::DescriptorPublicKey,
     scripts::{
         unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
@@ -47,6 +47,28 @@ pub enum VaultStatus {
     // TODO: At what depth do we forget it ?
     /// The spend transaction is confirmed
     Spent,
+}
+
+impl TryFrom<u32> for VaultStatus {
+    type Error = ();
+
+    fn try_from(n: u32) -> Result<Self, Self::Error> {
+        match n {
+            0 => Ok(Self::Funded),
+            1 => Ok(Self::Secured),
+            2 => Ok(Self::Active),
+            3 => Ok(Self::Unvaulting),
+            4 => Ok(Self::Unvaulted),
+            5 => Ok(Self::Canceling),
+            6 => Ok(Self::Canceled),
+            7 => Ok(Self::EmergencyVaulting),
+            8 => Ok(Self::EmergencyVaulted),
+            9 => Ok(Self::Spendable),
+            10 => Ok(Self::Spending),
+            11 => Ok(Self::Spent),
+            _ => Err(()),
+        }
+    }
 }
 
 /// We cache the known vault and their status to avoid too frequent lookups to the DB.
@@ -190,7 +212,7 @@ impl RevaultD {
         }
     }
 
-    fn vault_address(&mut self, child_number: u32) -> String {
+    pub fn vault_address(&mut self, child_number: u32) -> Address {
         let addr = self
             .vault_descriptor
             .derive(ChildNumber::from(child_number))
@@ -201,10 +223,10 @@ impl RevaultD {
         self.derivation_index_map
             .insert(addr.script_pubkey(), child_number);
 
-        addr.to_string()
+        addr
     }
 
-    pub fn unvault_address(&mut self, child_number: u32) -> String {
+    pub fn unvault_address(&mut self, child_number: u32) -> Address {
         let addr = self
             .unvault_descriptor
             .derive(ChildNumber::from(child_number))
@@ -215,7 +237,7 @@ impl RevaultD {
         self.derivation_index_map
             .insert(addr.script_pubkey(), child_number);
 
-        addr.to_string()
+        addr
     }
 
     fn gap_limit(&self) -> u32 {
@@ -238,29 +260,29 @@ impl RevaultD {
         self.file_from_datadir(&format!("revaultd-watchonly-wallet-{}", wallet_id))
     }
 
-    pub fn deposit_address(&mut self) -> String {
+    pub fn deposit_address(&mut self) -> Address {
         self.vault_address(self.current_unused_index)
     }
 
-    pub fn last_deposit_address(&mut self) -> String {
+    pub fn last_deposit_address(&mut self) -> Address {
         self.vault_address(self.current_unused_index + self.gap_limit())
     }
 
-    pub fn last_unvault_address(&mut self) -> String {
+    pub fn last_unvault_address(&mut self) -> Address {
         self.unvault_address(self.current_unused_index + self.gap_limit())
     }
 
-    /// All deposit addresses up to the gap limit (100)
+    /// All deposit addresses as strings up to the gap limit (100)
     pub fn all_deposit_addresses(&mut self) -> Vec<String> {
         (0..self.current_unused_index + self.gap_limit())
-            .map(|index| self.vault_address(index))
+            .map(|index| self.vault_address(index).to_string())
             .collect()
     }
 
-    /// All unvault addresses up to the gap limit (100)
+    /// All unvault addresses as strings up to the gap limit (100)
     pub fn all_unvault_addresses(&mut self) -> Vec<String> {
         (0..self.current_unused_index + self.gap_limit())
-            .map(|index| self.unvault_address(index))
+            .map(|index| self.unvault_address(index).to_string())
             .collect()
     }
 }

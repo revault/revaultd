@@ -13,5 +13,19 @@ dirs = "3.0.1"
 # It's concise, does the Right Thing, and even supports Windows !
 daemonize-simple = "0.1.4"
 
+# To talk to bitcoind, the most lightweight and capable i could find without
+# reinventing the wheel. Hesitated with ureq.
+jsonrpc = { git = "https://github.com/apoelstra/rust-jsonrpc", branch = "2020-09-basic-client" }
+
+# We use it for the cookie file
+base64 = "0.13.0"
+
+# We us TOML for the config and JSON for connections
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
+serde_json = "1.0.59"
+
+# Logging stuff
+log = "0.4"
+fern = "0.5"
+chrono = "0.4"

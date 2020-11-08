@@ -9,8 +9,6 @@ jobs:
         # We don't have a MSRV (yet?)
         toolchain:
           - stable
-          - beta
-          - nightly
         os:
           - ubuntu-latest
           - macOS-latest

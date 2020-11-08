@@ -89,12 +89,15 @@ fn main() {
         process::exit(1);
     });
 
-    let mut daemon = Daemonize::default();
-    // TODO: Make this configurable for inits
-    daemon.pid_file = Some(revaultd.pid_file());
-    daemon.doit().unwrap_or_else(|e| {
-        eprintln!("Error daemonizing: {}", e);
-        process::exit(1);
-    });
+    if revaultd.daemon {
+        let mut daemon = Daemonize::default();
+        // TODO: Make this configurable for inits
+        daemon.pid_file = Some(revaultd.pid_file());
+        daemon.doit().unwrap_or_else(|e| {
+            eprintln!("Error daemonizing: {}", e);
+            process::exit(1);
+        });
+        println!("Started revaultd daemon");
+    }
     daemon_main(revaultd);
 }

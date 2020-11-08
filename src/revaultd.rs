@@ -99,6 +99,8 @@ pub struct Vault {
 pub struct RevaultD {
     /// We store all our data in one place, that's here.
     pub data_dir: PathBuf,
+    /// Should we run as a daemon? (Default: yes)
+    pub daemon: bool,
 
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
@@ -177,11 +179,17 @@ impl RevaultD {
             }
         }
 
+        let daemon = match config.daemon {
+            Some(false) => false,
+            _ => true,
+        };
+
         Ok(RevaultD {
             vault_descriptor,
             unvault_descriptor,
             unvault_cpfp_descriptor,
             data_dir,
+            daemon,
             bitcoind_config: config.bitcoind_config,
             ourselves: config.ourselves,
             // Will be updated by the database

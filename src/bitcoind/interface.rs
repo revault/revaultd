@@ -164,16 +164,22 @@ impl BitcoinD {
         descriptors: Vec<String>,
         timestamp: u32,
         label: String,
+        fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
         let all_descriptors: Vec<serde_json::Value> = descriptors
             .into_iter()
             .map(|desc| {
                 let mut desc_map = serde_json::Map::with_capacity(3);
                 desc_map.insert("desc".to_string(), serde_json::Value::String(desc));
-                // FIXME: set to "now" for first import!
+                // We set to "now" the timestamp for fresh wallet, as otherwise bitcoind
+                // will rescan the last few blocks for each of them.
                 desc_map.insert(
                     "timestamp".to_string(),
-                    serde_json::Value::Number(serde_json::Number::from(timestamp)),
+                    if fresh_wallet {
+                        serde_json::Value::String("now".to_string())
+                    } else {
+                        serde_json::Value::Number(serde_json::Number::from(timestamp))
+                    },
                 );
                 desc_map.insert(
                     "label".to_string(),
@@ -202,16 +208,28 @@ impl BitcoinD {
         &self,
         descriptors: Vec<String>,
         timestamp: u32,
+        fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
-        self.bulk_import_descriptors(descriptors, timestamp, self.deposit_utxos_label())
+        self.bulk_import_descriptors(
+            descriptors,
+            timestamp,
+            self.deposit_utxos_label(),
+            fresh_wallet,
+        )
     }
 
     pub fn startup_import_unvault_descriptors(
         &self,
         descriptors: Vec<String>,
         timestamp: u32,
+        fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
-        self.bulk_import_descriptors(descriptors, timestamp, self.unvault_utxos_label())
+        self.bulk_import_descriptors(
+            descriptors,
+            timestamp,
+            self.unvault_utxos_label(),
+            fresh_wallet,
+        )
     }
 
     fn import_fresh_descriptor(

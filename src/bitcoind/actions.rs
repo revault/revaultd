@@ -143,6 +143,14 @@ fn wait_for_bitcoind_synced(
     }
 }
 
+fn unload_all_wallets(bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    for wallet_name in bitcoind.listwallets()? {
+        bitcoind.unloadwallet(wallet_name)?;
+    }
+
+    Ok(())
+}
+
 // This creates the actual wallet file, and imports the descriptors
 fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
     let wallet = db_wallet(&revaultd.db_file())
@@ -201,16 +209,6 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
         bitcoind.loadwallet_startup(bitcoind_wallet_path.clone())?;
     }
 
-    for wallet_name in bitcoind.listwallets()? {
-        if wallet_name != bitcoind_wallet_path {
-            log::info!(
-                "Too many wallets loaded on bitcoind! Unloading wallet '{}'.",
-                wallet_name
-            );
-            bitcoind.unloadwallet(wallet_name)?;
-        }
-    }
-
     Ok(())
 }
 
@@ -233,6 +231,10 @@ pub fn setup_bitcoind(revaultd: &mut RevaultD) -> BitcoinD {
         process::exit(1);
     });
 
+    unload_all_wallets(&bitcoind).unwrap_or_else(|e| {
+        log::error!("Unloading existing wallets: {}", e.to_string());
+        process::exit(1);
+    });
     maybe_create_wallet(revaultd, &bitcoind).unwrap_or_else(|e| {
         log::error!("Error while creating wallet: {}", e.to_string());
         process::exit(1);

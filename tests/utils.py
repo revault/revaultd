@@ -3,12 +3,10 @@ Most of the code here is stolen from C-lightning's test suite. This is surely
 Rusty Russell or Christian Decker who wrote most of this (I'd put some sats on
 cdecker), so credits to them ! (MIT licensed)
 """
-from bip32 import BIP32
 from bitcoin.rpc import RawProxy as BitcoinProxy
 from bitcoin.wallet import CKey
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
-from revault import Vault, SigServer, CosigningServer
 
 import bitcoin
 import logging
@@ -17,13 +15,6 @@ import re
 import subprocess
 import threading
 import time
-
-BITCOIND_CONFIG = {
-    "regtest": 1,
-    "rpcuser": "rpcuser",
-    "rpcpassword": "rpcpass",
-    "addresstype": "bech32",
-}
 
 
 TIMEOUT = int(os.getenv("TIMEOUT", 100))
@@ -41,14 +32,12 @@ def wait_for(success, timeout=TIMEOUT):
         raise ValueError("Error waiting for {}", success)
 
 
-def write_config(filename, opts, regtest_opts=None, section_name='regtest'):
+def write_config(filename, opts=None, network='regtest'):
     with open(filename, 'w') as f:
+        f.write(f"chain={network}\n")
+        f.write(f"[{network}]\n")
         for k, v in opts.items():
-            f.write("{}={}\n".format(k, v))
-        if regtest_opts:
-            f.write("[{}]\n".format(section_name))
-            for k, v in regtest_opts.items():
-                f.write("{}={}\n".format(k, v))
+            f.write(f"{k}={v}\n")
 
 
 class TailableProc(object):
@@ -248,14 +237,9 @@ class BitcoinD(TailableProc):
             '-printtoconsole',
             '-server',
             '-logtimestamps',
-            '-txindex',
             '-addresstype=bech32',
-            '-rpcthreads=16',
+            '-rpcthreads=4',
         ]
-        # For up to and including 0.16.1, this needs to be in main section.
-        BITCOIND_CONFIG['rpcport'] = rpcport
-        # For after 0.16.1 (eg. 3f398d7a17f136cd4a67998406ca41a124ae2966), this
-        # needs its own [regtest] section.
         BITCOIND_REGTEST = {
             'port': self.p2pport,
             'rpcport': rpcport,
@@ -263,9 +247,12 @@ class BitcoinD(TailableProc):
             'fallbackfee': Decimal(1000) / bitcoin.core.COIN,
         }
         self.conf_file = os.path.join(bitcoin_dir, 'bitcoin.conf')
-        write_config(self.conf_file, BITCOIND_CONFIG, BITCOIND_REGTEST)
+        write_config(self.conf_file, BITCOIND_REGTEST)
         self.rpc = SimpleBitcoinProxy(btc_conf_file=self.conf_file)
         self.proxies = []
+
+        # So that it can locate the cookie file
+        bitcoin.SelectParams("regtest")
 
     def start(self):
         TailableProc.start(self)
@@ -347,9 +334,6 @@ class BitcoinD(TailableProc):
         self.wait_for_log(r'UpdateTip: new best=.* height={}'
                           .format(final_len))
         return hashes
-
-    def getnewaddress(self):
-        return self.rpc.getnewaddress()
 
     def pay_to(self, address, amount):
         self.generate_block(1)

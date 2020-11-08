@@ -45,19 +45,13 @@ def directory(request, test_base_dir, test_name):
 
     yield directory
 
-    # This uses the status set in conftest.pytest_runtest_makereport to
-    # determine whether we succeeded or failed. Outcome can be None if the
-    # failure occurs during the setup phase, hence the use to getattr instead
-    # of accessing it directly.
-    rep_call = getattr(request.node, 'rep_call', None)
-    outcome = 'passed' if rep_call is None else rep_call.outcome
-    failed = not outcome or outcome != 'passed'
-
-    if not failed:
+    # FIXME: use lightningd's teardown checks for errors
+    try:
         shutil.rmtree(directory)
-    else:
-        logging.debug("Test execution failed, leaving the test directory {}"
-                      " intact.".format(directory))
+    except Exception:
+        files = [os.path.join(dp, f) for dp, dn, fn in os.walk(directory) for f in fn]
+        print("Directory still contains files:", files)
+        raise
 
 
 @pytest.fixture
@@ -70,43 +64,10 @@ def bitcoind(directory):
     bitcoind = BitcoinD(bitcoin_dir=directory)
     bitcoind.startup()
 
+    bitcoind.rpc.createwallet("revaultd-tests", False, False, "", True)
     while bitcoind.rpc.getbalance() < 50:
-        bitcoind.rpc.generatetoaddress(1, bitcoind.getnewaddress())
+        bitcoind.rpc.generatetoaddress(1, bitcoind.rpc.getnewaddress())
 
     yield bitcoind
 
     bitcoind.cleanup()
-
-
-@pytest.fixture
-def bitcoinds(directory):
-    # FIXME: do it in a less hacky manner
-    n_bitcoind = 5
-    bitcoinds = [BitcoinD(bitcoin_dir="{}/{}".format(directory, i))
-                 for i in range(n_bitcoind)]
-
-    for bitcoind in bitcoinds:
-        bitcoind.startup()
-
-    # Connect everyone..
-    for bit in bitcoinds:
-        for i in range(len(bitcoinds)):
-            bit.rpc.addnode("127.0.0.1:{}".format(bitcoinds[i]
-                                                  .p2pport), "add")
-
-    wait_for(lambda: all(bit.rpc.getconnectioncount() > 3
-                         for bit in bitcoinds))
-
-    # Hand some funds to everyone (10 utxos)
-    rounds = 111 // n_bitcoind + 1
-    for _ in range(rounds):
-        for bitcoind in bitcoinds:
-            bitcoind.rpc.generatetoaddress(1, bitcoind.rpc.getnewaddress())
-            blockcount = bitcoind.rpc.getblockcount()
-            wait_for(lambda: all(bit.rpc.getblockcount() == blockcount
-                                 for bit in bitcoinds))
-
-    yield bitcoinds
-
-    for bitcoind in bitcoinds:
-        bitcoind.cleanup()

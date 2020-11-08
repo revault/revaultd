@@ -386,3 +386,52 @@ class BitcoinD(TailableProc):
         except Exception:
             self.proc.kill()
         self.proc.wait()
+
+
+class RevaultD(TailableProc):
+    def __init__(self, datadir, ourselves, stakeholders, managers, csv,
+                 bitcoind):
+        TailableProc.__init__(self, datadir, verbose=False)
+
+        bin = os.path.join(os.path.dirname(__file__), "..",
+                           "target/debug/revaultd")
+        self.conf_file = os.path.join(datadir, "config.toml")
+        self.cmd_line = [
+            bin,
+            f"--conf",
+            f"{self.conf_file}"
+        ]
+        print(" ".join(self.cmd_line))
+
+        bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest",
+                                       ".cookie")
+        with open(self.conf_file, 'w') as f:
+            f.write(f"unvault_csv = {csv}\n")
+            f.write(f"data_dir = '{datadir}'\n")
+            f.write(f"daemon = false\n")
+            f.write(f"[bitcoind_config]\n")
+            f.write(f"network = \"regtest\"\n")
+            f.write(f"cookie_path = '{bitcoind_cookie}'\n")
+            f.write(f"addr = '127.0.0.1:{bitcoind.rpcport}'\n")
+            f.write(f"[ourselves]\n")
+            stk_xpub = ourselves.get("stakeholder_xpub")
+            if stk_xpub is not None:
+                f.write(f"stakeholder_xpub = '{stk_xpub}'\n")
+                assert ourselves.get("manager_xpub") is None
+            else:
+                f.write(f"manager_xpub = \"{ourselves['manager_xpub']}\"\n")
+            for stk in stakeholders:
+                f.write(f"[[stakeholders]]\n")
+                f.write(f"xpub = \"{stk['xpub']}\"\n")
+                f.write(f"cosigner_key = \"{stk['cosigner_key']}\"\n")
+            for man in managers:
+                f.write(f"[[managers]]\n")
+                f.write(f"xpub = \"{man['xpub']}\"\n")
+
+    def start(self):
+        TailableProc.start(self)
+        self.wait_for_log("revaultd started on network regtest")
+
+    def cleanup(self):
+        self.proc.kill()
+        self.proc.wait()

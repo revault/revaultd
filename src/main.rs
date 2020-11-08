@@ -51,9 +51,10 @@ fn daemon_main(mut revaultd: RevaultD) {
     });
 }
 
-// This creates the log file automagically if it doesn't exist
-fn setup_logger(log_file: &str) -> Result<(), fern::InitError> {
-    fern::Dispatch::new()
+// This creates the log file automagically if it doesn't exist, and logs on stdout
+// if None is given
+fn setup_logger(log_file: Option<&str>) -> Result<(), fern::InitError> {
+    let dispatcher = fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
                 "{}[{}][{}] {}",
@@ -64,9 +65,13 @@ fn setup_logger(log_file: &str) -> Result<(), fern::InitError> {
             ))
         })
         // FIXME: make this configurable
-        .level(log::LevelFilter::Trace)
-        .chain(fern::log_file(log_file)?)
-        .apply()?;
+        .level(log::LevelFilter::Trace);
+
+    if let Some(log_file) = log_file {
+        dispatcher.chain(fern::log_file(log_file)?).apply()?;
+    } else {
+        dispatcher.chain(std::io::stdout()).apply()?;
+    }
 
     Ok(())
 }
@@ -84,7 +89,13 @@ fn main() {
         process::exit(1);
     });
 
-    setup_logger(&revaultd.log_file().to_str().expect("Valid unicode")).unwrap_or_else(|e| {
+    let log_file = revaultd.log_file();
+    let log_output = if revaultd.daemon {
+        Some(log_file.to_str().expect("Valid unicode"))
+    } else {
+        None
+    };
+    setup_logger(log_output).unwrap_or_else(|e| {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });

@@ -1,9 +1,9 @@
 name: CI
 
-on: [push, pull_request]
+on: [pull_request]
 
 jobs:
-  build:
+  tests:
     strategy:
       matrix:
         # We don't have a MSRV (yet?)
@@ -27,6 +27,9 @@ jobs:
         run: cargo build --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }}
         run: cargo test --verbose --color always
+      - name: Functional tests
+        if: matrix.os == 'ubuntu-latest'
+        run: ./contrib/ci-functional-tests.sh
 
   grcov:
     runs-on: ubuntu-latest
@@ -49,6 +52,7 @@ jobs:
           CARGO_INCREMENTAL: '0'
           RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
           RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+          run: ./contrib/ci-functional-tests.sh
 
       - name: Gather coverage data
         id: coverage

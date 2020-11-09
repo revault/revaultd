@@ -268,7 +268,7 @@ checksum = "dc6f3ad7b9d11a0c00842ff8de1b60ee58661048eb8049ed33c73594f359d7e6"
 [[package]]
 name = "jsonrpc"
 version = "0.11.0"
-source = "git+https://github.com/apoelstra/rust-jsonrpc?branch=2020-09-basic-client#451f07fefc437215bebe737ccfed016e324e41ad"
+source = "git+https://github.com/apoelstra/rust-jsonrpc?branch=2020-09-basic-client#328a6f3ebb0ddc3b2be0322d965ef613278625a3"
 dependencies = [
  "base64-compat",
  "http",

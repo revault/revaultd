@@ -3,11 +3,12 @@
 revaultd exposes a [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 interface over a Unix Domain socket.
 
-| Command                     | Description                               |
-| --------------------------- | ----------------------------------------- |
-| [`getinfo`](#getinfo)       | Display general information               |
-| [`listvaults`](#listvaults) | Display a paginated list of vaults        |
-| [`signvault`](#signvault)   | Sign the Revault pre-signed transactions  |
+| Command                       | Description                               |
+| ----------------------------  | ----------------------------------------- |
+| [`getinfo`](#getinfo)         | Display general information               |
+| [`listvaults`](#listvaults)   | Display a paginated list of vaults        |
+| [`signvault`](#signvault)     | Sign the Revault pre-signed transactions  |
+| [`spendvaults`](#spendvaults) | Spend a list of active vaults             |
 
 # Reference
 
@@ -88,6 +89,25 @@ pre-signed transactions.
 | ---------------- | ------- | ----------------------------------- |
 | `txid`           | string  | Unique ID of the vault to sign      |
 | `only_emergency` | boolean | Sign only the emergency transaction |
+
+#### Response
+
+TODO: specify response
+
+### `spendvaults`
+
+The `spendvaults` RPC Command executes the spending process of the
+chosen vaults.
+
+#### Request
+
+| Parameter | Type                 | Description                                             |
+| --------- | -------------------- | ------------------------------------------------------- |
+| txid      | string array         | Vault IDs -- vaults must be [`active`](#vault-statuses) |
+| output    | map of string to int | Map of Bitcoin addresses to amount                      |
+
+Fee is deducted from the total amount of the vaults spent minus the total
+amount of the output.
 
 #### Response
 

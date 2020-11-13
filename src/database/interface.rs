@@ -1,7 +1,14 @@
-use crate::{config, database::DatabaseError};
-use revault_tx::miniscript::descriptor::DescriptorPublicKey;
+use crate::{config, database::DatabaseError, revaultd::VaultStatus};
+use revault_tx::{
+    bitcoin::{
+        consensus::encode,
+        util::{bip32::ChildNumber, psbt::PartiallySignedTransaction as Psbt},
+        Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
+    },
+    miniscript::descriptor::DescriptorPublicKey,
+};
 
-use std::{boxed::Box, path::PathBuf, str::FromStr};
+use std::{boxed::Box, convert::TryInto, path::PathBuf, str::FromStr};
 
 use rusqlite::{types::FromSqlError, Connection, Row, ToSql, Transaction, NO_PARAMS};
 
@@ -74,6 +81,7 @@ pub struct DbWallet {
     pub vault_descriptor: String,
     pub unvault_descriptor: String,
     pub ourselves: config::OurSelves,
+    pub deposit_derivation_index: u32,
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
@@ -113,6 +121,7 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
                 manager_xpub: our_man_xpub,
                 stakeholder_xpub: our_stk_xpub,
             },
+            deposit_derivation_index: row.get(6)?,
         })
     })?;
 
@@ -122,6 +131,78 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         .as_ref()
         .map_err(|e| DatabaseError(format!("Getting wallet: '{}'", e.to_string())))?
         .clone())
+}
+
+/// An entry of the "vaults" table
+pub struct DbVault {
+    pub id: u32,
+    pub wallet_id: u32,
+    pub status: VaultStatus,
+    pub blockheight: u32,
+    pub deposit_outpoint: OutPoint,
+    pub amount: Amount,
+    pub derivation_index: ChildNumber,
+}
+
+/// Get the vaults that didn't move onchain yet from the DB.
+pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM vaults WHERE status <= (?1)",
+        &[VaultStatus::Active as u32],
+        |row| {
+            let (id, wallet_id) = (row.get(0)?, row.get(1)?);
+            let status: VaultStatus = row.get::<_, u32>(2)?.try_into().map_err(|_| {
+                FromSqlError::Other(Box::new(DatabaseError(format!(
+                    "Unknown status for vault id '{}'",
+                    id
+                ))))
+            })?;
+            let blockheight = row.get(3)?;
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(4)?)
+                .map_err(|e| FromSqlError::Other(Box::new(e)))?;
+            let deposit_outpoint = OutPoint {
+                txid,
+                vout: row.get(5)?,
+            };
+            let amount = Amount::from_sat(row.get::<_, u32>(6)?.into());
+            let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
+
+            Ok(DbVault {
+                id,
+                wallet_id,
+                status,
+                blockheight,
+                deposit_outpoint,
+                amount,
+                derivation_index,
+            })
+        },
+    )?
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| DatabaseError(format!("Querying vaults from db: '{}'", e.to_string())))
+}
+
+/// The type of the transaction, as stored in the "transactions" table
+pub enum TransactionType {
+    Deposit,
+    Unvault,
+    Spend,
+    Cancel,
+    Emergency,
+    UnvaultEmergency,
+}
+
+/// A row in the "transactions" table
+pub struct DbTransaction {
+    pub id: u32,
+    pub vault_id: u32,
+    pub tx_type: TransactionType,
+    /// Must not be NULL for RevaultTransactions, must be NULL for external ones
+    pub psbt: Option<Psbt>,
+    /// Must not be NULL for external transactions, must be NULL for RevaultTransactions
+    pub tx: Option<BitcoinTransaction>,
 }
 
 // Add more db_* method here!

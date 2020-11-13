@@ -44,11 +44,16 @@ impl<'de> Deserialize<'de> for Stakeholder {
             ));
         }
 
-        let xpub = DescriptorPublicKey::from_str(&xpub_str.unwrap()).map_err(de::Error::custom)?;
+        let mut xpub =
+            DescriptorPublicKey::from_str(&xpub_str.unwrap()).map_err(de::Error::custom)?;
         // Check the xpub is an actual xpub
-        if let DescriptorPublicKey::SinglePub(_) = xpub {
+        xpub = if let DescriptorPublicKey::XPub(mut xpub) = xpub {
+            // We always derive from it, but from_str is a bit strict..
+            xpub.is_wildcard = true;
+            DescriptorPublicKey::XPub(xpub)
+        } else {
             return Err(de::Error::custom("Need an xpub, not a raw public key."));
-        }
+        };
 
         let cosigner_key =
             DescriptorPublicKey::from_str(&cosigner_key_str.unwrap()).map_err(de::Error::custom)?;
@@ -79,7 +84,15 @@ impl<'de> Deserialize<'de> for Manager {
             .get("xpub")
             .ok_or_else(|| de::Error::custom(r#"No "xpub" for manager entry."#))?;
 
-        let xpub = DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom)?;
+        let mut xpub = DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom)?;
+
+        xpub = if let DescriptorPublicKey::XPub(mut xpub) = xpub {
+            // We always derive from it, but from_str is a bit strict..
+            xpub.is_wildcard = true;
+            DescriptorPublicKey::XPub(xpub)
+        } else {
+            return Err(de::Error::custom("Need an xpub, not a raw public key."));
+        };
 
         Ok(Manager { xpub })
     }
@@ -104,12 +117,25 @@ impl<'de> Deserialize<'de> for OurSelves {
     {
         let map = HashMap::<String, String>::deserialize(deserializer)?;
 
-        let man_xpub = map
+        // FIXME: we don't check for raw key here
+
+        let mut man_xpub = map
             .get("manager_xpub")
             .map(|xpub_str| DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom));
-        let stk_xpub = map
+        if let Some(Ok(DescriptorPublicKey::XPub(mut xpub))) = man_xpub {
+            // We always derive from it, but from_str is a bit strict..
+            xpub.is_wildcard = true;
+            man_xpub = Some(Ok(DescriptorPublicKey::XPub(xpub)))
+        }
+
+        let mut stk_xpub = map
             .get("stakeholder_xpub")
             .map(|xpub_str| DescriptorPublicKey::from_str(&xpub_str).map_err(de::Error::custom));
+        if let Some(Ok(DescriptorPublicKey::XPub(mut xpub))) = stk_xpub {
+            // We always derive from it, but from_str is a bit strict..
+            xpub.is_wildcard = true;
+            stk_xpub = Some(Ok(DescriptorPublicKey::XPub(xpub)))
+        }
 
         Ok(match (man_xpub, stk_xpub) {
             (Some(man_xpub), Some(stk_xpub)) => OurSelves {

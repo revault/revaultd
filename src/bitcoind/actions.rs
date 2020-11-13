@@ -1,14 +1,12 @@
 use crate::{
     bitcoind::{interface::BitcoinD, BitcoindError},
     config::BitcoindConfig,
+    revaultd::RevaultD,
 };
 
-use std::{thread, time};
+use std::{process, thread, time};
 
-fn check_bitcoind_network(
-    bitcoind: &BitcoinD,
-    config_network: &String,
-) -> Result<(), BitcoindError> {
+fn check_bitcoind_network(bitcoind: &BitcoinD, config_network: &str) -> Result<(), BitcoindError> {
     let chaininfo = bitcoind.getblockchaininfo()?;
     let chain = chaininfo
         .get("chain")
@@ -29,7 +27,7 @@ fn check_bitcoind_network(
 
 /// Some sanity checks to be done at startup to make sure our bitcoind isn't going to fail under
 /// our feet for a legitimate reason.
-pub fn bitcoind_sanity_checks(
+fn bitcoind_sanity_checks(
     bitcoind: &BitcoinD,
     bitcoind_config: &BitcoindConfig,
 ) -> Result<(), BitcoindError> {
@@ -38,7 +36,7 @@ pub fn bitcoind_sanity_checks(
 
 /// Polls bitcoind until we are synced.
 /// Tries to be smart with getblockchaininfo calls.
-pub fn wait_for_bitcoind_synced(
+fn wait_for_bitcoind_synced(
     bitcoind: &BitcoinD,
     bitcoind_config: &BitcoindConfig,
 ) -> Result<(), BitcoindError> {
@@ -135,4 +133,26 @@ pub fn wait_for_bitcoind_synced(
 
         first = false;
     }
+}
+
+/// Connects to, sanity checks, and wait for bitcoind to be synced.
+/// Called at startup, will log and abort on error.
+pub fn setup_bitcoind(revaultd: &RevaultD) -> BitcoinD {
+    let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).unwrap_or_else(|e| {
+        log::error!("Could not connect to bitcoind: {}", e.to_string());
+        process::exit(1);
+    });
+
+    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
+        // FIXME: handle warming up
+        log::error!("Error checking bitcoind: {}", e.to_string());
+        process::exit(1);
+    });
+
+    wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
+        log::error!("Error while updating tip: {}", e.to_string());
+        process::exit(1);
+    });
+
+    bitcoind
 }

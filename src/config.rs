@@ -169,9 +169,9 @@ pub fn config_folder_path() -> Result<PathBuf, ConfigError> {
 }
 
 fn config_file_path() -> Result<PathBuf, ConfigError> {
-    config_folder_path().and_then(|mut path| {
+    config_folder_path().map(|mut path| {
         path.push("revault.toml");
-        Ok(path)
+        path
     })
 }
 

@@ -68,10 +68,11 @@ impl RevaultD {
 
         let data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         if !data_dir.as_path().exists() {
-            if let Err(_) = fs::create_dir_all(&data_dir) {
+            if let Err(e) = fs::create_dir_all(&data_dir) {
                 return Err(Box::from(ConfigError(format!(
-                    "Could not create data dir: '{:?}'.",
-                    data_dir
+                    "Could not create data dir '{:?}': {}.",
+                    data_dir,
+                    e.to_string()
                 ))));
             }
         }
@@ -84,6 +85,27 @@ impl RevaultD {
             bitcoind_config: config.bitcoind_config,
             ourselves: config.ourselves,
         })
+    }
+
+    fn file_from_datadir(&self, file_name: &str) -> PathBuf {
+        let data_dir_str = self
+            .data_dir
+            .to_str()
+            .expect("Impossible: the datadir path is valid unicode");
+
+        [data_dir_str, file_name].iter().collect()
+    }
+
+    pub fn log_file(&self) -> PathBuf {
+        self.file_from_datadir("log")
+    }
+
+    pub fn pid_file(&self) -> PathBuf {
+        self.file_from_datadir("revaultd.pid")
+    }
+
+    pub fn db_file(&self) -> PathBuf {
+        self.file_from_datadir("revaultd.sqlite3")
     }
 }
 

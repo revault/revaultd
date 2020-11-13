@@ -1,13 +1,10 @@
 mod bitcoind;
 mod config;
+mod database;
 mod revaultd;
 
 use crate::{
-    bitcoind::{
-        actions::{bitcoind_sanity_checks, wait_for_bitcoind_synced},
-        interface::BitcoinD,
-    },
-    config::parse_config,
+    bitcoind::actions::setup_bitcoind, config::parse_config, database::actions::setup_db,
     revaultd::RevaultD,
 };
 
@@ -30,22 +27,15 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     Some(PathBuf::from(args[2].to_owned()))
 }
 
-fn daemon_main(revaultd: RevaultD) {
-    let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).unwrap_or_else(|e| {
-        log::error!("Could not connect to bitcoind: {}", e.to_string());
-        process::exit(1);
+fn daemon_main(mut revaultd: RevaultD) {
+    // First and foremost
+    setup_db(&mut revaultd).unwrap_or_else(|e| {
+        log::error!("Error setting up database: '{}'", e.to_string());
+        process::exit(1)
     });
 
-    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
-        // FIXME: handle warming up
-        log::error!("Error checking bitcoind: {}", e.to_string());
-        process::exit(1);
-    });
-
-    wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
-        log::error!("Error while updating tip: {}", e.to_string());
-        process::exit(1);
-    });
+    // This aborts on error
+    let bitcoind = setup_bitcoind(&revaultd);
 
     log::info!(
         "revaultd started on network {}",
@@ -54,7 +44,7 @@ fn daemon_main(revaultd: RevaultD) {
 }
 
 // This creates the log file automagically if it doesn't exist
-fn setup_logger<'a>(log_file: &'a str) -> Result<(), fern::InitError> {
+fn setup_logger(log_file: &str) -> Result<(), fern::InitError> {
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -85,20 +75,15 @@ fn main() {
         eprintln!("Error creating global state: {}", e);
         process::exit(1);
     });
-    let data_dir_str = revaultd
-        .data_dir
-        .to_str()
-        .expect("Impossible: the datadir path is valid unicode");
 
-    let log_file: PathBuf = [data_dir_str, "log"].iter().collect();
-    setup_logger(&log_file.to_str().expect("Valid unicode")).unwrap_or_else(|e| {
+    setup_logger(&revaultd.log_file().to_str().expect("Valid unicode")).unwrap_or_else(|e| {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });
 
     let mut daemon = Daemonize::default();
     // TODO: Make this configurable for inits
-    daemon.pid_file = Some([data_dir_str, "revaultd.pid"].iter().collect());
+    daemon.pid_file = Some(revaultd.pid_file());
     daemon.doit().unwrap_or_else(|e| {
         eprintln!("Error daemonizing: {}", e);
         process::exit(1);

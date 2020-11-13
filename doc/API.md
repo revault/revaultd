@@ -213,3 +213,27 @@ then the revault daemon will start the spending process.
 ```
 
 ## Manager flow
+
+```
+HSM                client                      revaultd
+  +                      +                          +
+  |                      | +---listvaults active--> |
+  |                      | <-------vaults---------+ |
+  |                      |                          |
+  |                      | +---spendvaults--------> |
+  |                      | <-----psbt or wt nack--+ |
+  | <----sign spend tx-+ |                          |
+  | +------sig---------> |                          |
+  +                      |                          |
+                         |                          |
+client 2                 |                          |
+  +                      |                          |
+  | <---sign psbt------+ |                          |
+  | +-----psbt---------> |                          | // daemon ask wt opinion
+  +                      | +-------signtx psbt----> | // if ack, cosign server sign
+                         | <---OK or wt nack------+ | // then daemon broadcasts tx
+                         |                          |
+                         | +--listvaults----------> | // check vaults are spent
+                         + ^------vaults----------+ +
+
+```

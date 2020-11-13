@@ -159,3 +159,34 @@ then the revault daemon will start the spending process.
 | -------- | ---- | ------------------------------------------------------------------------------------------------------- |
 | sigs_ack | bool | Watchower has stored the given revocation tx (Field not present if tx type is `unvault_tx`, `spend_tx`) |
 
+
+## User flows
+
+### Stakeholder
+
+#### Sign the revocation transactions
+
+```
+ HSM                  client                    revaultd
+  +                      +                          +
+  |                      |                          |
+  |                      | +---listvaults deposit-> |
+  |                      | <-------->aults--------+ |
+  |                      |                          |
+  |                      | +---securevault txid---> |
+  |                      | <----psbts-------------+ |
+  |                      |                          |
+  | <----sign emer-----+ |                          |
+  | +------sig---------> |                          |
+  |                      | +-----signedtx (sig)---> |
+  | <---sign cancel----+ |                          |
+  | +------sig---------> |                          |
+  |                      | +------signedtx (sig)--> |
+  | <-sign unvault_emer+ |                          |
+  | +------------------> |                          |
+  |                      | +------signedtx--------> |
+  |                      |                          |
+  +                      | +---listvaults secure--> |  // check if the watchtowers has the
+                         | <--------vaults--------+ |  // revocation transactions
+                         +                          +
+```

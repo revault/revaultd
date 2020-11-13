@@ -7,7 +7,9 @@ CREATE TABLE wallets (
     id INTEGER PRIMARY KEY NOT NULL,
     timestamp INTEGER NOT NULL,
     vault_descriptor TEXT NOT NULL,
-    unvault_descriptor TEXT NOT NULL
+    unvault_descriptor TEXT NOT NULL,
+    our_manager_xpub TEXT,
+    our_stakeholder_xpub TEXT
 );
 
 CREATE TABLE vaults (

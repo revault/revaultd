@@ -29,6 +29,16 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Computing time since epoch: {}", e.to_string())))?;
     let vault_descriptor = revaultd.vault_descriptor.0.to_string();
     let unvault_descriptor = revaultd.unvault_descriptor.0.to_string();
+    let our_man_xpub_str = revaultd
+        .ourselves
+        .manager_xpub
+        .as_ref()
+        .map(|xpub| xpub.to_string());
+    let our_stk_xpub_str = revaultd
+        .ourselves
+        .stakeholder_xpub
+        .as_ref()
+        .map(|xpub| xpub.to_string());
 
     db_exec(&revaultd.db_file(), |tx| {
         tx.execute_batch(&SCHEMA)
@@ -39,8 +49,15 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         )
         .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
         tx.execute(
-        "INSERT INTO wallets (timestamp, vault_descriptor, unvault_descriptor) VALUES (?1, ?2, ?3)",
-        params![timestamp, vault_descriptor, unvault_descriptor],
+            "INSERT INTO wallets (timestamp, vault_descriptor, unvault_descriptor,\
+            our_manager_xpub, our_stakeholder_xpub) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                timestamp,
+                vault_descriptor,
+                unvault_descriptor,
+                our_man_xpub_str,
+                our_stk_xpub_str
+            ],
         )
         .map_err(|e| DatabaseError(format!("Inserting wallet: {}", e.to_string())))?;
 

@@ -8,9 +8,9 @@ network = "main"
 cookie_path = "/home/user/.bitcoin/.cookie"
 addr = "127.0.0.1:8332"
 
-# We are one of the below
+# We are one of the below stakeholders
 [ourselves]
-xpub = "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay"
+stakeholder_xpub = "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay"
 
 	# So is indentation
 	[[managers]]

@@ -3,12 +3,14 @@
 revaultd exposes a [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 interface over a Unix Domain socket.
 
-| Command                       | Description                               |
-| ----------------------------  | ----------------------------------------- |
-| [`getinfo`](#getinfo)         | Display general information               |
-| [`listvaults`](#listvaults)   | Display a paginated list of vaults        |
-| [`signvault`](#signvault)     | Sign the Revault pre-signed transactions  |
-| [`spendvaults`](#spendvaults) | Spend a list of active vaults             |
+| Command                                   | Description                                          |
+| ----------------------------------------- | ---------------------------------------------------- |
+| [`getinfo`](#getinfo)                     | Display general information                          |
+| [`listvaults`](#listvaults)               | Display a paginated list of vaults                   |
+| [`securevault`](#securevault)             | Retrieve the Revault revocation transactions to sign |
+| [`activatevault`](#activatevault)         | Retrieve the Revault unvault transaction to sign     |
+| [`spendvaults`](#spendvault)              | Retrieve the Revault spend transaction to sign       |
+| [`signedtx`](#signedtx)                   | Give back the transaction signed                     |
 
 # Reference
 
@@ -78,26 +80,47 @@ filtered by an optional `status` parameter.
 | ------------- | ------------------------------------------ | ------------------------- |
 | `vaults`      | array of [vault resource](#vault-resource) | Vaults filtered by status |
 
-### `signvault`
+### `securevault`
 
-The `signvault` RPC Command executes the signing process of the Revault
-pre-signed transactions.
+The `securevault` RPC Command executes the signing process of the
+Revault revocation transactions.
 
 #### Request
 
-| Parameter        | Type    | Description                         |
-| ---------------- | ------- | ----------------------------------- |
-| `txid`           | string  | Unique ID of the vault to sign      |
-| `only_emergency` | boolean | Sign only the emergency transaction |
+| Parameter        | Type    | Description                                     |
+| ---------------- | ------- | ----------------------------------------------- |
+| `txid`           | string  | Unique ID of the vault to secure                |
+| `only_emergency` | boolean | Retrieve only the emergency transaction to sign |
 
 #### Response
 
-TODO: specify response
+| Field                | Type   | Description                                                 |
+| -------------------- | ------ | ----------------------------------------------------------- |
+| emergency_tx         | string | Emergency transaction to sign using the PSBT format         |
+| cancel_tx            | string | Cancel transaction to sign using the PSBT format            |
+| emergency_unvault_tx | string | Emergency unvault transaction to sign using the PSBT format |
+
+### `activatevault`
+
+The `activatevault` RPC Command executes the signing process of the
+Revault unvault transaction.
+
+#### Request
+
+| Parameter        | Type    | Description                        |
+| ---------------- | ------- | ---------------------------------- |
+| `txid`           | string  | Unique ID of the vault to activate |
+
+#### Response
+
+| Field       | Type   | Description                                                 |
+| ----------- | ------ | ----------------------------------------------------------- |
+| unvault_tx  | string | Unvault transaction to sign using the PSBT format           |
 
 ### `spendvaults`
 
-The `spendvaults` RPC Command executes the spending process of the
-chosen vaults.
+The `spendvaults` RPC Command retrieve the spend transaction to sign
+according to the chosen vaults.
 
 #### Request
 
@@ -111,4 +134,28 @@ amount of the output.
 
 #### Response
 
-TODO: specify response
+| Field    | Type   | Description                                     |
+| -------- | ------ | ----------------------------------------------- |
+| spend_tx | string | Spend transaction to sign using the PSBT format |
+
+### `signedtx`
+
+The PSBT once signed must be given back to the daemon to be handled
+according to the context. 
+
+If the `signedtx` type is `spend_tx` and has enough manager signatures, 
+then the revault daemon will start the spending process. 
+
+#### Request
+
+| Parameter | Type    | Description                                                                                                   |
+| --------- | ------- | ------------------------------------------------------------------------------------------------------------- |
+| tx        | string  | PSBT with the required signatures                                                                             |
+| type      | string  | Type of the transaction, can be `emergency_tx`, `cancel_tx`, `emergency_unvault_tx`, `unvault_tx`, `spend_tx` |
+
+#### Response
+
+| Field    | Type | Description                                                                                             |
+| -------- | ---- | ------------------------------------------------------------------------------------------------------- |
+| sigs_ack | bool | Watchower has stored the given revocation tx (Field not present if tx type is `unvault_tx`, `spend_tx`) |
+

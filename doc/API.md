@@ -162,7 +162,7 @@ then the revault daemon will start the spending process.
 
 ## User flows
 
-### Stakeholder
+### Stakeholder flows
 
 #### Sign the revocation transactions
 
@@ -190,3 +190,26 @@ then the revault daemon will start the spending process.
                          | <--------vaults--------+ |  // revocation transactions
                          +                          +
 ```
+
+#### Sign the unvault transaction
+
+```
+ HSM                  client                      revaultd
+  +                      +                          +
+  |                      |                          |
+  |                      | +---listvaults secure--> |
+  |                      | <--------vaults--------+ |
+  |                      |                          |
+  |                      | +---activatevault txid-> |
+  |                      | <----psbt--------------+ |
+  |                      |                          |
+  | <----sign unvault--+ |                          |
+  | +------sig---------> |                          |
+  |                      | +-----signedtx (sig)---> |
+  |                      |                          |
+  +                      | +---listvaults active--> |  // check if the other stakeholders
+                         | <--------vaults--------+ |  // have signed the unvault tx too
+                         +                          +
+```
+
+## Manager flow

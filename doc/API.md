@@ -7,10 +7,12 @@ interface over a Unix Domain socket.
 | ----------------------------------------- | ---------------------------------------------------- |
 | [`getinfo`](#getinfo)                     | Display general information                          |
 | [`listvaults`](#listvaults)               | Display a paginated list of vaults                   |
-| [`securevault`](#securevault)             | Retrieve the Revault revocation transactions to sign |
-| [`activatevault`](#activatevault)         | Retrieve the Revault unvault transaction to sign     |
-| [`spendvaults`](#spendvault)              | Retrieve the Revault spend transaction to sign       |
-| [`signedtx`](#signedtx)                   | Give back the transaction signed                     |
+| [`getrevocationtxs`](#getrevocationtxs)   | Retrieve the Revault revocation transactions to sign |
+| [`getunvaulttx`](#getunvaulttx)           | Retrieve the Revault unvault transaction to sign     |
+| [`getspendtx`](#getspendtx)               | Retrieve the Revault spend transaction to sign       |
+| [`revocationtxs`](#revocationtxs)         | Give back the revocation transactions signed         |
+| [`unvaulttx`](#unvaulttx)                 | Give back the unvault transaction signed             |
+| [`spendtx`](#spendtx)                     | Give back the spend transaction signed               |
 
 # Reference
 
@@ -80,9 +82,9 @@ filtered by an optional `status` parameter.
 | ------------- | ------------------------------------------ | ------------------------- |
 | `vaults`      | array of [vault resource](#vault-resource) | Vaults filtered by status |
 
-### `securevault`
+### `getrevocationtxs`
 
-The `securevault` RPC Command executes the signing process of the
+The `getrevocationtxs` RPC Command executes the signing process of the
 Revault revocation transactions.
 
 #### Request
@@ -90,19 +92,30 @@ Revault revocation transactions.
 | Parameter        | Type    | Description                                     |
 | ---------------- | ------- | ----------------------------------------------- |
 | `txid`           | string  | Unique ID of the vault to secure                |
-| `only_emergency` | boolean | Retrieve only the emergency transaction to sign |
 
 #### Response
 
-| Field                | Type   | Description                                                 |
-| -------------------- | ------ | ----------------------------------------------------------- |
-| emergency_tx         | string | Emergency transaction to sign using the PSBT format         |
-| cancel_tx            | string | Cancel transaction to sign using the PSBT format            |
-| emergency_unvault_tx | string | Emergency unvault transaction to sign using the PSBT format |
+| Field                  | Type   | Description                                                 |
+| ---------------------- | ------ | ----------------------------------------------------------- |
+| `emergency_tx`         | string | Emergency transaction to sign using the PSBT format         |
+| `cancel_tx`            | string | Cancel transaction to sign using the PSBT format            |
+| `emergency_unvault_tx` | string | Emergency unvault transaction to sign using the PSBT format |
 
-### `activatevault`
+### `revocationtxs`
 
-The `activatevault` RPC Command executes the signing process of the
+The PSBTs once signed must be given back to the daemons.
+
+#### Request
+
+| Field                  | Type   | Description                                                |
+| ---------------------- | ------ | ---------------------------------------------------------- |
+| `emergency_tx`         | string | Emergency transaction signed using the PSBT format         |
+| `cancel_tx`            | string | Cancel transaction signed using the PSBT format            |
+| `emergency_unvault_tx` | string | Emergency unvault transaction signed using the PSBT format |
+
+### `getunvaulttx`
+
+The `getunvaulttx` RPC Command executes the signing process of the
 Revault unvault transaction.
 
 #### Request
@@ -113,52 +126,46 @@ Revault unvault transaction.
 
 #### Response
 
-| Field       | Type   | Description                                                 |
-| ----------- | ------ | ----------------------------------------------------------- |
-| unvault_tx  | string | Unvault transaction to sign using the PSBT format           |
+| Field        | Type   | Description                                                 |
+| ------------ | ------ | ----------------------------------------------------------- |
+| `unvault_tx` | string | Unvault transaction to sign using the PSBT format           |
 
-### `spendvaults`
+### `unvaultx`
 
-The `spendvaults` RPC Command retrieve the spend transaction to sign
+#### Request
+
+| Field        | Type   | Description                                                 |
+| ------------ | ------ | ----------------------------------------------------------- |
+| `unvault_tx` | string | Unvault transaction signed using the PSBT format            |
+
+### `getspendtx`
+
+The `getspendtx` RPC Command retrieve the spend transaction to sign
 according to the chosen vaults.
 
 #### Request
 
 | Parameter | Type                 | Description                                             |
 | --------- | -------------------- | ------------------------------------------------------- |
-| txid      | string array         | Vault IDs -- vaults must be [`active`](#vault-statuses) |
-| output    | map of string to int | Map of Bitcoin addresses to amount                      |
+| `txid`    | string array         | Vault IDs -- vaults must be [`active`](#vault-statuses) |
+| `output`  | map of string to int | Map of Bitcoin addresses to amount                      |
 
 Fee is deducted from the total amount of the vaults spent minus the total
 amount of the output.
 
 #### Response
 
-| Field    | Type   | Description                                     |
-| -------- | ------ | ----------------------------------------------- |
-| spend_tx | string | Spend transaction to sign using the PSBT format |
+| Field      | Type   | Description                                     |
+| ---------- | ------ | ----------------------------------------------- |
+| `spend_tx` | string | Spend transaction to sign using the PSBT format |
 
-### `signedtx`
-
-The PSBT once signed must be given back to the daemon to be handled
-according to the context. 
-
-If the `signedtx` type is `spend_tx` and has enough manager signatures, 
-then the revault daemon will start the spending process. 
+### `spendtx`
 
 #### Request
 
-| Parameter | Type    | Description                                                                                                   |
-| --------- | ------- | ------------------------------------------------------------------------------------------------------------- |
-| tx        | string  | PSBT with the required signatures                                                                             |
-| type      | string  | Type of the transaction, can be `emergency_tx`, `cancel_tx`, `emergency_unvault_tx`, `unvault_tx`, `spend_tx` |
-
-#### Response
-
-| Field    | Type | Description                                                                                             |
-| -------- | ---- | ------------------------------------------------------------------------------------------------------- |
-| sigs_ack | bool | Watchower has stored the given revocation tx (Field not present if tx type is `unvault_tx`, `spend_tx`) |
-
+| Field        | Type   | Description                                    |
+| ------------ | ------ | ---------------------------------------------- |
+| `spend_tx`   | string | Spend transaction signed using the PSBT format |
 
 ## User flows
 
@@ -170,46 +177,46 @@ then the revault daemon will start the spending process.
  HSM                  client                    revaultd
   +                      +                          +
   |                      |                          |
-  |                      | +---listvaults deposit-> |
-  |                      | <-------->aults--------+ |
+  |                      | +--+listvaults deposit+> |
+  |                      | <--------vaults+-------+ |
   |                      |                          |
-  |                      | +---securevault txid---> |
+  |                      | +--getrevocationtxs----> |
   |                      | <----psbts-------------+ |
   |                      |                          |
   | <----sign emer-----+ |                          |
   | +------sig---------> |                          |
-  |                      | +-----signedtx (sig)---> |
+  |                      |                          |
   | <---sign cancel----+ |                          |
   | +------sig---------> |                          |
-  |                      | +------signedtx (sig)--> |
-  | <-sign unvault_emer+ |                          |
-  | +------------------> |                          |
-  |                      | +------signedtx--------> |
   |                      |                          |
-  +                      | +---listvaults secure--> |  // check if the watchtowers has the
-                         | <--------vaults--------+ |  // revocation transactions
+  | <+sign unvault_emer+ |                          |
+  | +------------------> |                          |
+  |                      | +---revocationtxs------> |
+  |                      |                          |
+  +                      | +--+listvaults secure+-> |  // check if the watchtowers has the
+                         | <--------vaults+-------+ |  // revocation transactions
                          +                          +
 ```
 
 #### Sign the unvault transaction
 
 ```
- HSM                  client                      revaultd
-  +                      +                          +
-  |                      |                          |
-  |                      | +---listvaults secure--> |
-  |                      | <--------vaults--------+ |
-  |                      |                          |
-  |                      | +---activatevault txid-> |
-  |                      | <----psbt--------------+ |
-  |                      |                          |
-  | <----sign unvault--+ |                          |
-  | +------sig---------> |                          |
-  |                      | +-----signedtx (sig)---> |
-  |                      |                          |
-  +                      | +---listvaults active--> |  // check if the other stakeholders
-                         | <--------vaults--------+ |  // have signed the unvault tx too
-                         +                          +
+HSM                  client                      revaultd
+ +                      +                          +
+ |                      |                          |
+ |                      | +---listvaults secure--> |
+ |                      | <--------vaults--------+ |
+ |                      |                          |
+ |                      | +--getunvaulttx--------> |
+ |                      | <----psbt--------------+ |
+ |                      |                          |
+ | <----sign unvault--+ |                          |
+ | +------sig---------> |                          |
+ |                      | +----unvaulttx---------> |
+ |                      |                          |
+ +                      | +---listvaults active--> |  // check if the other stakeholders
+                        | <--------vaults--------+ |  // have signed the unvault tx too
+                        +                          +
 ```
 
 ## Manager flow
@@ -220,7 +227,7 @@ HSM                client                      revaultd
   |                      | +---listvaults active--> |
   |                      | <-------vaults---------+ |
   |                      |                          |
-  |                      | +---spendvaults--------> |
+  |                      | +-------getspendtx-----> |
   |                      | <-----psbt or wt nack--+ |
   | <----sign spend tx-+ |                          |
   | +------sig---------> |                          |
@@ -230,7 +237,7 @@ client 2                 |                          |
   +                      |                          |
   | <---sign psbt------+ |                          |
   | +-----psbt---------> |                          | // daemon ask wt opinion
-  +                      | +-------signtx psbt----> | // if ack, cosign server sign
+  +                      | +---spendtx------------> | // if ack, cosign server sign
                          | <---OK or wt nack------+ | // then daemon broadcasts tx
                          |                          |
                          | +--listvaults----------> | // check vaults are spent

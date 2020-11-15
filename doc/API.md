@@ -3,11 +3,16 @@
 revaultd exposes a [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 interface over a Unix Domain socket.
 
-| Command                     | Description                               |
-| --------------------------- | ----------------------------------------- |
-| [`getinfo`](#getinfo)       | Display general information               |
-| [`listvaults`](#listvaults) | Display a paginated list of vaults        |
-| [`signvault`](#signvault)   | Sign the Revault pre-signed transactions  |
+| Command                                   | Description                                          |
+| ----------------------------------------- | ---------------------------------------------------- |
+| [`getinfo`](#getinfo)                     | Display general information                          |
+| [`listvaults`](#listvaults)               | Display a paginated list of vaults                   |
+| [`getrevocationtxs`](#getrevocationtxs)   | Retrieve the Revault revocation transactions to sign |
+| [`getunvaulttx`](#getunvaulttx)           | Retrieve the Revault unvault transaction to sign     |
+| [`getspendtx`](#getspendtx)               | Retrieve the Revault spend transaction to sign       |
+| [`revocationtxs`](#revocationtxs)         | Give back the revocation transactions signed         |
+| [`unvaulttx`](#unvaulttx)                 | Give back the unvault transaction signed             |
+| [`spendtx`](#spendtx)                     | Give back the spend transaction signed               |
 
 # Reference
 
@@ -52,7 +57,7 @@ Display general information about the current daemon state.
 | `amount`      | int    | Amount of the vault in satoshis                                                      |
 | `blockheight` | int    | Block height at which the vault deposit transaction was confirmed (0 if unconfirmed) |
 | `status`      | string | Status of the vault ([vault statuses](#vault-statuses))                              |
-| `txid`        | string | Unique ID of the vault deposit transaction                                           |
+| `txid`        | string | Deposit txid of the vault deposit transaction                                        |
 | `vout`        | vout   | Index of the deposit output in the deposit transaction.                              |
 
 Note that the `scriptPubKey` is implicitly known as we have the vault output Miniscript descriptor.
@@ -77,18 +82,165 @@ filtered by an optional `status` parameter.
 | ------------- | ------------------------------------------ | ------------------------- |
 | `vaults`      | array of [vault resource](#vault-resource) | Vaults filtered by status |
 
-### `signvault`
+### `getrevocationtxs`
 
-The `signvault` RPC Command executes the signing process of the Revault
-pre-signed transactions.
+The `getrevocationtxs` RPC Command builds and returns the revocation transactions
+corresponding to a given vault.
 
 #### Request
 
-| Parameter        | Type    | Description                         |
-| ---------------- | ------- | ----------------------------------- |
-| `txid`           | string  | Unique ID of the vault to sign      |
-| `only_emergency` | boolean | Sign only the emergency transaction |
+| Parameter        | Type    | Description                                     |
+| ---------------- | ------- | ----------------------------------------------- |
+| `txid`           | string  | Deposit txid of the vault                       |
 
 #### Response
 
-TODO: specify response
+| Field                  | Type   | Description                                                 |
+| ---------------------- | ------ | ----------------------------------------------------------- |
+| `emergency_tx`         | string | Emergency transaction to sign using the PSBT format         |
+| `cancel_tx`            | string | Cancel transaction to sign using the PSBT format            |
+| `emergency_unvault_tx` | string | Emergency unvault transaction to sign using the PSBT format |
+
+### `revocationtxs`
+
+The PSBTs once signed must be given back to the daemon.
+
+#### Request
+
+| Field                  | Type   | Description                                                |
+| ---------------------- | ------ | ---------------------------------------------------------- |
+| `emergency_tx`         | string | Emergency transaction signed using the PSBT format         |
+| `cancel_tx`            | string | Cancel transaction signed using the PSBT format            |
+| `emergency_unvault_tx` | string | Emergency unvault transaction signed using the PSBT format |
+
+### `getunvaulttx`
+
+The `getunvaulttx` RPC Command builds and returns the unvault transaction of the given
+vault.
+
+#### Request
+
+| Parameter        | Type    | Description                           |
+| ---------------- | ------- | ------------------------------------- |
+| `txid`           | string  | Deposit txid of the vault to activate |
+
+#### Response
+
+| Field        | Type   | Description                                                 |
+| ------------ | ------ | ----------------------------------------------------------- |
+| `unvault_tx` | string | Unvault transaction to sign using the PSBT format           |
+
+### `unvaultx`
+
+#### Request
+
+| Field        | Type   | Description                                                 |
+| ------------ | ------ | ----------------------------------------------------------- |
+| `unvault_tx` | string | Unvault transaction signed using the PSBT format            |
+
+### `getspendtx`
+
+The `getspendtx` RPC Command builds and returns the spend transaction given a
+set of vaults to spend.
+
+#### Request
+
+| Parameter | Type                 | Description                                                       |
+| --------- | -------------------- | ----------------------------------------------------------------- |
+| `txid`    | string array         | Vault deposit txids -- vaults must be [`active`](#vault-statuses) |
+| `output`  | map of string to int | Map of Bitcoin addresses to amount                                |
+
+Fee is deducted from the total amount of the vaults spent minus the total
+amount of the output.
+
+#### Response
+
+| Field      | Type   | Description                                     |
+| ---------- | ------ | ----------------------------------------------- |
+| `spend_tx` | string | Spend transaction to sign using the PSBT format |
+
+### `spendtx`
+
+#### Request
+
+| Field        | Type   | Description                                    |
+| ------------ | ------ | ---------------------------------------------- |
+| `spend_tx`   | string | Spend transaction signed using the PSBT format |
+
+## User flows
+
+### Stakeholder flows
+
+#### Sign the revocation transactions
+
+```
+ HSM                  client                    revaultd
+  +                      +                          +
+  |                      |                          |
+  |                      | +--+listvaults deposit+> |
+  |                      | <--------vaults+-------+ |
+  |                      |                          |
+  |                      | +--getrevocationtxs----> |
+  |                      | <----psbts-------------+ |
+  |                      |                          |
+  | <----sign emer-----+ |                          |
+  | +------sig---------> |                          |
+  |                      |                          |
+  | <---sign cancel----+ |                          |
+  | +------sig---------> |                          |
+  |                      |                          |
+  | <+sign unvault_emer+ |                          |
+  | +------------------> |                          |
+  |                      | +---revocationtxs------> |
+  |                      |                          |
+  +                      | +--+listvaults secure+-> |  // check if the watchtowers has the
+                         | <--------vaults+-------+ |  // revocation transactions
+                         +                          +
+```
+
+#### Sign the unvault transaction
+
+```
+HSM                  client                      revaultd
+ +                      +                          +
+ |                      |                          |
+ |                      | +---listvaults secure--> |
+ |                      | <--------vaults--------+ |
+ |                      |                          |
+ |                      | +--getunvaulttx--------> |
+ |                      | <----psbt--------------+ |
+ |                      |                          |
+ | <----sign unvault--+ |                          |
+ | +------sig---------> |                          |
+ |                      | +----unvaulttx---------> |
+ |                      |                          |
+ +                      | +---listvaults active--> |  // check if the other stakeholders
+                        | <--------vaults--------+ |  // have signed the unvault tx too
+                        +                          +
+```
+
+## Manager flow
+
+```
+HSM                client                      revaultd
+  +                      +                          +
+  |                      | +---listvaults active--> |
+  |                      | <-------vaults---------+ |
+  |                      |                          |
+  |                      | +-------getspendtx-----> |
+  |                      | <-----psbt or wt nack--+ |
+  | <----sign spend tx-+ |                          |
+  | +------sig---------> |                          |
+  +                      |                          |
+                         |                          |
+client 2                 |                          |
+  +                      |                          |
+  | <---sign psbt------+ |                          |
+  | +-----psbt---------> |                          | // daemon ask wt opinion
+  +                      | +---spendtx------------> | // if ack, cosign server sign
+                         | <---OK or wt nack------+ | // then daemon broadcasts tx
+                         |                          |
+                         | +--listvaults----------> | // check vaults are spent
+                         + ^------vaults----------+ +
+
+```

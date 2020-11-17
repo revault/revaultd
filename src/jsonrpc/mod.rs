@@ -8,12 +8,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(not(windows))]
 use mio::{
     net::{UnixListener, UnixStream},
     Events, Interest, Poll, Token,
 };
-
-const JSONRPC_SERVER: Token = Token(0);
+#[cfg(windows)]
+use uds_windows::{UnixListener, UnixStream};
 
 pub struct RpcImpl;
 impl RpcApi for RpcImpl {
@@ -21,17 +22,6 @@ impl RpcApi for RpcImpl {
         // FIXME: of course, this is Bad :TM:
         process::exit(0);
     }
-}
-
-/// Set up the poller used to listen on the Unix Domain Socket for JSONRPC messages
-pub fn jsonrpcapi_setup(socket_path: PathBuf) -> Result<(Poll, UnixListener), io::Error> {
-    // FIXME: permissions! (umask before binding ?)
-    let mut listener = UnixListener::bind(&socket_path)?;
-    let poll = Poll::new()?;
-    poll.registry()
-        .register(&mut listener, JSONRPC_SERVER, Interest::READABLE)?;
-
-    Ok((poll, listener))
 }
 
 // Remove trailing newlines from utf-8 byte stream
@@ -111,11 +101,19 @@ fn handle_byte_stream(
     Ok(())
 }
 
-/// The main event loop for the JSONRPC interface
-pub fn jsonrpcapi_loop(mut poller: Poll, listener: UnixListener) -> Result<(), io::Error> {
+// For all but Windows, we use Mio.
+#[cfg(not(windows))]
+fn mio_loop(
+    mut listener: UnixListener,
+    jsonrpc_io: jsonrpc_core::IoHandler,
+) -> Result<(), io::Error> {
+    const JSONRPC_SERVER: Token = Token(0);
+    let mut poller = Poll::new()?;
     let mut events = Events::with_capacity(16);
-    let mut jsonrpc_io = jsonrpc_core::IoHandler::new();
-    jsonrpc_io.extend_with(RpcImpl.to_delegate());
+
+    poller
+        .registry()
+        .register(&mut listener, JSONRPC_SERVER, Interest::READABLE)?;
 
     loop {
         poller.poll(&mut events, Some(Duration::from_millis(100)))?;
@@ -147,4 +145,30 @@ pub fn jsonrpcapi_loop(mut poller: Poll, listener: UnixListener) -> Result<(), i
             }
         }
     }
+}
+
+// For windows, we don't: Mio UDS support for Windows is not yet implemented.
+#[cfg(windows)]
+fn windows_loop(
+    listener: UnixListener,
+    jsonrpc_io: jsonrpc_core::IoHandler,
+) -> Result<(), io::Error> {
+    for stream in listener.incoming() {
+        handle_byte_stream(&jsonrpc_io, stream?)?;
+    }
+
+    Ok(())
+}
+
+/// The main event loop for the JSONRPC interface, polling the UDS at `socket_path`
+pub fn jsonrpcapi_loop(socket_path: PathBuf) -> Result<(), io::Error> {
+    // FIXME: permissions! (umask before binding ?)
+    let listener = UnixListener::bind(&socket_path)?;
+    let mut jsonrpc_io = jsonrpc_core::IoHandler::new();
+    jsonrpc_io.extend_with(RpcImpl.to_delegate());
+
+    #[cfg(not(windows))]
+    return mio_loop(listener, jsonrpc_io);
+    #[cfg(windows)]
+    return windows_loop(listener, jsonrpc_io);
 }

@@ -160,10 +160,33 @@ fn windows_loop(
     Ok(())
 }
 
+// Tries to bind to the socket, if we are told it's already in use try to connect
+// to check there is actually someone listening and it's not a leftover from a
+// crash.
+fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
+    match UnixListener::bind(&socket_path) {
+        Ok(l) => Ok(l),
+        Err(e) => {
+            if e.kind() == io::ErrorKind::AddrInUse {
+                return match UnixStream::connect(&socket_path) {
+                    Ok(_) => Err(e),
+                    Err(_) => {
+                        // Ok, no one's here. Just delete the socket and bind.
+                        log::debug!("Removing leftover rpc socket.");
+                        std::fs::remove_file(&socket_path)?;
+                        UnixListener::bind(&socket_path)
+                    }
+                };
+            }
+            return Err(e);
+        }
+    }
+}
+
 /// The main event loop for the JSONRPC interface, polling the UDS at `socket_path`
 pub fn jsonrpcapi_loop(socket_path: PathBuf) -> Result<(), io::Error> {
     // FIXME: permissions! (umask before binding ?)
-    let listener = UnixListener::bind(&socket_path)?;
+    let listener = bind(socket_path)?;
     let mut jsonrpc_io = jsonrpc_core::IoHandler::new();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
 

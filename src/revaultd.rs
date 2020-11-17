@@ -268,6 +268,10 @@ impl RevaultD {
         self.file_from_datadir(&format!("revaultd-watchonly-wallet-{}", wallet_id))
     }
 
+    pub fn rpc_socket_file(&self) -> PathBuf {
+        self.file_from_datadir("revaultd_rpc")
+    }
+
     pub fn deposit_address(&mut self) -> Address {
         self.vault_address(self.current_unused_index)
     }

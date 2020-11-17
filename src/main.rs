@@ -1,17 +1,19 @@
 mod bitcoind;
 mod config;
 mod database;
+mod jsonrpc;
 mod revaultd;
 
 use crate::{
     bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
     config::Config,
     database::actions::setup_db,
+    jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
     revaultd::RevaultD,
 };
 
 use std::path::PathBuf;
-use std::{env, process};
+use std::{env, process, thread};
 
 use daemonize_simple::Daemonize;
 
@@ -45,6 +47,17 @@ fn daemon_main(mut revaultd: RevaultD) {
         "revaultd started on network {}",
         revaultd.bitcoind_config.network
     );
+
+    let (poller, listener) = jsonrpcapi_setup(revaultd.rpc_socket_file()).unwrap_or_else(|e| {
+        log::error!("Error setting up the JSONRPC server: {}", e.to_string());
+        process::exit(1)
+    });
+    let _jsonrpc_thread = thread::spawn(move || {
+        jsonrpcapi_loop(poller, listener).unwrap_or_else(|e| {
+            log::error!("Error in JSONRPC server event loop: {}", e.to_string());
+            process::exit(1)
+        })
+    });
 
     // We poll bitcoind until we die
     bitcoind_main_loop(&mut revaultd, &bitcoind).unwrap_or_else(|e| {

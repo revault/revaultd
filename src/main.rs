@@ -8,7 +8,7 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
     config::Config,
     database::actions::setup_db,
-    jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
+    jsonrpc::jsonrpcapi_loop,
     revaultd::RevaultD,
 };
 
@@ -48,12 +48,9 @@ fn daemon_main(mut revaultd: RevaultD) {
         revaultd.bitcoind_config.network
     );
 
-    let (poller, listener) = jsonrpcapi_setup(revaultd.rpc_socket_file()).unwrap_or_else(|e| {
-        log::error!("Error setting up the JSONRPC server: {}", e.to_string());
-        process::exit(1)
-    });
+    let socket_path = revaultd.rpc_socket_file();
     let _jsonrpc_thread = thread::spawn(move || {
-        jsonrpcapi_loop(poller, listener).unwrap_or_else(|e| {
+        jsonrpcapi_loop(socket_path).unwrap_or_else(|e| {
             log::error!("Error in JSONRPC server event loop: {}", e.to_string());
             process::exit(1)
         })

@@ -175,6 +175,8 @@ pub struct Config {
     pub unvault_csv: u32,
     /// An optional custom data directory
     pub data_dir: Option<PathBuf>,
+    /// Whether to daemonize the process
+    pub daemon: Option<bool>,
     // TODO: sync server address
 }
 

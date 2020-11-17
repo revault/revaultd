@@ -12,7 +12,10 @@ use revault_tx::{
     transactions::VaultTransaction,
 };
 
-use std::{process, thread, time};
+use std::{
+    process, thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 fn check_bitcoind_network(bitcoind: &BitcoinD, config_network: &str) -> Result<(), BitcoindError> {
     let chaininfo = bitcoind.getblockchaininfo()?;
@@ -100,9 +103,9 @@ fn wait_for_bitcoind_synced(
             if (first || delta > 1_000) && blocks < 100_000 {
                 log::info!("Waiting for bitcoind to gather enough headers..");
                 if bitcoind_config.network.eq("regtest") {
-                    thread::sleep(time::Duration::from_secs(3));
+                    thread::sleep(Duration::from_secs(3));
                 } else {
-                    thread::sleep(time::Duration::from_secs(5 * 60));
+                    thread::sleep(Duration::from_secs(5 * 60));
                 }
 
                 let chaininfo = bitcoind.getblockchaininfo()?;
@@ -134,13 +137,21 @@ fn wait_for_bitcoind_synced(
         // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
         // conservative. Eg if 10_000 are left to be downloaded we'll check back
         // in ~4min.
-        let sleep_duration = time::Duration::from_secs(delta / 20 / 2);
+        let sleep_duration = Duration::from_secs(delta / 20 / 2);
         log::info!("We'll poll bitcoind again in {:?} seconds", sleep_duration);
         // FIXME: maybe Edouard will need more fine-grained updates eventually
         thread::sleep(sleep_duration);
 
         first = false;
     }
+}
+
+fn unload_all_wallets(bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    for wallet_name in bitcoind.listwallets()? {
+        bitcoind.unloadwallet(wallet_name)?;
+    }
+
+    Ok(())
 }
 
 // This creates the actual wallet file, and imports the descriptors
@@ -152,6 +163,12 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         .to_str()
         .expect("Path is valid unicode")
         .to_string();
+    // Did we just create the wallet ?
+    let curr_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_secs())
+        .map_err(|e| BitcoindError(format!("Computing time since epoch: {}", e.to_string())))?;
+    let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
 
     if !bitcoind_wallet_path.exists() {
         bitcoind.createwallet_startup(bitcoind_wallet_str)?;
@@ -171,7 +188,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
             addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
         }
         log::trace!("Importing deposit descriptors '{:?}'", &addresses);
-        bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp)?;
+        bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
 
         // As a consequence, we don't have enough information to opportunistically import a
         // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
@@ -181,7 +198,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
             addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
         }
         log::trace!("Importing unvault descriptors '{:?}'", &addresses);
-        bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp)?;
+        bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
     }
 
     Ok(())
@@ -199,16 +216,6 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
     if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
         log::info!("Loading wallet '{}'.", bitcoind_wallet_path);
         bitcoind.loadwallet_startup(bitcoind_wallet_path.clone())?;
-    }
-
-    for wallet_name in bitcoind.listwallets()? {
-        if wallet_name != bitcoind_wallet_path {
-            log::info!(
-                "Too many wallets loaded on bitcoind! Unloading wallet '{}'.",
-                wallet_name
-            );
-            bitcoind.unloadwallet(wallet_name)?;
-        }
     }
 
     Ok(())
@@ -233,6 +240,10 @@ pub fn setup_bitcoind(revaultd: &mut RevaultD) -> BitcoinD {
         process::exit(1);
     });
 
+    unload_all_wallets(&bitcoind).unwrap_or_else(|e| {
+        log::error!("Unloading existing wallets: {}", e.to_string());
+        process::exit(1);
+    });
     maybe_create_wallet(revaultd, &bitcoind).unwrap_or_else(|e| {
         log::error!("Error while creating wallet: {}", e.to_string());
         process::exit(1);
@@ -343,6 +354,6 @@ pub fn bitcoind_main_loop(
 ) -> Result<(), BitcoindError> {
     loop {
         poll_bitcoind(revaultd, &bitcoind)?;
-        thread::sleep(time::Duration::from_secs(30));
+        thread::sleep(Duration::from_secs(30));
     }
 }

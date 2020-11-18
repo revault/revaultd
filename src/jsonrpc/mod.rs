@@ -1,10 +1,13 @@
 mod api;
 use api::RpcApi;
 
+use crate::threadmessages::ThreadMessage;
+
 use std::{
     io::{self, Read},
     path::PathBuf,
     process,
+    sync::mpsc::Sender,
     time::Duration,
 };
 
@@ -184,7 +187,7 @@ fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS at `socket_path`
-pub fn jsonrpcapi_loop(socket_path: PathBuf) -> Result<(), io::Error> {
+pub fn jsonrpcapi_loop(_tx: Sender<ThreadMessage>, socket_path: PathBuf) -> Result<(), io::Error> {
     // Create the socket with RW permissions only for the user
     // FIXME: find a workaround for Windows...
     #[cfg(unix)]

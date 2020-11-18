@@ -6,6 +6,7 @@ use crate::{
         interface::db_wallet,
     },
     revaultd::RevaultD,
+    threadmessages::ThreadMessage,
 };
 use revault_tx::{
     bitcoin::{consensus::encode, hashes::hex::FromHex, Transaction},
@@ -13,6 +14,7 @@ use revault_tx::{
 };
 
 use std::{
+    sync::{mpsc::Sender, Arc, RwLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -254,11 +256,17 @@ fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
         .map_err(|e| BitcoindError(format!("Deserializing tx hex: '{}'", e.to_string())))
 }
 
-fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    let (new_deposits, spent_deposits) = bitcoind.sync_deposits(&revaultd.vaults)?;
+fn poll_bitcoind(
+    revaultd: &mut Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    let (new_deposits, spent_deposits) =
+        bitcoind.sync_deposits(&revaultd.read().unwrap().vaults)?;
 
     for (outpoint, utxo) in new_deposits.into_iter() {
         let derivation_index = *revaultd
+            .read()
+            .unwrap()
             .derivation_index_map
             .get(&utxo.txo.script_pubkey)
             .ok_or_else(|| BitcoindError(format!("Unknown derivation index for: {:#?}", &utxo)))?;
@@ -275,8 +283,8 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
             .ok_or_else(|| BitcoindError("Deposit transaction isn't confirmed!".to_string()))?;
 
         db_insert_new_vault(
-            &revaultd.db_file(),
-            revaultd.wallet_id,
+            &revaultd.read().unwrap().db_file(),
+            revaultd.read().unwrap().wallet_id,
             utxo.status,
             blockheight,
             outpoint.txid.to_vec(),
@@ -286,30 +294,34 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
             vault_tx,
         )
         .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
-        revaultd.vaults.insert(outpoint, utxo);
+        revaultd.write().unwrap().vaults.insert(outpoint, utxo);
 
         // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
         // FIXME: of course, that's rudimentary
-        if derivation_index > revaultd.current_unused_index {
-            revaultd.current_unused_index += 1;
-            let next_addr =
-                bitcoind.addr_descriptor(&revaultd.last_deposit_address().to_string())?;
+        if derivation_index > revaultd.read().unwrap().current_unused_index {
+            revaultd.write().unwrap().current_unused_index += 1;
+            let next_addr = bitcoind
+                .addr_descriptor(&revaultd.write().unwrap().last_deposit_address().to_string())?;
             bitcoind.import_fresh_deposit_descriptor(next_addr)?;
-            let next_addr =
-                bitcoind.addr_descriptor(&revaultd.last_unvault_address().to_string())?;
+            let next_addr = bitcoind
+                .addr_descriptor(&revaultd.write().unwrap().last_unvault_address().to_string())?;
             bitcoind.import_fresh_unvault_descriptor(next_addr)?;
         }
     }
 
     for (outpoint, utxo) in spent_deposits.into_iter() {
-        let deriv_index = *revaultd
+        let deriv_index = *revaultd.read().unwrap()
             .derivation_index_map
             .get(&utxo.txo.script_pubkey)
             .ok_or_else(|| BitcoindError(
                     format!("A deposit was spent for which we don't know the corresponding xpub derivation. Outpoint: '{}'\nUtxo: '{:#?}'",
                         &outpoint,
                         &utxo)))?;
-        let unvault_addr = revaultd.unvault_address(deriv_index).to_string();
+        let unvault_addr = revaultd
+            .write()
+            .unwrap()
+            .unvault_address(deriv_index)
+            .to_string();
 
         if let Some(unvault_outpoint) = bitcoind.unvault_from_vault(&outpoint, unvault_addr)? {
             log::debug!(
@@ -319,9 +331,13 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
             );
             // Note that it *might* have actually been confirmed during the last 30s, but it's not
             // a big deal to have it marked as unconfirmed for the next 30s..
-            db_unvault_deposit(&revaultd.db_file(), outpoint.txid.to_vec(), outpoint.vout)
-                // TODO: something like From<DbError> for BitcoindError ?
-                .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
+            db_unvault_deposit(
+                &revaultd.read().unwrap().db_file(),
+                outpoint.txid.to_vec(),
+                outpoint.vout,
+            )
+            // TODO: something like From<DbError> for BitcoindError ?
+            .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
         } else if false {
             // TODO: handle bypass
         } else {
@@ -340,11 +356,12 @@ fn poll_bitcoind(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
 /// The bitcoind event loop.
 /// Poll bitcoind every 30 seconds, and update our state accordingly.
 pub fn bitcoind_main_loop(
-    revaultd: &mut RevaultD,
+    _tx: Sender<ThreadMessage>,
+    mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
     loop {
-        poll_bitcoind(revaultd, &bitcoind)?;
+        poll_bitcoind(&mut revaultd, &bitcoind)?;
         thread::sleep(Duration::from_secs(30));
     }
 }

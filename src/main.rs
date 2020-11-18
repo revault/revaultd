@@ -1,14 +1,11 @@
 mod bitcoind;
 mod config;
+mod daemon;
 mod database;
 mod revaultd;
 
-use crate::{
-    bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
-    config::parse_config,
-    database::actions::setup_db,
-    revaultd::RevaultD,
-};
+use crate::daemon::start;
+use crate::{config::parse_config, revaultd::RevaultD};
 
 use std::path::PathBuf;
 use std::{env, process};
@@ -27,28 +24,6 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     }
 
     Some(PathBuf::from(args[2].to_owned()))
-}
-
-fn daemon_main(mut revaultd: RevaultD) {
-    // First and foremost
-    setup_db(&mut revaultd).unwrap_or_else(|e| {
-        log::error!("Error setting up database: '{}'", e.to_string());
-        process::exit(1)
-    });
-
-    // This aborts on error
-    let bitcoind = setup_bitcoind(&mut revaultd);
-
-    log::info!(
-        "revaultd started on network {}",
-        revaultd.bitcoind_config.network
-    );
-
-    // We poll bitcoind until we die
-    bitcoind_main_loop(&mut revaultd, &bitcoind).unwrap_or_else(|e| {
-        log::error!("Error in bitcoind main loop: {}", e.to_string());
-        process::exit(1)
-    });
 }
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout
@@ -110,5 +85,5 @@ fn main() {
         });
         println!("Started revaultd daemon");
     }
-    daemon_main(revaultd);
+    start(revaultd);
 }

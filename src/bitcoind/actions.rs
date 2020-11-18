@@ -13,7 +13,7 @@ use revault_tx::{
 };
 
 use std::{
-    process, thread,
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -223,37 +223,39 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
 
 /// Connects to, sanity checks, and wait for bitcoind to be synced.
 /// Called at startup, will log and abort on error.
-pub fn setup_bitcoind(revaultd: &mut RevaultD) -> BitcoinD {
-    let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).unwrap_or_else(|e| {
+pub fn setup_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError> {
+    let bitcoind = BitcoinD::new(&revaultd.bitcoind_config).map_err(|e| {
         log::error!("Could not connect to bitcoind: {}", e.to_string());
-        process::exit(1);
-    });
+        e
+    })?;
 
-    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
+    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).map_err(|e| {
         // FIXME: handle warming up
         log::error!("Error checking bitcoind: {}", e.to_string());
-        process::exit(1);
-    });
+        e
+    })?;
 
-    wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config).unwrap_or_else(|e| {
+    wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config).map_err(|e| {
         log::error!("Error while updating tip: {}", e.to_string());
-        process::exit(1);
-    });
+        e
+    })?;
 
-    unload_all_wallets(&bitcoind).unwrap_or_else(|e| {
+    unload_all_wallets(&bitcoind).map_err(|e| {
         log::error!("Unloading existing wallets: {}", e.to_string());
-        process::exit(1);
-    });
-    maybe_create_wallet(revaultd, &bitcoind).unwrap_or_else(|e| {
-        log::error!("Error while creating wallet: {}", e.to_string());
-        process::exit(1);
-    });
-    maybe_load_wallet(&revaultd, &bitcoind).unwrap_or_else(|e| {
-        log::error!("Error while loading wallet: {}", e.to_string());
-        process::exit(1);
-    });
+        e
+    })?;
 
-    bitcoind
+    maybe_create_wallet(revaultd, &bitcoind).map_err(|e| {
+        log::error!("Error while creating wallet: {}", e.to_string());
+        e
+    })?;
+
+    maybe_load_wallet(&revaultd, &bitcoind).map_err(|e| {
+        log::error!("Error while loading wallet: {}", e.to_string());
+        e
+    })?;
+
+    Ok(bitcoind)
 }
 
 fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {

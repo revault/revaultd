@@ -137,6 +137,23 @@ pub struct RevaultD {
     // TODO: RPC server stuff
 }
 
+fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    return {
+        use fs::DirBuilder;
+        use std::os::unix::fs::DirBuilderExt;
+
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700).recursive(true).create(datadir_path)
+    };
+
+    #[cfg(not(unix))]
+    return {
+        // FIXME: make Windows secure (again?)
+        fs::create_dir_all(datadir_path)
+    };
+}
+
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
@@ -170,7 +187,7 @@ impl RevaultD {
 
         let data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         if !data_dir.as_path().exists() {
-            if let Err(e) = fs::create_dir_all(&data_dir) {
+            if let Err(e) = create_datadir(&data_dir) {
                 return Err(Box::from(ConfigError(format!(
                     "Could not create data dir '{:?}': {}.",
                     data_dir,

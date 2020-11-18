@@ -11,6 +11,7 @@ use revault_tx::{
 
 use std::{
     convert::TryInto,
+    fs,
     path::PathBuf,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
@@ -26,9 +27,31 @@ fn timestamp_to_u32(n: u64) -> u32 {
         .expect("Is this the year 2106 yet? Misconfigured system clock.")
 }
 
+// Create the db file with RW permissions only for the user
+fn create_db_file(db_path: &PathBuf) -> Result<(), std::io::Error> {
+    let mut options = fs::OpenOptions::new();
+    let options = options.read(true).write(true).create_new(true);
+
+    #[cfg(unix)]
+    return {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600).open(db_path)?;
+        Ok(())
+    };
+
+    #[cfg(not(unix))]
+    return {
+        // FIXME: make Windows secure (again?)
+        options.open(db_path)?;
+        Ok(())
+    };
+}
+
 // No database yet ? In a single tx, create a new one from the schema and populate with current
 // information
 fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
+    let db_path = revaultd.db_file();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|dur| timestamp_to_u32(dur.as_secs()))
@@ -46,7 +69,11 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .as_ref()
         .map(|xpub| xpub.to_string());
 
-    db_exec(&revaultd.db_file(), |tx| {
+    // Rusqlite could create it for us, but we want custom permissions
+    create_db_file(&db_path)
+        .map_err(|e| DatabaseError(format!("Creating db file: {}", e.to_string())))?;
+
+    db_exec(&db_path, |tx| {
         tx.execute_batch(&SCHEMA)
             .map_err(|e| DatabaseError(format!("Creating database: {}", e.to_string())))?;
         tx.execute(

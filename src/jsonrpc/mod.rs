@@ -185,8 +185,16 @@ fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
 
 /// The main event loop for the JSONRPC interface, polling the UDS at `socket_path`
 pub fn jsonrpcapi_loop(socket_path: PathBuf) -> Result<(), io::Error> {
-    // FIXME: permissions! (umask before binding ?)
-    let listener = bind(socket_path)?;
+    // Create the socket with RW permissions only for the user
+    // FIXME: find a workaround for Windows...
+    #[cfg(unix)]
+    let old_umask = unsafe { libc::umask(0o177) };
+    let listener = bind(socket_path);
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(old_umask);
+    }
+    let listener = listener?;
     let mut jsonrpc_io = jsonrpc_core::IoHandler::new();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
 

@@ -539,6 +539,7 @@ dependencies = [
  "jsonrpc",
  "jsonrpc-core",
  "jsonrpc-derive",
+ "libc",
  "log",
  "mio",
  "revault_tx",

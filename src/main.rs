@@ -5,7 +5,7 @@ mod revaultd;
 
 use crate::{
     bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
-    config::parse_config,
+    config::Config,
     database::actions::setup_db,
     revaultd::RevaultD,
 };
@@ -80,7 +80,7 @@ fn main() {
     let args = env::args().collect();
     let conf_file = parse_args(args);
 
-    let config = parse_config(conf_file).unwrap_or_else(|e| {
+    let config = Config::from_file(conf_file).unwrap_or_else(|e| {
         eprintln!("Error parsing config: {}", e);
         process::exit(1);
     });

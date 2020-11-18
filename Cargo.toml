@@ -33,6 +33,9 @@ chrono = "0.4"
 # DB stuff
 rusqlite = { version = "0.24.1", features = ["bundled"] }
 
+# For umask..
+libc = "0.2.80"
+
 # For the JSONRPC API
 jsonrpc-core = "15.1.0"
 jsonrpc-derive = "15.1.0"

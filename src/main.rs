@@ -60,14 +60,14 @@ fn daemon_main(mut revaultd: RevaultD) {
     let socket_path = revaultd.rpc_socket_file();
     let revaultd = Arc::new(RwLock::new(revaultd));
     let bit_revaultd = revaultd.clone();
-    thread::spawn(move || {
+    let jsonrpc_thread = thread::spawn(move || {
         jsonrpcapi_loop(jsonrpc_tx, socket_path).unwrap_or_else(|e| {
             log::error!("Error in JSONRPC server event loop: {}", e.to_string());
             process::exit(1)
         })
     });
 
-    thread::spawn(move || {
+    let bitcoind_thread = thread::spawn(move || {
         bitcoind_main_loop(bitcoind_tx, bit_revaultd, &bitcoind).unwrap_or_else(|e| {
             log::error!("Error in bitcoind main loop: {}", e.to_string());
             process::exit(1)
@@ -81,8 +81,16 @@ fn daemon_main(mut revaultd: RevaultD) {
     for message in rx {
         match message {
             ThreadMessage::Rpc(RpcMessage::Shutdown) => {
+                revaultd.write().unwrap().shutdown = true;
                 log::info!("Stopping revaultd.");
-                // FIXME: clean shutdown next plz sir
+                jsonrpc_thread.join().unwrap_or_else(|e| {
+                    log::error!("Joining RPC server thread: {:?}", e);
+                    process::exit(1);
+                });
+                bitcoind_thread.join().unwrap_or_else(|e| {
+                    log::error!("Joining bitcoind thread: {:?}", e);
+                    process::exit(1);
+                });
                 process::exit(0);
             }
             _ => {

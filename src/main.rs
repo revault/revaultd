@@ -80,6 +80,11 @@ fn daemon_main(mut revaultd: RevaultD) {
     );
     for message in rx {
         match message {
+            ThreadMessage::Rpc(RpcMessage::Shutdown) => {
+                log::info!("Stopping revaultd.");
+                // FIXME: clean shutdown next plz sir
+                process::exit(0);
+            }
             _ => {
                 log::error!("Main thread received an unexpected message: {:#?}", message);
                 process::exit(1);

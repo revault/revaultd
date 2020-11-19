@@ -16,7 +16,7 @@ use revault_tx::{
 use std::{
     sync::{mpsc::Sender, Arc, RwLock},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 fn check_bitcoind_network(bitcoind: &BitcoinD, config_network: &str) -> Result<(), BitcoindError> {
@@ -360,8 +360,20 @@ pub fn bitcoind_main_loop(
     mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
-    loop {
+    let mut last_poll = None;
+
+    while !revaultd.read().unwrap().shutdown {
+        let now = Instant::now();
+        if let Some(last_poll) = last_poll {
+            if now.duration_since(last_poll) < Duration::from_secs(30) {
+                continue;
+            }
+        }
+
+        last_poll = Some(now);
         poll_bitcoind(&mut revaultd, &bitcoind)?;
-        thread::sleep(Duration::from_secs(30));
+        thread::sleep(Duration::from_millis(100));
     }
+
+    Ok(())
 }

@@ -5,7 +5,6 @@ use api::{JsonRpcMetaData, RpcApi, RpcImpl};
 use std::{
     io::{self, Read},
     path::PathBuf,
-    process,
     sync::mpsc::Sender,
     time::Duration,
 };
@@ -156,6 +155,13 @@ fn windows_loop(
 ) -> Result<(), io::Error> {
     for stream in listener.incoming() {
         handle_byte_stream(&jsonrpc_io, stream?, metadata.clone())?;
+
+        // We can't loop until is_shutdown() as we block until we got a message.
+        // So, to handle shutdown the cleanest way is to check if the above handler
+        // set shutdown.
+        if metadata.is_shutdown() {
+            break;
+        }
     }
 
     Ok(())

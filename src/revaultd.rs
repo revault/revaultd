@@ -132,9 +132,10 @@ pub struct RevaultD {
 
     /// The id of the wallet used in the db
     pub wallet_id: u32,
-    // TODO: servers connection stuff
 
-    // TODO: RPC server stuff
+    /// Are we told to stop ?
+    pub shutdown: bool,
+    // TODO: servers connection stuff
 }
 
 fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
@@ -216,6 +217,7 @@ impl RevaultD {
             vaults: HashMap::new(),
             // Will be updated soon (:tm:)
             wallet_id: 0,
+            shutdown: false,
         })
     }
 

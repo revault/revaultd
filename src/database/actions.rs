@@ -226,10 +226,7 @@ pub fn db_unvault_deposit(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        config::{parse_config, Config},
-        revaultd::RevaultD,
-    };
+    use crate::{config::Config, revaultd::RevaultD};
     use revault_tx::bitcoin::{hashes::hex::FromHex, OutPoint};
 
     use std::{fs, path::PathBuf};
@@ -240,7 +237,7 @@ mod test {
         let mut config_path = datadir_path.clone();
         config_path.push("config.toml");
 
-        let config: Config = parse_config(Some(config_path)).expect("Parsing valid config file");
+        let config = Config::from_file(Some(config_path)).expect("Parsing valid config file");
         let mut revaultd = RevaultD::from_config(config).expect("Creating state from config");
         // Tweak the datadir, or it'll create it at ~/.revault/
         revaultd.data_dir = datadir_path.clone();

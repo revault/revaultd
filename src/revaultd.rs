@@ -298,7 +298,7 @@ impl RevaultD {
 #[cfg(test)]
 mod tests {
     use super::RevaultD;
-    use crate::config::{parse_config, Config};
+    use crate::config::Config;
 
     use std::path::PathBuf;
 
@@ -308,7 +308,7 @@ mod tests {
         path = path.parent().unwrap().to_path_buf();
         path.push("../test_data/valid_config.toml");
 
-        let config: Config = parse_config(Some(path)).expect("Parsing valid config file");
+        let config = Config::from_file(Some(path)).expect("Parsing valid config file");
         RevaultD::from_config(config).expect("Creating state from config");
         // TODO: test actual fields..
     }

@@ -1,7 +1,6 @@
 mod api;
-use api::RpcApi;
-
 use crate::threadmessages::ThreadMessage;
+use api::{JsonRpcMetaData, RpcApi, RpcImpl};
 
 use std::{
     io::{self, Read},
@@ -18,14 +17,6 @@ use mio::{
 };
 #[cfg(windows)]
 use uds_windows::{UnixListener, UnixStream};
-
-pub struct RpcImpl;
-impl RpcApi for RpcImpl {
-    fn stop(&self) -> jsonrpc_core::Result<()> {
-        // FIXME: of course, this is Bad :TM:
-        process::exit(0);
-    }
-}
 
 // Remove trailing newlines from utf-8 byte stream
 fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
@@ -82,15 +73,16 @@ fn read_bytes_from_stream(mut stream: UnixStream) -> Result<Option<Vec<u8>>, io:
 
 // Try to parse and interpret bytes from the stream
 fn handle_byte_stream(
-    jsonrpc_io: &jsonrpc_core::IoHandler,
+    jsonrpc_io: &jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
     stream: UnixStream,
+    metadata: JsonRpcMetaData,
 ) -> Result<(), io::Error> {
     if let Some(bytes) = read_bytes_from_stream(stream)? {
         match String::from_utf8(bytes) {
             Ok(string) => {
                 log::trace!("JSONRPC server: got '{}'", &string);
                 // FIXME: couldn't we just spawn it in a thread or handle the future?
-                jsonrpc_io.handle_request_sync(&string);
+                jsonrpc_io.handle_request_sync(&string, metadata);
             }
             Err(e) => {
                 log::error!(
@@ -108,7 +100,8 @@ fn handle_byte_stream(
 #[cfg(not(windows))]
 fn mio_loop(
     mut listener: UnixListener,
-    jsonrpc_io: jsonrpc_core::IoHandler,
+    jsonrpc_io: jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
+    metadata: JsonRpcMetaData,
 ) -> Result<(), io::Error> {
     const JSONRPC_SERVER: Token = Token(0);
     let mut poller = Poll::new()?;
@@ -118,7 +111,7 @@ fn mio_loop(
         .registry()
         .register(&mut listener, JSONRPC_SERVER, Interest::READABLE)?;
 
-    loop {
+    while !metadata.is_shutdown() {
         poller.poll(&mut events, Some(Duration::from_millis(100)))?;
 
         for event in &events {
@@ -129,10 +122,12 @@ fn mio_loop(
 
             // A connection was established; loop to process all the messages
             if event.token() == JSONRPC_SERVER && event.is_readable() {
+                // This is not a while !metadata.is_shutdown() on purpose: if we are told
+                // to stop, we finish what we were previously told to.
                 loop {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            handle_byte_stream(&jsonrpc_io, stream)?;
+                            handle_byte_stream(&jsonrpc_io, stream, metadata.clone())?;
                         }
                         Err(e) => {
                             // Ok; next time then!
@@ -148,16 +143,19 @@ fn mio_loop(
             }
         }
     }
+
+    Ok(())
 }
 
 // For windows, we don't: Mio UDS support for Windows is not yet implemented.
 #[cfg(windows)]
 fn windows_loop(
     listener: UnixListener,
-    jsonrpc_io: jsonrpc_core::IoHandler,
+    jsonrpc_io: jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
+    metadata: JsonRpcMetaData,
 ) -> Result<(), io::Error> {
     for stream in listener.incoming() {
-        handle_byte_stream(&jsonrpc_io, stream?)?;
+        handle_byte_stream(&jsonrpc_io, stream?, metadata.clone())?;
     }
 
     Ok(())
@@ -187,7 +185,7 @@ fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS at `socket_path`
-pub fn jsonrpcapi_loop(_tx: Sender<ThreadMessage>, socket_path: PathBuf) -> Result<(), io::Error> {
+pub fn jsonrpcapi_loop(tx: Sender<ThreadMessage>, socket_path: PathBuf) -> Result<(), io::Error> {
     // Create the socket with RW permissions only for the user
     // FIXME: find a workaround for Windows...
     #[cfg(unix)]
@@ -198,11 +196,12 @@ pub fn jsonrpcapi_loop(_tx: Sender<ThreadMessage>, socket_path: PathBuf) -> Resu
         libc::umask(old_umask);
     }
     let listener = listener?;
-    let mut jsonrpc_io = jsonrpc_core::IoHandler::new();
+    let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
+    let metadata = JsonRpcMetaData::from_tx(tx);
 
     #[cfg(not(windows))]
-    return mio_loop(listener, jsonrpc_io);
+    return mio_loop(listener, jsonrpc_io, metadata);
     #[cfg(windows)]
-    return windows_loop(listener, jsonrpc_io);
+    return windows_loop(listener, jsonrpc_io, metadata);
 }

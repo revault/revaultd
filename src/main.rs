@@ -33,11 +33,13 @@ fn daemon_main(mut revaultd: RevaultD) {
     // First and foremost
     setup_db(&mut revaultd).unwrap_or_else(|e| {
         log::error!("Error setting up database: '{}'", e.to_string());
-        process::exit(1)
+        process::exit(1);
     });
 
-    // This aborts on error
-    let bitcoind = setup_bitcoind(&mut revaultd);
+    let bitcoind = setup_bitcoind(&mut revaultd).unwrap_or_else(|e| {
+        log::error!("Error setting up bitcoind: {}", e.to_string());
+        process::exit(1);
+    });
 
     log::info!(
         "revaultd started on network {}",
@@ -47,7 +49,7 @@ fn daemon_main(mut revaultd: RevaultD) {
     // We poll bitcoind until we die
     bitcoind_main_loop(&mut revaultd, &bitcoind).unwrap_or_else(|e| {
         log::error!("Error in bitcoind main loop: {}", e.to_string());
-        process::exit(1)
+        process::exit(1);
     });
 }
 
@@ -110,5 +112,6 @@ fn main() {
         });
         println!("Started revaultd daemon");
     }
+
     daemon_main(revaultd);
 }

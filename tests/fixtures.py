@@ -5,12 +5,13 @@ cdecker), so credits to them ! (MIT licensed)
 """
 from bitcoin.core import COIN
 from decimal import Decimal
-from utils import BitcoinD, RevaultD, wait_for
+from utils import BitcoinD, RevaultD, wait_for, TEST_DEBUG
 
 import logging
 import os
 import pytest
 import shutil
+import sys
 import tempfile
 
 __attempts = {}

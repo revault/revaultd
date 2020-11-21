@@ -110,11 +110,15 @@ fn mio_loop(
     let mut connections_map: HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)> =
         HashMap::with_capacity(32);
 
+    // Edge case: we might close the socket before writing the response to the
+    // 'stop' call that made us shutdown. This tracks that we answer politely.
+    let mut stop_token = unique_token;
+
     poller
         .registry()
         .register(&mut listener, JSONRPC_SERVER, Interest::READABLE)?;
 
-    while !metadata.is_shutdown() {
+    loop {
         poller.poll(&mut events, Some(Duration::from_millis(100)))?;
 
         for event in &events {
@@ -183,6 +187,10 @@ fn mio_loop(
                                         event.token(),
                                         Interest::READABLE.add(Interest::WRITABLE),
                                     )?;
+
+                                    if metadata.is_shutdown() {
+                                        stop_token = event.token();
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -210,12 +218,14 @@ fn mio_loop(
                 if event.is_read_closed() {
                     log::trace!("Dropping connection for {:?}", event.token());
                     connections_map.remove(&event.token());
+
+                    if event.token() == stop_token {
+                        return Ok(());
+                    }
                 }
             }
         }
     }
-
-    Ok(())
 }
 
 // For windows, we don't: Mio UDS support for Windows is not yet implemented.

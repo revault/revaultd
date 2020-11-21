@@ -9,3 +9,5 @@ impl std::fmt::Display for BitcoindError {
         write!(f, "Bitcoind error: {}", self.0)
     }
 }
+
+impl std::error::Error for BitcoindError {}

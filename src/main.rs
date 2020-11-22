@@ -9,7 +9,7 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
     config::Config,
     database::actions::setup_db,
-    jsonrpc::jsonrpcapi_loop,
+    jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
     revaultd::RevaultD,
     threadmessages::*,
 };
@@ -50,6 +50,11 @@ fn daemon_main(mut revaultd: RevaultD) {
         process::exit(1);
     });
 
+    let socket = jsonrpcapi_setup(revaultd.rpc_socket_file()).unwrap_or_else(|e| {
+        log::error!("Setting up JSONRPC server: {}", e.to_string());
+        process::exit(1);
+    });
+
     // We start two threads, the JSONRPC one in order to be controlled externally,
     // and the bitcoind one to poll bitcoind until we die.
     // Each of them can send us messages, and we listen for them until we are told
@@ -57,11 +62,10 @@ fn daemon_main(mut revaultd: RevaultD) {
     let (tx, rx) = mpsc::channel();
     let jsonrpc_tx = tx.clone();
     let bitcoind_tx = tx;
-    let socket_path = revaultd.rpc_socket_file();
     let revaultd = Arc::new(RwLock::new(revaultd));
     let bit_revaultd = revaultd.clone();
     let jsonrpc_thread = thread::spawn(move || {
-        jsonrpcapi_loop(jsonrpc_tx, socket_path).unwrap_or_else(|e| {
+        jsonrpcapi_loop(jsonrpc_tx, socket).unwrap_or_else(|e| {
             log::error!("Error in JSONRPC server event loop: {}", e.to_string());
             process::exit(1)
         })

@@ -291,8 +291,8 @@ fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
     }
 }
 
-/// The main event loop for the JSONRPC interface, polling the UDS at `socket_path`
-pub fn jsonrpcapi_loop(tx: Sender<ThreadMessage>, socket_path: PathBuf) -> Result<(), io::Error> {
+/// Bind to the UDS at `socket_path`
+pub fn jsonrpcapi_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
     // Create the socket with RW permissions only for the user
     // FIXME: find a workaround for Windows...
     #[cfg(unix)]
@@ -302,7 +302,12 @@ pub fn jsonrpcapi_loop(tx: Sender<ThreadMessage>, socket_path: PathBuf) -> Resul
     unsafe {
         libc::umask(old_umask);
     }
-    let listener = listener?;
+
+    listener
+}
+
+/// The main event loop for the JSONRPC interface, polling the UDS listener
+pub fn jsonrpcapi_loop(tx: Sender<ThreadMessage>, listener: UnixListener) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
     let metadata = JsonRpcMetaData::from_tx(tx);
@@ -315,7 +320,7 @@ pub fn jsonrpcapi_loop(tx: Sender<ThreadMessage>, socket_path: PathBuf) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{jsonrpcapi_loop, trimmed};
+    use super::{jsonrpcapi_loop, jsonrpcapi_setup, trimmed};
     use crate::threadmessages::{RpcMessage, ThreadMessage};
 
     use std::{
@@ -340,9 +345,9 @@ mod tests {
         path.push("../test_data/revaultd_rpc");
 
         let (tx, rx) = mpsc::channel();
-        let path_ = path.clone();
+        let socket = jsonrpcapi_setup(path.clone()).unwrap();
         thread::spawn(move || {
-            jsonrpcapi_loop(tx, path_).unwrap_or_else(|e| {
+            jsonrpcapi_loop(tx, socket).unwrap_or_else(|e| {
                 panic!("Error in JSONRPC server event loop: {}", e.to_string());
             })
         });

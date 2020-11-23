@@ -1,4 +1,5 @@
-use crate::{config, database::DatabaseError, revaultd::VaultStatus};
+use crate::{database::DatabaseError, revaultd::VaultStatus};
+use common::config;
 use revault_tx::{
     bitcoin::{
         consensus::encode,

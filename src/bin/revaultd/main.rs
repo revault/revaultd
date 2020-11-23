@@ -1,5 +1,4 @@
 mod bitcoind;
-mod config;
 mod database;
 mod jsonrpc;
 mod revaultd;
@@ -7,12 +6,12 @@ mod threadmessages;
 
 use crate::{
     bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
-    config::Config,
     database::actions::setup_db,
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
     revaultd::RevaultD,
     threadmessages::*,
 };
+use common::config::Config;
 
 use std::{
     env,

@@ -1,4 +1,4 @@
-use crate::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
+use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
 
 use std::{collections::HashMap, convert::TryFrom, fs, path::PathBuf, vec::Vec};
 
@@ -321,15 +321,14 @@ impl RevaultD {
 #[cfg(test)]
 mod tests {
     use super::RevaultD;
-    use crate::config::Config;
+    use common::config::Config;
 
     use std::path::PathBuf;
 
     #[test]
     fn test_from_config() {
-        let mut path = PathBuf::from(file!());
-        path = path.parent().unwrap().to_path_buf();
-        path.push("../test_data/valid_config.toml");
+        let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
+        path.push("../../../test_data/valid_config.toml");
 
         let config = Config::from_file(Some(path)).expect("Parsing valid config file");
         RevaultD::from_config(config).expect("Creating state from config");

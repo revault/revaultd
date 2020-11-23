@@ -7,7 +7,6 @@ use std::{
     io::{self, Read, Write},
     path::PathBuf,
     sync::{mpsc::Sender, Arc, RwLock},
-    time::Duration,
 };
 
 #[cfg(not(windows))]
@@ -340,9 +339,8 @@ mod tests {
     // until the functional tests suite can run on it.
     #[test]
     fn simple_write_recv() {
-        let mut path = PathBuf::from(file!());
-        path = path.parent().unwrap().parent().unwrap().to_path_buf();
-        path.push("../test_data/revaultd_rpc");
+        let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
+        path.push("../../../../test_data/revaultd_rpc");
 
         let (tx, rx) = mpsc::channel();
         let socket = jsonrpcapi_setup(path.clone()).unwrap();

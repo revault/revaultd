@@ -132,9 +132,27 @@ pub struct RevaultD {
 
     /// The id of the wallet used in the db
     pub wallet_id: u32,
-    // TODO: servers connection stuff
 
-    // TODO: RPC server stuff
+    /// Are we told to stop ?
+    pub shutdown: bool,
+    // TODO: servers connection stuff
+}
+
+fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    return {
+        use fs::DirBuilder;
+        use std::os::unix::fs::DirBuilderExt;
+
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700).recursive(true).create(datadir_path)
+    };
+
+    #[cfg(not(unix))]
+    return {
+        // FIXME: make Windows secure (again?)
+        fs::create_dir_all(datadir_path)
+    };
 }
 
 impl RevaultD {
@@ -170,7 +188,7 @@ impl RevaultD {
 
         let data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         if !data_dir.as_path().exists() {
-            if let Err(e) = fs::create_dir_all(&data_dir) {
+            if let Err(e) = create_datadir(&data_dir) {
                 return Err(Box::from(ConfigError(format!(
                     "Could not create data dir '{:?}': {}.",
                     data_dir,
@@ -199,6 +217,7 @@ impl RevaultD {
             vaults: HashMap::new(),
             // Will be updated soon (:tm:)
             wallet_id: 0,
+            shutdown: false,
         })
     }
 
@@ -266,6 +285,10 @@ impl RevaultD {
 
     pub fn watchonly_wallet_file(&self, wallet_id: u32) -> PathBuf {
         self.file_from_datadir(&format!("revaultd-watchonly-wallet-{}", wallet_id))
+    }
+
+    pub fn rpc_socket_file(&self) -> PathBuf {
+        self.file_from_datadir("revaultd_rpc")
     }
 
     pub fn deposit_address(&mut self) -> Address {

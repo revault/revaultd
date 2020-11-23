@@ -7,17 +7,22 @@ from bitcoin.rpc import RawProxy as BitcoinProxy
 from bitcoin.wallet import CKey
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
+from typing import Optional
 
 import bitcoin
+import json
 import logging
 import os
 import re
+import select
+import socket
 import subprocess
 import threading
 import time
 
 
-TIMEOUT = int(os.getenv("TIMEOUT", 100))
+TIMEOUT = int(os.getenv("TIMEOUT", 40))
+TEST_DEBUG = os.getenv("TEST_DEBUG", "0") == "1"
 
 
 def wait_for(success, timeout=TIMEOUT):
@@ -38,6 +43,154 @@ def write_config(filename, opts=None, network='regtest'):
         f.write(f"[{network}]\n")
         for k, v in opts.items():
             f.write(f"{k}={v}\n")
+
+
+class RpcError(ValueError):
+    def __init__(self, method: str, payload: dict, error: str):
+        super(ValueError, self).__init__(
+            "RPC call failed: method: {}, payload: {}, error: {}".format(
+                method, payload, error
+            )
+        )
+
+        self.method = method
+        self.payload = payload
+        self.error = error
+
+
+class UnixSocket(object):
+    """A wrapper for socket.socket that is specialized to unix sockets.
+
+    Some OS implementations impose restrictions on the Unix sockets.
+
+     - On linux OSs the socket path must be shorter than the in-kernel buffer
+       size (somewhere around 100 bytes), thus long paths may end up failing
+       the `socket.connect` call.
+
+    This is a small wrapper that tries to work around these limitations.
+
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self.sock: Optional[socket.SocketType] = None
+        self.connect()
+
+    def connect(self) -> None:
+        try:
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect(self.path)
+        except OSError as e:
+            self.close()
+
+            if (e.args[0] == "AF_UNIX path too long" and os.uname()[0] == "Linux"):
+                # If this is a Linux system we may be able to work around this
+                # issue by opening our directory and using `/proc/self/fd/` to
+                # get a short alias for the socket file.
+                #
+                # This was heavily inspired by the Open vSwitch code see here:
+                # https://github.com/openvswitch/ovs/blob/master/python/ovs/socket_util.py
+
+                dirname = os.path.dirname(self.path)
+                basename = os.path.basename(self.path)
+
+                # Open an fd to our home directory, that we can then find
+                # through `/proc/self/fd` and access the contents.
+                dirfd = os.open(dirname, os.O_DIRECTORY | os.O_RDONLY)
+                short_path = "/proc/self/fd/%d/%s" % (dirfd, basename)
+                self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.sock.connect(short_path)
+            else:
+                # There is no good way to recover from this.
+                raise
+
+    def close(self) -> None:
+        if self.sock is not None:
+            self.sock.close()
+        self.sock = None
+
+    def sendall(self, b: bytes) -> None:
+        if self.sock is None:
+            raise socket.error("not connected")
+
+        self.sock.sendall(b)
+
+    def recv(self, length: int) -> bytes:
+        if self.sock is None:
+            raise socket.error("not connected")
+
+        return self.sock.recv(length)
+
+    def __del__(self) -> None:
+        self.close()
+
+
+class UnixDomainSocketRpc(object):
+    def __init__(self, socket_path, logger=logging):
+        self.socket_path = socket_path
+        self.logger = logger
+        self.next_id = 0
+
+    def _writeobj(self, sock, obj):
+        s = json.dumps(obj, ensure_ascii=False)
+        sock.sock.sendall(s.encode())
+
+    def _readobj(self, sock, buff=b''):
+        """Read a JSON object, starting with buff; returns object and any buffer left over."""
+        while True:
+            [sock], _, _ = select.select([sock.sock], [], [], TIMEOUT)
+            n_to_read = max(2048, len(buff))
+            b = sock.recv(n_to_read)
+            buff += b
+            if len(b) != n_to_read:
+                print("Got: {}", buff)
+                return json.loads(buff)
+
+    def __getattr__(self, name):
+        """Intercept any call that is not explicitly defined and call @call.
+
+        We might still want to define the actual methods in the subclasses for
+        documentation purposes.
+        """
+        name = name.replace('_', '-')
+
+        def wrapper(*args, **kwargs):
+            if len(args) != 0 and len(kwargs) != 0:
+                raise RpcError("Cannot mix positional and non-positional arguments")
+            elif len(args) != 0:
+                return self.call(name, payload=args)
+            else:
+                return self.call(name, payload=kwargs)
+        return wrapper
+
+    # FIXME: support named parameters on the Rust server!
+    def call(self, method, payload=[]):
+        self.logger.debug("Calling %s with payload %r", method, payload)
+
+        # FIXME: we open a new socket for every readobj call...
+        sock = UnixSocket(self.socket_path)
+        msg = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": method,
+            "params": payload,
+        })
+        sock.sock.send(msg.encode())
+        this_id = self.next_id
+        resp = self._readobj(sock)
+
+        self.logger.debug("Received response for %s call: %r", method, resp)
+        if 'id' in resp and resp['id'] != this_id:
+            raise ValueError("Malformed response, id is not {}: {}.".format(this_id, resp))
+        sock.close()
+
+        if not isinstance(resp, dict):
+            raise ValueError("Malformed response, response is not a dictionary %s." % resp)
+        elif "error" in resp:
+            raise RpcError(method, payload, resp['error'])
+        elif "result" not in resp:
+            raise ValueError("Malformed response, \"result\" missing.")
+        return resp["result"]
 
 
 class TailableProc(object):
@@ -339,7 +492,7 @@ class BitcoinD(TailableProc):
         self.generate_block(1)
         # So that we can boutique-compute fees in the tests by assuming we work
         # with 50 * 10**8 sats outputs.
-        addr = self.getnewaddress()
+        addr = self.rpc.getnewaddress()
         txid = self.rpc.sendtoaddress(addr, 50)
         self.generate_block(1, wait_for_mempool=str(txid))
         txin = self.rpc.listunspent(None, None, [addr], None, None)[-1]
@@ -401,7 +554,8 @@ class RevaultD(TailableProc):
             f"--conf",
             f"{self.conf_file}"
         ]
-        print(" ".join(self.cmd_line))
+        socket_path = os.path.join(datadir, "revaultd_rpc")
+        self.rpc = UnixDomainSocketRpc(socket_path)
 
         bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest",
                                        ".cookie")

@@ -1,17 +1,26 @@
 mod bitcoind;
 mod config;
 mod database;
+mod jsonrpc;
 mod revaultd;
+mod threadmessages;
 
 use crate::{
     bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
     config::Config,
     database::actions::setup_db,
+    jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
     revaultd::RevaultD,
+    threadmessages::*,
 };
 
-use std::path::PathBuf;
-use std::{env, process};
+use std::{
+    env,
+    path::PathBuf,
+    process,
+    sync::{mpsc, Arc, RwLock},
+    thread,
+};
 
 use daemonize_simple::Daemonize;
 
@@ -41,16 +50,59 @@ fn daemon_main(mut revaultd: RevaultD) {
         process::exit(1);
     });
 
-    log::info!(
-        "revaultd started on network {}",
-        revaultd.bitcoind_config.network
-    );
-
-    // We poll bitcoind until we die
-    bitcoind_main_loop(&mut revaultd, &bitcoind).unwrap_or_else(|e| {
-        log::error!("Error in bitcoind main loop: {}", e.to_string());
+    let socket = jsonrpcapi_setup(revaultd.rpc_socket_file()).unwrap_or_else(|e| {
+        log::error!("Setting up JSONRPC server: {}", e.to_string());
         process::exit(1);
     });
+
+    // We start two threads, the JSONRPC one in order to be controlled externally,
+    // and the bitcoind one to poll bitcoind until we die.
+    // Each of them can send us messages, and we listen for them until we are told
+    // to shutdown.
+    let (tx, rx) = mpsc::channel();
+    let jsonrpc_tx = tx.clone();
+    let bitcoind_tx = tx;
+    let revaultd = Arc::new(RwLock::new(revaultd));
+    let bit_revaultd = revaultd.clone();
+    let jsonrpc_thread = thread::spawn(move || {
+        jsonrpcapi_loop(jsonrpc_tx, socket).unwrap_or_else(|e| {
+            log::error!("Error in JSONRPC server event loop: {}", e.to_string());
+            process::exit(1)
+        })
+    });
+
+    let bitcoind_thread = thread::spawn(move || {
+        bitcoind_main_loop(bitcoind_tx, bit_revaultd, &bitcoind).unwrap_or_else(|e| {
+            log::error!("Error in bitcoind main loop: {}", e.to_string());
+            process::exit(1)
+        })
+    });
+
+    log::info!(
+        "revaultd started on network {}",
+        revaultd.read().unwrap().bitcoind_config.network
+    );
+    for message in rx {
+        match message {
+            ThreadMessage::Rpc(RpcMessage::Shutdown) => {
+                revaultd.write().unwrap().shutdown = true;
+                log::info!("Stopping revaultd.");
+                jsonrpc_thread.join().unwrap_or_else(|e| {
+                    log::error!("Joining RPC server thread: {:?}", e);
+                    process::exit(1);
+                });
+                bitcoind_thread.join().unwrap_or_else(|e| {
+                    log::error!("Joining bitcoind thread: {:?}", e);
+                    process::exit(1);
+                });
+                process::exit(0);
+            }
+            _ => {
+                log::error!("Main thread received an unexpected message: {:#?}", message);
+                process::exit(1);
+            }
+        }
+    }
 }
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout

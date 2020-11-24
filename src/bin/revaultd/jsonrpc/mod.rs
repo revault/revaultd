@@ -118,7 +118,7 @@ fn mio_loop(
         .register(&mut listener, JSONRPC_SERVER, Interest::READABLE)?;
 
     loop {
-        poller.poll(&mut events, Some(Duration::from_millis(100)))?;
+        poller.poll(&mut events, None)?;
 
         for event in &events {
             // FIXME: remove, was just out of curiosity
@@ -164,6 +164,16 @@ fn mio_loop(
                     }
                 }
             } else if connections_map.contains_key(&event.token()) {
+                if event.is_read_closed() {
+                    log::trace!("Dropping connection for {:?}", event.token());
+                    connections_map.remove(&event.token());
+
+                    if event.token() == stop_token {
+                        return Ok(());
+                    }
+                    continue;
+                }
+
                 if event.is_readable() {
                     let (stream, resp_queue) = connections_map
                         .get_mut(&event.token())
@@ -211,15 +221,6 @@ fn mio_loop(
                     while let Some(resp) = resp_queue.write().unwrap().pop_front() {
                         log::trace!("Writing response '{:?}' for {:?}", &resp, event.token());
                         write_byte_stream(stream, resp)?;
-                    }
-                }
-
-                if event.is_read_closed() {
-                    log::trace!("Dropping connection for {:?}", event.token());
-                    connections_map.remove(&event.token());
-
-                    if event.token() == stop_token {
-                        return Ok(());
                     }
                 }
             }

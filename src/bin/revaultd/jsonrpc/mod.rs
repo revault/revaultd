@@ -104,14 +104,14 @@ fn mio_loop(
     let mut poller = Poll::new()?;
     let mut events = Events::with_capacity(16);
 
-    // UID per connection
-    let mut unique_token = Token(JSONRPC_SERVER.0 + 1);
-    let mut connections_map: HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)> =
-        HashMap::with_capacity(32);
-
     // Edge case: we might close the socket before writing the response to the
     // 'stop' call that made us shutdown. This tracks that we answer politely.
-    let mut stop_token = unique_token;
+    let mut stop_token = Token(JSONRPC_SERVER.0 + 1);
+
+    // UID per connection
+    let mut unique_token = Token(stop_token.0 + 1);
+    let mut connections_map: HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)> =
+        HashMap::with_capacity(32);
 
     poller
         .registry()

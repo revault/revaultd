@@ -1,0 +1,139 @@
+use common::config::{config_folder_path, Config};
+
+use std::{
+    env,
+    io::{Read, Write},
+    path::PathBuf,
+    process,
+};
+
+use serde_json::Value as Json;
+
+#[cfg(not(windows))]
+use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use uds_windows::UnixStream;
+
+// Exits with error
+fn show_usage() {
+    eprintln!("Usage:");
+    eprintln!(" revault-cli [--conf conf_path] <command> [<param 1> <param 2> ...]");
+    process::exit(1);
+}
+
+// Returns (Maybe(special conf file), Method name, Maybe(List of parameters))
+fn parse_args(mut args: Vec<String>) -> (Option<PathBuf>, String, Vec<String>) {
+    if args.len() < 2 {
+        eprintln!("Not enough arguments.");
+        show_usage();
+    }
+
+    args.remove(0); // Program name
+    let method_or_conf = args.remove(0);
+    if method_or_conf == "--conf" {
+        if args.len() < 2 {
+            eprintln!("Not enough arguments.");
+            show_usage();
+        }
+
+        let conf_file = Some(PathBuf::from(args.remove(0)));
+        (conf_file, args.remove(0), args)
+    } else {
+        (None, method_or_conf, args)
+    }
+}
+
+fn rpc_request(method: String, params: Vec<String>) -> Json {
+    let method = Json::String(method);
+    let params = Json::Array(
+        params
+            .into_iter()
+            .map(|string| Json::String(string))
+            .collect(),
+    );
+    let mut object = serde_json::Map::<String, Json>::new();
+    object.insert("jsonrpc".to_string(), Json::String("2.0".to_string()));
+    object.insert(
+        "id".to_string(),
+        Json::String(format!("revault-cli-{}", process::id())),
+    );
+    object.insert("method".to_string(), method);
+    object.insert("params".to_string(), params);
+
+    Json::Object(object)
+}
+
+fn socket_file(conf_file: Option<PathBuf>) -> PathBuf {
+    let config = Config::from_file(conf_file).unwrap_or_else(|e| {
+        eprintln!("Error getting config: {}", e);
+        process::exit(1);
+    });
+    let data_dir = config.data_dir.unwrap_or_else(|| {
+        config_folder_path().unwrap_or_else(|e| {
+            eprintln!("{}", e);
+            process::exit(1);
+        })
+    });
+    let data_dir = data_dir.to_str().expect("Datadir is valid unicode");
+
+    [data_dir, "revaultd_rpc"].iter().collect()
+}
+
+fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
+    vec.truncate(bytes_read);
+
+    // Until there is some whatever-newline character, pop.
+    while let Some(byte) = vec.last() {
+        // Of course, we assume utf-8
+        if byte < &0x0a || byte > &0x0d {
+            break;
+        }
+        vec.pop();
+    }
+
+    vec
+}
+
+fn main() {
+    let args = env::args().collect();
+    let (conf_file, method, params) = parse_args(args);
+    let request = rpc_request(method, params);
+    let socket_file = socket_file(conf_file);
+    let mut raw_response = vec![0; 256];
+    let mut response: Json;
+
+    let mut socket = UnixStream::connect(&socket_file).unwrap_or_else(|e| {
+        eprintln!("Could not connect to {:?}: '{}'", socket_file, e);
+        process::exit(1);
+    });
+    socket
+        .write_all(request.to_string().as_bytes())
+        .unwrap_or_else(|e| {
+            eprintln!("Writing to {:?}: '{}'", &socket_file, e);
+            process::exit(1);
+        });
+
+    loop {
+        loop {
+            let read = socket.read(&mut raw_response).unwrap_or_else(|e| {
+                eprintln!("Reading from {:?}: '{}'", &socket_file, e);
+                process::exit(1);
+            });
+            if read == raw_response.len() {
+                raw_response.resize(2 * read, 0);
+            } else {
+                raw_response = trimmed(raw_response, read);
+                break;
+            }
+        }
+        response = serde_json::from_slice(&raw_response).unwrap_or_else(|e| {
+            eprintln!("Parsing response '{:x?}': '{}'", raw_response, e);
+            process::exit(1);
+        });
+        if response.get("id") == request.get("id") {
+            break;
+        }
+    }
+
+    print!("{}", response);
+}

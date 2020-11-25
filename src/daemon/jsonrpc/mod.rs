@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn simple_write_recv() {
         let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        path.push("../../../../test_data/revaultd_rpc");
+        path.push("../../../test_data/revaultd_rpc");
 
         let (tx, rx) = mpsc::channel();
         let socket = jsonrpcapi_setup(path.clone()).unwrap();

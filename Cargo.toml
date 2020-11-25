@@ -8,6 +8,14 @@ edition = "2018"
 name = "common"
 path = "src/common/lib.rs"
 
+[[bin]]
+name = "revaultd"
+path = "src/daemon/main.rs"
+
+[[bin]]
+name = "revault-cli"
+path = "src/cli/main.rs"
+
 [dependencies]
 revault_tx = { git = "https://github.com/darosior/revault", branch = "update_latest_miniscript" }
 

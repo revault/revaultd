@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn test_from_config() {
         let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        path.push("../../../test_data/valid_config.toml");
+        path.push("../../test_data/valid_config.toml");
 
         let config = Config::from_file(Some(path)).expect("Parsing valid config file");
         RevaultD::from_config(config).expect("Creating state from config");

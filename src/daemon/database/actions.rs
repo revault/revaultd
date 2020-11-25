@@ -261,7 +261,7 @@ mod test {
 
     fn dummy_revaultd() -> RevaultD {
         let mut datadir_path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        datadir_path.push("../../../../test_data/datadir");
+        datadir_path.push("../../../test_data/datadir");
         let mut config_path = datadir_path.clone();
         config_path.push("config.toml");
 

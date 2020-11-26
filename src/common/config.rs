@@ -215,6 +215,8 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
     /// Whether to daemonize the process
     pub daemon: Option<bool>,
+    /// What messages to log
+    pub log_level: Option<String>,
     // TODO: sync server address
 }
 

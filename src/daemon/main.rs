@@ -17,6 +17,7 @@ use std::{
     env,
     path::PathBuf,
     process,
+    str::FromStr,
     sync::{mpsc, Arc, RwLock},
     thread,
 };
@@ -106,7 +107,10 @@ fn daemon_main(mut revaultd: RevaultD) {
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout
 // if None is given
-fn setup_logger(log_file: Option<&str>) -> Result<(), fern::InitError> {
+fn setup_logger(
+    log_file: Option<&str>,
+    log_level: log::LevelFilter,
+) -> Result<(), fern::InitError> {
     let dispatcher = fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -117,8 +121,7 @@ fn setup_logger(log_file: Option<&str>) -> Result<(), fern::InitError> {
                 message
             ))
         })
-        // FIXME: make this configurable
-        .level(log::LevelFilter::Trace);
+        .level(log_level);
 
     if let Some(log_file) = log_file {
         dispatcher.chain(fern::log_file(log_file)?).apply()?;
@@ -137,6 +140,14 @@ fn main() {
         eprintln!("Error parsing config: {}", e);
         process::exit(1);
     });
+    let log_level = if let Some(ref level) = &config.log_level {
+        log::LevelFilter::from_str(level.as_str()).unwrap_or_else(|e| {
+            eprintln!("Invalid log level: {}", e);
+            process::exit(1);
+        })
+    } else {
+        log::LevelFilter::Trace
+    };
     let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
         eprintln!("Error creating global state: {}", e);
         process::exit(1);
@@ -148,7 +159,7 @@ fn main() {
     } else {
         None
     };
-    setup_logger(log_output).unwrap_or_else(|e| {
+    setup_logger(log_output, log_level).unwrap_or_else(|e| {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });

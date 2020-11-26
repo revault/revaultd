@@ -10,11 +10,15 @@ use std::{collections::HashMap, fs, str::FromStr};
 use jsonrpc::{client::Client, simple_rtt::Tripper};
 
 pub struct BitcoinD {
-    client: Client<Tripper>,
+    node_client: Client<Tripper>,
+    watchonly_client: Client<Tripper>,
 }
 
 impl BitcoinD {
-    pub fn new(config: &BitcoindConfig) -> Result<BitcoinD, BitcoindError> {
+    pub fn new(
+        config: &BitcoindConfig,
+        watchonly_wallet_path: String,
+    ) -> Result<BitcoinD, BitcoindError> {
         let cookie_string = fs::read_to_string(&config.cookie_path)
             .map_err(|e| BitcoindError(format!("Reading cookie file: {}", e.to_string())))?;
         // The cookie file content is "__cookie__:pass"
@@ -23,9 +27,17 @@ impl BitcoinD {
             cookie_slices.next().map(|s| s.to_string()),
             cookie_slices.next().map(|s| s.to_string()),
         );
-        let client = Client::new(format!("{}", config.addr), user, pass);
+        let node_client = Client::new(format!("{}", config.addr), user.clone(), pass.clone());
+        let watchonly_client = Client::new(
+            format!("http://{}/wallet/{}", config.addr, watchonly_wallet_path),
+            user,
+            pass,
+        );
 
-        Ok(BitcoinD { client })
+        Ok(BitcoinD {
+            node_client,
+            watchonly_client,
+        })
     }
 
     fn deposit_utxos_label(&self) -> String {
@@ -38,13 +50,13 @@ impl BitcoinD {
 
     fn make_request<'a, 'b>(
         &self,
+        client: &Client<Tripper>,
         method: &'a str,
         params: &'b [serde_json::Value],
     ) -> Result<serde_json::Value, BitcoindError> {
-        let req = self.client.build_request(method, params);
+        let req = client.build_request(method, params);
         log::trace!("Sending to bitcoind: {:#?}", req);
-        let resp = self
-            .client
+        let resp = client
             .send_request(&req)
             .map_err(|e| BitcoindError(format!("Sending request: {}", e.to_string())))?;
         let res = resp
@@ -55,12 +67,28 @@ impl BitcoinD {
         Ok(res)
     }
 
+    fn make_node_request<'a, 'b>(
+        &self,
+        method: &'a str,
+        params: &'b [serde_json::Value],
+    ) -> Result<serde_json::Value, BitcoindError> {
+        self.make_request(&self.node_client, method, params)
+    }
+
+    fn make_watchonly_request<'a, 'b>(
+        &self,
+        method: &'a str,
+        params: &'b [serde_json::Value],
+    ) -> Result<serde_json::Value, BitcoindError> {
+        self.make_request(&self.watchonly_client, method, params)
+    }
+
     pub fn getblockchaininfo(&self) -> Result<serde_json::Value, BitcoindError> {
-        self.make_request("getblockchaininfo", &[])
+        self.make_node_request("getblockchaininfo", &[])
     }
 
     pub fn createwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
-        let res = self.make_request(
+        let res = self.make_node_request(
             "createwallet",
             &[
                 serde_json::Value::String(wallet_path),
@@ -84,7 +112,7 @@ impl BitcoinD {
     }
 
     pub fn listwallets(&self) -> Result<Vec<String>, BitcoindError> {
-        self.make_request("listwallets", &[])?
+        self.make_node_request("listwallets", &[])?
             .as_array()
             .ok_or_else(|| {
                 BitcoindError("API break, 'listwallets' didn't return an array.".to_string())
@@ -105,7 +133,7 @@ impl BitcoinD {
     }
 
     pub fn loadwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
-        let res = self.make_request(
+        let res = self.make_node_request(
             "loadwallet",
             &[
                 serde_json::Value::String(wallet_path),
@@ -124,7 +152,7 @@ impl BitcoinD {
     }
 
     pub fn unloadwallet(&self, wallet_name: String) -> Result<(), BitcoindError> {
-        let res = self.make_request(
+        let res = self.make_node_request(
             "unloadwallet",
             &[
                 serde_json::Value::String(wallet_name),
@@ -144,7 +172,7 @@ impl BitcoinD {
         let desc_wo_checksum = format!("addr({})", address);
 
         Ok(self
-            .make_request(
+            .make_watchonly_request(
                 "getdescriptorinfo",
                 &[serde_json::Value::String(desc_wo_checksum)],
             )?
@@ -190,7 +218,7 @@ impl BitcoinD {
             })
             .collect();
 
-        let res = self.make_request(
+        let res = self.make_watchonly_request(
             "importdescriptors",
             &[serde_json::Value::Array(all_descriptors)],
         )?;
@@ -248,7 +276,7 @@ impl BitcoinD {
             serde_json::Value::String(label.clone()),
         );
 
-        let res = self.make_request(
+        let res = self.make_watchonly_request(
             "importdescriptors",
             &[serde_json::Value::Array(vec![serde_json::Value::Object(
                 desc_map,
@@ -325,7 +353,7 @@ impl BitcoinD {
         let mut spent_utxos = existing_utxos.clone();
 
         for utxo in self
-            .make_request("listunspent", &[])?
+            .make_watchonly_request("listunspent", &[])?
             .as_array()
             .ok_or_else(|| {
                 BitcoindError("API break, 'listunspent' didn't return an array.".to_string())
@@ -416,7 +444,7 @@ impl BitcoinD {
         &self,
         txid: Txid,
     ) -> Result<(String, Option<u32>), BitcoindError> {
-        let res = self.make_request(
+        let res = self.make_watchonly_request(
             "gettransaction",
             &[serde_json::Value::String(txid.to_string())],
         )?;
@@ -439,7 +467,7 @@ impl BitcoinD {
     // This assumes wallet transactions, will error otherwise !
     fn previous_outpoints(&self, outpoint: &OutPoint) -> Result<Vec<OutPoint>, BitcoindError> {
         Ok(self
-            .make_request(
+            .make_watchonly_request(
                 "gettransaction",
                 &[
                     serde_json::Value::String(outpoint.txid.to_string()),
@@ -477,7 +505,7 @@ impl BitcoinD {
         vault_outpoint: &OutPoint,
         unvault_address: String,
     ) -> Result<Option<OutPoint>, BitcoindError> {
-        let res = self.make_request(
+        let res = self.make_watchonly_request(
             "listunspent",
             &[
                 serde_json::Value::Number(serde_json::Number::from(0)), // minconf

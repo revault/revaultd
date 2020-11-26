@@ -141,7 +141,7 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     );
 
     revaultd.current_unused_index = wallet.deposit_derivation_index;
-    revaultd.wallet_id = wallet.id;
+    revaultd.wallet_id = Some(wallet.id);
 
     for vault in db_deposits(&db_path)?.into_iter() {
         let deposit_script_pubkey = revaultd

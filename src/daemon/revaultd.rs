@@ -131,7 +131,7 @@ pub struct RevaultD {
     pub derivation_index_map: HashMap<Script, u32>,
 
     /// The id of the wallet used in the db
-    pub wallet_id: u32,
+    pub wallet_id: Option<u32>,
 
     /// Are we told to stop ?
     pub shutdown: bool,
@@ -197,6 +197,7 @@ impl RevaultD {
                 ))));
             }
         }
+        data_dir = fs::canonicalize(data_dir)?;
 
         let daemon = match config.daemon {
             Some(false) => false,
@@ -217,7 +218,7 @@ impl RevaultD {
             derivation_index_map: HashMap::new(),
             vaults: HashMap::new(),
             // Will be updated soon (:tm:)
-            wallet_id: 0,
+            wallet_id: None,
             shutdown: false,
         })
     }
@@ -267,6 +268,11 @@ impl RevaultD {
         100
     }
 
+    pub fn watchonly_wallet_name(&self) -> Option<String> {
+        self.wallet_id
+            .map(|ref id| format!("revaultd-watchonly-wallet-{}", id))
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.file_from_datadir("log")
     }
@@ -279,8 +285,13 @@ impl RevaultD {
         self.file_from_datadir("revaultd.sqlite3")
     }
 
-    pub fn watchonly_wallet_file(&self, wallet_id: u32) -> PathBuf {
-        self.file_from_datadir(&format!("revaultd-watchonly-wallet-{}", wallet_id))
+    pub fn watchonly_wallet_file(&self) -> Option<String> {
+        self.watchonly_wallet_name().map(|ref name| {
+            self.file_from_datadir(name)
+                .to_str()
+                .expect("Valid utf-8")
+                .to_string()
+        })
     }
 
     pub fn rpc_socket_file(&self) -> PathBuf {

@@ -14,6 +14,7 @@ use revault_tx::{
 };
 
 use std::{
+    path::PathBuf,
     sync::{mpsc::Sender, Arc, RwLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -168,11 +169,9 @@ fn unload_all_wallets(bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
 fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
     let wallet = db_wallet(&revaultd.db_file())
         .map_err(|e| BitcoindError(format!("Error getting wallet from db: {}", e.to_string())))?;
-    let bitcoind_wallet_path = revaultd.watchonly_wallet_file(wallet.id);
-    let bitcoind_wallet_str = bitcoind_wallet_path
-        .to_str()
-        .expect("Path is valid unicode")
-        .to_string();
+    let bitcoind_wallet_path = revaultd
+        .watchonly_wallet_file()
+        .expect("Wallet id is set at startup in setup_db()");
     // Did we just create the wallet ?
     let curr_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -180,8 +179,8 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         .map_err(|e| BitcoindError(format!("Computing time since epoch: {}", e.to_string())))?;
     let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
 
-    if !bitcoind_wallet_path.exists() {
-        bitcoind.createwallet_startup(bitcoind_wallet_str)?;
+    if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
+        bitcoind.createwallet_startup(bitcoind_wallet_path)?;
 
         // Now, import descriptors.
         // TODO: maybe warn, depending on the timestamp, that it's going to take some time.
@@ -215,13 +214,9 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
 }
 
 fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    let wallet = db_wallet(&revaultd.db_file())
-        .map_err(|e| BitcoindError(format!("Error getting wallet from db: {}", e.to_string())))?;
     let bitcoind_wallet_path = revaultd
-        .watchonly_wallet_file(wallet.id)
-        .to_str()
-        .expect("Path is valid unicode")
-        .to_string();
+        .watchonly_wallet_file()
+        .expect("Wallet id is set at startup in setup_db()");
 
     if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
         log::info!("Loading wallet '{}'.", bitcoind_wallet_path);
@@ -234,8 +229,13 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
 /// Connects to, sanity checks, and wait for bitcoind to be synced.
 /// Called at startup, will log and abort on error.
 pub fn setup_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError> {
-    let bitcoind = BitcoinD::new(&revaultd.bitcoind_config)
-        .map_err(|e| BitcoindError(format!("Could not connect to bitcoind: {}", e.to_string())))?;
+    let bitcoind = BitcoinD::new(
+        &revaultd.bitcoind_config,
+        revaultd
+            .watchonly_wallet_file()
+            .expect("Wallet id is set at startup in setup_db()"),
+    )
+    .map_err(|e| BitcoindError(format!("Could not connect to bitcoind: {}", e.to_string())))?;
 
     bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).map_err(|e| {
         // FIXME: handle warming up
@@ -292,7 +292,11 @@ fn poll_bitcoind(
 
         db_insert_new_vault(
             &revaultd.read().unwrap().db_file(),
-            revaultd.read().unwrap().wallet_id,
+            revaultd
+                .read()
+                .unwrap()
+                .wallet_id
+                .expect("Wallet id is set at startup in setup_db()"),
             utxo.status,
             blockheight,
             outpoint.txid.to_vec(),

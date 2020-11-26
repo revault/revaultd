@@ -9,7 +9,7 @@ use crate::{
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
-    bitcoin::{consensus::encode, hashes::hex::FromHex, Transaction},
+    bitcoin::{consensus::encode, hashes::hex::FromHex, Network, Transaction},
     transactions::VaultTransaction,
 };
 
@@ -19,7 +19,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-fn check_bitcoind_network(bitcoind: &BitcoinD, config_network: &str) -> Result<(), BitcoindError> {
+fn check_bitcoind_network(
+    bitcoind: &BitcoinD,
+    config_network: &Network,
+) -> Result<(), BitcoindError> {
     let chaininfo = bitcoind.getblockchaininfo()?;
     let chain = chaininfo
         .get("chain")
@@ -27,11 +30,16 @@ fn check_bitcoind_network(bitcoind: &BitcoinD, config_network: &str) -> Result<(
         .ok_or_else(|| {
             BitcoindError("No valid 'chain' in getblockchaininfo response?".to_owned())
         })?;
+    let bip70_net = match config_network {
+        Network::Bitcoin => "main",
+        Network::Testnet => "test",
+        Network::Regtest => "regtest",
+    };
 
-    if !config_network.eq(chain) {
+    if !bip70_net.eq(chain) {
         return Err(BitcoindError(format!(
-            "Wrong network, bitcoind is on '{}' but our config says '{}'",
-            chain, config_network
+            "Wrong network, bitcoind is on '{}' but our config says '{}' ({})",
+            chain, bip70_net, config_network
         )));
     }
 
@@ -104,7 +112,7 @@ fn wait_for_bitcoind_synced(
             // Then: get the number of blocks left to DL
             if (first || delta > 1_000) && blocks < 100_000 {
                 log::info!("Waiting for bitcoind to gather enough headers..");
-                if bitcoind_config.network.eq("regtest") {
+                if bitcoind_config.network.to_string().eq("regtest") {
                     thread::sleep(Duration::from_secs(3));
                 } else {
                     thread::sleep(Duration::from_secs(5 * 60));

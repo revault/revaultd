@@ -554,7 +554,7 @@ class RevaultD(TailableProc):
             f"--conf",
             f"{self.conf_file}"
         ]
-        socket_path = os.path.join(datadir, "revaultd_rpc")
+        socket_path = os.path.join(datadir, "regtest", "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
 
         bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest",

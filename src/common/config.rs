@@ -231,11 +231,12 @@ impl std::error::Error for ConfigError {}
 
 /// Get the absolute path to the revault configuration folder.
 ///
-/// This a "revault" directory in the XDG standard configuration directory for all OSes but
-/// Linux-based ones, for which it's `~/.revault`.
+/// It's a "revault/<network>/" directory in the XDG standard configuration directory for
+/// all OSes but Linux-based ones, for which it's `~/.revault/<network>/`.
+/// There is only one config file at `revault/config.toml`, which specifies the network.
 /// Rationale: we want to have the database, RPC socket, etc.. in the same folder as the
-/// configuration file but for Linux the XDG specify a data directory (`~/.local/share/`) different
-/// from the configuration one (`~/.config/`).
+/// configuration file but for Linux the XDG specifoes a data directory (`~/.local/share/`)
+/// different from the configuration one (`~/.config/`).
 pub fn config_folder_path() -> Result<PathBuf, ConfigError> {
     #[cfg(target_os = "linux")]
     let configs_dir = dirs::home_dir();

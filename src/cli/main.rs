@@ -76,7 +76,13 @@ fn socket_file(conf_file: Option<PathBuf>) -> PathBuf {
     });
     let data_dir = data_dir.to_str().expect("Datadir is valid unicode");
 
-    [data_dir, "revaultd_rpc"].iter().collect()
+    [
+        data_dir,
+        config.bitcoind_config.network.to_string().as_str(),
+        "revaultd_rpc",
+    ]
+    .iter()
+    .collect()
 }
 
 fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {

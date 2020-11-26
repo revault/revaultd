@@ -186,7 +186,8 @@ impl RevaultD {
 
         let unvault_cpfp_descriptor = unvault_cpfp_descriptor(managers_pubkeys)?;
 
-        let data_dir = config.data_dir.unwrap_or(config_folder_path()?);
+        let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
+        data_dir.push(config.bitcoind_config.network.to_string());
         if !data_dir.as_path().exists() {
             if let Err(e) = create_datadir(&data_dir) {
                 return Err(Box::from(ConfigError(format!(

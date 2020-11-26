@@ -374,7 +374,7 @@ mod tests {
         sock.write(msg.as_bytes()).unwrap();
         // FIXME(darosior): i need to debug the fuck out of this but i need to install a VM
         // first...
-        #[cfg(not(windows))]
+        //#[cfg(not(windows))]
         assert_eq!(rx.recv().unwrap(), ThreadMessage::Rpc(RpcMessage::Shutdown));
     }
 }

@@ -157,14 +157,6 @@ fn wait_for_bitcoind_synced(
     }
 }
 
-fn unload_all_wallets(bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    for wallet_name in bitcoind.listwallets()? {
-        bitcoind.unloadwallet(wallet_name)?;
-    }
-
-    Ok(())
-}
-
 // This creates the actual wallet file, and imports the descriptors
 fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
     let wallet = db_wallet(&revaultd.db_file())
@@ -244,9 +236,6 @@ pub fn setup_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
 
     wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config)
         .map_err(|e| BitcoindError(format!("Error while updating tip: {}", e.to_string())))?;
-
-    unload_all_wallets(&bitcoind)
-        .map_err(|e| BitcoindError(format!("Unloading existing wallets: {}", e.to_string())))?;
 
     maybe_create_wallet(revaultd, &bitcoind)
         .map_err(|e| BitcoindError(format!("Error while creating wallet: {}", e.to_string())))?;

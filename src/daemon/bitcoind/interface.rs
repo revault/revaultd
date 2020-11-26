@@ -151,22 +151,6 @@ impl BitcoinD {
         )))
     }
 
-    pub fn unloadwallet(&self, wallet_name: String) -> Result<(), BitcoindError> {
-        let res = self.make_node_request(
-            "unloadwallet",
-            &[
-                serde_json::Value::String(wallet_name),
-                serde_json::Value::Bool(false), // load_on_startup
-            ],
-        )?;
-
-        if let Some(warning) = res.get("warning") {
-            log::debug!("Warning unloading wallet: {}", warning);
-        }
-
-        Ok(())
-    }
-
     /// Constructs an `addr()` descriptor out of an address
     pub fn addr_descriptor(&self, address: &str) -> Result<String, BitcoindError> {
         let desc_wo_checksum = format!("addr({})", address);

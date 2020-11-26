@@ -4,6 +4,18 @@ version = "0.0.1"
 authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 
+[lib]
+name = "common"
+path = "src/common/lib.rs"
+
+[[bin]]
+name = "revaultd"
+path = "src/daemon/main.rs"
+
+[[bin]]
+name = "revault-cli"
+path = "src/cli/main.rs"
+
 [dependencies]
 revault_tx = { git = "https://github.com/darosior/revault", branch = "update_latest_miniscript" }
 

@@ -1,8 +1,8 @@
 use crate::{
     bitcoind::BitcoindError,
-    config::BitcoindConfig,
     revaultd::{CachedVault, VaultStatus},
 };
+use common::config::BitcoindConfig;
 use revault_tx::bitcoin::{Address, Amount, OutPoint, TxOut, Txid};
 
 use std::{collections::HashMap, fs, str::FromStr};

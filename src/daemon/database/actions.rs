@@ -253,14 +253,15 @@ pub fn db_unvault_deposit(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{config::Config, revaultd::RevaultD};
+    use crate::revaultd::RevaultD;
+    use common::config::Config;
     use revault_tx::bitcoin::{hashes::hex::FromHex, OutPoint};
 
     use std::{fs, path::PathBuf};
 
     fn dummy_revaultd() -> RevaultD {
         let mut datadir_path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        datadir_path.push("../../test_data/datadir");
+        datadir_path.push("../../../test_data/datadir");
         let mut config_path = datadir_path.clone();
         config_path.push("config.toml");
 

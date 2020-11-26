@@ -1,6 +1,5 @@
 use crate::{
     bitcoind::{interface::BitcoinD, BitcoindError},
-    config::BitcoindConfig,
     database::{
         actions::{db_insert_new_vault, db_unvault_deposit},
         interface::db_wallet,
@@ -8,6 +7,7 @@ use crate::{
     revaultd::RevaultD,
     threadmessages::ThreadMessage,
 };
+use common::config::BitcoindConfig;
 use revault_tx::{
     bitcoin::{consensus::encode, hashes::hex::FromHex, Transaction},
     transactions::VaultTransaction,

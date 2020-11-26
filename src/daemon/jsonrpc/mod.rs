@@ -7,7 +7,6 @@ use std::{
     io::{self, Read, Write},
     path::PathBuf,
     sync::{mpsc::Sender, Arc, RwLock},
-    time::Duration,
 };
 
 #[cfg(not(windows))]
@@ -105,21 +104,21 @@ fn mio_loop(
     let mut poller = Poll::new()?;
     let mut events = Events::with_capacity(16);
 
-    // UID per connection
-    let mut unique_token = Token(JSONRPC_SERVER.0 + 1);
-    let mut connections_map: HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)> =
-        HashMap::with_capacity(32);
-
     // Edge case: we might close the socket before writing the response to the
     // 'stop' call that made us shutdown. This tracks that we answer politely.
-    let mut stop_token = unique_token;
+    let mut stop_token = Token(JSONRPC_SERVER.0 + 1);
+
+    // UID per connection
+    let mut unique_token = Token(stop_token.0 + 1);
+    let mut connections_map: HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)> =
+        HashMap::with_capacity(32);
 
     poller
         .registry()
         .register(&mut listener, JSONRPC_SERVER, Interest::READABLE)?;
 
     loop {
-        poller.poll(&mut events, Some(Duration::from_millis(100)))?;
+        poller.poll(&mut events, None)?;
 
         for event in &events {
             // FIXME: remove, was just out of curiosity
@@ -165,6 +164,16 @@ fn mio_loop(
                     }
                 }
             } else if connections_map.contains_key(&event.token()) {
+                if event.is_read_closed() {
+                    log::trace!("Dropping connection for {:?}", event.token());
+                    connections_map.remove(&event.token());
+
+                    if event.token() == stop_token {
+                        return Ok(());
+                    }
+                    continue;
+                }
+
                 if event.is_readable() {
                     let (stream, resp_queue) = connections_map
                         .get_mut(&event.token())
@@ -212,15 +221,6 @@ fn mio_loop(
                     while let Some(resp) = resp_queue.write().unwrap().pop_front() {
                         log::trace!("Writing response '{:?}' for {:?}", &resp, event.token());
                         write_byte_stream(stream, resp)?;
-                    }
-                }
-
-                if event.is_read_closed() {
-                    log::trace!("Dropping connection for {:?}", event.token());
-                    connections_map.remove(&event.token());
-
-                    if event.token() == stop_token {
-                        return Ok(());
                     }
                 }
             }
@@ -340,9 +340,8 @@ mod tests {
     // until the functional tests suite can run on it.
     #[test]
     fn simple_write_recv() {
-        let mut path = PathBuf::from(file!());
-        path = path.parent().unwrap().parent().unwrap().to_path_buf();
-        path.push("../test_data/revaultd_rpc");
+        let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
+        path.push("../../../test_data/revaultd_rpc");
 
         let (tx, rx) = mpsc::channel();
         let socket = jsonrpcapi_setup(path.clone()).unwrap();

@@ -1,22 +1,60 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::vec::Vec;
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr, vec::Vec};
 
-use revault_tx::miniscript::descriptor::DescriptorPublicKey;
+use revault_tx::{bitcoin::Network, miniscript::descriptor::DescriptorPublicKey};
+
 use serde::{de, Deserialize, Deserializer};
 
 /// Everything we need to know for talking to bitcoind serenely
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct BitcoindConfig {
-    /// The network we are operating on, one of "mainnet", "testnet", "regtest"
-    pub network: String,
+    /// The network we are operating on, one of "bitcoin", "testnet", "regtest"
+    pub network: Network,
     /// Path to bitcoind's cookie file, to authenticate the RPC connection
-    // TODO: think more about our potential need for the datadir
     pub cookie_path: PathBuf,
     /// The IP:port bitcoind's RPC is listening on
     pub addr: SocketAddr,
+}
+
+impl<'de> Deserialize<'de> for BitcoindConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let map = HashMap::<String, String>::deserialize(deserializer)?;
+
+        let network =
+            Network::from_str(map.get("network").ok_or_else(|| {
+                de::Error::custom(r#"Missing "network" entry in "bitcoind_config""#)
+            })?)
+            .map_err(|e| {
+                de::Error::custom(format!(
+                    r#"Invalid "network" entry in "bitcoind_config": {}"#,
+                    e
+                ))
+            })?;
+        let cookie_path: PathBuf = map
+            .get("cookie_path")
+            .ok_or_else(|| {
+                de::Error::custom(r#"Missing "cookie_path" entry in "bitcoind_config""#)
+            })?
+            .into();
+        let addr =
+            SocketAddr::from_str(map.get("addr").ok_or_else(|| {
+                de::Error::custom(r#"Missing "addr" entry in "bitcoind_config""#)
+            })?)
+            .map_err(|e| {
+                de::Error::custom(format!(
+                    r#"Invalid "addr" entry in "bitcoind_config": {}"#,
+                    e
+                ))
+            })?;
+
+        Ok(Self {
+            network,
+            cookie_path,
+            addr,
+        })
+    }
 }
 
 /// A participant not taking part in day-to-day fund management, and who runs

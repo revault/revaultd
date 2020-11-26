@@ -4,7 +4,7 @@ unvault_csv = 18
 wizard = "sardine"
 
 [bitcoind_config]
-network = "main"
+network = "bitcoin"
 cookie_path = "/home/user/.bitcoin/.cookie"
 addr = "127.0.0.1:8332"
 

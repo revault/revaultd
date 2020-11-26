@@ -231,12 +231,7 @@ impl RevaultD {
     }
 
     fn network(&self) -> Network {
-        match self.bitcoind_config.network.as_str() {
-            "main" => Network::Bitcoin,
-            "test" => Network::Testnet,
-            "regtest" => Network::Regtest,
-            _ => unreachable!("Network is checked at startup"),
-        }
+        self.bitcoind_config.network
     }
 
     pub fn vault_address(&mut self, child_number: u32) -> Address {

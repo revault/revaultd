@@ -148,6 +148,7 @@ fn main() {
     } else {
         log::LevelFilter::Trace
     };
+    // FIXME: should probably be from_db(), would allow us to not use Option members
     let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
         eprintln!("Error creating global state: {}", e);
         process::exit(1);

@@ -3,7 +3,7 @@ use crate::{
     revaultd::{CachedVault, VaultStatus},
 };
 use common::config::BitcoindConfig;
-use revault_tx::bitcoin::{Address, Amount, OutPoint, TxOut, Txid};
+use revault_tx::bitcoin::{Address, Amount, BlockHash, OutPoint, TxOut, Txid};
 
 use std::{collections::HashMap, fs, str::FromStr};
 
@@ -85,6 +85,23 @@ impl BitcoinD {
 
     pub fn getblockchaininfo(&self) -> Result<serde_json::Value, BitcoindError> {
         self.make_node_request("getblockchaininfo", &[])
+    }
+
+    pub fn get_tip(&self) -> Result<(u32, BlockHash), BitcoindError> {
+        let json_height = self.make_node_request("getblockcount", &[])?;
+        let height = json_height.as_u64().ok_or_else(|| {
+            BitcoindError("API break, 'getblockcount' didn't return an u64.".to_string())
+        })?;
+        let hash = BlockHash::from_str(
+            self.make_node_request("getblockhash", &[json_height])?
+                .as_str()
+                .ok_or_else(|| {
+                    BitcoindError("API break, 'getblockhash' didn't return a string.".to_string())
+                })?,
+        )
+        .map_err(|e| BitcoindError(format!("Invalid blockhash given by 'getblockhash': {}", e)))?;
+
+        Ok((height as u32, hash))
     }
 
     pub fn createwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {

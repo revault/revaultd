@@ -3,7 +3,7 @@ use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, Ou
 use std::{collections::HashMap, convert::TryFrom, fs, path::PathBuf, vec::Vec};
 
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Address, Network, OutPoint, Script, TxOut},
+    bitcoin::{util::bip32::ChildNumber, Address, BlockHash, OutPoint, Script, TxOut},
     miniscript::descriptor::DescriptorPublicKey,
     scripts::{
         unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
@@ -97,14 +97,13 @@ pub struct Vault {
 
 /// Our global state
 pub struct RevaultD {
-    /// We store all our data in one place, that's here.
-    pub data_dir: PathBuf,
-    /// Should we run as a daemon? (Default: yes)
-    pub daemon: bool,
-
+    // Bitcoind stuff
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
+    /// Last block we heard about
+    pub tip: Option<(u32, BlockHash)>,
 
+    // Scripts stuff
     /// Who am i, and where am i in all this mess ?
     pub ourselves: OurSelves,
     /// The miniscript descriptor of vault's outputs scripts
@@ -118,6 +117,7 @@ pub struct RevaultD {
     // FIXME: think more about desync reconciliation..
     pub current_unused_index: u32,
 
+    // UTXOs stuff
     /// A cache of known vaults by txid
     pub vaults: HashMap<OutPoint, CachedVault>,
     /// A hack, kind of the entire reason why we use Miniscript is to not use patterns
@@ -130,11 +130,15 @@ pub struct RevaultD {
     /// Miniscript descriptors.
     pub derivation_index_map: HashMap<Script, u32>,
 
+    // Misc stuff
     /// The id of the wallet used in the db
     pub wallet_id: Option<u32>,
-
     /// Are we told to stop ?
     pub shutdown: bool,
+    /// We store all our data in one place, that's here.
+    pub data_dir: PathBuf,
+    /// Should we run as a daemon? (Default: yes)
+    pub daemon: bool,
     // TODO: servers connection stuff
 }
 
@@ -211,6 +215,7 @@ impl RevaultD {
             data_dir,
             daemon,
             bitcoind_config: config.bitcoind_config,
+            tip: None,
             ourselves: config.ourselves,
             // Will be updated by the database
             current_unused_index: 0,
@@ -232,16 +237,12 @@ impl RevaultD {
         [data_dir_str, file_name].iter().collect()
     }
 
-    fn network(&self) -> Network {
-        self.bitcoind_config.network
-    }
-
     pub fn vault_address(&mut self, child_number: u32) -> Address {
         let addr = self
             .vault_descriptor
             .derive(ChildNumber::from(child_number))
             .0
-            .address(self.network())
+            .address(self.bitcoind_config.network)
             .expect("vault_descriptor is a wsh");
         // So we can retrieve it later..
         self.derivation_index_map
@@ -255,7 +256,7 @@ impl RevaultD {
             .unvault_descriptor
             .derive(ChildNumber::from(child_number))
             .0
-            .address(self.network())
+            .address(self.bitcoind_config.network)
             .expect("vault_descriptor is a wsh");
         // So we can retrieve it later..
         self.derivation_index_map

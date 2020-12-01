@@ -1,7 +1,7 @@
 use crate::{
     bitcoind::{interface::BitcoinD, BitcoindError},
     database::{
-        actions::{db_insert_new_vault, db_unvault_deposit},
+        actions::{db_insert_new_vault, db_unvault_deposit, db_update_tip},
         interface::db_wallet,
     },
     revaultd::RevaultD,
@@ -246,6 +246,24 @@ pub fn setup_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
     Ok(bitcoind)
 }
 
+fn update_tip(
+    revaultd: &mut Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    let tip = bitcoind.get_tip()?;
+    let current_tip = revaultd.read().unwrap().tip.expect("Set at startup..");
+
+    if tip != current_tip {
+        log::debug!("New tip: {:#?}", &tip);
+
+        db_update_tip(&revaultd.read().unwrap().db_file(), tip)
+            .map_err(|e| BitcoindError(format!("Updating tip in database: {}", e)))?;
+        revaultd.write().unwrap().tip = Some(tip);
+    }
+
+    Ok(())
+}
+
 fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
     let mut bytes = Vec::from_hex(hex)
         .map_err(|e| BitcoindError(format!("Parsing tx hex: '{}'", e.to_string())))?;
@@ -372,6 +390,7 @@ pub fn bitcoind_main_loop(
         }
 
         last_poll = Some(now);
+        update_tip(&mut revaultd, &bitcoind)?;
         poll_bitcoind(&mut revaultd, &bitcoind)?;
         thread::sleep(Duration::from_millis(100));
     }

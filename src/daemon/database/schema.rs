@@ -3,6 +3,12 @@ CREATE TABLE version (
     version INTEGER NOT NULL
 );
 
+CREATE TABLE tip (
+    network TEXT NOT NULL,
+    blockheight INTEGER NOT NULL,
+    blockhash BLOB NOT NULL
+);
+
 CREATE TABLE wallets (
     id INTEGER PRIMARY KEY NOT NULL,
     timestamp INTEGER NOT NULL,

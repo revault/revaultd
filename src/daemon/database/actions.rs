@@ -1,5 +1,5 @@
 use crate::{
-    database::{interface::*, schema::SCHEMA, DatabaseError, VERSION},
+    database::{interface::*, schema::SCHEMA, DatabaseError, DB_VERSION},
     revaultd::{CachedVault, RevaultD, VaultStatus},
 };
 use revault_tx::{
@@ -78,7 +78,7 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
             .map_err(|e| DatabaseError(format!("Creating database: {}", e.to_string())))?;
         tx.execute(
             "INSERT INTO version (version) VALUES (?1)",
-            params![VERSION],
+            params![DB_VERSION],
         )
         .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
         tx.execute(
@@ -116,10 +116,10 @@ fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
     // Check if their database is not from the future.
     // We'll eventually do migration here if version < VERSION, but be strict until then.
     let version = db_version(&db_path)?;
-    if version != VERSION {
+    if version != DB_VERSION {
         return Err(DatabaseError(format!(
             "Unexpected database version: got '{}', expected '{}'",
-            version, VERSION
+            version, DB_VERSION
         )));
     }
 
@@ -332,7 +332,7 @@ mod test {
         revaultd.bitcoind_config.network = Network::Bitcoin;
         // Neither would it accept to open a database from the future!
         db_exec(&revaultd.db_file(), |tx| {
-            tx.execute("UPDATE version SET version = (?1)", params![VERSION + 1])
+            tx.execute("UPDATE version SET version = (?1)", params![DB_VERSION + 1])
                 .unwrap();
             Ok(())
         })

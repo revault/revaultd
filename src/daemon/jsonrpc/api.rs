@@ -10,13 +10,13 @@ use jsonrpc_derive::rpc;
 
 #[derive(Clone)]
 pub struct JsonRpcMetaData {
-    pub tx: Sender<ThreadMessage>,
+    pub tx: Sender<ThreadMessageIn>,
     pub shutdown: Arc<AtomicBool>,
 }
 impl jsonrpc_core::Metadata for JsonRpcMetaData {}
 
 impl JsonRpcMetaData {
-    pub fn from_tx(tx: Sender<ThreadMessage>) -> Self {
+    pub fn from_tx(tx: Sender<ThreadMessageIn>) -> Self {
         JsonRpcMetaData {
             tx,
             shutdown: Arc::from(AtomicBool::from(false)),
@@ -49,7 +49,7 @@ impl RpcApi for RpcImpl {
     fn stop(&self, meta: JsonRpcMetaData) -> jsonrpc_core::Result<()> {
         meta.shutdown();
         meta.tx
-            .send(ThreadMessage::Rpc(RpcMessage::Shutdown))
+            .send(ThreadMessageIn::Rpc(RpcMessageIn::Shutdown))
             .unwrap();
         Ok(())
     }

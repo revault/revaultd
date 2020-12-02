@@ -59,34 +59,48 @@ fn daemon_main(mut revaultd: RevaultD) {
     // and the bitcoind one to poll bitcoind until we die.
     // Each of them can send us messages, and we listen for them until we are told
     // to shutdown.
-    let (tx, rx) = mpsc::channel();
-    let jsonrpc_tx = tx.clone();
-    let bitcoind_tx = tx;
-    let revaultd = Arc::new(RwLock::new(revaultd));
-    let bit_revaultd = revaultd.clone();
+
+    // The communication from them to us
+    let (main_tx, main_rx) = mpsc::channel();
+    let jsonrpc_main_tx = main_tx.clone();
+    let bitcoind_main_tx = main_tx;
+
+    // The communication from us to the bitcoind thread
+    let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
+
     let jsonrpc_thread = thread::spawn(move || {
-        jsonrpcapi_loop(jsonrpc_tx, socket).unwrap_or_else(|e| {
+        jsonrpcapi_loop(jsonrpc_main_tx, socket).unwrap_or_else(|e| {
             log::error!("Error in JSONRPC server event loop: {}", e.to_string());
             process::exit(1)
         })
     });
 
+    let revaultd = Arc::new(RwLock::new(revaultd));
+    let bit_revaultd = revaultd.clone();
     let bitcoind_thread = thread::spawn(move || {
-        bitcoind_main_loop(bitcoind_tx, bit_revaultd, &bitcoind).unwrap_or_else(|e| {
-            log::error!("Error in bitcoind main loop: {}", e.to_string());
-            process::exit(1)
-        })
+        bitcoind_main_loop(bitcoind_main_tx, bitcoind_rx, bit_revaultd, &bitcoind).unwrap_or_else(
+            |e| {
+                log::error!("Error in bitcoind main loop: {}", e.to_string());
+                process::exit(1)
+            },
+        )
     });
 
     log::info!(
         "revaultd started on network {}",
         revaultd.read().unwrap().bitcoind_config.network
     );
-    for message in rx {
+    for message in main_rx {
         match message {
-            ThreadMessage::Rpc(RpcMessage::Shutdown) => {
-                revaultd.write().unwrap().shutdown = true;
+            ThreadMessageIn::Rpc(RpcMessageIn::Shutdown) => {
                 log::info!("Stopping revaultd.");
+                bitcoind_tx
+                    .send(BitcoindMessageOut::Shutdown)
+                    .unwrap_or_else(|e| {
+                        log::error!("Sending shutdown to bitcoind thread: {:?}", e);
+                        process::exit(1);
+                    });
+
                 jsonrpc_thread.join().unwrap_or_else(|e| {
                     log::error!("Joining RPC server thread: {:?}", e);
                     process::exit(1);

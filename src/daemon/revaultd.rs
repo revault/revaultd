@@ -133,8 +133,6 @@ pub struct RevaultD {
     // Misc stuff
     /// The id of the wallet used in the db
     pub wallet_id: Option<u32>,
-    /// Are we told to stop ?
-    pub shutdown: bool,
     /// We store all our data in one place, that's here.
     pub data_dir: PathBuf,
     /// Should we run as a daemon? (Default: yes)
@@ -224,7 +222,6 @@ impl RevaultD {
             vaults: HashMap::new(),
             // Will be updated soon (:tm:)
             wallet_id: None,
-            shutdown: false,
         })
     }
 

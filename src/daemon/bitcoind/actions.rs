@@ -5,7 +5,7 @@ use crate::{
         interface::db_wallet,
     },
     revaultd::RevaultD,
-    threadmessages::ThreadMessage,
+    threadmessages::{BitcoindMessageOut, ThreadMessageIn},
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
@@ -15,7 +15,10 @@ use revault_tx::{
 
 use std::{
     path::PathBuf,
-    sync::{mpsc::Sender, Arc, RwLock},
+    sync::{
+        mpsc::{Receiver, Sender, TryRecvError},
+        Arc, RwLock,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -375,13 +378,28 @@ fn poll_bitcoind(
 /// The bitcoind event loop.
 /// Poll bitcoind every 30 seconds, and update our state accordingly.
 pub fn bitcoind_main_loop(
-    _tx: Sender<ThreadMessage>,
+    _tx: Sender<ThreadMessageIn>,
+    rx: Receiver<BitcoindMessageOut>,
     mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
     let mut last_poll = None;
 
-    while !revaultd.read().unwrap().shutdown {
+    loop {
+        match rx.try_recv() {
+            Ok(msg) => match msg {
+                BitcoindMessageOut::Shutdown => {
+                    log::info!("Bitcoind received shutdown from main. Exiting.");
+                    return Ok(());
+                }
+            },
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                log::error!("Channel with main thread disconnected. Exiting.");
+                return Err(BitcoindError("Channel disconnected".to_string()));
+            }
+        };
+
         let now = Instant::now();
         if let Some(last_poll) = last_poll {
             if now.duration_since(last_poll) < Duration::from_secs(30) {
@@ -394,6 +412,4 @@ pub fn bitcoind_main_loop(
         poll_bitcoind(&mut revaultd, &bitcoind)?;
         thread::sleep(Duration::from_millis(100));
     }
-
-    Ok(())
 }

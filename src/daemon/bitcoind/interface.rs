@@ -104,6 +104,40 @@ impl BitcoinD {
         Ok((height as u32, hash))
     }
 
+    pub fn synchronization_info(&self) -> Result<(u64, u64, bool, f64), BitcoindError> {
+        let chaininfo = self.make_node_request("getblockchaininfo", &[])?;
+        Ok((
+            chaininfo
+                .get("headers")
+                .and_then(|h| h.as_u64())
+                .ok_or_else(|| {
+                    BitcoindError("No valid 'headers' in getblockchaininfo response?".to_owned())
+                })?,
+            chaininfo
+                .get("blocks")
+                .and_then(|b| b.as_u64())
+                .ok_or_else(|| {
+                    BitcoindError("No valid 'blocks' in getblockchaininfo response?".to_owned())
+                })?,
+            chaininfo
+                .get("initialblockdownload")
+                .and_then(|i| i.as_bool())
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
+                    )
+                })?,
+            chaininfo
+                .get("verificationprogress")
+                .and_then(|i| i.as_f64())
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
+                    )
+                })?,
+        ))
+    }
+
     pub fn createwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
         let res = self.make_node_request(
             "createwallet",

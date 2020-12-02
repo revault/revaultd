@@ -5,7 +5,7 @@ mod revaultd;
 mod threadmessages;
 
 use crate::{
-    bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
+    bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     database::actions::setup_db,
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
     revaultd::RevaultD,
@@ -45,7 +45,7 @@ fn daemon_main(mut revaultd: RevaultD) {
         process::exit(1);
     });
 
-    let bitcoind = setup_bitcoind(&mut revaultd).unwrap_or_else(|e| {
+    let bitcoind = start_bitcoind(&mut revaultd).unwrap_or_else(|e| {
         log::error!("Error setting up bitcoind: {}", e.to_string());
         process::exit(1);
     });

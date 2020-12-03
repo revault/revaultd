@@ -1,5 +1,8 @@
 use crate::{
-    bitcoind::{interface::BitcoinD, BitcoindError},
+    bitcoind::{
+        interface::{BitcoinD, SyncInfo},
+        BitcoindError,
+    },
     database::{
         actions::{db_insert_new_vault, db_unvault_deposit, db_update_tip},
         interface::db_wallet,
@@ -59,28 +62,28 @@ fn bitcoind_sanity_checks(
     check_bitcoind_network(&bitcoind, &bitcoind_config.network)
 }
 
-/// Polls bitcoind until we are synced.
-/// Tries to be smart with getblockchaininfo calls.
+/// Polls bitcoind to check if we are synced yet.
+/// Tries to be smart with getblockchaininfo calls by adjsuting the sleep duration
+/// between calls.
+/// If sync_progress == 1.0, we are done.
 fn bitcoind_sync_status(
     bitcoind: &BitcoinD,
     bitcoind_config: &BitcoindConfig,
     sleep_duration: &mut Option<Duration>,
-    synced: &mut bool,
+    sync_progress: &mut f64,
 ) -> Result<(), BitcoindError> {
     let first_poll = sleep_duration.is_none();
 
-    let (headers, blocks, ibd, progress) = bitcoind.synchronization_info()?;
-    let mut delta = if headers > blocks {
-        headers - blocks
-    } else {
-        0
-    };
+    let SyncInfo {
+        headers,
+        blocks,
+        ibd,
+        progress,
+    } = bitcoind.synchronization_info()?;
+    *sync_progress = progress;
 
-    if ibd {
-        // Ok, so we have some time. Let's try to avoid slowing it down by
-        // spamming it with getblockchaininfo calls.
-
-        if first_poll {
+    if first_poll {
+        if ibd {
             log::info!(
                 "Bitcoind is currently performing IBD, this is going to \
                         take some time."
@@ -101,14 +104,24 @@ fn bitcoind_sync_status(
                 return Ok(());
             }
         }
-    } else if progress == 1.0 {
-        *synced = true;
+
+        if progress < 0.7 {
+            log::info!(
+                "Bitcoind is far behind network tip, this is going to \
+                        take some time."
+            );
+        }
     }
 
     // Sleeping a second per 20 blocks seems a good upper bound estimation
     // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
     // conservative. Eg if 10_000 are left to be downloaded we'll check back
     // in ~4min.
+    let delta = if headers > blocks {
+        headers - blocks
+    } else {
+        0
+    };
     *sleep_duration = Some(Duration::from_secs(delta / 20 / 2));
 
     Ok(())
@@ -328,8 +341,16 @@ pub fn bitcoind_main_loop(
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
     let mut last_poll = None;
-    let mut bitcoind_synced = false;
     let mut sync_waittime = None;
+    // The verification progress announced by bitcoind *at startup* thus won't be updated
+    // after startup check. Should be *exactly* 1.0 when synced, but hey, floats so we are
+    // careful.
+    let mut sync_progress = 0.0f64;
+    // When bitcoind is synced, we poll each 30s. On regtest we speed it up for testing.
+    let poll_interval = match revaultd.read().unwrap().bitcoind_config.network {
+        Network::Regtest => Duration::from_secs(3),
+        _ => Duration::from_secs(30),
+    };
 
     loop {
         let now = Instant::now();
@@ -341,6 +362,14 @@ pub fn bitcoind_main_loop(
                     log::info!("Bitcoind received shutdown from main. Exiting.");
                     return Ok(());
                 }
+                BitcoindMessageOut::SyncProgress(resp_tx) => {
+                    resp_tx.send(sync_progress).map_err(|e| {
+                        BitcoindError(format!(
+                            "Sending synchronization progress to main thread: {}",
+                            e
+                        ))
+                    })?;
+                }
             },
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -349,9 +378,9 @@ pub fn bitcoind_main_loop(
             }
         };
 
-        // While waiting for bitcoind to be synced, guesstimate how much time of block
-        // connection we have left to not harass it with `getblockchaininfo`.
-        if !bitcoind_synced {
+        if (sync_progress as u32) < 1 {
+            // While waiting for bitcoind to be synced, guesstimate how much time of block
+            // connection we have left to not harass it with `getblockchaininfo`.
             if let Some(last) = last_poll {
                 if let Some(waittime) = sync_waittime {
                     if now.duration_since(last) < waittime {
@@ -364,13 +393,12 @@ pub fn bitcoind_main_loop(
                 &bitcoind,
                 &revaultd.read().unwrap().bitcoind_config,
                 &mut sync_waittime,
-                &mut bitcoind_synced,
+                &mut sync_progress,
             )?;
-            log::info!("We'll poll bitcoind again in {:?} seconds", sync_waittime);
 
             // Ok. Sync, done. Now just be sure the watchonly wallet is properly loaded, and
             // to create it if it's first run.
-            if bitcoind_synced {
+            if sync_progress as u32 >= 1 {
                 let mut revaultd = revaultd.write().unwrap();
                 maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
                     BitcoindError(format!("Error while creating wallet: {}", e.to_string()))
@@ -378,6 +406,10 @@ pub fn bitcoind_main_loop(
                 maybe_load_wallet(&mut revaultd, &bitcoind).map_err(|e| {
                     BitcoindError(format!("Error while loading wallet: {}", e.to_string()))
                 })?;
+
+                log::info!("bitcoind now synced.");
+            } else {
+                log::info!("We'll poll bitcoind again in {:?} seconds", sync_waittime);
             }
 
             continue;
@@ -385,7 +417,7 @@ pub fn bitcoind_main_loop(
 
         // When bitcoind isn't synced, poll each 30s
         if let Some(last_poll) = last_poll {
-            if now.duration_since(last_poll) < Duration::from_secs(30) {
+            if now.duration_since(last_poll) < poll_interval {
                 continue;
             }
         }

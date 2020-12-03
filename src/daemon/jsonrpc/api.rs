@@ -1,12 +1,17 @@
 use crate::threadmessages::*;
+use common::VERSION;
 
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    sync::mpsc::Sender,
-    sync::Arc,
+    process,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Sender},
+        Arc,
+    },
 };
 
 use jsonrpc_derive::rpc;
+use serde_json::json;
 
 #[derive(Clone)]
 pub struct JsonRpcMetaData {
@@ -40,6 +45,10 @@ pub trait RpcApi {
     /// Stops the daemon
     #[rpc(meta, name = "stop")]
     fn stop(&self, meta: Self::Metadata) -> jsonrpc_core::Result<()>;
+
+    /// Get informations about the daemon
+    #[rpc(meta, name = "getinfo")]
+    fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 pub struct RpcImpl;
@@ -52,5 +61,26 @@ impl RpcApi for RpcImpl {
             .send(ThreadMessageIn::Rpc(RpcMessageIn::Shutdown))
             .unwrap();
         Ok(())
+    }
+
+    fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        meta.tx
+            .send(ThreadMessageIn::Rpc(RpcMessageIn::GetInfo(response_tx)))
+            .unwrap_or_else(|e| {
+                log::error!("Sending 'getinfo' to main thread: {:?}", e);
+                process::exit(1);
+            });
+        let (net, height, progress) = response_rx.recv().unwrap_or_else(|e| {
+            log::error!("Receiving 'getinfo' result from main thread: {:?}", e);
+            process::exit(1);
+        });
+
+        Ok(json!({
+            "version": VERSION.to_string(),
+            "network": net,
+            "blockheight": height,
+            "sync": progress,
+        }))
     }
 }

@@ -28,7 +28,7 @@ Display general information about the current daemon state.
 | ------------- | ------- | --------------------------------------------------------------- |
 | `blockheight` | integer | Current block height                                            |
 | `network`     | string  | Answer can be `mainnet`, `testnet`, `regtest`                   |
-| `sync`        | integer | The synchronization progress as percentage                      |
+| `sync`        | float   | The synchronization progress as percentage (`0 < sync < 1`)     |
 | `version`     | string  | Version following the [SimVer](http://www.simver.org/) format   |
 
 ## Vault

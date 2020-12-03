@@ -348,16 +348,29 @@ class SimpleBitcoinProxy:
     throwaway connections. This is easier than to reach into the RPC
     library to close, reopen and reauth upon failure.
     """
-    def __init__(self, btc_conf_file, *args, **kwargs):
-        self.__btc_conf_file__ = btc_conf_file
+    def __init__(self, bitcoind_dir, bitcoind_port, *args, **kwargs):
+        self.__btc_conf_file__ = os.path.join(bitcoind_dir, "bitcoin.conf")
+        self.__cookie_path = os.path.join(bitcoind_dir, "regtest", ".cookie")
+        self.__port = bitcoind_port
+        # The internal bitcoind wallet, used to generate blocks and distribute
+        # coins
+        self.wallet_name = "revaultd-tests"
 
     def __getattr__(self, name):
         if name.startswith('__') and name.endswith('__'):
             # Python internal stuff
             raise AttributeError
 
+        # We want to hit the per-wallet API and python-bitcoinlib will not read
+        # the cookie if we specify a custom URL..
+        with open(self.__cookie_path) as fd:
+            authpair = fd.read()
+        service_url = f"http://{authpair}@localhost:{self.__port}/wallet"\
+                      f"/{self.wallet_name}"
+
         # Create a callable to do the actual call
-        proxy = BitcoinProxy(btc_conf_file=self.__btc_conf_file__)
+        proxy = BitcoinProxy(btc_conf_file=self.__btc_conf_file__,
+                             service_url=service_url)
 
         def f(*args):
             return proxy._call(name, *args)
@@ -390,7 +403,6 @@ class BitcoinD(TailableProc):
             '-printtoconsole',
             '-server',
             '-logtimestamps',
-            '-addresstype=bech32',
             '-rpcthreads=4',
         ]
         BITCOIND_REGTEST = {
@@ -401,11 +413,9 @@ class BitcoinD(TailableProc):
         }
         self.conf_file = os.path.join(bitcoin_dir, 'bitcoin.conf')
         write_config(self.conf_file, BITCOIND_REGTEST)
-        self.rpc = SimpleBitcoinProxy(btc_conf_file=self.conf_file)
+        self.rpc = SimpleBitcoinProxy(bitcoind_dir=self.bitcoin_dir,
+                                      bitcoind_port=self.rpcport)
         self.proxies = []
-
-        # So that it can locate the cookie file
-        bitcoin.SelectParams("regtest")
 
     def start(self):
         TailableProc.start(self)
@@ -585,6 +595,8 @@ class RevaultD(TailableProc):
     def start(self):
         TailableProc.start(self)
         self.wait_for_log("revaultd started on network regtest")
+        # Be sure to be up to date with bitcoind
+        self.wait_for_logs(["bitcoind now synced", "New tip"])
 
     def cleanup(self):
         self.proc.kill()

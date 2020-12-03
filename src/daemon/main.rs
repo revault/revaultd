@@ -12,6 +12,7 @@ use crate::{
     threadmessages::*,
 };
 use common::config::Config;
+use database::interface::db_tip;
 
 use std::{
     env,
@@ -39,6 +40,8 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
 }
 
 fn daemon_main(mut revaultd: RevaultD) {
+    let (db_path, network) = (revaultd.db_file(), revaultd.bitcoind_config.network);
+
     // First and foremost
     setup_db(&mut revaultd).unwrap_or_else(|e| {
         log::error!("Error setting up database: '{}'", e.to_string());
@@ -110,6 +113,35 @@ fn daemon_main(mut revaultd: RevaultD) {
                     process::exit(1);
                 });
                 process::exit(0);
+            }
+            ThreadMessageIn::Rpc(RpcMessageIn::GetInfo(response_tx)) => {
+                log::trace!("Got getinfo from RPC thread");
+
+                let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
+                bitcoind_tx
+                    .send(BitcoindMessageOut::SyncProgress(bitrep_tx))
+                    .unwrap_or_else(|e| {
+                        log::error!("Sending 'syncprogress' to bitcoind thread: {:?}", e);
+                        process::exit(1);
+                    });
+                let progress = bitrep_rx.recv().unwrap_or_else(|e| {
+                    log::error!("Receving 'syncprogress' from bitcoind thread: {:?}", e);
+                    process::exit(1);
+                });
+
+                // This means blockheight == 0 for IBD.
+                let (blockheight, _) = db_tip(&db_path).unwrap_or_else(|e| {
+                    log::error!("Getting tip from db: {:?}", e);
+                    process::exit(1);
+                });
+
+                response_tx
+                    .send((network.to_string(), blockheight, progress))
+                    // TODO: a macro for the unwrap_or_else boilerplate..
+                    .unwrap_or_else(|e| {
+                        log::error!("Sending 'getinfo' result to RPC thread: {:?}", e);
+                        process::exit(1);
+                    });
             }
             _ => {
                 log::error!("Main thread received an unexpected message: {:#?}", message);

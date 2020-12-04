@@ -19,9 +19,10 @@ use revault_tx::{
 /// transactions
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VaultStatus {
-    // FIXME: More formally analyze the impact of reorgs
-    // FIXME: Min confirms ?
-    /// The deposit transaction is confirmed
+    /// The deposit transaction has less than 6 confirmations
+    Unconfirmed,
+    // FIXME: Do we assume "no reorgs > 6 blocks" ?
+    /// The deposit transaction has more than 6 confirmations
     Funded,
     /// The emergency transaction is signed
     Secured,
@@ -54,18 +55,19 @@ impl TryFrom<u32> for VaultStatus {
 
     fn try_from(n: u32) -> Result<Self, Self::Error> {
         match n {
-            0 => Ok(Self::Funded),
-            1 => Ok(Self::Secured),
-            2 => Ok(Self::Active),
-            3 => Ok(Self::Unvaulting),
-            4 => Ok(Self::Unvaulted),
-            5 => Ok(Self::Canceling),
-            6 => Ok(Self::Canceled),
-            7 => Ok(Self::EmergencyVaulting),
-            8 => Ok(Self::EmergencyVaulted),
-            9 => Ok(Self::Spendable),
-            10 => Ok(Self::Spending),
-            11 => Ok(Self::Spent),
+            0 => Ok(Self::Unconfirmed),
+            1 => Ok(Self::Funded),
+            2 => Ok(Self::Secured),
+            3 => Ok(Self::Active),
+            4 => Ok(Self::Unvaulting),
+            5 => Ok(Self::Unvaulted),
+            6 => Ok(Self::Canceling),
+            7 => Ok(Self::Canceled),
+            8 => Ok(Self::EmergencyVaulting),
+            9 => Ok(Self::EmergencyVaulted),
+            10 => Ok(Self::Spendable),
+            11 => Ok(Self::Spending),
+            12 => Ok(Self::Spent),
             _ => Err(()),
         }
     }
@@ -76,6 +78,7 @@ impl FromStr for VaultStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "unconfirmed" => Ok(Self::Unconfirmed),
             "funded" => Ok(Self::Funded),
             "secured" => Ok(Self::Secured),
             "active" => Ok(Self::Active),
@@ -99,6 +102,7 @@ impl fmt::Display for VaultStatus {
             f,
             "{}",
             match *self {
+                Self::Unconfirmed => "unconfirmed",
                 Self::Funded => "funded",
                 Self::Secured => "secured",
                 Self::Active => "active",
@@ -111,7 +115,6 @@ impl fmt::Display for VaultStatus {
                 Self::Spendable => "spendable",
                 Self::Spending => "spending",
                 Self::Spent => "spent",
-                _ => unreachable!(),
             }
         )
     }

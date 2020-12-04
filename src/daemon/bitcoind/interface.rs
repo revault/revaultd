@@ -1,5 +1,5 @@
 use crate::{
-    bitcoind::BitcoindError,
+    bitcoind::{BitcoindError, MIN_CONF},
     revaultd::{CachedVault, VaultStatus},
 };
 use common::config::BitcoindConfig;
@@ -389,22 +389,26 @@ impl BitcoinD {
 
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
     /// We take the currently known utxos, and return both the new deposits and the spent deposits.
-    pub fn sync_deposits(
+    pub fn sync_deposits<'a>(
         &self,
         existing_utxos: &HashMap<OutPoint, CachedVault>,
     ) -> Result<
         (
-            HashMap<OutPoint, CachedVault>,
-            HashMap<OutPoint, CachedVault>,
+            HashMap<OutPoint, CachedVault>, // new
+            HashMap<OutPoint, CachedVault>, // newly confirmed
+            HashMap<OutPoint, CachedVault>, // spent
         ),
         BitcoindError,
     > {
-        let mut new_utxos = HashMap::new();
+        let (mut new_deposits, mut confirmed_deposits) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
-        let mut spent_utxos = existing_utxos.clone();
+        let mut spent_deposits = existing_utxos.clone();
 
         for utxo in self
-            .make_watchonly_request("listunspent", &[])?
+            .make_watchonly_request(
+                "listunspent",
+                &[serde_json::Value::Number(serde_json::Number::from(0))], // minconf
+            )?
             .as_array()
             .ok_or_else(|| {
                 BitcoindError::Custom(
@@ -415,13 +419,32 @@ impl BitcoinD {
             if utxo.get("label") != Some(&serde_json::Value::String(self.deposit_utxos_label())) {
                 continue;
             }
+            let confirmations = utxo
+                .get("confirmations")
+                .ok_or_else(|| {
+                    BitcoindError::Custom(
+                        "API break, 'listunspent' entry didn't contain a 'confirmations'."
+                            .to_string(),
+                    )
+                })?
+                .as_u64()
+                .ok_or_else(|| {
+                    BitcoindError::Custom(
+                        "API break, 'listunspent' entry didn't contain a valid 'confirmations'."
+                            .to_string(),
+                    )
+                })?;
 
             let outpoint = self.outpoint_from_utxo(&utxo)?;
             // Not obvious at first sight:
-            //  - spent_utxos == existing_utxos before the loop
+            //  - spent_deposits == existing_deposits before the loop
             //  - listunspent won't send duplicated entries
             //  - remove() will return None if it was not present in the map, ie new deposit
-            if spent_utxos.remove(&outpoint).is_some() {
+            if let Some(utxo) = spent_deposits.remove(&outpoint) {
+                // It may be present but still unconfirmed, though.
+                if utxo.status == VaultStatus::Unconfirmed && confirmations >= MIN_CONF {
+                    confirmed_deposits.insert(outpoint, utxo);
+                }
                 continue;
             }
 
@@ -470,25 +493,30 @@ impl BitcoinD {
                 })?
                 .as_sat();
 
-            log::trace!(
-                "Got a new deposit at {:#?} for address {} ({} sats)",
+            log::debug!(
+                "Got a new {}-conf deposit at {:#?} for address {} ({} sats)",
+                &confirmations,
                 &outpoint,
                 &address,
                 &value
             );
-            new_utxos.insert(
+            new_deposits.insert(
                 outpoint,
                 CachedVault {
                     txo: TxOut {
                         value,
                         script_pubkey,
                     },
-                    status: VaultStatus::Funded,
+                    status: if confirmations < MIN_CONF {
+                        VaultStatus::Unconfirmed
+                    } else {
+                        VaultStatus::Funded
+                    },
                 },
             );
         }
 
-        Ok((new_utxos, spent_utxos))
+        Ok((new_deposits, confirmed_deposits, spent_deposits))
     }
 
     /// Get the raw transaction as hex, and the blockheight it was included in if

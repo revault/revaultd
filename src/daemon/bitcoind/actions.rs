@@ -5,11 +5,12 @@ use crate::{
     },
     database::{
         actions::{
-            db_increase_deposit_index, db_insert_new_vault, db_unvault_deposit, db_update_tip,
+            db_confirm_deposit, db_increase_deposit_index, db_insert_new_vault, db_unvault_deposit,
+            db_update_tip,
         },
         interface::db_wallet,
     },
-    revaultd::RevaultD,
+    revaultd::{RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, ThreadMessageIn},
 };
 use common::config::BitcoindConfig;
@@ -252,12 +253,14 @@ fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
         .map_err(|e| BitcoindError::Custom(format!("Deserializing tx hex: '{}'", e.to_string())))
 }
 
-fn poll_bitcoind(
+// This syncs with bitcoind our incoming deposits, and those that were spent.
+fn update_deposits(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
-    let db_path = revaultd.read().unwrap().db_file();
-    let (new_deposits, spent_deposits) =
+    // Sync deposit of vaults we know have an unspent deposit.
+    // It will mark yet-unconfirmed deposits with 6+ confs as Funded.
+    let (new_deposits, conf_deposits, spent_deposits) =
         bitcoind.sync_deposits(&revaultd.read().unwrap().vaults)?;
 
     for (outpoint, utxo) in new_deposits.into_iter() {
@@ -277,9 +280,15 @@ fn poll_bitcoind(
                 wallet_tx.0
             ))
         })?);
-        let blockheight = wallet_tx.1.ok_or_else(|| {
-            BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
-        })?;
+        let blockheight = if matches!(utxo.status, VaultStatus::Funded) {
+            // It MUST exist if 6+ confs!
+            wallet_tx.1.ok_or_else(|| {
+                BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
+            })?
+        } else {
+            // Don't record it at all as we treat it as unconfirmed
+            0
+        };
 
         db_insert_new_vault(
             &revaultd.read().unwrap().db_file(),
@@ -307,7 +316,7 @@ fn poll_bitcoind(
                 current_first_index
             );
 
-            db_increase_deposit_index(&db_path, current_first_index)?;
+            db_increase_deposit_index(&revaultd.read().unwrap().db_file(), current_first_index)?;
             revaultd.write().unwrap().current_unused_index += 1;
             let next_addr = bitcoind
                 .addr_descriptor(&revaultd.write().unwrap().last_deposit_address().to_string())?;
@@ -316,6 +325,25 @@ fn poll_bitcoind(
                 .addr_descriptor(&revaultd.write().unwrap().last_unvault_address().to_string())?;
             bitcoind.import_fresh_unvault_descriptor(next_addr)?;
         }
+    }
+
+    for (outpoint, _) in conf_deposits.into_iter() {
+        log::debug!("Vault at {} is now confirmed", &outpoint);
+
+        let blockheight = bitcoind
+            .get_wallet_transaction(outpoint.txid)?
+            .1
+            .ok_or_else(|| {
+                BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
+            })?;
+        db_confirm_deposit(&revaultd.read().unwrap().db_file(), &outpoint, blockheight)?;
+        revaultd
+            .write()
+            .unwrap()
+            .vaults
+            .get_mut(&outpoint)
+            .ok_or_else(|| BitcoindError::Custom("An unknown vault got confirmed?".to_string()))?
+            .status = VaultStatus::Funded;
     }
 
     for (outpoint, utxo) in spent_deposits.into_iter() {
@@ -345,13 +373,30 @@ fn poll_bitcoind(
                 outpoint.txid.to_vec(),
                 outpoint.vout,
             )?;
+            revaultd
+                .write()
+                .unwrap()
+                .vaults
+                .get_mut(&outpoint)
+                .expect("We just checked it")
+                .status = VaultStatus::Unvaulting;
         } else if false {
-            // TODO: handle bypass
+            // TODO: handle bypass and emergency
         } else {
-            log::warn!(
-                "The deposit utxo created via '{}' just vanished. Maybe a reorg is ongoing?",
-                &outpoint
-            );
+            match utxo.status {
+                // Fine.
+                VaultStatus::Unconfirmed => log::debug!(
+                    "The unconfirmed deposit utxo created via '{}' just vanished",
+                    &outpoint
+                ),
+                // Bad.
+                VaultStatus::Funded | VaultStatus::Secured => log::warn!(
+                    "The deposit utxo created via '{}' just vanished. Maybe a reorg is ongoing?",
+                    &outpoint
+                ),
+                // Impossible.
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -450,7 +495,7 @@ pub fn bitcoind_main_loop(
         }
 
         last_poll = Some(now);
-        poll_bitcoind(&mut revaultd, &bitcoind)?;
+        update_deposits(&mut revaultd, &bitcoind)?;
         update_tip(&mut revaultd, &bitcoind)?;
 
         thread::sleep(Duration::from_millis(100));

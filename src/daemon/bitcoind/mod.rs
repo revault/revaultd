@@ -5,6 +5,9 @@ use jsonrpc::error::{Error, RpcError};
 pub mod actions;
 pub mod interface;
 
+/// Minimum number of confirmations before treating a deposit as confirmed
+const MIN_CONF: u64 = 6;
+
 /// An error happened in the bitcoind-manager thread
 #[derive(Debug)]
 pub enum BitcoindError {

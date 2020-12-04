@@ -37,6 +37,7 @@ Display general information about the current daemon state.
 
 | Order | Value                | Description                                                                                                  |
 | ----- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 0     | `unconfirmed`        | The vault's deposit transaction is less than 6 blocks-deep in the chain                                      |
 | 1     | `funded`             | The vault is initiated by a vault tx                                                                         |
 | 2     | `secured`            | The vault's emergency transaction is fully signed and shared with the watchtowers                            |
 | 3     | `active`             | The vault's unvault, cancel, and unvault-emergency txs are fully signed and shared with the watchtowers      |

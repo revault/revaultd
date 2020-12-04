@@ -3,7 +3,7 @@ use crate::{
     revaultd::{CachedVault, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, util::bip32::ChildNumber, BlockHash, TxOut},
+    bitcoin::{consensus::encode, util::bip32::ChildNumber, BlockHash, OutPoint, TxOut},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
     transactions::VaultTransaction,
@@ -292,6 +292,29 @@ pub fn db_insert_new_vault(
     })
 }
 
+/// Mark an unconfirmed deposit as being in 'Funded' state (confirmed)
+pub fn db_confirm_deposit(
+    db_path: &PathBuf,
+    outpoint: &OutPoint,
+    blockheight: u32,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), blockheight = (?2) WHERE deposit_txid = (?3) \
+             AND deposit_vout = (?4) ",
+            params![
+                VaultStatus::Funded as u32,
+                blockheight,
+                outpoint.txid.to_vec(),
+                outpoint.vout
+            ],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
+
+        Ok(())
+    })
+}
+
 /// Mark an active vault as being in 'unvaulting' state
 pub fn db_unvault_deposit(
     db_path: &PathBuf,
@@ -303,12 +326,7 @@ pub fn db_unvault_deposit(
             "UPDATE vaults SET status = (?1) WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
             params![VaultStatus::Unvaulting as u32, txid, vout],
         )
-        .map_err(|e| {
-            DatabaseError(format!(
-                "Updating vault transaction to 'unvaulting': {}",
-                e.to_string()
-            ))
-        })?;
+        .map_err(|e| DatabaseError(format!("Updating vault to 'unvaulting': {}", e.to_string())))?;
 
         Ok(())
     })

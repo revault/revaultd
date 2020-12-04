@@ -19,8 +19,9 @@ impl BitcoinD {
         config: &BitcoindConfig,
         watchonly_wallet_path: String,
     ) -> Result<BitcoinD, BitcoindError> {
-        let cookie_string = fs::read_to_string(&config.cookie_path)
-            .map_err(|e| BitcoindError(format!("Reading cookie file: {}", e.to_string())))?;
+        let cookie_string = fs::read_to_string(&config.cookie_path).map_err(|e| {
+            BitcoindError::Custom(format!("Reading cookie file: {}", e.to_string()))
+        })?;
         // The cookie file content is "__cookie__:pass"
         let mut cookie_slices = cookie_string.split(":");
         let (user, pass) = (
@@ -58,10 +59,8 @@ impl BitcoinD {
         log::trace!("Sending to bitcoind: {:#?}", req);
         let resp = client
             .send_request(&req)
-            .map_err(|e| BitcoindError(format!("Sending request: {}", e.to_string())))?;
-        let res = resp
-            .into_result()
-            .map_err(|e| BitcoindError(format!("Making request: {}", e.to_string())))?;
+            .map_err(|e| BitcoindError::Server(e))?;
+        let res = resp.into_result().map_err(|e| BitcoindError::Server(e))?;
         log::trace!("Got from bitcoind: {:#?}", res);
 
         Ok(res)
@@ -90,16 +89,20 @@ impl BitcoinD {
     pub fn get_tip(&self) -> Result<(u32, BlockHash), BitcoindError> {
         let json_height = self.make_node_request("getblockcount", &[])?;
         let height = json_height.as_u64().ok_or_else(|| {
-            BitcoindError("API break, 'getblockcount' didn't return an u64.".to_string())
+            BitcoindError::Custom("API break, 'getblockcount' didn't return an u64.".to_string())
         })?;
         let hash = BlockHash::from_str(
             self.make_node_request("getblockhash", &[json_height])?
                 .as_str()
                 .ok_or_else(|| {
-                    BitcoindError("API break, 'getblockhash' didn't return a string.".to_string())
+                    BitcoindError::Custom(
+                        "API break, 'getblockhash' didn't return a string.".to_string(),
+                    )
                 })?,
         )
-        .map_err(|e| BitcoindError(format!("Invalid blockhash given by 'getblockhash': {}", e)))?;
+        .map_err(|e| {
+            BitcoindError::Custom(format!("Invalid blockhash given by 'getblockhash': {}", e))
+        })?;
 
         Ok((height as u32, hash))
     }
@@ -111,19 +114,23 @@ impl BitcoinD {
                 .get("headers")
                 .and_then(|h| h.as_u64())
                 .ok_or_else(|| {
-                    BitcoindError("No valid 'headers' in getblockchaininfo response?".to_owned())
+                    BitcoindError::Custom(
+                        "No valid 'headers' in getblockchaininfo response?".to_owned(),
+                    )
                 })?,
             blocks: chaininfo
                 .get("blocks")
                 .and_then(|b| b.as_u64())
                 .ok_or_else(|| {
-                    BitcoindError("No valid 'blocks' in getblockchaininfo response?".to_owned())
+                    BitcoindError::Custom(
+                        "No valid 'blocks' in getblockchaininfo response?".to_owned(),
+                    )
                 })?,
             ibd: chaininfo
                 .get("initialblockdownload")
                 .and_then(|i| i.as_bool())
                 .ok_or_else(|| {
-                    BitcoindError(
+                    BitcoindError::Custom(
                         "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
                     )
                 })?,
@@ -131,7 +138,7 @@ impl BitcoinD {
                 .get("verificationprogress")
                 .and_then(|i| i.as_f64())
                 .ok_or_else(|| {
-                    BitcoindError(
+                    BitcoindError::Custom(
                         "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
                     )
                 })?,
@@ -156,7 +163,7 @@ impl BitcoinD {
             return Ok(());
         }
 
-        Err(BitcoindError(format!(
+        Err(BitcoindError::Custom(format!(
             "Error creating wallet: '{:?}'",
             res.get("warning")
         )))
@@ -166,7 +173,9 @@ impl BitcoinD {
         self.make_node_request("listwallets", &[])?
             .as_array()
             .ok_or_else(|| {
-                BitcoindError("API break, 'listwallets' didn't return an array.".to_string())
+                BitcoindError::Custom(
+                    "API break, 'listwallets' didn't return an array.".to_string(),
+                )
             })
             .map(|vec| {
                 vec.iter()
@@ -196,7 +205,7 @@ impl BitcoinD {
             return Ok(());
         }
 
-        Err(BitcoindError(format!(
+        Err(BitcoindError::Custom(format!(
             "Error loading wallet: '{:?}'",
             res.get("warning")
         )))
@@ -212,10 +221,12 @@ impl BitcoinD {
                 &[serde_json::Value::String(desc_wo_checksum)],
             )?
             .get("descriptor")
-            .ok_or_else(|| BitcoindError("No 'descriptor' in 'getdescriptorinfo'".to_string()))?
+            .ok_or_else(|| {
+                BitcoindError::Custom("No 'descriptor' in 'getdescriptorinfo'".to_string())
+            })?
             .as_str()
             .ok_or_else(|| {
-                BitcoindError(
+                BitcoindError::Custom(
                     "'descriptor' in 'getdescriptorinfo' isn't a string anymore".to_string(),
                 )
             })?
@@ -262,7 +273,7 @@ impl BitcoinD {
             return Ok(());
         }
 
-        Err(BitcoindError(format!(
+        Err(BitcoindError::Custom(format!(
             "Error returned from 'importdescriptor': {:?}",
             res.get("error")
         )))
@@ -322,7 +333,7 @@ impl BitcoinD {
             return Ok(());
         }
 
-        Err(BitcoindError(format!(
+        Err(BitcoindError::Custom(format!(
             "In import_fresh descriptor, error returned from 'importdescriptor': {:?}",
             res.get("error")
         )))
@@ -341,16 +352,18 @@ impl BitcoinD {
         let txid = utxo
             .get("txid")
             .ok_or_else(|| {
-                BitcoindError("API break, 'listunspent' entry didn't contain a 'txid'.".to_string())
+                BitcoindError::Custom(
+                    "API break, 'listunspent' entry didn't contain a 'txid'.".to_string(),
+                )
             })?
             .as_str()
             .ok_or_else(|| {
-                BitcoindError(
+                BitcoindError::Custom(
                     "API break, 'listunspent' entry didn't contain a string 'txid'.".to_string(),
                 )
             })?;
         let txid = Txid::from_str(txid).map_err(|e| {
-            BitcoindError(format!(
+            BitcoindError::Custom(format!(
                 "Converting txid from str in 'listunspent': {}.",
                 e.to_string()
             ))
@@ -358,11 +371,13 @@ impl BitcoinD {
         let vout = utxo
             .get("vout")
             .ok_or_else(|| {
-                BitcoindError("API break, 'listunspent' entry didn't contain a 'vout'.".to_string())
+                BitcoindError::Custom(
+                    "API break, 'listunspent' entry didn't contain a 'vout'.".to_string(),
+                )
             })?
             .as_u64()
             .ok_or_else(|| {
-                BitcoindError(
+                BitcoindError::Custom(
                     "API break, 'listunspent' entry didn't contain a valid 'vout'.".to_string(),
                 )
             })?;
@@ -392,7 +407,9 @@ impl BitcoinD {
             .make_watchonly_request("listunspent", &[])?
             .as_array()
             .ok_or_else(|| {
-                BitcoindError("API break, 'listunspent' didn't return an array.".to_string())
+                BitcoindError::Custom(
+                    "API break, 'listunspent' didn't return an array.".to_string(),
+                )
             })?
         {
             if utxo.get("label") != Some(&serde_json::Value::String(self.deposit_utxos_label())) {
@@ -411,20 +428,20 @@ impl BitcoinD {
             let address = utxo
                 .get("address")
                 .ok_or_else(|| {
-                    BitcoindError(
+                    BitcoindError::Custom(
                         "API break, 'listunspent' entry didn't contain an 'address'.".to_string(),
                     )
                 })?
                 .as_str()
                 .ok_or_else(|| {
-                    BitcoindError(
+                    BitcoindError::Custom(
                         "API break, 'listunspent' entry didn't contain a string 'address'."
                             .to_string(),
                     )
                 })?;
             let script_pubkey = Address::from_str(address)
                 .map_err(|e| {
-                    BitcoindError(format!(
+                    BitcoindError::Custom(format!(
                         "Could not parse 'address' from 'listunspent' entry: {}",
                         e.to_string()
                     ))
@@ -433,20 +450,20 @@ impl BitcoinD {
             let amount = utxo
                 .get("amount")
                 .ok_or_else(|| {
-                    BitcoindError(
+                    BitcoindError::Custom(
                         "API break, 'listunspent' entry didn't contain an 'amount'.".to_string(),
                     )
                 })?
                 .as_f64()
                 .ok_or_else(|| {
-                    BitcoindError(
+                    BitcoindError::Custom(
                         "API break, 'listunspent' entry didn't contain a valid 'amount'."
                             .to_string(),
                     )
                 })?;
             let value = Amount::from_btc(amount)
                 .map_err(|e| {
-                    BitcoindError(format!(
+                    BitcoindError::Custom(format!(
                         "Could not convert 'listunspent' entry's 'amount' to an Amount: {}",
                         e.to_string()
                     ))
@@ -487,13 +504,15 @@ impl BitcoinD {
         let tx_hex = res
             .get("hex")
             .ok_or_else(|| {
-                BitcoindError(format!(
+                BitcoindError::Custom(format!(
                     "API break: no 'hex' in 'gettransaction' result (txid: {})",
                     txid
                 ))
             })?
             .as_str()
-            .ok_or_else(|| BitcoindError("API break: 'hex' is not a string ????".to_string()))?
+            .ok_or_else(|| {
+                BitcoindError::Custom("API break: 'hex' is not a string ????".to_string())
+            })?
             .to_string();
         let blockheight = res.get("blockheight").map(|bh| bh.as_u64().unwrap() as u32);
 
@@ -513,15 +532,19 @@ impl BitcoinD {
             )?
             .get("decoded")
             .ok_or_else(|| {
-                BitcoindError(
+                BitcoindError::Custom(
                     "API break: 'gettransaction' has no 'hex' in verbose mode?".to_string(),
                 )
             })?
             .get("vin")
-            .ok_or_else(|| BitcoindError("API break: 'gettransaction' has no 'vin' ?".to_string()))?
+            .ok_or_else(|| {
+                BitcoindError::Custom("API break: 'gettransaction' has no 'vin' ?".to_string())
+            })?
             .as_array()
             .ok_or_else(|| {
-                BitcoindError("API break: 'gettransaction' 'vin' isn't an array?".to_string())
+                BitcoindError::Custom(
+                    "API break: 'gettransaction' 'vin' isn't an array?".to_string(),
+                )
             })?
             .into_iter()
             .filter_map(|txin| {
@@ -550,7 +573,7 @@ impl BitcoinD {
             ],
         )?;
         let utxos = res.as_array().ok_or_else(|| {
-            BitcoindError("API break: 'listunspent' didn't return an array".to_string())
+            BitcoindError::Custom("API break: 'listunspent' didn't return an array".to_string())
         })?;
 
         for utxo in utxos {

@@ -37,7 +37,7 @@ fn check_bitcoind_network(
         .get("chain")
         .and_then(|c| c.as_str())
         .ok_or_else(|| {
-            BitcoindError("No valid 'chain' in getblockchaininfo response?".to_owned())
+            BitcoindError::Custom("No valid 'chain' in getblockchaininfo response?".to_owned())
         })?;
     let bip70_net = match config_network {
         Network::Bitcoin => "main",
@@ -46,7 +46,7 @@ fn check_bitcoind_network(
     };
 
     if !bip70_net.eq(chain) {
-        return Err(BitcoindError(format!(
+        return Err(BitcoindError::Custom(format!(
             "Wrong network, bitcoind is on '{}' but our config says '{}' ({})",
             chain, bip70_net, config_network
         )));
@@ -139,7 +139,9 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
     let curr_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|dur| dur.as_secs())
-        .map_err(|e| BitcoindError(format!("Computing time since epoch: {}", e.to_string())))?;
+        .map_err(|e| {
+            BitcoindError::Custom(format!("Computing time since epoch: {}", e.to_string()))
+        })?;
     let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
 
     if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
@@ -198,12 +200,18 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
             .watchonly_wallet_file()
             .expect("Wallet id is set at startup in setup_db()"),
     )
-    .map_err(|e| BitcoindError(format!("Could not connect to bitcoind: {}", e.to_string())))?;
-
-    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).map_err(|e| {
-        // FIXME: handle warming up
-        BitcoindError(format!("Error checking bitcoind: {}", e.to_string()))
+    .map_err(|e| {
+        BitcoindError::Custom(format!("Could not connect to bitcoind: {}", e.to_string()))
     })?;
+
+    while let Err(e) = bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config) {
+        if e.is_warming_up() {
+            log::info!("Bitcoind is warming up. Waiting for it to be back up.");
+            thread::sleep(Duration::from_secs(3))
+        } else {
+            return Err(e);
+        }
+    }
 
     Ok(bitcoind)
 }
@@ -227,9 +235,9 @@ fn update_tip(
 
 fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
     let mut bytes = Vec::from_hex(hex)
-        .map_err(|e| BitcoindError(format!("Parsing tx hex: '{}'", e.to_string())))?;
+        .map_err(|e| BitcoindError::Custom(format!("Parsing tx hex: '{}'", e.to_string())))?;
     encode::deserialize::<Transaction>(&mut bytes)
-        .map_err(|e| BitcoindError(format!("Deserializing tx hex: '{}'", e.to_string())))
+        .map_err(|e| BitcoindError::Custom(format!("Deserializing tx hex: '{}'", e.to_string())))
 }
 
 fn poll_bitcoind(
@@ -246,18 +254,20 @@ fn poll_bitcoind(
             .unwrap()
             .derivation_index_map
             .get(&utxo.txo.script_pubkey)
-            .ok_or_else(|| BitcoindError(format!("Unknown derivation index for: {:#?}", &utxo)))?;
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
+            })?;
         let wallet_tx = bitcoind.get_wallet_transaction(outpoint.txid)?;
         let vault_tx = VaultTransaction(tx_from_hex(&wallet_tx.0).map_err(|e| {
-            BitcoindError(format!(
+            BitcoindError::Custom(format!(
                 "Deserializing tx from hex: '{}'. Transaction: '{}'",
                 e.to_string(),
                 wallet_tx.0
             ))
         })?);
-        let blockheight = wallet_tx
-            .1
-            .ok_or_else(|| BitcoindError("Deposit transaction isn't confirmed!".to_string()))?;
+        let blockheight = wallet_tx.1.ok_or_else(|| {
+            BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
+        })?;
 
         db_insert_new_vault(
             &revaultd.read().unwrap().db_file(),
@@ -300,7 +310,7 @@ fn poll_bitcoind(
         let deriv_index = *revaultd.read().unwrap()
             .derivation_index_map
             .get(&utxo.txo.script_pubkey)
-            .ok_or_else(|| BitcoindError(
+            .ok_or_else(|| BitcoindError::Custom(
                     format!("A deposit was spent for which we don't know the corresponding xpub derivation. Outpoint: '{}'\nUtxo: '{:#?}'",
                         &outpoint,
                         &utxo)))?;
@@ -370,7 +380,7 @@ pub fn bitcoind_main_loop(
                 }
                 BitcoindMessageOut::SyncProgress(resp_tx) => {
                     resp_tx.send(sync_progress).map_err(|e| {
-                        BitcoindError(format!(
+                        BitcoindError::Custom(format!(
                             "Sending synchronization progress to main thread: {}",
                             e
                         ))
@@ -380,7 +390,7 @@ pub fn bitcoind_main_loop(
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 log::error!("Channel with main thread disconnected. Exiting.");
-                return Err(BitcoindError("Channel disconnected".to_string()));
+                return Err(BitcoindError::Custom("Channel disconnected".to_string()));
             }
         };
 
@@ -407,10 +417,10 @@ pub fn bitcoind_main_loop(
             if sync_progress as u32 >= 1 {
                 let mut revaultd = revaultd.write().unwrap();
                 maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError(format!("Error while creating wallet: {}", e.to_string()))
+                    BitcoindError::Custom(format!("Error while creating wallet: {}", e.to_string()))
                 })?;
                 maybe_load_wallet(&mut revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError(format!("Error while loading wallet: {}", e.to_string()))
+                    BitcoindError::Custom(format!("Error while loading wallet: {}", e.to_string()))
                 })?;
 
                 log::info!("bitcoind now synced.");

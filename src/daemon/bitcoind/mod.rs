@@ -1,3 +1,5 @@
+use crate::database::DatabaseError;
+
 pub mod actions;
 pub mod interface;
 
@@ -11,3 +13,9 @@ impl std::fmt::Display for BitcoindError {
 }
 
 impl std::error::Error for BitcoindError {}
+
+impl From<DatabaseError> for BitcoindError {
+    fn from(e: DatabaseError) -> Self {
+        Self(format!("Database error in bitcoind thread: {}", e))
+    }
+}

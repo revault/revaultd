@@ -131,8 +131,7 @@ fn bitcoind_sync_status(
 
 // This creates the actual wallet file, and imports the descriptors
 fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    let wallet = db_wallet(&revaultd.db_file())
-        .map_err(|e| BitcoindError(format!("Error getting wallet from db: {}", e.to_string())))?;
+    let wallet = db_wallet(&revaultd.db_file())?;
     let bitcoind_wallet_path = revaultd
         .watchonly_wallet_file()
         .expect("Wallet id is set at startup in setup_db()");
@@ -219,8 +218,7 @@ fn update_tip(
     if tip != current_tip {
         log::debug!("New tip: {:#?}", &tip);
 
-        db_update_tip(&revaultd.read().unwrap().db_file(), tip)
-            .map_err(|e| BitcoindError(format!("Updating tip in database: {}", e)))?;
+        db_update_tip(&revaultd.read().unwrap().db_file(), tip)?;
         revaultd.write().unwrap().tip = Some(tip);
     }
 
@@ -275,8 +273,7 @@ fn poll_bitcoind(
             utxo.txo.value as u32,
             derivation_index,
             vault_tx,
-        )
-        .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
+        )?;
         revaultd.write().unwrap().vaults.insert(outpoint, utxo);
 
         // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
@@ -288,8 +285,7 @@ fn poll_bitcoind(
                 current_first_index
             );
 
-            db_increase_deposit_index(&db_path, current_first_index)
-                .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
+            db_increase_deposit_index(&db_path, current_first_index)?;
             revaultd.write().unwrap().current_unused_index += 1;
             let next_addr = bitcoind
                 .addr_descriptor(&revaultd.write().unwrap().last_deposit_address().to_string())?;
@@ -326,9 +322,7 @@ fn poll_bitcoind(
                 &revaultd.read().unwrap().db_file(),
                 outpoint.txid.to_vec(),
                 outpoint.vout,
-            )
-            // TODO: something like From<DbError> for BitcoindError ?
-            .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
+            )?;
         } else if false {
             // TODO: handle bypass
         } else {

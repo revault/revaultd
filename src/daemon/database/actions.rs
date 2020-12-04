@@ -3,7 +3,7 @@ use crate::{
     revaultd::{CachedVault, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, BlockHash, TxOut},
+    bitcoin::{consensus::encode, util::bip32::ChildNumber, BlockHash, TxOut},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
     transactions::VaultTransaction,
@@ -162,6 +162,20 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     );
 
     revaultd.current_unused_index = wallet.deposit_derivation_index;
+    // Of course, it's no good... Miniscript on bitcoind soon :tm:
+    // FIXME: in the meantime, reversed gap limit?
+    (0..revaultd.current_unused_index + revaultd.gap_limit()).for_each(|i| {
+        revaultd.derivation_index_map.insert(
+            revaultd
+                .vault_descriptor
+                .derive(ChildNumber::from(i))
+                .0
+                .address(revaultd.bitcoind_config.network)
+                .expect("vault_descriptor is a wsh")
+                .script_pubkey(),
+            i,
+        );
+    });
     revaultd.wallet_id = Some(wallet.id);
 
     for vault in db_deposits(&db_path)?.into_iter() {
@@ -209,6 +223,21 @@ pub fn db_update_tip(db_path: &PathBuf, tip: (u32, BlockHash)) -> Result<(), Dat
         tx.execute(
             "UPDATE tip SET blockheight = (?1), blockhash = (?2)",
             params![tip.0, tip.1.to_vec()],
+        )
+        .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))?;
+
+        Ok(())
+    })
+}
+
+pub fn db_increase_deposit_index(
+    db_path: &PathBuf,
+    current_index: u32,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE wallets SET deposit_derivation_index = (?1)",
+            params![current_index + 1],
         )
         .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))?;
 

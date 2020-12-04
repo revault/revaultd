@@ -4,7 +4,9 @@ use crate::{
         BitcoindError,
     },
     database::{
-        actions::{db_insert_new_vault, db_unvault_deposit, db_update_tip},
+        actions::{
+            db_increase_deposit_index, db_insert_new_vault, db_unvault_deposit, db_update_tip,
+        },
         interface::db_wallet,
     },
     revaultd::RevaultD,
@@ -235,6 +237,7 @@ fn poll_bitcoind(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
     let (new_deposits, spent_deposits) =
         bitcoind.sync_deposits(&revaultd.read().unwrap().vaults)?;
 
@@ -277,7 +280,15 @@ fn poll_bitcoind(
 
         // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
         // FIXME: of course, that's rudimentary
-        if derivation_index > revaultd.read().unwrap().current_unused_index {
+        let current_first_index = revaultd.read().unwrap().current_unused_index;
+        if derivation_index > current_first_index {
+            log::debug!(
+                "Incrementing deposit derivation index from {}",
+                current_first_index
+            );
+
+            db_increase_deposit_index(&db_path, current_first_index)
+                .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
             revaultd.write().unwrap().current_unused_index += 1;
             let next_addr = bitcoind
                 .addr_descriptor(&revaultd.write().unwrap().last_deposit_address().to_string())?;

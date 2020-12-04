@@ -287,9 +287,6 @@ impl RevaultD {
             .0
             .address(self.bitcoind_config.network)
             .expect("vault_descriptor is a wsh");
-        // So we can retrieve it later..
-        self.derivation_index_map
-            .insert(addr.script_pubkey(), child_number);
 
         addr
     }
@@ -301,14 +298,11 @@ impl RevaultD {
             .0
             .address(self.bitcoind_config.network)
             .expect("vault_descriptor is a wsh");
-        // So we can retrieve it later..
-        self.derivation_index_map
-            .insert(addr.script_pubkey(), child_number);
 
         addr
     }
 
-    fn gap_limit(&self) -> u32 {
+    pub fn gap_limit(&self) -> u32 {
         100
     }
 

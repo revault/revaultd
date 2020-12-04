@@ -121,7 +121,7 @@ pub struct DbWallet {
     pub vault_descriptor: String,
     pub unvault_descriptor: String,
     pub ourselves: config::OurSelves,
-    pub deposit_derivation_index: u32,
+    pub deposit_derivation_index: ChildNumber,
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
@@ -161,7 +161,7 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
                 manager_xpub: our_man_xpub,
                 stakeholder_xpub: our_stk_xpub,
             },
-            deposit_derivation_index: row.get(6)?,
+            deposit_derivation_index: ChildNumber::from(row.get::<_, u32>(6)?),
         })
     })?;
 
@@ -227,15 +227,15 @@ pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
 /// The type of the transaction, as stored in the "transactions" table
 pub enum TransactionType {
     Deposit,
-    Unvault,
-    Spend,
-    Cancel,
-    Emergency,
-    UnvaultEmergency,
+    _Unvault,
+    _Spend,
+    _Cancel,
+    _Emergency,
+    _UnvaultEmergency,
 }
 
 /// A row in the "transactions" table
-pub struct DbTransaction {
+pub struct _DbTransaction {
     pub id: u32,
     pub vault_id: u32,
     pub tx_type: TransactionType,

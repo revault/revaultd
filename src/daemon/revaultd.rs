@@ -134,7 +134,7 @@ pub struct CachedVault {
 /// of the pre-signed transactions.
 /// Likewise, depending on our role (manager or stakeholder), we may not have the
 /// emergency transactions.
-pub struct Vault {
+pub struct _Vault {
     /// The deposit utxo and the status of the vault, that we keep in memory
     pub cached_vault: CachedVault,
     pub vault_tx: Option<VaultTransaction>,
@@ -170,7 +170,7 @@ pub struct RevaultD {
     /// We don't make an enormous deal of address reuse (we cancel to the same keys),
     /// however we at least try to generate new addresses once they're used.
     // FIXME: think more about desync reconciliation..
-    pub current_unused_index: u32,
+    pub current_unused_index: ChildNumber,
 
     // UTXOs stuff
     /// A cache of known vaults by txid
@@ -183,7 +183,7 @@ pub struct RevaultD {
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
     /// keys used to generate a script from bitcoind while we cannot pass it xpub-expressed
     /// Miniscript descriptors.
-    pub derivation_index_map: HashMap<Script, u32>,
+    pub derivation_index_map: HashMap<Script, ChildNumber>,
 
     // Misc stuff
     /// The id of the wallet used in the db
@@ -271,7 +271,7 @@ impl RevaultD {
             tip: None,
             ourselves: config.ourselves,
             // Will be updated by the database
-            current_unused_index: 0,
+            current_unused_index: ChildNumber::from(0),
             // FIXME: we don't need SipHash for those, use a faster alternative
             derivation_index_map: HashMap::new(),
             vaults: HashMap::new(),
@@ -289,10 +289,10 @@ impl RevaultD {
         [data_dir_str, file_name].iter().collect()
     }
 
-    pub fn vault_address(&self, child_number: u32) -> Address {
+    pub fn vault_address(&self, child_number: ChildNumber) -> Address {
         let addr = self
             .vault_descriptor
-            .derive(ChildNumber::from(child_number))
+            .derive(child_number)
             .0
             .address(self.bitcoind_config.network)
             .expect("vault_descriptor is a wsh");
@@ -300,10 +300,10 @@ impl RevaultD {
         addr
     }
 
-    pub fn unvault_address(&self, child_number: u32) -> Address {
+    pub fn unvault_address(&self, child_number: ChildNumber) -> Address {
         let addr = self
             .unvault_descriptor
-            .derive(ChildNumber::from(child_number))
+            .derive(child_number)
             .0
             .address(self.bitcoind_config.network)
             .expect("vault_descriptor is a wsh");
@@ -350,11 +350,15 @@ impl RevaultD {
     }
 
     pub fn last_deposit_address(&self) -> Address {
-        self.vault_address(self.current_unused_index + self.gap_limit())
+        let raw_index: u32 = self.current_unused_index.into();
+        // FIXME: this should fail instead of creating a hardened index
+        self.vault_address(ChildNumber::from(raw_index + self.gap_limit()))
     }
 
     pub fn last_unvault_address(&self) -> Address {
-        self.unvault_address(self.current_unused_index + self.gap_limit())
+        let raw_index: u32 = self.current_unused_index.into();
+        // FIXME: this should fail instead of creating a hardened index
+        self.unvault_address(ChildNumber::from(raw_index + self.gap_limit()))
     }
 
     /// All deposit addresses as strings up to the gap limit (100)
@@ -371,8 +375,13 @@ impl RevaultD {
 
     /// All unvault addresses as strings up to the gap limit (100)
     pub fn all_unvault_addresses(&mut self) -> Vec<String> {
-        (0..self.current_unused_index + self.gap_limit())
-            .map(|index| self.unvault_address(index).to_string())
+        let raw_index: u32 = self.current_unused_index.into();
+        (0..raw_index + self.gap_limit())
+            .map(|raw_index| {
+                // FIXME: this should fail instead of creating a hardened index
+                self.unvault_address(ChildNumber::from(raw_index))
+                    .to_string()
+            })
             .collect()
     }
 }

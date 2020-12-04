@@ -5,7 +5,7 @@ use crate::{
     },
     database::{
         actions::{
-            db_confirm_deposit, db_increase_deposit_index, db_insert_new_vault, db_unvault_deposit,
+            db_confirm_deposit, db_insert_new_vault, db_unvault_deposit, db_update_deposit_index,
             db_update_tip,
         },
         interface::db_wallet,
@@ -15,7 +15,7 @@ use crate::{
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
-    bitcoin::{consensus::encode, hashes::hex::FromHex, Network, Transaction},
+    bitcoin::{consensus::encode, hashes::hex::FromHex, Amount, Network, Transaction},
     transactions::VaultTransaction,
 };
 
@@ -299,9 +299,8 @@ fn update_deposits(
                 .expect("Wallet id is set at startup in setup_db()"),
             utxo.status,
             blockheight,
-            outpoint.txid.to_vec(),
-            outpoint.vout,
-            utxo.txo.value as u32,
+            &outpoint,
+            Amount::from_sat(utxo.txo.value),
             derivation_index,
             vault_tx,
         )?;
@@ -316,8 +315,17 @@ fn update_deposits(
                 current_first_index
             );
 
-            db_increase_deposit_index(&revaultd.read().unwrap().db_file(), current_first_index)?;
-            revaultd.write().unwrap().current_unused_index += 1;
+            let new_index = revaultd
+                .read()
+                .unwrap()
+                .current_unused_index
+                .increment()
+                .map_err(|e| {
+                    // FIXME: we should probably go back to 0 at this point.
+                    BitcoindError::Custom(format!("Deriving next index: {}", e))
+                })?;
+            db_update_deposit_index(&revaultd.read().unwrap().db_file(), new_index)?;
+            revaultd.write().unwrap().current_unused_index = new_index;
             let next_addr = bitcoind
                 .addr_descriptor(&revaultd.read().unwrap().last_deposit_address().to_string())?;
             bitcoind.import_fresh_deposit_descriptor(next_addr)?;
@@ -368,11 +376,7 @@ fn update_deposits(
             );
             // Note that it *might* have actually been confirmed during the last 30s, but it's not
             // a big deal to have it marked as unconfirmed for the next 30s..
-            db_unvault_deposit(
-                &revaultd.read().unwrap().db_file(),
-                outpoint.txid.to_vec(),
-                outpoint.vout,
-            )?;
+            db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint)?;
             revaultd
                 .write()
                 .unwrap()

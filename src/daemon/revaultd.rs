@@ -1,6 +1,6 @@
 use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
 
-use std::{collections::HashMap, convert::TryFrom, fs, path::PathBuf, vec::Vec};
+use std::{collections::HashMap, convert::TryFrom, fmt, fs, path::PathBuf, str::FromStr, vec::Vec};
 
 use revault_tx::{
     bitcoin::{util::bip32::ChildNumber, Address, BlockHash, OutPoint, Script, TxOut},
@@ -17,7 +17,7 @@ use revault_tx::{
 
 /// The status of a [Vault], depends both on the block chain and the set of pre-signed
 /// transactions
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VaultStatus {
     // FIXME: More formally analyze the impact of reorgs
     // FIXME: Min confirms ?
@@ -68,6 +68,52 @@ impl TryFrom<u32> for VaultStatus {
             11 => Ok(Self::Spent),
             _ => Err(()),
         }
+    }
+}
+
+impl FromStr for VaultStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "funded" => Ok(Self::Funded),
+            "secured" => Ok(Self::Secured),
+            "active" => Ok(Self::Active),
+            "unvaulting" => Ok(Self::Unvaulting),
+            "unvaulted" => Ok(Self::Unvaulted),
+            "canceling" => Ok(Self::Canceling),
+            "canceled" => Ok(Self::Canceled),
+            "emergencyvaulting" => Ok(Self::EmergencyVaulting),
+            "emergencyvaulted" => Ok(Self::EmergencyVaulted),
+            "spendable" => Ok(Self::Spendable),
+            "spending" => Ok(Self::Spending),
+            "spent" => Ok(Self::Spent),
+            _ => Err(()),
+        }
+    }
+}
+
+impl fmt::Display for VaultStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match *self {
+                Self::Funded => "funded",
+                Self::Secured => "secured",
+                Self::Active => "active",
+                Self::Unvaulting => "unvaulting",
+                Self::Unvaulted => "unvaulted",
+                Self::Canceling => "canceling",
+                Self::Canceled => "canceled",
+                Self::EmergencyVaulting => "emergencyvaulting",
+                Self::EmergencyVaulted => "emergencyvaulted",
+                Self::Spendable => "spendable",
+                Self::Spending => "spending",
+                Self::Spent => "spent",
+                _ => unreachable!(),
+            }
+        )
     }
 }
 

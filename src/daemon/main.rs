@@ -8,11 +8,13 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     database::actions::setup_db,
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
-    revaultd::RevaultD,
+    revaultd::{RevaultD, VaultStatus},
     threadmessages::*,
 };
 use common::config::Config;
 use database::interface::db_tip;
+
+use revault_tx::bitcoin::{Amount, Txid};
 
 use std::{
     env,
@@ -142,6 +144,36 @@ fn daemon_main(mut revaultd: RevaultD) {
                         log::error!("Sending 'getinfo' result to RPC thread: {:?}", e);
                         process::exit(1);
                     });
+            }
+            ThreadMessageIn::Rpc(RpcMessageIn::ListVaults((status, txids), response_tx)) => {
+                log::trace!("Got listvaults from RPC thread");
+
+                let mut resp = Vec::<(u64, String, String, u32)>::new();
+                for (ref outpoint, ref vault) in revaultd.read().unwrap().vaults.iter() {
+                    if let Some(status) = status {
+                        if vault.status != status {
+                            continue;
+                        }
+                    }
+
+                    if let Some(ref txids) = &txids {
+                        if !txids.contains(&outpoint.txid) {
+                            continue;
+                        }
+                    }
+
+                    resp.push((
+                        vault.txo.value,
+                        vault.status.to_string(),
+                        outpoint.txid.to_string(),
+                        outpoint.vout,
+                    ));
+                }
+
+                response_tx.send(resp).unwrap_or_else(|e| {
+                    log::error!("Sending 'listvaults' result to RPC thread: {:?}", e);
+                    process::exit(1);
+                });
             }
             _ => {
                 log::error!("Main thread received an unexpected message: {:#?}", message);

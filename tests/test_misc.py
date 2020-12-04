@@ -31,3 +31,10 @@ def test_getinfo(revaultd_manager, bitcoind):
     revaultd_manager.wait_for_log("New tip")
     sec_res = revaultd_manager.rpc.call("getinfo")
     assert sec_res["blockheight"] == res["blockheight"] + 1
+
+
+def test_listvaults(revaultd_manager):
+    res = revaultd_manager.rpc.call("listvaults")
+    assert res["vaults"] == []
+
+    # TODO: add a getnewaddress method to test listvaults..

@@ -1,5 +1,5 @@
 mod api;
-use crate::threadmessages::ThreadMessageIn;
+use crate::threadmessages::RpcMessageIn;
 use api::{JsonRpcMetaData, RpcApi, RpcImpl};
 
 use std::{
@@ -307,10 +307,7 @@ pub fn jsonrpcapi_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error>
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
-pub fn jsonrpcapi_loop(
-    tx: Sender<ThreadMessageIn>,
-    listener: UnixListener,
-) -> Result<(), io::Error> {
+pub fn jsonrpcapi_loop(tx: Sender<RpcMessageIn>, listener: UnixListener) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
     let metadata = JsonRpcMetaData::from_tx(tx);
@@ -324,7 +321,7 @@ pub fn jsonrpcapi_loop(
 #[cfg(test)]
 mod tests {
     use super::{jsonrpcapi_loop, jsonrpcapi_setup, trimmed};
-    use crate::threadmessages::{RpcMessageIn, ThreadMessageIn};
+    use crate::threadmessages::RpcMessageIn;
 
     use std::{
         io::{Read, Write},
@@ -379,7 +376,7 @@ mod tests {
         // first...
         #[cfg(not(windows))]
         match rx.recv() {
-            Ok(ThreadMessageIn::Rpc(RpcMessageIn::Shutdown)) => {}
+            Ok(RpcMessageIn::Shutdown) => {}
             _ => panic!("Didn't receive shutdown"),
         }
     }

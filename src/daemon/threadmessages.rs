@@ -1,5 +1,5 @@
 use crate::revaultd::VaultStatus;
-use revault_tx::bitcoin::{Amount, Txid};
+use revault_tx::bitcoin::Txid;
 
 use std::sync::mpsc::SyncSender;
 
@@ -14,17 +14,6 @@ pub enum RpcMessageIn {
         // amount, status, txid, vout
         SyncSender<Vec<(u64, String, String, u32)>>,
     ),
-}
-
-/// Incoming from bitcoind poller thread
-#[derive(Debug)]
-pub enum BitcoindMessageIn {}
-
-/// Incoming from a spawned thread
-#[derive(Debug)]
-pub enum ThreadMessageIn {
-    Rpc(RpcMessageIn),
-    Bitcoind(BitcoindMessageIn),
 }
 
 /// Outgoing to the bitcoind poller thread

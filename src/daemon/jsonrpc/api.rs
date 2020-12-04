@@ -1,10 +1,7 @@
 use crate::{revaultd::VaultStatus, threadmessages::*};
 use common::VERSION;
 
-use revault_tx::bitcoin::{
-    hashes::hex::{Error as FromHexError, FromHex},
-    Txid,
-};
+use revault_tx::bitcoin::{hashes::hex::FromHex, Txid};
 
 use std::{
     process,
@@ -22,13 +19,13 @@ use serde_json::json;
 
 #[derive(Clone)]
 pub struct JsonRpcMetaData {
-    pub tx: Sender<ThreadMessageIn>,
+    pub tx: Sender<RpcMessageIn>,
     pub shutdown: Arc<AtomicBool>,
 }
 impl jsonrpc_core::Metadata for JsonRpcMetaData {}
 
 impl JsonRpcMetaData {
-    pub fn from_tx(tx: Sender<ThreadMessageIn>) -> Self {
+    pub fn from_tx(tx: Sender<RpcMessageIn>) -> Self {
         JsonRpcMetaData {
             tx,
             shutdown: Arc::from(AtomicBool::from(false)),
@@ -73,16 +70,14 @@ impl RpcApi for RpcImpl {
 
     fn stop(&self, meta: JsonRpcMetaData) -> jsonrpc_core::Result<()> {
         meta.shutdown();
-        meta.tx
-            .send(ThreadMessageIn::Rpc(RpcMessageIn::Shutdown))
-            .unwrap();
+        meta.tx.send(RpcMessageIn::Shutdown).unwrap();
         Ok(())
     }
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         meta.tx
-            .send(ThreadMessageIn::Rpc(RpcMessageIn::GetInfo(response_tx)))
+            .send(RpcMessageIn::GetInfo(response_tx))
             .unwrap_or_else(|e| {
                 log::error!("Sending 'getinfo' to main thread: {:?}", e);
                 process::exit(1);
@@ -134,10 +129,7 @@ impl RpcApi for RpcImpl {
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         meta.tx
-            .send(ThreadMessageIn::Rpc(RpcMessageIn::ListVaults(
-                (status, txids),
-                response_tx,
-            )))
+            .send(RpcMessageIn::ListVaults((status, txids), response_tx))
             .unwrap_or_else(|e| {
                 log::error!("Sending 'listvaults' to main thread: {:?}", e);
                 process::exit(1);

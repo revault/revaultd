@@ -11,7 +11,7 @@ use crate::{
         interface::db_wallet,
     },
     revaultd::{RevaultD, VaultStatus},
-    threadmessages::{BitcoindMessageOut, ThreadMessageIn},
+    threadmessages::BitcoindMessageOut,
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
@@ -22,7 +22,7 @@ use revault_tx::{
 use std::{
     path::PathBuf,
     sync::{
-        mpsc::{Receiver, Sender, TryRecvError},
+        mpsc::{Receiver, TryRecvError},
         Arc, RwLock,
     },
     thread,
@@ -408,7 +408,6 @@ fn update_deposits(
 /// The bitcoind event loop.
 /// Poll bitcoind every 30 seconds, and update our state accordingly.
 pub fn bitcoind_main_loop(
-    _tx: Sender<ThreadMessageIn>,
     rx: Receiver<BitcoindMessageOut>,
     mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,

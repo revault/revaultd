@@ -63,19 +63,16 @@ fn daemon_main(mut revaultd: RevaultD) {
 
     // We start two threads, the JSONRPC one in order to be controlled externally,
     // and the bitcoind one to poll bitcoind until we die.
-    // Each of them can send us messages, and we listen for them until we are told
-    // to shutdown.
+    // We may get requests from the RPC one, and send requests to the bitcoind one.
 
     // The communication from them to us
-    let (main_tx, main_rx) = mpsc::channel();
-    let jsonrpc_main_tx = main_tx.clone();
-    let bitcoind_main_tx = main_tx;
+    let (rpc_tx, rpc_rx) = mpsc::channel();
 
     // The communication from us to the bitcoind thread
     let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
 
     let jsonrpc_thread = thread::spawn(move || {
-        jsonrpcapi_loop(jsonrpc_main_tx, socket).unwrap_or_else(|e| {
+        jsonrpcapi_loop(rpc_tx, socket).unwrap_or_else(|e| {
             log::error!("Error in JSONRPC server event loop: {}", e.to_string());
             process::exit(1)
         })
@@ -84,21 +81,19 @@ fn daemon_main(mut revaultd: RevaultD) {
     let revaultd = Arc::new(RwLock::new(revaultd));
     let bit_revaultd = revaultd.clone();
     let bitcoind_thread = thread::spawn(move || {
-        bitcoind_main_loop(bitcoind_main_tx, bitcoind_rx, bit_revaultd, &bitcoind).unwrap_or_else(
-            |e| {
-                log::error!("Error in bitcoind main loop: {}", e.to_string());
-                process::exit(1)
-            },
-        )
+        bitcoind_main_loop(bitcoind_rx, bit_revaultd, &bitcoind).unwrap_or_else(|e| {
+            log::error!("Error in bitcoind main loop: {}", e.to_string());
+            process::exit(1)
+        })
     });
 
     log::info!(
         "revaultd started on network {}",
         revaultd.read().unwrap().bitcoind_config.network
     );
-    for message in main_rx {
+    for message in rpc_rx {
         match message {
-            ThreadMessageIn::Rpc(RpcMessageIn::Shutdown) => {
+            RpcMessageIn::Shutdown => {
                 log::info!("Stopping revaultd.");
                 bitcoind_tx
                     .send(BitcoindMessageOut::Shutdown)
@@ -117,7 +112,7 @@ fn daemon_main(mut revaultd: RevaultD) {
                 });
                 process::exit(0);
             }
-            ThreadMessageIn::Rpc(RpcMessageIn::GetInfo(response_tx)) => {
+            RpcMessageIn::GetInfo(response_tx) => {
                 log::trace!("Got getinfo from RPC thread");
 
                 let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
@@ -146,7 +141,7 @@ fn daemon_main(mut revaultd: RevaultD) {
                         process::exit(1);
                     });
             }
-            ThreadMessageIn::Rpc(RpcMessageIn::ListVaults((status, txids), response_tx)) => {
+            RpcMessageIn::ListVaults((status, txids), response_tx) => {
                 log::trace!("Got listvaults from RPC thread");
 
                 let mut resp = Vec::<(u64, String, String, u32)>::new();
@@ -175,10 +170,6 @@ fn daemon_main(mut revaultd: RevaultD) {
                     log::error!("Sending 'listvaults' result to RPC thread: {:?}", e);
                     process::exit(1);
                 });
-            }
-            _ => {
-                log::error!("Main thread received an unexpected message: {:#?}", message);
-                process::exit(1);
             }
         }
     }

@@ -1,5 +1,5 @@
 use crate::revaultd::VaultStatus;
-use revault_tx::bitcoin::Txid;
+use revault_tx::bitcoin::{Address, Txid};
 
 use std::sync::mpsc::SyncSender;
 
@@ -14,6 +14,7 @@ pub enum RpcMessageIn {
         // amount, status, txid, vout
         SyncSender<Vec<(u64, String, String, u32)>>,
     ),
+    DepositAddr(SyncSender<Address>),
 }
 
 /// Outgoing to the bitcoind poller thread

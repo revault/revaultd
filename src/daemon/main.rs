@@ -171,6 +171,15 @@ fn daemon_main(mut revaultd: RevaultD) {
                     process::exit(1);
                 });
             }
+            RpcMessageIn::DepositAddr(response_tx) => {
+                log::trace!("Got 'depositaddr' request from RPC thread");
+                response_tx
+                    .send(revaultd.read().unwrap().deposit_address())
+                    .unwrap_or_else(|e| {
+                        log::error!("Sending 'depositaddr' result to RPC thread: {:?}", e);
+                        process::exit(1);
+                    });
+            }
         }
     }
 }

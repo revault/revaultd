@@ -319,10 +319,10 @@ fn update_deposits(
             db_increase_deposit_index(&revaultd.read().unwrap().db_file(), current_first_index)?;
             revaultd.write().unwrap().current_unused_index += 1;
             let next_addr = bitcoind
-                .addr_descriptor(&revaultd.write().unwrap().last_deposit_address().to_string())?;
+                .addr_descriptor(&revaultd.read().unwrap().last_deposit_address().to_string())?;
             bitcoind.import_fresh_deposit_descriptor(next_addr)?;
             let next_addr = bitcoind
-                .addr_descriptor(&revaultd.write().unwrap().last_unvault_address().to_string())?;
+                .addr_descriptor(&revaultd.read().unwrap().last_unvault_address().to_string())?;
             bitcoind.import_fresh_unvault_descriptor(next_addr)?;
         }
     }
@@ -355,7 +355,7 @@ fn update_deposits(
                         &outpoint,
                         &utxo)))?;
         let unvault_addr = revaultd
-            .write()
+            .read()
             .unwrap()
             .unvault_address(deriv_index)
             .to_string();

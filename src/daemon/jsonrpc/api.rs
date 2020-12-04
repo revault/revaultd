@@ -62,6 +62,9 @@ pub trait RpcApi {
         status: Option<String>,
         txids: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "getdepositaddress")]
+    fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 pub struct RpcImpl;
@@ -140,5 +143,21 @@ impl RpcApi for RpcImpl {
         });
 
         Ok(json!({ "vaults": vaults }))
+    }
+
+    fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        meta.tx
+            .send(RpcMessageIn::DepositAddr(response_tx))
+            .unwrap_or_else(|e| {
+                log::error!("Sending 'depositaddr' to main thread: {:?}", e);
+                process::exit(1);
+            });
+        let address = response_rx.recv().unwrap_or_else(|e| {
+            log::error!("Receiving 'depositaddr' result from main thread: {:?}", e);
+            process::exit(1);
+        });
+
+        Ok(json!({ "address": address.to_string() }))
     }
 }

@@ -283,7 +283,7 @@ impl RevaultD {
         [data_dir_str, file_name].iter().collect()
     }
 
-    pub fn vault_address(&mut self, child_number: u32) -> Address {
+    pub fn vault_address(&self, child_number: u32) -> Address {
         let addr = self
             .vault_descriptor
             .derive(ChildNumber::from(child_number))
@@ -294,7 +294,7 @@ impl RevaultD {
         addr
     }
 
-    pub fn unvault_address(&mut self, child_number: u32) -> Address {
+    pub fn unvault_address(&self, child_number: u32) -> Address {
         let addr = self
             .unvault_descriptor
             .derive(ChildNumber::from(child_number))
@@ -339,15 +339,15 @@ impl RevaultD {
         self.file_from_datadir("revaultd_rpc")
     }
 
-    pub fn deposit_address(&mut self) -> Address {
+    pub fn deposit_address(&self) -> Address {
         self.vault_address(self.current_unused_index)
     }
 
-    pub fn last_deposit_address(&mut self) -> Address {
+    pub fn last_deposit_address(&self) -> Address {
         self.vault_address(self.current_unused_index + self.gap_limit())
     }
 
-    pub fn last_unvault_address(&mut self) -> Address {
+    pub fn last_unvault_address(&self) -> Address {
         self.unvault_address(self.current_unused_index + self.gap_limit())
     }
 

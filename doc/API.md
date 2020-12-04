@@ -31,6 +31,18 @@ Display general information about the current daemon state.
 | `sync`        | float   | The synchronization progress as percentage (`0 < sync < 1`)     |
 | `version`     | string  | Version following the [SimVer](http://www.simver.org/) format   |
 
+
+### `getdepositaddress`
+
+Get an address to build a deposit transaction.
+
+#### Response
+
+| Field         | Type   | Description                                                 |
+| ------------- | ------ | ----------------------------------------------------------- |
+| `address`     | string | An address for the N-of-N multisig deposit script           |
+
+
 ## Vault
 
 ### Vault statuses

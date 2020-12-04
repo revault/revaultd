@@ -573,6 +573,7 @@ class RevaultD(TailableProc):
             f.write(f"unvault_csv = {csv}\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
+            f.write(f"log_level = 'trace'\n")
             f.write(f"[bitcoind_config]\n")
             f.write(f"network = \"regtest\"\n")
             f.write(f"cookie_path = '{bitcoind_cookie}'\n")

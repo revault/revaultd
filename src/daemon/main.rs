@@ -8,13 +8,11 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     database::actions::setup_db,
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
-    revaultd::{RevaultD, VaultStatus},
+    revaultd::RevaultD,
     threadmessages::*,
 };
 use common::config::Config;
 use database::interface::db_tip;
-
-use revault_tx::bitcoin::{Amount, Txid};
 
 use std::{
     env,
@@ -45,16 +43,19 @@ fn daemon_main(mut revaultd: RevaultD) {
     let (db_path, network) = (revaultd.db_file(), revaultd.bitcoind_config.network);
 
     // First and foremost
+    log::info!("Setting up database");
     setup_db(&mut revaultd).unwrap_or_else(|e| {
         log::error!("Error setting up database: '{}'", e.to_string());
         process::exit(1);
     });
 
+    log::info!("Setting up bitcoind connection");
     let bitcoind = start_bitcoind(&mut revaultd).unwrap_or_else(|e| {
         log::error!("Error setting up bitcoind: {}", e.to_string());
         process::exit(1);
     });
 
+    log::info!("Starting JSONRPC server");
     let socket = jsonrpcapi_setup(revaultd.rpc_socket_file()).unwrap_or_else(|e| {
         log::error!("Setting up JSONRPC server: {}", e.to_string());
         process::exit(1);
@@ -224,7 +225,7 @@ fn main() {
             process::exit(1);
         })
     } else {
-        log::LevelFilter::Trace
+        log::LevelFilter::Info
     };
     // FIXME: should probably be from_db(), would allow us to not use Option members
     let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {

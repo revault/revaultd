@@ -184,7 +184,7 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
         .expect("Wallet id is set at startup in setup_db()");
 
     if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
-        log::info!("Loading wallet '{}'.", bitcoind_wallet_path);
+        log::info!("Loading our watchonly wallet '{}'.", bitcoind_wallet_path);
         bitcoind.loadwallet_startup(bitcoind_wallet_path.clone())?;
     }
 

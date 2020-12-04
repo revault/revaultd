@@ -144,13 +144,19 @@ pub struct Vault {
     pub unvault_emergency_tx: Option<UnvaultEmergencyTransaction>,
 }
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub struct BlockchainTip {
+    pub height: u32,
+    pub hash: BlockHash,
+}
+
 /// Our global state
 pub struct RevaultD {
     // Bitcoind stuff
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
     /// Last block we heard about
-    pub tip: Option<(u32, BlockHash)>,
+    pub tip: Option<BlockchainTip>,
 
     // Scripts stuff
     /// Who am i, and where am i in all this mess ?

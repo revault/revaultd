@@ -1,9 +1,9 @@
 use crate::{
     database::{interface::*, schema::SCHEMA, DatabaseError, DB_VERSION},
-    revaultd::{CachedVault, RevaultD, VaultStatus},
+    revaultd::{BlockchainTip, CachedVault, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, util::bip32::ChildNumber, BlockHash, OutPoint, TxOut},
+    bitcoin::{consensus::encode, util::bip32::ChildNumber, OutPoint, TxOut},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
     transactions::VaultTransaction,
@@ -218,11 +218,11 @@ pub fn setup_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
 }
 
 /// Called by the bitcoind thread as we poll `getblockcount`
-pub fn db_update_tip(db_path: &PathBuf, tip: (u32, BlockHash)) -> Result<(), DatabaseError> {
+pub fn db_update_tip(db_path: &PathBuf, tip: BlockchainTip) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
             "UPDATE tip SET blockheight = (?1), blockhash = (?2)",
-            params![tip.0, tip.1.to_vec()],
+            params![tip.height, tip.hash.to_vec()],
         )
         .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))?;
 
@@ -239,7 +239,7 @@ pub fn db_increase_deposit_index(
             "UPDATE wallets SET deposit_derivation_index = (?1)",
             params![current_index + 1],
         )
-        .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))?;
+        .map_err(|e| DatabaseError(format!("Inserting new derivation index: {}", e.to_string())))?;
 
         Ok(())
     })

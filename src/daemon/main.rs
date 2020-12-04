@@ -8,7 +8,7 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     database::actions::setup_db,
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
-    revaultd::RevaultD,
+    revaultd::{BlockchainTip, RevaultD},
     threadmessages::*,
 };
 use common::config::Config;
@@ -128,7 +128,10 @@ fn daemon_main(mut revaultd: RevaultD) {
                 });
 
                 // This means blockheight == 0 for IBD.
-                let (blockheight, _) = db_tip(&db_path).unwrap_or_else(|e| {
+                let BlockchainTip {
+                    height: blockheight,
+                    ..
+                } = db_tip(&db_path).unwrap_or_else(|e| {
                     log::error!("Getting tip from db: {:?}", e);
                     process::exit(1);
                 });

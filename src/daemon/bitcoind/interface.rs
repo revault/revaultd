@@ -1,6 +1,6 @@
 use crate::{
     bitcoind::{BitcoindError, MIN_CONF},
-    revaultd::{CachedVault, VaultStatus},
+    revaultd::{BlockchainTip, CachedVault, VaultStatus},
 };
 use common::config::BitcoindConfig;
 use revault_tx::bitcoin::{Address, Amount, BlockHash, OutPoint, TxOut, Txid};
@@ -86,11 +86,11 @@ impl BitcoinD {
         self.make_node_request("getblockchaininfo", &[])
     }
 
-    pub fn get_tip(&self) -> Result<(u32, BlockHash), BitcoindError> {
+    pub fn get_tip(&self) -> Result<BlockchainTip, BitcoindError> {
         let json_height = self.make_node_request("getblockcount", &[])?;
         let height = json_height.as_u64().ok_or_else(|| {
             BitcoindError::Custom("API break, 'getblockcount' didn't return an u64.".to_string())
-        })?;
+        })? as u32;
         let hash = BlockHash::from_str(
             self.make_node_request("getblockhash", &[json_height])?
                 .as_str()
@@ -104,7 +104,7 @@ impl BitcoinD {
             BitcoindError::Custom(format!("Invalid blockhash given by 'getblockhash': {}", e))
         })?;
 
-        Ok((height as u32, hash))
+        Ok(BlockchainTip { height, hash })
     }
 
     pub fn synchronization_info(&self) -> Result<SyncInfo, BitcoindError> {

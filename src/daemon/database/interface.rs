@@ -1,4 +1,7 @@
-use crate::{database::DatabaseError, revaultd::VaultStatus};
+use crate::{
+    database::DatabaseError,
+    revaultd::{BlockchainTip, VaultStatus},
+};
 use common::config;
 use revault_tx::{
     bitcoin::{
@@ -75,17 +78,17 @@ pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
 }
 
 /// Get our tip from the database
-pub fn db_tip(db_path: &PathBuf) -> Result<(u32, BlockHash), DatabaseError> {
+pub fn db_tip(db_path: &PathBuf) -> Result<BlockchainTip, DatabaseError> {
     let rows = db_query(
         db_path,
         "SELECT blockheight, blockhash FROM tip",
         NO_PARAMS,
         |row| {
-            let blockheight = row.get::<_, u32>(0)?;
-            let blockhash: BlockHash = encode::deserialize(&row.get::<_, Vec<u8>>(1)?)
+            let height = row.get::<_, u32>(0)?;
+            let hash: BlockHash = encode::deserialize(&row.get::<_, Vec<u8>>(1)?)
                 .map_err(|e| FromSqlError::Other(Box::new(e)))?;
 
-            Ok((blockheight, blockhash))
+            Ok(BlockchainTip { height, hash })
         },
     )?;
 

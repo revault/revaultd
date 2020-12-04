@@ -64,6 +64,13 @@ fn bitcoind_sanity_checks(
     check_bitcoind_network(&bitcoind, &bitcoind_config.network)
 }
 
+/// Bitcoind uses a guess for the value of verificationprogress. It will eventually get to
+/// be 1, but can take some time; when it's > 0.99999 we are synced anyways so use that.
+fn roundup_progress(progress: f64) -> f64 {
+    let precision = 10u64.pow(5);
+    ((progress * precision as f64 + 1.0) as u64 / precision) as f64
+}
+
 /// Polls bitcoind to check if we are synced yet.
 /// Tries to be smart with getblockchaininfo calls by adjsuting the sleep duration
 /// between calls.
@@ -82,7 +89,7 @@ fn bitcoind_sync_status(
         ibd,
         progress,
     } = bitcoind.synchronization_info()?;
-    *sync_progress = progress;
+    *sync_progress = roundup_progress(progress);
 
     if first_poll {
         if ibd {
@@ -124,7 +131,12 @@ fn bitcoind_sync_status(
     } else {
         0
     };
-    *sleep_duration = Some(Duration::from_secs(delta / 20 / 2));
+    *sleep_duration = Some(std::cmp::max(
+        Duration::from_secs(delta / 20 / 2),
+        Duration::from_secs(5),
+    ));
+
+    log::info!("We'll poll bitcoind again in {:?} seconds", sleep_duration);
 
     Ok(())
 }
@@ -424,10 +436,9 @@ pub fn bitcoind_main_loop(
                 })?;
 
                 log::info!("bitcoind now synced.");
-            } else {
-                log::info!("We'll poll bitcoind again in {:?} seconds", sync_waittime);
             }
 
+            last_poll = Some(now);
             continue;
         }
 

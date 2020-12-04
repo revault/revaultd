@@ -350,8 +350,13 @@ impl RevaultD {
 
     /// All deposit addresses as strings up to the gap limit (100)
     pub fn all_deposit_addresses(&mut self) -> Vec<String> {
-        (0..self.current_unused_index + self.gap_limit())
-            .map(|index| self.vault_address(index).to_string())
+        self.derivation_index_map
+            .keys()
+            .map(|s| {
+                Address::from_script(s, self.bitcoind_config.network)
+                    .expect("Created from P2WSH address")
+                    .to_string()
+            })
             .collect()
     }
 

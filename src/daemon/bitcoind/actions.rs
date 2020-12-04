@@ -145,9 +145,9 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
 
     if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
         bitcoind.createwallet_startup(bitcoind_wallet_path)?;
+        log::info!("Importing descriptors to bitcoind watchonly wallet.");
 
         // Now, import descriptors.
-        // TODO: maybe warn, depending on the timestamp, that it's going to take some time.
         // In theory, we could just import the vault (deposit) descriptor expressed using xpubs, give a
         // range to bitcoind as the gap limit, and be fine.
         // Unfortunately we cannot just import descriptors as is, since bitcoind does not support
@@ -166,6 +166,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         // As a consequence, we don't have enough information to opportunistically import a
         // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
         // deposit and unvault descriptors..
+        // FIXME: maybe we actually have, with the derivation_index_map ?
         let mut addresses = revaultd.all_unvault_addresses();
         for i in 0..addresses.len() {
             addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;

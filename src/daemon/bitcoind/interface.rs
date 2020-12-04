@@ -241,6 +241,7 @@ impl BitcoinD {
                     if fresh_wallet {
                         serde_json::Value::String("now".to_string())
                     } else {
+                        log::debug!("Not a fresh wallet, rescan *may* take some time.");
                         serde_json::Value::Number(serde_json::Number::from(timestamp))
                     },
                 );

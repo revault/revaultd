@@ -258,10 +258,10 @@ pub fn db_update_deposit_index(
 pub fn db_insert_new_vault(
     db_path: &PathBuf,
     wallet_id: u32,
-    status: VaultStatus,
+    status: &VaultStatus,
     blockheight: u32,
     deposit_outpoint: &OutPoint,
-    amount: Amount,
+    amount: &Amount,
     derivation_index: ChildNumber,
     vault_tx: VaultTransaction,
 ) -> Result<(), DatabaseError> {
@@ -273,7 +273,7 @@ pub fn db_insert_new_vault(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 wallet_id,
-                status as u32,
+                *status as u32,
                 blockheight,
                 deposit_outpoint.txid.to_vec(),
                 deposit_outpoint.vout,
@@ -417,10 +417,10 @@ mod test {
         db_insert_new_vault(
             &db_path,
             wallet_id,
-            status,
+            &status,
             blockheight,
             &first_deposit_outpoint,
-            amount,
+            &amount,
             derivation_index,
             vault_tx,
         )
@@ -439,10 +439,10 @@ mod test {
         db_insert_new_vault(
             &db_path,
             wallet_id,
-            status,
+            &status,
             blockheight,
             &second_deposit_outpoint,
-            amount,
+            &amount,
             derivation_index,
             vault_tx,
         )
@@ -461,10 +461,10 @@ mod test {
         db_insert_new_vault(
             &db_path,
             wallet_id,
-            status,
+            &status,
             blockheight,
             &third_deposit_outpoint,
-            amount,
+            &amount,
             derivation_index,
             vault_tx.clone(),
         )
@@ -475,10 +475,10 @@ mod test {
         db_insert_new_vault(
             &db_path,
             wallet_id + 1,
-            status,
+            &status,
             blockheight,
             &third_deposit_outpoint,
-            amount,
+            &amount,
             derivation_index,
             vault_tx,
         )

@@ -290,6 +290,7 @@ fn update_deposits(
             0
         };
 
+        let amount = Amount::from_sat(utxo.txo.value);
         db_insert_new_vault(
             &revaultd.read().unwrap().db_file(),
             revaultd
@@ -297,13 +298,24 @@ fn update_deposits(
                 .unwrap()
                 .wallet_id
                 .expect("Wallet id is set at startup in setup_db()"),
-            utxo.status,
+            &utxo.status,
             blockheight,
             &outpoint,
-            Amount::from_sat(utxo.txo.value),
+            &amount,
             derivation_index,
             vault_tx,
         )?;
+        log::debug!(
+            "Got a new {} deposit at {} for {} ({})",
+            if blockheight == 0 {
+                "unconfirmed"
+            } else {
+                "confirmed"
+            },
+            &outpoint,
+            &utxo.txo.script_pubkey,
+            &amount
+        );
         revaultd.write().unwrap().vaults.insert(outpoint, utxo);
 
         // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk

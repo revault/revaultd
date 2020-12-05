@@ -33,8 +33,37 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert sec_res["blockheight"] == res["blockheight"] + 1
 
 
-def test_listvaults(revaultd_manager):
+def test_listvaults(revaultd_manager, bitcoind):
     res = revaultd_manager.rpc.call("listvaults")
     assert res["vaults"] == []
 
-    # TODO: add a getnewaddress method to test listvaults..
+    # Send to a deposit address, we detect one unconfirmed vault
+    amount_sent = 0.75
+    addr = revaultd_manager.rpc.call("getdepositaddress")["address"]
+    txid = bitcoind.rpc.sendtoaddress(addr, amount_sent)
+    revaultd_manager.wait_for_log("Got a new unconfirmed deposit")
+    vault_list = revaultd_manager.rpc.call("listvaults")["vaults"]
+    assert len(vault_list) == 1
+    assert vault_list[0]["status"] == "unconfirmed"
+    assert vault_list[0]["txid"] == txid
+    assert vault_list[0]["amount"] == amount_sent * 10**8
+
+    # Generate 5 blocks, it is still unconfirmed
+    bitcoind.generate_block(5)
+    revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
+        "unconfirmed"
+
+    # 1 more block will get it confirmed
+    bitcoind.generate_block(1)
+    revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
+        "funded"
+
+    # Of course, it persists across restarts.
+    revaultd_manager.rpc.call("stop")
+    revaultd_manager.proc.wait(TIMEOUT)
+    revaultd_manager.start()
+    vault_list = revaultd_manager.rpc.call("listvaults")["vaults"]
+    assert len(vault_list) == 1
+    assert vault_list[0]["status"] == "unconfirmed"
+    assert vault_list[0]["txid"] == txid
+    assert vault_list[0]["amount"] == amount_sent * 10**8

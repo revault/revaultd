@@ -141,6 +141,17 @@ impl RpcApi for RpcImpl {
             log::error!("Receiving 'listvaults' result from main thread: {:?}", e);
             process::exit(1);
         });
+        let vaults: Vec<serde_json::Value> = vaults
+            .into_iter()
+            .map(|(value, status, txid, vout)| {
+                json!({
+                    "amount": value,
+                    "status": status,
+                    "txid": txid,
+                    "vout": vout,
+                })
+            })
+            .collect();
 
         Ok(json!({ "vaults": vaults }))
     }

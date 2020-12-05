@@ -488,13 +488,6 @@ impl BitcoinD {
                 })?
                 .as_sat();
 
-            log::debug!(
-                "Got a new {}-conf deposit at {:#?} for address {} ({} sats)",
-                &confirmations,
-                &outpoint,
-                &address,
-                &value
-            );
             new_deposits.insert(
                 outpoint,
                 CachedVault {

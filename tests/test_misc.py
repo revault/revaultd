@@ -67,3 +67,15 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert vault_list[0]["status"] == "unconfirmed"
     assert vault_list[0]["txid"] == txid
     assert vault_list[0]["amount"] == amount_sent * 10**8
+
+
+def test_getdepositaddress(revaultd_manager, bitcoind):
+    addr = revaultd_manager.rpc.call("getdepositaddress")["address"]
+
+    # If we don't use it, we'll get the same
+    assert addr == revaultd_manager.rpc.call("getdepositaddress")["address"]
+
+    # But if we do, we'll get the next one!
+    bitcoind.rpc.sendtoaddress(addr, 0.22222)
+    revaultd_manager.wait_for_log("Got a new unconfirmed deposit")
+    assert addr != revaultd_manager.rpc.call("getdepositaddress")["address"]

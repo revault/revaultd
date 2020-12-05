@@ -36,32 +36,32 @@ fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
 // Returns an error only on a fatal one, and None on recoverable ones.
 fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io::Error> {
     let mut buf = vec![0; 512];
-    let mut bytes_read = 0;
+    let mut total_read = 0;
 
     loop {
         match stream.read(&mut buf) {
             Ok(0) => {
-                if bytes_read == 0 {
+                if total_read == 0 {
                     return Ok(None);
                 }
-                return Ok(Some(trimmed(buf, bytes_read)));
+                return Ok(Some(trimmed(buf, total_read)));
             }
             Ok(n) => {
-                bytes_read += n;
-                if bytes_read == buf.len() {
-                    buf.resize(bytes_read * 2, 0);
+                total_read += n;
+                if total_read == buf.len() {
+                    buf.resize(total_read * 2, 0);
                 } else {
-                    return Ok(Some(trimmed(buf, bytes_read)));
+                    return Ok(Some(trimmed(buf, total_read)));
                 }
             }
             Err(err) => {
                 match err.kind() {
                     io::ErrorKind::WouldBlock => {
-                        if bytes_read == 0 {
+                        if total_read == 0 {
                             // We can't read it just yet, but it's fine.
                             return Ok(None);
                         }
-                        return Ok(Some(trimmed(buf, bytes_read)));
+                        return Ok(Some(trimmed(buf, total_read)));
                     }
                     io::ErrorKind::Interrupted => {
                         // Try again on interruption.

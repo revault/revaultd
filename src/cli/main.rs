@@ -120,15 +120,18 @@ fn main() {
         });
 
     loop {
+        let mut total_read = 0;
         loop {
-            let read = socket.read(&mut raw_response).unwrap_or_else(|e| {
-                eprintln!("Reading from {:?}: '{}'", &socket_file, e);
-                process::exit(1);
-            });
-            if read == raw_response.len() {
-                raw_response.resize(2 * read, 0);
+            total_read += socket
+                .read(&mut raw_response[total_read..])
+                .unwrap_or_else(|e| {
+                    eprintln!("Reading from {:?}: '{}'", &socket_file, e);
+                    process::exit(1);
+                });
+            if total_read == raw_response.len() {
+                raw_response.resize(2 * total_read, 0);
             } else {
-                raw_response = trimmed(raw_response, read);
+                raw_response = trimmed(raw_response, total_read);
                 break;
             }
         }

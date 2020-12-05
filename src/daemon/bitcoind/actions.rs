@@ -309,7 +309,7 @@ fn update_deposits(
         // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
         // FIXME: of course, that's rudimentary
         let current_first_index = revaultd.read().unwrap().current_unused_index;
-        if derivation_index > current_first_index {
+        if derivation_index >= current_first_index {
             log::debug!(
                 "Incrementing deposit derivation index from {}",
                 current_first_index

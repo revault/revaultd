@@ -23,7 +23,7 @@ impl BitcoinD {
             BitcoindError::Custom(format!("Reading cookie file: {}", e.to_string()))
         })?;
         // The cookie file content is "__cookie__:pass"
-        let mut cookie_slices = cookie_string.split(":");
+        let mut cookie_slices = cookie_string.split(':');
         let (user, pass) = (
             cookie_slices.next().map(|s| s.to_string()),
             cookie_slices.next().map(|s| s.to_string()),
@@ -57,10 +57,8 @@ impl BitcoinD {
     ) -> Result<serde_json::Value, BitcoindError> {
         let req = client.build_request(method, params);
         log::trace!("Sending to bitcoind: {:#?}", req);
-        let resp = client
-            .send_request(&req)
-            .map_err(|e| BitcoindError::Server(e))?;
-        let res = resp.into_result().map_err(|e| BitcoindError::Server(e))?;
+        let resp = client.send_request(&req).map_err(BitcoindError::Server)?;
+        let res = resp.into_result().map_err(BitcoindError::Server)?;
         log::trace!("Got from bitcoind: {:#?}", res);
 
         Ok(res)
@@ -318,10 +316,7 @@ impl BitcoinD {
             "timestamp".to_string(),
             serde_json::Value::String("now".to_string()),
         );
-        desc_map.insert(
-            "label".to_string(),
-            serde_json::Value::String(label.clone()),
-        );
+        desc_map.insert("label".to_string(), serde_json::Value::String(label));
 
         let res = self.make_watchonly_request(
             "importdescriptors",
@@ -389,7 +384,7 @@ impl BitcoinD {
 
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
     /// We take the currently known utxos, and return both the new deposits and the spent deposits.
-    pub fn sync_deposits<'a>(
+    pub fn sync_deposits(
         &self,
         existing_utxos: &HashMap<OutPoint, CachedVault>,
     ) -> Result<
@@ -574,7 +569,7 @@ impl BitcoinD {
                     "API break: 'gettransaction' 'vin' isn't an array?".to_string(),
                 )
             })?
-            .into_iter()
+            .iter()
             .filter_map(|txin| {
                 Some(OutPoint {
                     txid: Txid::from_str(txin.get("txid")?.as_str()?).ok()?,

@@ -199,7 +199,7 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
 
     if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
         log::info!("Loading our watchonly wallet '{}'.", bitcoind_wallet_path);
-        bitcoind.loadwallet_startup(bitcoind_wallet_path.clone())?;
+        bitcoind.loadwallet_startup(bitcoind_wallet_path)?;
     }
 
     Ok(())
@@ -247,9 +247,9 @@ fn update_tip(
 }
 
 fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
-    let mut bytes = Vec::from_hex(hex)
+    let bytes = Vec::from_hex(hex)
         .map_err(|e| BitcoindError::Custom(format!("Parsing tx hex: '{}'", e.to_string())))?;
-    encode::deserialize::<Transaction>(&mut bytes)
+    encode::deserialize::<Transaction>(&bytes)
         .map_err(|e| BitcoindError::Custom(format!("Deserializing tx hex: '{}'", e.to_string())))
 }
 
@@ -479,7 +479,7 @@ pub fn bitcoind_main_loop(
                 maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
                     BitcoindError::Custom(format!("Error while creating wallet: {}", e.to_string()))
                 })?;
-                maybe_load_wallet(&mut revaultd, &bitcoind).map_err(|e| {
+                maybe_load_wallet(&revaultd, &bitcoind).map_err(|e| {
                     BitcoindError::Custom(format!("Error while loading wallet: {}", e.to_string()))
                 })?;
 

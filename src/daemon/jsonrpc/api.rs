@@ -33,7 +33,7 @@ impl JsonRpcMetaData {
     }
 
     pub fn is_shutdown(&self) -> bool {
-        return self.shutdown.load(Ordering::Relaxed);
+        self.shutdown.load(Ordering::Relaxed)
     }
 
     pub fn shutdown(&self) {

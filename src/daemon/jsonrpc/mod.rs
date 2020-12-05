@@ -93,6 +93,11 @@ fn write_byte_stream(stream: &mut UnixStream, resp: String) -> Result<(), io::Er
     }
 }
 
+// Used to check if, when receiving an event for a token, we have an ongoing connection and stream
+// for it.
+#[cfg(not(windows))]
+type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>;
+
 // For all but Windows, we use Mio.
 #[cfg(not(windows))]
 fn mio_loop(
@@ -110,8 +115,7 @@ fn mio_loop(
 
     // UID per connection
     let mut unique_token = Token(stop_token.0 + 1);
-    let mut connections_map: HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)> =
-        HashMap::with_capacity(32);
+    let mut connections_map: ConnectionMap = HashMap::with_capacity(32);
 
     poller
         .registry()
@@ -286,7 +290,8 @@ fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
                     }
                 };
             }
-            return Err(e);
+
+            Err(e)
         }
     }
 }

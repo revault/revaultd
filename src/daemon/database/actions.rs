@@ -186,7 +186,7 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
 
     for vault in db_deposits(&db_path)?.into_iter() {
         let deposit_script_pubkey = revaultd
-            .vault_address(vault.derivation_index.into())
+            .vault_address(vault.derivation_index)
             .script_pubkey();
         revaultd.vaults.insert(
             vault.deposit_outpoint,
@@ -254,6 +254,7 @@ pub fn db_update_deposit_index(
 
 /// Insert a new deposit in the database (atomically record both the vault and the deposit
 /// transaction).
+#[allow(clippy::too_many_arguments)]
 pub fn db_insert_new_vault(
     db_path: &PathBuf,
     wallet_id: u32,

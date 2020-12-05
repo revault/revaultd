@@ -256,10 +256,7 @@ impl RevaultD {
         }
         data_dir = fs::canonicalize(data_dir)?;
 
-        let daemon = match config.daemon {
-            Some(false) => false,
-            _ => true,
-        };
+        let daemon = !matches!(config.daemon, Some(false));
 
         Ok(RevaultD {
             vault_descriptor,
@@ -290,25 +287,19 @@ impl RevaultD {
     }
 
     pub fn vault_address(&self, child_number: ChildNumber) -> Address {
-        let addr = self
-            .vault_descriptor
+        self.vault_descriptor
             .derive(child_number)
             .0
             .address(self.bitcoind_config.network)
-            .expect("vault_descriptor is a wsh");
-
-        addr
+            .expect("vault_descriptor is a wsh")
     }
 
     pub fn unvault_address(&self, child_number: ChildNumber) -> Address {
-        let addr = self
-            .unvault_descriptor
+        self.unvault_descriptor
             .derive(child_number)
             .0
             .address(self.bitcoind_config.network)
-            .expect("vault_descriptor is a wsh");
-
-        addr
+            .expect("vault_descriptor is a wsh")
     }
 
     pub fn gap_limit(&self) -> u32 {

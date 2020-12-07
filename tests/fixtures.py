@@ -3,9 +3,8 @@ Most of the code here is stolen from C-lightning's test suite. This is surely
 Rusty Russell or Christian Decker who wrote most of this (I'd put some sats on
 cdecker), so credits to them ! (MIT licensed)
 """
-from utils import BitcoinD, RevaultD
+from utils import BitcoinD, RevaultD, get_participants, RevaultDFactory
 
-import bip32
 import os
 import pytest
 import shutil
@@ -72,33 +71,9 @@ def bitcoind(directory):
     bitcoind.cleanup()
 
 
-def get_participants(n_stk, n_man):
-    """Get the configuration entries for each participant."""
-    stakeholders_hds = [bip32.BIP32.from_seed(os.urandom(32))
-                        for _ in range(n_stk)]
-    cosigners_hds = [bip32.BIP32.from_seed(os.urandom(32))
-                     for _ in range(n_stk)]
-    stakeholders = [
-        {
-            "xpub": stakeholders_hds[i].get_master_xpub(),
-            "cosigner_key": cosigners_hds[i].get_pubkey_from_path("m/0").hex()
-        }
-        for i in range(n_stk)
-    ]
-
-    managers = [
-        {
-            "xpub": m.get_master_xpub(),
-        }
-        for m in [bip32.BIP32.from_seed(os.urandom(32)) for _ in range(n_man)]
-    ]
-
-    return (stakeholders, managers)
-
-
 @pytest.fixture
-def revaultd_stakeholder(bitcoind, test_base_dir):
-    datadir = os.path.join(test_base_dir, "revaultd")
+def revaultd_stakeholder(bitcoind, directory):
+    datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     stakeholders, managers = get_participants(2, 3)
 
@@ -116,8 +91,8 @@ def revaultd_stakeholder(bitcoind, test_base_dir):
 
 
 @pytest.fixture
-def revaultd_manager(bitcoind, test_base_dir):
-    datadir = os.path.join(test_base_dir, "revaultd")
+def revaultd_manager(bitcoind, directory):
+    datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     stakeholders, managers = get_participants(2, 3)
 
@@ -132,3 +107,12 @@ def revaultd_manager(bitcoind, test_base_dir):
     yield revaultd
 
     revaultd.cleanup()
+
+
+@pytest.fixture
+def revaultd_factory(directory, bitcoind):
+    factory = RevaultDFactory(directory, bitcoind)
+
+    yield factory
+
+    factory.cleanup()

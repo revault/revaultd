@@ -1,6 +1,6 @@
 from fixtures import (
     revaultd_stakeholder, revaultd_manager, bitcoind, directory, test_base_dir,
-    test_name
+    test_name, revaultd_factory
 )
 from utils import TIMEOUT, wait_for
 import time
@@ -68,14 +68,21 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert vault_list[0]["amount"] == amount_sent * 10**8
 
 
-def test_getdepositaddress(revaultd_manager, bitcoind):
-    addr = revaultd_manager.rpc.call("getdepositaddress")["address"]
+def test_getdepositaddress(revaultd_factory, bitcoind):
+    (stks, mans) = revaultd_factory.deploy(4, 2)
+    addr = stks[0].rpc.call("getdepositaddress")["address"]
 
-    # If we don't use it, we'll get the same
-    assert addr == revaultd_manager.rpc.call("getdepositaddress")["address"]
+    # If we don't use it, we'll get the same. From us and everyone else
+    for n in stks + mans:
+        assert addr == n.rpc.call("getdepositaddress")["address"]
 
-    # But if we do, we'll get the next one!
+    # But if we do, we'll get the next one (but the same from everyone)!
     bitcoind.rpc.sendtoaddress(addr, 0.22222)
-    revaultd_manager.wait_for_logs(["Got a new unconfirmed deposit",
-                                    "Incremented deposit derivation index"])
-    assert addr != revaultd_manager.rpc.call("getdepositaddress")["address"]
+    stks[0].wait_for_logs(["Got a new unconfirmed deposit",
+                           "Incremented deposit derivation index"])
+    addr2 = stks[0].rpc.call("getdepositaddress")["address"]
+    assert addr2 != addr
+    for n in stks[1:] + mans:
+        n.wait_for_logs(["Got a new unconfirmed deposit",
+                         "Incremented deposit derivation index"])
+        assert addr2 == n.rpc.call("getdepositaddress")["address"]

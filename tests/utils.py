@@ -8,10 +8,12 @@ from decimal import Decimal
 from ephemeral_port_reserve import reserve
 from typing import Optional
 
+import bip32
 import bitcoin
 import json
 import logging
 import os
+import random
 import re
 import select
 import socket
@@ -47,6 +49,30 @@ class RpcError(ValueError):
         self.method = method
         self.payload = payload
         self.error = error
+
+
+def get_participants(n_stk, n_man):
+    """Get the configuration entries for each participant."""
+    stakeholders_hds = [bip32.BIP32.from_seed(os.urandom(32))
+                        for _ in range(n_stk)]
+    cosigners_hds = [bip32.BIP32.from_seed(os.urandom(32))
+                     for _ in range(n_stk)]
+    stakeholders = [
+        {
+            "xpub": stakeholders_hds[i].get_master_xpub(),
+            "cosigner_key": cosigners_hds[i].get_pubkey_from_path("m/0").hex(),
+        }
+        for i in range(n_stk)
+    ]
+
+    managers = [
+        {
+            "xpub": m.get_master_xpub(),
+        }
+        for m in [bip32.BIP32.from_seed(os.urandom(32)) for _ in range(n_man)]
+    ]
+
+    return (stakeholders, managers)
 
 
 class UnixSocket(object):
@@ -574,3 +600,61 @@ class RevaultD(TailableProc):
     def cleanup(self):
         self.proc.kill()
         self.proc.wait()
+
+
+class RevaultDFactory:
+    # FIXME: we use a single bitcoind for all the wallets because it's much
+    # more efficient. Eventually, we may have to test with separate ones.
+    def __init__(self, root_dir, bitcoind):
+        self.root_dir = root_dir
+        self.bitcoind = bitcoind
+        self.daemons = []
+
+    def deploy(self, n_stakeholders, n_managers, funding=None, csv=None):
+        """
+        Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
+        managers and optionally fund it with {funding} sats.
+        """
+        (conf_stk, conf_man) = get_participants(n_stakeholders, n_managers)
+        if csv is None:
+            # More than 6 months
+            csv = random.randint(1, 26784)
+
+        stk_nodes = []
+        for i in range(len(conf_stk)):
+            datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
+            os.makedirs(datadir, exist_ok=True)
+
+            ourselves = {
+                "stakeholder_xpub": conf_stk[i]["xpub"],
+            }
+            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
+                              self.bitcoind)
+            daemon.start()
+            stk_nodes.append(daemon)
+
+        man_nodes = []
+        for i in range(len(conf_man)):
+            datadir = os.path.join(self.root_dir, f"revaultd-man-{i}")
+            os.makedirs(datadir, exist_ok=True)
+
+            ourselves = {
+                "manager_xpub": conf_man[i]["xpub"],
+            }
+            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
+                              self.bitcoind)
+            daemon.start()
+            man_nodes.append(daemon)
+
+        if funding is not None:
+            assert isinstance(funding, int)
+            addr = man_nodes[0].rpc.getdepositaddress["address"]
+            txid = self.bitcoind.rpc.sendtoaddress(addr, 49.9999)
+            self.bitcoind.generate_block(6, wait_for_mempool=txid)
+
+        self.daemons += stk_nodes + man_nodes
+        return (stk_nodes, man_nodes)
+
+    def cleanup(self):
+        for n in self.daemons:
+            n.cleanup()

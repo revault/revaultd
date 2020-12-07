@@ -3,7 +3,7 @@ use crate::{
     revaultd::{CachedVault, VaultStatus},
 };
 use common::config::BitcoindConfig;
-use revault_tx::bitcoin::{Address, Amount, OutPoint, TxOut, Txid};
+use revault_tx::bitcoin::{Address, Amount, BlockHash, OutPoint, TxOut, Txid};
 
 use std::{collections::HashMap, fs, str::FromStr};
 
@@ -85,6 +85,57 @@ impl BitcoinD {
 
     pub fn getblockchaininfo(&self) -> Result<serde_json::Value, BitcoindError> {
         self.make_node_request("getblockchaininfo", &[])
+    }
+
+    pub fn get_tip(&self) -> Result<(u32, BlockHash), BitcoindError> {
+        let json_height = self.make_node_request("getblockcount", &[])?;
+        let height = json_height.as_u64().ok_or_else(|| {
+            BitcoindError("API break, 'getblockcount' didn't return an u64.".to_string())
+        })?;
+        let hash = BlockHash::from_str(
+            self.make_node_request("getblockhash", &[json_height])?
+                .as_str()
+                .ok_or_else(|| {
+                    BitcoindError("API break, 'getblockhash' didn't return a string.".to_string())
+                })?,
+        )
+        .map_err(|e| BitcoindError(format!("Invalid blockhash given by 'getblockhash': {}", e)))?;
+
+        Ok((height as u32, hash))
+    }
+
+    pub fn synchronization_info(&self) -> Result<SyncInfo, BitcoindError> {
+        let chaininfo = self.make_node_request("getblockchaininfo", &[])?;
+        Ok(SyncInfo {
+            headers: chaininfo
+                .get("headers")
+                .and_then(|h| h.as_u64())
+                .ok_or_else(|| {
+                    BitcoindError("No valid 'headers' in getblockchaininfo response?".to_owned())
+                })?,
+            blocks: chaininfo
+                .get("blocks")
+                .and_then(|b| b.as_u64())
+                .ok_or_else(|| {
+                    BitcoindError("No valid 'blocks' in getblockchaininfo response?".to_owned())
+                })?,
+            ibd: chaininfo
+                .get("initialblockdownload")
+                .and_then(|i| i.as_bool())
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
+                    )
+                })?,
+            progress: chaininfo
+                .get("verificationprogress")
+                .and_then(|i| i.as_f64())
+                .ok_or_else(|| {
+                    BitcoindError(
+                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
+                    )
+                })?,
+        })
     }
 
     pub fn createwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
@@ -512,4 +563,11 @@ impl BitcoinD {
 
         Ok(None)
     }
+}
+
+pub struct SyncInfo {
+    pub headers: u64,
+    pub blocks: u64,
+    pub ibd: bool,
+    pub progress: f64,
 }

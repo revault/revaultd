@@ -5,13 +5,16 @@ mod revaultd;
 mod threadmessages;
 
 use crate::{
-    bitcoind::actions::{bitcoind_main_loop, setup_bitcoind},
+    bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     database::actions::setup_db,
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
-    revaultd::RevaultD,
+    revaultd::{RevaultD, VaultStatus},
     threadmessages::*,
 };
 use common::config::Config;
+use database::interface::db_tip;
+
+use revault_tx::bitcoin::{Amount, Txid};
 
 use std::{
     env,
@@ -39,13 +42,15 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
 }
 
 fn daemon_main(mut revaultd: RevaultD) {
+    let (db_path, network) = (revaultd.db_file(), revaultd.bitcoind_config.network);
+
     // First and foremost
     setup_db(&mut revaultd).unwrap_or_else(|e| {
         log::error!("Error setting up database: '{}'", e.to_string());
         process::exit(1);
     });
 
-    let bitcoind = setup_bitcoind(&mut revaultd).unwrap_or_else(|e| {
+    let bitcoind = start_bitcoind(&mut revaultd).unwrap_or_else(|e| {
         log::error!("Error setting up bitcoind: {}", e.to_string());
         process::exit(1);
     });
@@ -59,34 +64,48 @@ fn daemon_main(mut revaultd: RevaultD) {
     // and the bitcoind one to poll bitcoind until we die.
     // Each of them can send us messages, and we listen for them until we are told
     // to shutdown.
-    let (tx, rx) = mpsc::channel();
-    let jsonrpc_tx = tx.clone();
-    let bitcoind_tx = tx;
-    let revaultd = Arc::new(RwLock::new(revaultd));
-    let bit_revaultd = revaultd.clone();
+
+    // The communication from them to us
+    let (main_tx, main_rx) = mpsc::channel();
+    let jsonrpc_main_tx = main_tx.clone();
+    let bitcoind_main_tx = main_tx;
+
+    // The communication from us to the bitcoind thread
+    let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
+
     let jsonrpc_thread = thread::spawn(move || {
-        jsonrpcapi_loop(jsonrpc_tx, socket).unwrap_or_else(|e| {
+        jsonrpcapi_loop(jsonrpc_main_tx, socket).unwrap_or_else(|e| {
             log::error!("Error in JSONRPC server event loop: {}", e.to_string());
             process::exit(1)
         })
     });
 
+    let revaultd = Arc::new(RwLock::new(revaultd));
+    let bit_revaultd = revaultd.clone();
     let bitcoind_thread = thread::spawn(move || {
-        bitcoind_main_loop(bitcoind_tx, bit_revaultd, &bitcoind).unwrap_or_else(|e| {
-            log::error!("Error in bitcoind main loop: {}", e.to_string());
-            process::exit(1)
-        })
+        bitcoind_main_loop(bitcoind_main_tx, bitcoind_rx, bit_revaultd, &bitcoind).unwrap_or_else(
+            |e| {
+                log::error!("Error in bitcoind main loop: {}", e.to_string());
+                process::exit(1)
+            },
+        )
     });
 
     log::info!(
         "revaultd started on network {}",
         revaultd.read().unwrap().bitcoind_config.network
     );
-    for message in rx {
+    for message in main_rx {
         match message {
-            ThreadMessage::Rpc(RpcMessage::Shutdown) => {
-                revaultd.write().unwrap().shutdown = true;
+            ThreadMessageIn::Rpc(RpcMessageIn::Shutdown) => {
                 log::info!("Stopping revaultd.");
+                bitcoind_tx
+                    .send(BitcoindMessageOut::Shutdown)
+                    .unwrap_or_else(|e| {
+                        log::error!("Sending shutdown to bitcoind thread: {:?}", e);
+                        process::exit(1);
+                    });
+
                 jsonrpc_thread.join().unwrap_or_else(|e| {
                     log::error!("Joining RPC server thread: {:?}", e);
                     process::exit(1);
@@ -96,6 +115,65 @@ fn daemon_main(mut revaultd: RevaultD) {
                     process::exit(1);
                 });
                 process::exit(0);
+            }
+            ThreadMessageIn::Rpc(RpcMessageIn::GetInfo(response_tx)) => {
+                log::trace!("Got getinfo from RPC thread");
+
+                let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
+                bitcoind_tx
+                    .send(BitcoindMessageOut::SyncProgress(bitrep_tx))
+                    .unwrap_or_else(|e| {
+                        log::error!("Sending 'syncprogress' to bitcoind thread: {:?}", e);
+                        process::exit(1);
+                    });
+                let progress = bitrep_rx.recv().unwrap_or_else(|e| {
+                    log::error!("Receving 'syncprogress' from bitcoind thread: {:?}", e);
+                    process::exit(1);
+                });
+
+                // This means blockheight == 0 for IBD.
+                let (blockheight, _) = db_tip(&db_path).unwrap_or_else(|e| {
+                    log::error!("Getting tip from db: {:?}", e);
+                    process::exit(1);
+                });
+
+                response_tx
+                    .send((network.to_string(), blockheight, progress))
+                    // TODO: a macro for the unwrap_or_else boilerplate..
+                    .unwrap_or_else(|e| {
+                        log::error!("Sending 'getinfo' result to RPC thread: {:?}", e);
+                        process::exit(1);
+                    });
+            }
+            ThreadMessageIn::Rpc(RpcMessageIn::ListVaults((status, txids), response_tx)) => {
+                log::trace!("Got listvaults from RPC thread");
+
+                let mut resp = Vec::<(u64, String, String, u32)>::new();
+                for (ref outpoint, ref vault) in revaultd.read().unwrap().vaults.iter() {
+                    if let Some(status) = status {
+                        if vault.status != status {
+                            continue;
+                        }
+                    }
+
+                    if let Some(ref txids) = &txids {
+                        if !txids.contains(&outpoint.txid) {
+                            continue;
+                        }
+                    }
+
+                    resp.push((
+                        vault.txo.value,
+                        vault.status.to_string(),
+                        outpoint.txid.to_string(),
+                        outpoint.vout,
+                    ));
+                }
+
+                response_tx.send(resp).unwrap_or_else(|e| {
+                    log::error!("Sending 'listvaults' result to RPC thread: {:?}", e);
+                    process::exit(1);
+                });
             }
             _ => {
                 log::error!("Main thread received an unexpected message: {:#?}", message);
@@ -148,6 +226,7 @@ fn main() {
     } else {
         log::LevelFilter::Trace
     };
+    // FIXME: should probably be from_db(), would allow us to not use Option members
     let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
         eprintln!("Error creating global state: {}", e);
         process::exit(1);

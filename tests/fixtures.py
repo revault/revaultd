@@ -65,7 +65,8 @@ def bitcoind(directory):
     bitcoind = BitcoinD(bitcoin_dir=directory)
     bitcoind.startup()
 
-    bitcoind.rpc.createwallet("revaultd-tests", False, False, "", True)
+    bitcoind.rpc.createwallet(bitcoind.rpc.wallet_name, False, False, "", True)
+
     while bitcoind.rpc.getbalance() < 50:
         bitcoind.rpc.generatetoaddress(1, bitcoind.rpc.getnewaddress())
 

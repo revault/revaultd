@@ -28,7 +28,7 @@ Display general information about the current daemon state.
 | ------------- | ------- | --------------------------------------------------------------- |
 | `blockheight` | integer | Current block height                                            |
 | `network`     | string  | Answer can be `mainnet`, `testnet`, `regtest`                   |
-| `sync`        | integer | The synchronization progress as percentage                      |
+| `sync`        | float   | The synchronization progress as percentage (`0 < sync < 1`)     |
 | `version`     | string  | Version following the [SimVer](http://www.simver.org/) format   |
 
 ## Vault
@@ -55,8 +55,7 @@ Display general information about the current daemon state.
 | Field         | Type   | Description                                                                          |
 | ------------- | ------ | ------------------------------------------------------------------------------------ |
 | `amount`      | int    | Amount of the vault in satoshis                                                      |
-| `blockheight` | int    | Block height at which the vault deposit transaction was confirmed (0 if unconfirmed) |
-| `status`      | string | Status of the vault ([vault statuses](#vault-statuses))                              |
+| `status`      | string | Status of the vault (see [vault statuses](#vault-statuses))                          |
 | `txid`        | string | Deposit txid of the vault deposit transaction                                        |
 | `vout`        | vout   | Index of the deposit output in the deposit transaction.                              |
 
@@ -66,15 +65,15 @@ Note that the `scriptPubKey` is implicitly known as we have the vault output Min
 
 ### `listvaults`
 
-The `listvaults` RPC command displays a list of vaults
-filtered by an optional `status` parameter.
+The `listvaults` RPC command displays a list of vaults optionally filtered by
+either `status` or deposit `txids`.
 
 #### Request
 
 | Parameter | Type         | Description                                                                                     |
 | --------- | ------------ | ----------------------------------------------------------------------------------------------- |
-| `status`  | string array | Vault status -- optional, choices are [vault statuses](#vault-statuses)                         |
-| `txid`    | string array | Vault IDs -- optional, filter the list with the given vault IDs                                 |
+| `status`  | string array | Vault status -- optional, see [vault statuses](#vault-statuses) for possible values             |
+| `txids`   | string array | Vault IDs -- optional, filter the list with the given vault IDs                                 |
 
 #### Response
 

@@ -1,11 +1,14 @@
 use crate::{
-    bitcoind::{interface::BitcoinD, BitcoindError},
+    bitcoind::{
+        interface::{BitcoinD, SyncInfo},
+        BitcoindError,
+    },
     database::{
-        actions::{db_insert_new_vault, db_unvault_deposit},
+        actions::{db_insert_new_vault, db_unvault_deposit, db_update_tip},
         interface::db_wallet,
     },
     revaultd::RevaultD,
-    threadmessages::ThreadMessage,
+    threadmessages::{BitcoindMessageOut, ThreadMessageIn},
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
@@ -15,7 +18,10 @@ use revault_tx::{
 
 use std::{
     path::PathBuf,
-    sync::{mpsc::Sender, Arc, RwLock},
+    sync::{
+        mpsc::{Receiver, Sender, TryRecvError},
+        Arc, RwLock,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -56,105 +62,69 @@ fn bitcoind_sanity_checks(
     check_bitcoind_network(&bitcoind, &bitcoind_config.network)
 }
 
-/// Polls bitcoind until we are synced.
-/// Tries to be smart with getblockchaininfo calls.
-fn wait_for_bitcoind_synced(
+/// Polls bitcoind to check if we are synced yet.
+/// Tries to be smart with getblockchaininfo calls by adjsuting the sleep duration
+/// between calls.
+/// If sync_progress == 1.0, we are done.
+fn bitcoind_sync_status(
     bitcoind: &BitcoinD,
     bitcoind_config: &BitcoindConfig,
+    sleep_duration: &mut Option<Duration>,
+    sync_progress: &mut f64,
 ) -> Result<(), BitcoindError> {
-    // We need to take the edge case in which all headers aren't downloaded yet
-    // into account.
-    let mut first = true;
+    let first_poll = sleep_duration.is_none();
 
-    loop {
-        let chaininfo = bitcoind.getblockchaininfo()?;
-        let (headers, blocks, ibd) = (
-            chaininfo
-                .get("headers")
-                .and_then(|h| h.as_u64())
-                .ok_or_else(|| {
-                    BitcoindError("No valid 'headers' in getblockchaininfo response?".to_owned())
-                })?,
-            chaininfo
-                .get("blocks")
-                .and_then(|b| b.as_u64())
-                .ok_or_else(|| {
-                    BitcoindError("No valid 'blocks' in getblockchaininfo response?".to_owned())
-                })?,
-            chaininfo
-                .get("initialblockdownload")
-                .and_then(|i| i.as_bool())
-                .ok_or_else(|| {
-                    BitcoindError(
-                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
-        );
-        let mut delta = if headers > blocks {
-            headers - blocks
-        } else {
-            0
-        };
+    let SyncInfo {
+        headers,
+        blocks,
+        ibd,
+        progress,
+    } = bitcoind.synchronization_info()?;
+    *sync_progress = progress;
 
+    if first_poll {
         if ibd {
-            // Ok, so we have some time. Let's try to avoid slowing it down by
-            // spamming it with getblockchaininfo calls.
-
-            if first {
-                log::info!(
-                    "Bitcoind is currently performing IBD, this is going to \
+            log::info!(
+                "Bitcoind is currently performing IBD, this is going to \
                         take some time."
-                );
-            }
+            );
 
-            // First: wait for it to gather all headers, if the current delta is
-            // big enough. let's assume it won't take longer than 5min from now
+            // If it may not have received all headers, be conservative and wait
+            // for that first. Let's assume it won't take longer than 5min from now
             // for mainnet.
-            // Then: get the number of blocks left to DL
-            if (first || delta > 1_000) && blocks < 100_000 {
+            if progress < 0.01 {
                 log::info!("Waiting for bitcoind to gather enough headers..");
-                if bitcoind_config.network.to_string().eq("regtest") {
-                    thread::sleep(Duration::from_secs(3));
-                } else {
-                    thread::sleep(Duration::from_secs(5 * 60));
-                }
 
-                let chaininfo = bitcoind.getblockchaininfo()?;
-                let (headers, blocks) = (
-                    chaininfo
-                        .get("headers")
-                        .and_then(|h| h.as_u64())
-                        .ok_or_else(|| {
-                            BitcoindError(
-                                "No valid 'headers' in getblockchaininfo response?".to_owned(),
-                            )
-                        })?,
-                    chaininfo
-                        .get("blocks")
-                        .and_then(|b| b.as_u64())
-                        .ok_or_else(|| {
-                            BitcoindError(
-                                "No valid 'blocks' in getblockchaininfo response?".to_owned(),
-                            )
-                        })?,
-                );
-                delta = headers - blocks;
+                *sleep_duration = if bitcoind_config.network.to_string().eq("regtest") {
+                    Some(Duration::from_secs(3))
+                } else {
+                    Some(Duration::from_secs(5 * 60))
+                };
+
+                return Ok(());
             }
-        } else if delta == 0 {
-            return Ok(());
         }
 
-        // Sleeping a second per 20 blocks seems a good upper bound estimation
-        // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
-        // conservative. Eg if 10_000 are left to be downloaded we'll check back
-        // in ~4min.
-        let sleep_duration = Duration::from_secs(delta / 20 / 2);
-        log::info!("We'll poll bitcoind again in {:?} seconds", sleep_duration);
-        // FIXME: maybe Edouard will need more fine-grained updates eventually
-        thread::sleep(sleep_duration);
-
-        first = false;
+        if progress < 0.7 {
+            log::info!(
+                "Bitcoind is far behind network tip, this is going to \
+                        take some time."
+            );
+        }
     }
+
+    // Sleeping a second per 20 blocks seems a good upper bound estimation
+    // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
+    // conservative. Eg if 10_000 are left to be downloaded we'll check back
+    // in ~4min.
+    let delta = if headers > blocks {
+        headers - blocks
+    } else {
+        0
+    };
+    *sleep_duration = Some(Duration::from_secs(delta / 20 / 2));
+
+    Ok(())
 }
 
 // This creates the actual wallet file, and imports the descriptors
@@ -218,9 +188,8 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
     Ok(())
 }
 
-/// Connects to, sanity checks, and wait for bitcoind to be synced.
-/// Called at startup, will log and abort on error.
-pub fn setup_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError> {
+/// Connects to and sanity checks bitcoind.
+pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError> {
     let bitcoind = BitcoinD::new(
         &revaultd.bitcoind_config,
         revaultd
@@ -234,16 +203,25 @@ pub fn setup_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
         BitcoindError(format!("Error checking bitcoind: {}", e.to_string()))
     })?;
 
-    wait_for_bitcoind_synced(&bitcoind, &revaultd.bitcoind_config)
-        .map_err(|e| BitcoindError(format!("Error while updating tip: {}", e.to_string())))?;
-
-    maybe_create_wallet(revaultd, &bitcoind)
-        .map_err(|e| BitcoindError(format!("Error while creating wallet: {}", e.to_string())))?;
-
-    maybe_load_wallet(&revaultd, &bitcoind)
-        .map_err(|e| BitcoindError(format!("Error while loading wallet: {}", e.to_string())))?;
-
     Ok(bitcoind)
+}
+
+fn update_tip(
+    revaultd: &mut Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    let tip = bitcoind.get_tip()?;
+    let current_tip = revaultd.read().unwrap().tip.expect("Set at startup..");
+
+    if tip != current_tip {
+        log::debug!("New tip: {:#?}", &tip);
+
+        db_update_tip(&revaultd.read().unwrap().db_file(), tip)
+            .map_err(|e| BitcoindError(format!("Updating tip in database: {}", e)))?;
+        revaultd.write().unwrap().tip = Some(tip);
+    }
+
+    Ok(())
 }
 
 fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
@@ -357,24 +335,97 @@ fn poll_bitcoind(
 /// The bitcoind event loop.
 /// Poll bitcoind every 30 seconds, and update our state accordingly.
 pub fn bitcoind_main_loop(
-    _tx: Sender<ThreadMessage>,
+    _tx: Sender<ThreadMessageIn>,
+    rx: Receiver<BitcoindMessageOut>,
     mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
     let mut last_poll = None;
+    let mut sync_waittime = None;
+    // The verification progress announced by bitcoind *at startup* thus won't be updated
+    // after startup check. Should be *exactly* 1.0 when synced, but hey, floats so we are
+    // careful.
+    let mut sync_progress = 0.0f64;
+    // When bitcoind is synced, we poll each 30s. On regtest we speed it up for testing.
+    let poll_interval = match revaultd.read().unwrap().bitcoind_config.network {
+        Network::Regtest => Duration::from_secs(3),
+        _ => Duration::from_secs(30),
+    };
 
-    while !revaultd.read().unwrap().shutdown {
+    loop {
         let now = Instant::now();
+
+        // If master told us something to do, do it now.
+        match rx.try_recv() {
+            Ok(msg) => match msg {
+                BitcoindMessageOut::Shutdown => {
+                    log::info!("Bitcoind received shutdown from main. Exiting.");
+                    return Ok(());
+                }
+                BitcoindMessageOut::SyncProgress(resp_tx) => {
+                    resp_tx.send(sync_progress).map_err(|e| {
+                        BitcoindError(format!(
+                            "Sending synchronization progress to main thread: {}",
+                            e
+                        ))
+                    })?;
+                }
+            },
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                log::error!("Channel with main thread disconnected. Exiting.");
+                return Err(BitcoindError("Channel disconnected".to_string()));
+            }
+        };
+
+        if (sync_progress as u32) < 1 {
+            // While waiting for bitcoind to be synced, guesstimate how much time of block
+            // connection we have left to not harass it with `getblockchaininfo`.
+            if let Some(last) = last_poll {
+                if let Some(waittime) = sync_waittime {
+                    if now.duration_since(last) < waittime {
+                        continue;
+                    }
+                }
+            }
+
+            bitcoind_sync_status(
+                &bitcoind,
+                &revaultd.read().unwrap().bitcoind_config,
+                &mut sync_waittime,
+                &mut sync_progress,
+            )?;
+
+            // Ok. Sync, done. Now just be sure the watchonly wallet is properly loaded, and
+            // to create it if it's first run.
+            if sync_progress as u32 >= 1 {
+                let mut revaultd = revaultd.write().unwrap();
+                maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
+                    BitcoindError(format!("Error while creating wallet: {}", e.to_string()))
+                })?;
+                maybe_load_wallet(&mut revaultd, &bitcoind).map_err(|e| {
+                    BitcoindError(format!("Error while loading wallet: {}", e.to_string()))
+                })?;
+
+                log::info!("bitcoind now synced.");
+            } else {
+                log::info!("We'll poll bitcoind again in {:?} seconds", sync_waittime);
+            }
+
+            continue;
+        }
+
+        // When bitcoind isn't synced, poll each 30s
         if let Some(last_poll) = last_poll {
-            if now.duration_since(last_poll) < Duration::from_secs(30) {
+            if now.duration_since(last_poll) < poll_interval {
                 continue;
             }
         }
 
         last_poll = Some(now);
         poll_bitcoind(&mut revaultd, &bitcoind)?;
+        update_tip(&mut revaultd, &bitcoind)?;
+
         thread::sleep(Duration::from_millis(100));
     }
-
-    Ok(())
 }

@@ -1,9 +1,9 @@
 use crate::{
-    database::{interface::*, schema::SCHEMA, DatabaseError, VERSION},
+    database::{interface::*, schema::SCHEMA, DatabaseError, DB_VERSION},
     revaultd::{CachedVault, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, TxOut},
+    bitcoin::{consensus::encode, BlockHash, TxOut},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
     transactions::VaultTransaction,
@@ -78,7 +78,16 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
             .map_err(|e| DatabaseError(format!("Creating database: {}", e.to_string())))?;
         tx.execute(
             "INSERT INTO version (version) VALUES (?1)",
-            params![VERSION],
+            params![DB_VERSION],
+        )
+        .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
+        tx.execute(
+            "INSERT INTO tip (network, blockheight, blockhash) VALUES (?1, ?2, ?3)",
+            params![
+                revaultd.bitcoind_config.network.to_string(),
+                0,
+                vec![0u8; 32]
+            ],
         )
         .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
         tx.execute(
@@ -102,13 +111,23 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
 
 // Called on startup to check database integrity
 fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
+    let db_path = revaultd.db_file();
+
     // Check if their database is not from the future.
     // We'll eventually do migration here if version < VERSION, but be strict until then.
-    let version = db_version(&revaultd.db_file())?;
-    if version != VERSION {
+    let version = db_version(&db_path)?;
+    if version != DB_VERSION {
         return Err(DatabaseError(format!(
             "Unexpected database version: got '{}', expected '{}'",
-            version, VERSION
+            version, DB_VERSION
+        )));
+    }
+
+    let db_net = db_network(&db_path)?;
+    if db_net != revaultd.bitcoind_config.network {
+        return Err(DatabaseError(format!(
+            "Invalid network. Database is on '{}' but config says '{}'.",
+            db_net, revaultd.bitcoind_config.network
         )));
     }
 
@@ -119,6 +138,8 @@ fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
 fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     let db_path = revaultd.db_file();
     let wallet = db_wallet(&db_path)?;
+
+    revaultd.tip = Some(db_tip(&db_path)?);
 
     //FIXME: Find a way to check if the policies described in the config files are equivalent
     // to the miniscript in the db.
@@ -182,6 +203,19 @@ pub fn setup_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     Ok(())
 }
 
+/// Called by the bitcoind thread as we poll `getblockcount`
+pub fn db_update_tip(db_path: &PathBuf, tip: (u32, BlockHash)) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE tip SET blockheight = (?1), blockhash = (?2)",
+            params![tip.0, tip.1.to_vec()],
+        )
+        .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))?;
+
+        Ok(())
+    })
+}
+
 /// Insert a new deposit in the database (atomically record both the vault and the deposit
 /// transaction).
 pub fn db_insert_new_vault(
@@ -189,6 +223,7 @@ pub fn db_insert_new_vault(
     wallet_id: u32,
     status: VaultStatus,
     blockheight: u32,
+    // FIXME: TYYYYYYPES
     deposit_txid: Vec<u8>,
     deposit_vout: u32,
     amount: u32,
@@ -255,7 +290,7 @@ mod test {
     use super::*;
     use crate::revaultd::RevaultD;
     use common::config::Config;
-    use revault_tx::bitcoin::{hashes::hex::FromHex, OutPoint};
+    use revault_tx::bitcoin::{hashes::hex::FromHex, Network, OutPoint};
 
     use std::{fs, path::PathBuf};
 
@@ -291,9 +326,13 @@ mod test {
         create_db(&mut revaultd).unwrap_err();
         // The version is right
         check_db(&mut revaultd).unwrap();
-        // But it would not open a database from the future!
+        // But it would not open a database created for a different network
+        revaultd.bitcoind_config.network = Network::Testnet;
+        check_db(&mut revaultd).unwrap_err();
+        revaultd.bitcoind_config.network = Network::Bitcoin;
+        // Neither would it accept to open a database from the future!
         db_exec(&revaultd.db_file(), |tx| {
-            tx.execute("UPDATE version SET version = (?1)", params![VERSION + 1])
+            tx.execute("UPDATE version SET version = (?1)", params![DB_VERSION + 1])
                 .unwrap();
             Ok(())
         })

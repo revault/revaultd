@@ -1,5 +1,5 @@
 mod api;
-use crate::threadmessages::ThreadMessage;
+use crate::threadmessages::ThreadMessageIn;
 use api::{JsonRpcMetaData, RpcApi, RpcImpl};
 
 use std::{
@@ -307,7 +307,10 @@ pub fn jsonrpcapi_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error>
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
-pub fn jsonrpcapi_loop(tx: Sender<ThreadMessage>, listener: UnixListener) -> Result<(), io::Error> {
+pub fn jsonrpcapi_loop(
+    tx: Sender<ThreadMessageIn>,
+    listener: UnixListener,
+) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
     let metadata = JsonRpcMetaData::from_tx(tx);
@@ -321,7 +324,7 @@ pub fn jsonrpcapi_loop(tx: Sender<ThreadMessage>, listener: UnixListener) -> Res
 #[cfg(test)]
 mod tests {
     use super::{jsonrpcapi_loop, jsonrpcapi_setup, trimmed};
-    use crate::threadmessages::{RpcMessage, ThreadMessage};
+    use crate::threadmessages::{RpcMessageIn, ThreadMessageIn};
 
     use std::{
         io::{Read, Write},
@@ -375,6 +378,9 @@ mod tests {
         // FIXME(darosior): i need to debug the fuck out of this but i need to install a VM
         // first...
         #[cfg(not(windows))]
-        assert_eq!(rx.recv().unwrap(), ThreadMessage::Rpc(RpcMessage::Shutdown));
+        match rx.recv() {
+            Ok(ThreadMessageIn::Rpc(RpcMessageIn::Shutdown)) => {}
+            _ => panic!("Didn't receive shutdown"),
+        }
     }
 }

@@ -4,7 +4,7 @@ use revault_tx::{
     bitcoin::{
         consensus::encode,
         util::{bip32::ChildNumber, psbt::PartiallySignedTransaction as Psbt},
-        Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
+        Amount, BlockHash, Network, OutPoint, Transaction as BitcoinTransaction, Txid,
     },
     miniscript::descriptor::DescriptorPublicKey,
 };
@@ -72,6 +72,42 @@ pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
         .ok_or_else(|| DatabaseError("No row in version table?".to_string()))?
         .as_ref()
         .map_err(|e| DatabaseError(format!("Getting version: '{}'", e.to_string())))?)
+}
+
+/// Get our tip from the database
+pub fn db_tip(db_path: &PathBuf) -> Result<(u32, BlockHash), DatabaseError> {
+    let rows = db_query(
+        db_path,
+        "SELECT blockheight, blockhash FROM tip",
+        NO_PARAMS,
+        |row| {
+            let blockheight = row.get::<_, u32>(0)?;
+            let blockhash: BlockHash = encode::deserialize(&row.get::<_, Vec<u8>>(1)?)
+                .map_err(|e| FromSqlError::Other(Box::new(e)))?;
+
+            Ok((blockheight, blockhash))
+        },
+    )?;
+
+    Ok(*rows
+        .get(0)
+        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))?
+        .as_ref()
+        .map_err(|e| DatabaseError(format!("Getting tip: '{}'", e.to_string())))?)
+}
+
+/// Get the network this DB was created on
+pub fn db_network(db_path: &PathBuf) -> Result<Network, DatabaseError> {
+    let rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
+        Ok(Network::from_str(&row.get::<_, String>(0)?)
+            .expect("We only evert insert from to_string"))
+    })?;
+
+    Ok(*rows
+        .get(0)
+        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))?
+        .as_ref()
+        .map_err(|e| DatabaseError(format!("Getting tip: '{}'", e.to_string())))?)
 }
 
 /// A "wallet" as stored in the database

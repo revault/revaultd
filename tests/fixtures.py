@@ -3,16 +3,12 @@ Most of the code here is stolen from C-lightning's test suite. This is surely
 Rusty Russell or Christian Decker who wrote most of this (I'd put some sats on
 cdecker), so credits to them ! (MIT licensed)
 """
-from bitcoin.core import COIN
-from decimal import Decimal
-from utils import BitcoinD, RevaultD, wait_for, TEST_DEBUG
+from utils import BitcoinD, RevaultD
 
 import bip32
-import logging
 import os
 import pytest
 import shutil
-import sys
 import tempfile
 
 __attempts = {}
@@ -51,7 +47,7 @@ def directory(request, test_base_dir, test_name):
     try:
         shutil.rmtree(directory)
     except Exception:
-        files = [os.path.join(dp, f) for dp, dn, fn in os.walk(directory) for f in fn]
+        files = [os.path.join(dp, f) for dp, _, fn in os.walk(directory) for f in fn]
         print("Directory still contains files:", files)
         raise
 

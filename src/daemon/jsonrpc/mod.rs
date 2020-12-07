@@ -63,8 +63,12 @@ fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io
                         }
                         return Ok(Some(trimmed(buf, total_read)));
                     }
-                    io::ErrorKind::Interrupted => {
-                        // Try again on interruption.
+                    io::ErrorKind::Interrupted
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe => {
+                        // Try again on interruption or disconnection. In the latter case we'll
+                        // remove the stream anyways.
                         continue;
                     }
                     // Now that's actually bad
@@ -243,7 +247,7 @@ fn windows_loop(
         let mut stream = stream?;
 
         // Ok, so we got something to read (we don't respond to garbage)
-        if let Some(bytes) = read_bytes_from_stream(&stream)? {
+        while let Some(bytes) = read_bytes_from_stream(&stream)? {
             // Is it actually readable?
             match String::from_utf8(bytes) {
                 Ok(string) => {
@@ -361,25 +365,22 @@ mod tests {
         let mut sock = UnixStream::connect(path).unwrap();
 
         // Write an invalid JSONRPC message
-        // For some reasons it takes '{}' as non-empty parameters..
+        // For some reasons it takes '{}' as non-empty parameters ON UNIX BUT NOT WINDOWS WTF..
         let invalid_msg =
-            String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": {}}"#);
+            String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": {"a": "b"}}"#);
         let mut response = vec![0; 256];
         sock.write(invalid_msg.as_bytes()).unwrap();
         let read = sock.read(&mut response).unwrap();
         assert_eq!(
             String::from_utf8(trimmed(response, read)).unwrap(),
             String::from(
-                r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid parameters: No parameters were expected","data":"Map({})"},"id":0}"#
+                r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid parameters: No parameters were expected","data":"Map({\"a\": String(\"b\")})"},"id":0}"#
             )
         );
 
         // Tell it to stop, should send us a Shutdown message
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);
         sock.write(msg.as_bytes()).unwrap();
-        // FIXME(darosior): i need to debug the fuck out of this but i need to install a VM
-        // first...
-        #[cfg(not(windows))]
         match rx.recv() {
             Ok(RpcMessageIn::Shutdown) => {}
             _ => panic!("Didn't receive shutdown"),

@@ -2,7 +2,7 @@ from fixtures import (
     revaultd_stakeholder, revaultd_manager, bitcoind, directory, test_base_dir,
     test_name
 )
-from utils import TIMEOUT
+from utils import TIMEOUT, wait_for
 import time
 import json, socket
 
@@ -28,9 +28,8 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["version"] == "0.0.2"
 
     bitcoind.generate_block(1)
-    revaultd_manager.wait_for_log("New tip")
-    sec_res = revaultd_manager.rpc.call("getinfo")
-    assert sec_res["blockheight"] == res["blockheight"] + 1
+    wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"]
+                      == res["blockheight"] + 1)
 
 
 def test_listvaults(revaultd_manager, bitcoind):
@@ -77,5 +76,6 @@ def test_getdepositaddress(revaultd_manager, bitcoind):
 
     # But if we do, we'll get the next one!
     bitcoind.rpc.sendtoaddress(addr, 0.22222)
-    revaultd_manager.wait_for_log("Got a new unconfirmed deposit")
+    revaultd_manager.wait_for_logs(["Got a new unconfirmed deposit",
+                                    "Incremented deposit derivation index"])
     assert addr != revaultd_manager.rpc.call("getdepositaddress")["address"]

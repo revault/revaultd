@@ -237,10 +237,10 @@ fn update_tip(
     let current_tip = revaultd.read().unwrap().tip.expect("Set at startup..");
 
     if tip != current_tip {
-        log::debug!("New tip: {:#?}", &tip);
-
         db_update_tip(&revaultd.read().unwrap().db_file(), tip)?;
         revaultd.write().unwrap().tip = Some(tip);
+
+        log::debug!("New tip: {:#?}", &tip);
     }
 
     Ok(())
@@ -322,11 +322,6 @@ fn update_deposits(
         // FIXME: of course, that's rudimentary
         let current_first_index = revaultd.read().unwrap().current_unused_index;
         if derivation_index >= current_first_index {
-            log::debug!(
-                "Incrementing deposit derivation index from {}",
-                current_first_index
-            );
-
             let new_index = revaultd
                 .read()
                 .unwrap()
@@ -344,6 +339,11 @@ fn update_deposits(
             let next_addr = bitcoind
                 .addr_descriptor(&revaultd.read().unwrap().last_unvault_address().to_string())?;
             bitcoind.import_fresh_unvault_descriptor(next_addr)?;
+
+            log::debug!(
+                "Incremented deposit derivation index from {}",
+                current_first_index
+            );
         }
     }
 

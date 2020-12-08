@@ -10,7 +10,7 @@ pub enum RpcMessageIn {
     // Network, blockheight, sync progress
     GetInfo(SyncSender<(String, u32, f64)>),
     ListVaults(
-        (Option<VaultStatus>, Option<Vec<Txid>>),
+        (Option<Vec<VaultStatus>>, Option<Vec<Txid>>),
         // amount, status, txid, vout
         SyncSender<Vec<(u64, String, String, u32)>>,
     ),

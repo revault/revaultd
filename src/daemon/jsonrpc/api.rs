@@ -59,7 +59,7 @@ pub trait RpcApi {
     fn listvaults(
         &self,
         meta: Self::Metadata,
-        status: Option<String>,
+        status: Option<Vec<String>>,
         txids: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
@@ -101,13 +101,23 @@ impl RpcApi for RpcImpl {
     fn listvaults(
         &self,
         meta: Self::Metadata,
-        status: Option<String>,
+        statuses: Option<Vec<String>>,
         txids: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let status = if let Some(status) = status {
-            Some(VaultStatus::from_str(&status).map_err(|_| {
-                JsonRpcError::invalid_params(format!("'{}' is not a valid vault status", &status))
-            })?)
+        let statuses = if let Some(statuses) = statuses {
+            Some(
+                statuses
+                    .into_iter()
+                    .map(|status_str| {
+                        VaultStatus::from_str(&status_str).map_err(|_| {
+                            JsonRpcError::invalid_params(format!(
+                                "'{}' is not a valid vault status",
+                                &status_str
+                            ))
+                        })
+                    })
+                    .collect::<jsonrpc_core::Result<Vec<VaultStatus>>>()?,
+            )
         } else {
             None
         };
@@ -132,7 +142,7 @@ impl RpcApi for RpcImpl {
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         meta.tx
-            .send(RpcMessageIn::ListVaults((status, txids), response_tx))
+            .send(RpcMessageIn::ListVaults((statuses, txids), response_tx))
             .unwrap_or_else(|e| {
                 log::error!("Sending 'listvaults' to main thread: {:?}", e);
                 process::exit(1);

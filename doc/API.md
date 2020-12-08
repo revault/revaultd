@@ -3,6 +3,8 @@
 revaultd exposes a [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 interface over a Unix Domain socket.
 
+Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubKey`s.
+
 | Command                                   | Description                                          |
 | ----------------------------------------- | ---------------------------------------------------- |
 | [`getinfo`](#getinfo)                     | Display general information                          |

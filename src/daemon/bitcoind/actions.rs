@@ -259,7 +259,6 @@ fn update_deposits(
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
     // Sync deposit of vaults we know have an unspent deposit.
-    // It will mark yet-unconfirmed deposits with 6+ confs as Funded.
     let (new_deposits, conf_deposits, spent_deposits) =
         bitcoind.sync_deposits(&revaultd.read().unwrap().vaults)?;
 
@@ -348,8 +347,6 @@ fn update_deposits(
     }
 
     for (outpoint, _) in conf_deposits.into_iter() {
-        log::debug!("Vault at {} is now confirmed", &outpoint);
-
         let blockheight = bitcoind
             .get_wallet_transaction(outpoint.txid)?
             .1
@@ -364,6 +361,8 @@ fn update_deposits(
             .get_mut(&outpoint)
             .ok_or_else(|| BitcoindError::Custom("An unknown vault got confirmed?".to_string()))?
             .status = VaultStatus::Funded;
+
+        log::debug!("Vault at {} is now confirmed", &outpoint);
     }
 
     for (outpoint, utxo) in spent_deposits.into_iter() {

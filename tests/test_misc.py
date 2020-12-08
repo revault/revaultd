@@ -49,12 +49,13 @@ def test_listvaults(revaultd_manager, bitcoind):
 
     # Generate 5 blocks, it is still unconfirmed
     bitcoind.generate_block(5)
-    revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
+    assert revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
         "unconfirmed"
 
     # 1 more block will get it confirmed
     bitcoind.generate_block(1)
-    revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
+    revaultd_manager.wait_for_log(f"Vault at .*{txid}.* is now confirmed")
+    assert revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
         "funded"
 
     # Of course, it persists across restarts.

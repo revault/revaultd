@@ -90,9 +90,10 @@ def revaultd_stakeholder(bitcoind, directory):
     revaultd.cleanup()
 
 
+# FIXME: Fix the directory fixture to conserve dir on failure
 @pytest.fixture
-def revaultd_manager(bitcoind, directory):
-    datadir = os.path.join(directory, "revaultd")
+def revaultd_manager(bitcoind, test_base_dir):
+    datadir = os.path.join(test_base_dir, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     stakeholders, managers = get_participants(2, 3)
 

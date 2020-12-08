@@ -105,37 +105,49 @@ impl RpcApi for RpcImpl {
         txids: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let statuses = if let Some(statuses) = statuses {
-            Some(
-                statuses
-                    .into_iter()
-                    .map(|status_str| {
-                        VaultStatus::from_str(&status_str).map_err(|_| {
-                            JsonRpcError::invalid_params(format!(
-                                "'{}' is not a valid vault status",
-                                &status_str
-                            ))
+            // If they give an empty array, it's not that they don't want any result, but rather
+            // that they don't want this filter to be taken into account!
+            if statuses.len() > 0 {
+                Some(
+                    statuses
+                        .into_iter()
+                        .map(|status_str| {
+                            VaultStatus::from_str(&status_str).map_err(|_| {
+                                JsonRpcError::invalid_params(format!(
+                                    "'{}' is not a valid vault status",
+                                    &status_str
+                                ))
+                            })
                         })
-                    })
-                    .collect::<jsonrpc_core::Result<Vec<VaultStatus>>>()?,
-            )
+                        .collect::<jsonrpc_core::Result<Vec<VaultStatus>>>()?,
+                )
+            } else {
+                None
+            }
         } else {
             None
         };
         let txids = if let Some(txids) = txids {
-            Some(
-                txids
-                    .into_iter()
-                    .map(|tx_str| {
-                        Txid::from_hex(&tx_str).map_err(|e| {
-                            JsonRpcError::invalid_params(format!(
-                                "'{}' is not a valid txid ({})",
-                                &tx_str,
-                                e.to_string()
-                            ))
+            // If they give an empty array, it's not that they don't want any result, but rather
+            // that they don't want this filter to be taken into account!
+            if txids.len() > 0 {
+                Some(
+                    txids
+                        .into_iter()
+                        .map(|tx_str| {
+                            Txid::from_hex(&tx_str).map_err(|e| {
+                                JsonRpcError::invalid_params(format!(
+                                    "'{}' is not a valid txid ({})",
+                                    &tx_str,
+                                    e.to_string()
+                                ))
+                            })
                         })
-                    })
-                    .collect::<jsonrpc_core::Result<Vec<Txid>>>()?,
-            )
+                        .collect::<jsonrpc_core::Result<Vec<Txid>>>()?,
+                )
+            } else {
+                None
+            }
         } else {
             None
         };

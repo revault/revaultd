@@ -64,9 +64,32 @@ def test_listvaults(revaultd_manager, bitcoind):
     revaultd_manager.start()
     vault_list = revaultd_manager.rpc.call("listvaults")["vaults"]
     assert len(vault_list) == 1
-    assert vault_list[0]["status"] == "unconfirmed"
+    assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
     assert vault_list[0]["amount"] == amount_sent * 10**8
+
+    # And we can filter the result by status
+    vault_list = revaultd_manager.rpc.call("listvaults",
+                                           [["unconfirmed"]])["vaults"]
+    assert len(vault_list) == 0
+    vault_list = revaultd_manager.rpc.call("listvaults",
+                                           [["funded"]])["vaults"]
+    assert len(vault_list) == 1
+    assert vault_list[0]["status"] == "funded"
+    assert vault_list[0]["txid"] == txid
+    assert vault_list[0]["amount"] == amount_sent * 10**8
+
+    # And we can filter the result by txid
+    vault_list = revaultd_manager.rpc.call("listvaults", [[], [txid]])["vaults"]
+    assert len(vault_list) == 1
+    assert vault_list[0]["status"] == "funded"
+    assert vault_list[0]["txid"] == txid
+    assert vault_list[0]["amount"] == amount_sent * 10**8
+
+    inexistant_txid = "0" * 64
+    vault_list = revaultd_manager.rpc.call("listvaults",
+                                           [[], [inexistant_txid]])["vaults"]
+    assert len(vault_list) == 0
 
 
 def test_getdepositaddress(revaultd_factory, bitcoind):

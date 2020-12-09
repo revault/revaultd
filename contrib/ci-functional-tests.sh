@@ -1,19 +1,17 @@
 set -xe
 
-cargo build
-sudo apt update
-sudo apt install python3 python3-pip python3-venv libsqlite3-dev build-essential libtool autotools-dev automake pkg-config bsdmainutils python3 libevent-dev libboost-system-dev libboost-filesystem-dev libboost-test-dev libboost-thread-dev
+# Build the revaultd binary
+cargo build --release
 
-# FIXME: dl it from bitcoincore.org post branch-off
-git clone https://github.com/bitcoin/bitcoin && cd bitcoin
-git checkout v0.21.0rc1
-./contrib/install_db4.sh `pwd`
-./autogen.sh
-export BDB_PREFIX="`pwd`/db4"
-./configure BDB_LIBS="-L${BDB_PREFIX}/lib -ldb_cxx-4.8" BDB_CFLAGS="-I${BDB_PREFIX}/include" --without-gui --disable-tests --disable-bench --enable-c++17
-make -j4 && sudo make install
-cd ..
+# Download the bitcoind binary
+BITCOIND_VERSION="0.21.0rc2"
+DIR_NAME="bitcoin-$BITCOIND_VERSION"
+ARCHIVE_NAME="$DIR_NAME.tar.gz"
+curl https://bitcoincore.org/bin/bitcoin-core-0.21.0/test.rc2/bitcoin-0.21.0rc2-x86_64-linux-gnu.tar.gz -o $ARCHIVE_NAME
+tar -xzf $ARCHIVE_NAME
+sudo mv $DIR_NAME/bin/bitcoind /usr/local/bin/
 
+# Run the functional tests
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt

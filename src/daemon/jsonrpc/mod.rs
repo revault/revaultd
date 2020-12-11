@@ -79,18 +79,19 @@ fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io
     }
 }
 
-fn write_byte_stream(stream: &mut UnixStream, resp: String) -> Result<(), io::Error> {
+// Returns Ok(true) on written data and Ok(false) on non-fatal error but non-written data
+fn write_byte_stream(stream: &mut UnixStream, resp: &String) -> Result<bool, io::Error> {
     match stream.write(resp.as_bytes()) {
         Ok(n) => {
             if n < resp.len() {
                 // We didn't write everything!
                 Err(io::ErrorKind::WriteZero.into())
             } else {
-                Ok(())
+                Ok(true)
             }
         }
         Err(e) => match e.kind() {
-            io::ErrorKind::WouldBlock | io::ErrorKind::BrokenPipe => Ok(()),
+            io::ErrorKind::WouldBlock | io::ErrorKind::BrokenPipe => Ok(false),
             io::ErrorKind::Interrupted => write_byte_stream(stream, resp),
             _ => Err(e),
         },
@@ -183,6 +184,7 @@ fn mio_loop(
                 }
 
                 if event.is_readable() {
+                    log::trace!("Readable event for {:?}", event.token());
                     let (stream, resp_queue) = connections_map
                         .get_mut(&event.token())
                         .expect("We checked it existed just above.");
@@ -221,14 +223,24 @@ fn mio_loop(
                 }
 
                 if event.is_writable() {
+                    log::trace!("Writable event for {:?}", event.token());
                     let (stream, resp_queue) = connections_map
                         .get_mut(&event.token())
                         .expect("We checked it existed just above.");
 
                     // FIFO
-                    while let Some(resp) = resp_queue.write().unwrap().pop_front() {
+                    loop {
+                        // We can't use while let Some(resp) because deadlock
+                        let resp = match resp_queue.write().unwrap().pop_front() {
+                            Some(resp) => resp,
+                            None => break,
+                        };
+
                         log::trace!("Writing response '{:?}' for {:?}", &resp, event.token());
-                        write_byte_stream(stream, resp)?;
+                        if !write_byte_stream(stream, &resp)? {
+                            // If we could not write the data, don't lose track of it!
+                            resp_queue.write().unwrap().push_front(resp);
+                        }
                     }
                 }
             }
@@ -253,7 +265,7 @@ fn windows_loop(
                 Ok(string) => {
                     // If it is and wants a response, write it directly
                     if let Some(resp) = jsonrpc_io.handle_request_sync(&string, metadata.clone()) {
-                        write_byte_stream(&mut stream, resp)?;
+                        while !write_byte_stream(&mut stream, &resp)? {}
                     }
                 }
                 Err(e) => {

@@ -4,22 +4,25 @@ use crate::{
         BitcoindError,
     },
     database::{
-        actions::{db_insert_new_vault, db_unvault_deposit, db_update_tip},
+        actions::{
+            db_confirm_deposit, db_insert_new_vault, db_unvault_deposit, db_update_deposit_index,
+            db_update_tip,
+        },
         interface::db_wallet,
     },
-    revaultd::RevaultD,
-    threadmessages::{BitcoindMessageOut, ThreadMessageIn},
+    revaultd::{RevaultD, VaultStatus},
+    threadmessages::BitcoindMessageOut,
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
-    bitcoin::{consensus::encode, hashes::hex::FromHex, Network, Transaction},
+    bitcoin::{consensus::encode, hashes::hex::FromHex, Amount, Network, Transaction},
     transactions::VaultTransaction,
 };
 
 use std::{
     path::PathBuf,
     sync::{
-        mpsc::{Receiver, Sender, TryRecvError},
+        mpsc::{Receiver, TryRecvError},
         Arc, RwLock,
     },
     thread,
@@ -35,7 +38,7 @@ fn check_bitcoind_network(
         .get("chain")
         .and_then(|c| c.as_str())
         .ok_or_else(|| {
-            BitcoindError("No valid 'chain' in getblockchaininfo response?".to_owned())
+            BitcoindError::Custom("No valid 'chain' in getblockchaininfo response?".to_owned())
         })?;
     let bip70_net = match config_network {
         Network::Bitcoin => "main",
@@ -44,7 +47,7 @@ fn check_bitcoind_network(
     };
 
     if !bip70_net.eq(chain) {
-        return Err(BitcoindError(format!(
+        return Err(BitcoindError::Custom(format!(
             "Wrong network, bitcoind is on '{}' but our config says '{}' ({})",
             chain, bip70_net, config_network
         )));
@@ -60,6 +63,13 @@ fn bitcoind_sanity_checks(
     bitcoind_config: &BitcoindConfig,
 ) -> Result<(), BitcoindError> {
     check_bitcoind_network(&bitcoind, &bitcoind_config.network)
+}
+
+/// Bitcoind uses a guess for the value of verificationprogress. It will eventually get to
+/// be 1, but can take some time; when it's > 0.99999 we are synced anyways so use that.
+fn roundup_progress(progress: f64) -> f64 {
+    let precision = 10u64.pow(5);
+    ((progress * precision as f64 + 1.0) as u64 / precision) as f64
 }
 
 /// Polls bitcoind to check if we are synced yet.
@@ -80,7 +90,7 @@ fn bitcoind_sync_status(
         ibd,
         progress,
     } = bitcoind.synchronization_info()?;
-    *sync_progress = progress;
+    *sync_progress = roundup_progress(progress);
 
     if first_poll {
         if ibd {
@@ -122,15 +132,19 @@ fn bitcoind_sync_status(
     } else {
         0
     };
-    *sleep_duration = Some(Duration::from_secs(delta / 20 / 2));
+    *sleep_duration = Some(std::cmp::max(
+        Duration::from_secs(delta / 20 / 2),
+        Duration::from_secs(5),
+    ));
+
+    log::info!("We'll poll bitcoind again in {:?} seconds", sleep_duration);
 
     Ok(())
 }
 
 // This creates the actual wallet file, and imports the descriptors
 fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    let wallet = db_wallet(&revaultd.db_file())
-        .map_err(|e| BitcoindError(format!("Error getting wallet from db: {}", e.to_string())))?;
+    let wallet = db_wallet(&revaultd.db_file())?;
     let bitcoind_wallet_path = revaultd
         .watchonly_wallet_file()
         .expect("Wallet id is set at startup in setup_db()");
@@ -138,14 +152,16 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
     let curr_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|dur| dur.as_secs())
-        .map_err(|e| BitcoindError(format!("Computing time since epoch: {}", e.to_string())))?;
+        .map_err(|e| {
+            BitcoindError::Custom(format!("Computing time since epoch: {}", e.to_string()))
+        })?;
     let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
 
     if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
         bitcoind.createwallet_startup(bitcoind_wallet_path)?;
+        log::info!("Importing descriptors to bitcoind watchonly wallet.");
 
         // Now, import descriptors.
-        // TODO: maybe warn, depending on the timestamp, that it's going to take some time.
         // In theory, we could just import the vault (deposit) descriptor expressed using xpubs, give a
         // range to bitcoind as the gap limit, and be fine.
         // Unfortunately we cannot just import descriptors as is, since bitcoind does not support
@@ -164,6 +180,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         // As a consequence, we don't have enough information to opportunistically import a
         // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
         // deposit and unvault descriptors..
+        // FIXME: maybe we actually have, with the derivation_index_map ?
         let mut addresses = revaultd.all_unvault_addresses();
         for i in 0..addresses.len() {
             addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
@@ -181,8 +198,8 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
         .expect("Wallet id is set at startup in setup_db()");
 
     if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
-        log::info!("Loading wallet '{}'.", bitcoind_wallet_path);
-        bitcoind.loadwallet_startup(bitcoind_wallet_path.clone())?;
+        log::info!("Loading our watchonly wallet '{}'.", bitcoind_wallet_path);
+        bitcoind.loadwallet_startup(bitcoind_wallet_path)?;
     }
 
     Ok(())
@@ -196,12 +213,18 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
             .watchonly_wallet_file()
             .expect("Wallet id is set at startup in setup_db()"),
     )
-    .map_err(|e| BitcoindError(format!("Could not connect to bitcoind: {}", e.to_string())))?;
-
-    bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config).map_err(|e| {
-        // FIXME: handle warming up
-        BitcoindError(format!("Error checking bitcoind: {}", e.to_string()))
+    .map_err(|e| {
+        BitcoindError::Custom(format!("Could not connect to bitcoind: {}", e.to_string()))
     })?;
+
+    while let Err(e) = bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config) {
+        if e.is_warming_up() {
+            log::info!("Bitcoind is warming up. Waiting for it to be back up.");
+            thread::sleep(Duration::from_secs(3))
+        } else {
+            return Err(e);
+        }
+    }
 
     Ok(bitcoind)
 }
@@ -214,28 +237,29 @@ fn update_tip(
     let current_tip = revaultd.read().unwrap().tip.expect("Set at startup..");
 
     if tip != current_tip {
-        log::debug!("New tip: {:#?}", &tip);
-
-        db_update_tip(&revaultd.read().unwrap().db_file(), tip)
-            .map_err(|e| BitcoindError(format!("Updating tip in database: {}", e)))?;
+        db_update_tip(&revaultd.read().unwrap().db_file(), tip)?;
         revaultd.write().unwrap().tip = Some(tip);
+
+        log::debug!("New tip: {:#?}", &tip);
     }
 
     Ok(())
 }
 
 fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
-    let mut bytes = Vec::from_hex(hex)
-        .map_err(|e| BitcoindError(format!("Parsing tx hex: '{}'", e.to_string())))?;
-    encode::deserialize::<Transaction>(&mut bytes)
-        .map_err(|e| BitcoindError(format!("Deserializing tx hex: '{}'", e.to_string())))
+    let bytes = Vec::from_hex(hex)
+        .map_err(|e| BitcoindError::Custom(format!("Parsing tx hex: '{}'", e.to_string())))?;
+    encode::deserialize::<Transaction>(&bytes)
+        .map_err(|e| BitcoindError::Custom(format!("Deserializing tx hex: '{}'", e.to_string())))
 }
 
-fn poll_bitcoind(
+// This syncs with bitcoind our incoming deposits, and those that were spent.
+fn update_deposits(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
 ) -> Result<(), BitcoindError> {
-    let (new_deposits, spent_deposits) =
+    // Sync deposit of vaults we know have an unspent deposit.
+    let (new_deposits, conf_deposits, spent_deposits) =
         bitcoind.sync_deposits(&revaultd.read().unwrap().vaults)?;
 
     for (outpoint, utxo) in new_deposits.into_iter() {
@@ -244,19 +268,28 @@ fn poll_bitcoind(
             .unwrap()
             .derivation_index_map
             .get(&utxo.txo.script_pubkey)
-            .ok_or_else(|| BitcoindError(format!("Unknown derivation index for: {:#?}", &utxo)))?;
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
+            })?;
         let wallet_tx = bitcoind.get_wallet_transaction(outpoint.txid)?;
         let vault_tx = VaultTransaction(tx_from_hex(&wallet_tx.0).map_err(|e| {
-            BitcoindError(format!(
+            BitcoindError::Custom(format!(
                 "Deserializing tx from hex: '{}'. Transaction: '{}'",
                 e.to_string(),
                 wallet_tx.0
             ))
         })?);
-        let blockheight = wallet_tx
-            .1
-            .ok_or_else(|| BitcoindError("Deposit transaction isn't confirmed!".to_string()))?;
+        let blockheight = if matches!(utxo.status, VaultStatus::Funded) {
+            // It MUST exist if 6+ confs!
+            wallet_tx.1.ok_or_else(|| {
+                BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
+            })?
+        } else {
+            // Don't record it at all as we treat it as unconfirmed
+            0
+        };
 
+        let amount = Amount::from_sat(utxo.txo.value);
         db_insert_new_vault(
             &revaultd.read().unwrap().db_file(),
             revaultd
@@ -264,40 +297,84 @@ fn poll_bitcoind(
                 .unwrap()
                 .wallet_id
                 .expect("Wallet id is set at startup in setup_db()"),
-            utxo.status,
+            &utxo.status,
             blockheight,
-            outpoint.txid.to_vec(),
-            outpoint.vout,
-            utxo.txo.value as u32,
+            &outpoint,
+            &amount,
             derivation_index,
             vault_tx,
-        )
-        .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
+        )?;
+        log::debug!(
+            "Got a new {} deposit at {} for {} ({})",
+            if blockheight == 0 {
+                "unconfirmed"
+            } else {
+                "confirmed"
+            },
+            &outpoint,
+            &utxo.txo.script_pubkey,
+            &amount
+        );
         revaultd.write().unwrap().vaults.insert(outpoint, utxo);
 
         // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
         // FIXME: of course, that's rudimentary
-        if derivation_index > revaultd.read().unwrap().current_unused_index {
-            revaultd.write().unwrap().current_unused_index += 1;
+        let current_first_index = revaultd.read().unwrap().current_unused_index;
+        if derivation_index >= current_first_index {
+            let new_index = revaultd
+                .read()
+                .unwrap()
+                .current_unused_index
+                .increment()
+                .map_err(|e| {
+                    // FIXME: we should probably go back to 0 at this point.
+                    BitcoindError::Custom(format!("Deriving next index: {}", e))
+                })?;
+            db_update_deposit_index(&revaultd.read().unwrap().db_file(), new_index)?;
+            revaultd.write().unwrap().current_unused_index = new_index;
             let next_addr = bitcoind
-                .addr_descriptor(&revaultd.write().unwrap().last_deposit_address().to_string())?;
+                .addr_descriptor(&revaultd.read().unwrap().last_deposit_address().to_string())?;
             bitcoind.import_fresh_deposit_descriptor(next_addr)?;
             let next_addr = bitcoind
-                .addr_descriptor(&revaultd.write().unwrap().last_unvault_address().to_string())?;
+                .addr_descriptor(&revaultd.read().unwrap().last_unvault_address().to_string())?;
             bitcoind.import_fresh_unvault_descriptor(next_addr)?;
+
+            log::debug!(
+                "Incremented deposit derivation index from {}",
+                current_first_index
+            );
         }
+    }
+
+    for (outpoint, _) in conf_deposits.into_iter() {
+        let blockheight = bitcoind
+            .get_wallet_transaction(outpoint.txid)?
+            .1
+            .ok_or_else(|| {
+                BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
+            })?;
+        db_confirm_deposit(&revaultd.read().unwrap().db_file(), &outpoint, blockheight)?;
+        revaultd
+            .write()
+            .unwrap()
+            .vaults
+            .get_mut(&outpoint)
+            .ok_or_else(|| BitcoindError::Custom("An unknown vault got confirmed?".to_string()))?
+            .status = VaultStatus::Funded;
+
+        log::debug!("Vault at {} is now confirmed", &outpoint);
     }
 
     for (outpoint, utxo) in spent_deposits.into_iter() {
         let deriv_index = *revaultd.read().unwrap()
             .derivation_index_map
             .get(&utxo.txo.script_pubkey)
-            .ok_or_else(|| BitcoindError(
+            .ok_or_else(|| BitcoindError::Custom(
                     format!("A deposit was spent for which we don't know the corresponding xpub derivation. Outpoint: '{}'\nUtxo: '{:#?}'",
                         &outpoint,
                         &utxo)))?;
         let unvault_addr = revaultd
-            .write()
+            .read()
             .unwrap()
             .unvault_address(deriv_index)
             .to_string();
@@ -310,20 +387,31 @@ fn poll_bitcoind(
             );
             // Note that it *might* have actually been confirmed during the last 30s, but it's not
             // a big deal to have it marked as unconfirmed for the next 30s..
-            db_unvault_deposit(
-                &revaultd.read().unwrap().db_file(),
-                outpoint.txid.to_vec(),
-                outpoint.vout,
-            )
-            // TODO: something like From<DbError> for BitcoindError ?
-            .map_err(|e| BitcoindError(format!("Database error: {}", e.to_string())))?;
+            db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint)?;
+            revaultd
+                .write()
+                .unwrap()
+                .vaults
+                .get_mut(&outpoint)
+                .expect("We just checked it")
+                .status = VaultStatus::Unvaulting;
         } else if false {
-            // TODO: handle bypass
+            // TODO: handle bypass and emergency
         } else {
-            log::warn!(
-                "The deposit utxo created via '{}' just vanished. Maybe a reorg is ongoing?",
-                &outpoint
-            );
+            match utxo.status {
+                // Fine.
+                VaultStatus::Unconfirmed => log::debug!(
+                    "The unconfirmed deposit utxo created via '{}' just vanished",
+                    &outpoint
+                ),
+                // Bad.
+                VaultStatus::Funded | VaultStatus::Secured => log::warn!(
+                    "The deposit utxo created via '{}' just vanished. Maybe a reorg is ongoing?",
+                    &outpoint
+                ),
+                // Impossible.
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -335,7 +423,6 @@ fn poll_bitcoind(
 /// The bitcoind event loop.
 /// Poll bitcoind every 30 seconds, and update our state accordingly.
 pub fn bitcoind_main_loop(
-    _tx: Sender<ThreadMessageIn>,
     rx: Receiver<BitcoindMessageOut>,
     mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
@@ -364,7 +451,7 @@ pub fn bitcoind_main_loop(
                 }
                 BitcoindMessageOut::SyncProgress(resp_tx) => {
                     resp_tx.send(sync_progress).map_err(|e| {
-                        BitcoindError(format!(
+                        BitcoindError::Custom(format!(
                             "Sending synchronization progress to main thread: {}",
                             e
                         ))
@@ -374,7 +461,7 @@ pub fn bitcoind_main_loop(
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 log::error!("Channel with main thread disconnected. Exiting.");
-                return Err(BitcoindError("Channel disconnected".to_string()));
+                return Err(BitcoindError::Custom("Channel disconnected".to_string()));
             }
         };
 
@@ -401,17 +488,16 @@ pub fn bitcoind_main_loop(
             if sync_progress as u32 >= 1 {
                 let mut revaultd = revaultd.write().unwrap();
                 maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError(format!("Error while creating wallet: {}", e.to_string()))
+                    BitcoindError::Custom(format!("Error while creating wallet: {}", e.to_string()))
                 })?;
-                maybe_load_wallet(&mut revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError(format!("Error while loading wallet: {}", e.to_string()))
+                maybe_load_wallet(&revaultd, &bitcoind).map_err(|e| {
+                    BitcoindError::Custom(format!("Error while loading wallet: {}", e.to_string()))
                 })?;
 
                 log::info!("bitcoind now synced.");
-            } else {
-                log::info!("We'll poll bitcoind again in {:?} seconds", sync_waittime);
             }
 
+            last_poll = Some(now);
             continue;
         }
 
@@ -423,7 +509,7 @@ pub fn bitcoind_main_loop(
         }
 
         last_poll = Some(now);
-        poll_bitcoind(&mut revaultd, &bitcoind)?;
+        update_deposits(&mut revaultd, &bitcoind)?;
         update_tip(&mut revaultd, &bitcoind)?;
 
         thread::sleep(Duration::from_millis(100));

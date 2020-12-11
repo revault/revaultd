@@ -1,5 +1,5 @@
 mod api;
-use crate::threadmessages::ThreadMessageIn;
+use crate::threadmessages::RpcMessageIn;
 use api::{JsonRpcMetaData, RpcApi, RpcImpl};
 
 use std::{
@@ -36,35 +36,39 @@ fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
 // Returns an error only on a fatal one, and None on recoverable ones.
 fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io::Error> {
     let mut buf = vec![0; 512];
-    let mut bytes_read = 0;
+    let mut total_read = 0;
 
     loop {
         match stream.read(&mut buf) {
             Ok(0) => {
-                if bytes_read == 0 {
+                if total_read == 0 {
                     return Ok(None);
                 }
-                return Ok(Some(trimmed(buf, bytes_read)));
+                return Ok(Some(trimmed(buf, total_read)));
             }
             Ok(n) => {
-                bytes_read += n;
-                if bytes_read == buf.len() {
-                    buf.resize(bytes_read * 2, 0);
+                total_read += n;
+                if total_read == buf.len() {
+                    buf.resize(total_read * 2, 0);
                 } else {
-                    return Ok(Some(trimmed(buf, bytes_read)));
+                    return Ok(Some(trimmed(buf, total_read)));
                 }
             }
             Err(err) => {
                 match err.kind() {
                     io::ErrorKind::WouldBlock => {
-                        if bytes_read == 0 {
+                        if total_read == 0 {
                             // We can't read it just yet, but it's fine.
                             return Ok(None);
                         }
-                        return Ok(Some(trimmed(buf, bytes_read)));
+                        return Ok(Some(trimmed(buf, total_read)));
                     }
-                    io::ErrorKind::Interrupted => {
-                        // Try again on interruption.
+                    io::ErrorKind::Interrupted
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe => {
+                        // Try again on interruption or disconnection. In the latter case we'll
+                        // remove the stream anyways.
                         continue;
                     }
                     // Now that's actually bad
@@ -93,6 +97,11 @@ fn write_byte_stream(stream: &mut UnixStream, resp: String) -> Result<(), io::Er
     }
 }
 
+// Used to check if, when receiving an event for a token, we have an ongoing connection and stream
+// for it.
+#[cfg(not(windows))]
+type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>;
+
 // For all but Windows, we use Mio.
 #[cfg(not(windows))]
 fn mio_loop(
@@ -110,8 +119,7 @@ fn mio_loop(
 
     // UID per connection
     let mut unique_token = Token(stop_token.0 + 1);
-    let mut connections_map: HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)> =
-        HashMap::with_capacity(32);
+    let mut connections_map: ConnectionMap = HashMap::with_capacity(32);
 
     poller
         .registry()
@@ -239,7 +247,7 @@ fn windows_loop(
         let mut stream = stream?;
 
         // Ok, so we got something to read (we don't respond to garbage)
-        if let Some(bytes) = read_bytes_from_stream(&stream)? {
+        while let Some(bytes) = read_bytes_from_stream(&stream)? {
             // Is it actually readable?
             match String::from_utf8(bytes) {
                 Ok(string) => {
@@ -286,7 +294,8 @@ fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
                     }
                 };
             }
-            return Err(e);
+
+            Err(e)
         }
     }
 }
@@ -307,10 +316,7 @@ pub fn jsonrpcapi_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error>
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
-pub fn jsonrpcapi_loop(
-    tx: Sender<ThreadMessageIn>,
-    listener: UnixListener,
-) -> Result<(), io::Error> {
+pub fn jsonrpcapi_loop(tx: Sender<RpcMessageIn>, listener: UnixListener) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
     let metadata = JsonRpcMetaData::from_tx(tx);
@@ -324,7 +330,7 @@ pub fn jsonrpcapi_loop(
 #[cfg(test)]
 mod tests {
     use super::{jsonrpcapi_loop, jsonrpcapi_setup, trimmed};
-    use crate::threadmessages::{RpcMessageIn, ThreadMessageIn};
+    use crate::threadmessages::RpcMessageIn;
 
     use std::{
         io::{Read, Write},
@@ -359,27 +365,24 @@ mod tests {
         let mut sock = UnixStream::connect(path).unwrap();
 
         // Write an invalid JSONRPC message
-        // For some reasons it takes '{}' as non-empty parameters..
+        // For some reasons it takes '{}' as non-empty parameters ON UNIX BUT NOT WINDOWS WTF..
         let invalid_msg =
-            String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": {}}"#);
+            String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": {"a": "b"}}"#);
         let mut response = vec![0; 256];
         sock.write(invalid_msg.as_bytes()).unwrap();
         let read = sock.read(&mut response).unwrap();
         assert_eq!(
             String::from_utf8(trimmed(response, read)).unwrap(),
             String::from(
-                r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid parameters: No parameters were expected","data":"Map({})"},"id":0}"#
+                r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid parameters: No parameters were expected","data":"Map({\"a\": String(\"b\")})"},"id":0}"#
             )
         );
 
         // Tell it to stop, should send us a Shutdown message
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);
         sock.write(msg.as_bytes()).unwrap();
-        // FIXME(darosior): i need to debug the fuck out of this but i need to install a VM
-        // first...
-        #[cfg(not(windows))]
         match rx.recv() {
-            Ok(ThreadMessageIn::Rpc(RpcMessageIn::Shutdown)) => {}
+            Ok(RpcMessageIn::Shutdown) => {}
             _ => panic!("Didn't receive shutdown"),
         }
     }

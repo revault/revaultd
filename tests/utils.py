@@ -4,15 +4,16 @@ Rusty Russell or Christian Decker who wrote most of this (I'd put some sats on
 cdecker), so credits to them ! (MIT licensed)
 """
 from bitcoin.rpc import RawProxy as BitcoinProxy
-from bitcoin.wallet import CKey
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
 from typing import Optional
 
+import bip32
 import bitcoin
 import json
 import logging
 import os
+import random
 import re
 import select
 import socket
@@ -37,14 +38,6 @@ def wait_for(success, timeout=TIMEOUT):
         raise ValueError("Error waiting for {}", success)
 
 
-def write_config(filename, opts=None, network='regtest'):
-    with open(filename, 'w') as f:
-        f.write(f"chain={network}\n")
-        f.write(f"[{network}]\n")
-        for k, v in opts.items():
-            f.write(f"{k}={v}\n")
-
-
 class RpcError(ValueError):
     def __init__(self, method: str, payload: dict, error: str):
         super(ValueError, self).__init__(
@@ -56,6 +49,30 @@ class RpcError(ValueError):
         self.method = method
         self.payload = payload
         self.error = error
+
+
+def get_participants(n_stk, n_man):
+    """Get the configuration entries for each participant."""
+    stakeholders_hds = [bip32.BIP32.from_seed(os.urandom(32))
+                        for _ in range(n_stk)]
+    cosigners_hds = [bip32.BIP32.from_seed(os.urandom(32))
+                     for _ in range(n_stk)]
+    stakeholders = [
+        {
+            "xpub": stakeholders_hds[i].get_master_xpub(),
+            "cosigner_key": cosigners_hds[i].get_pubkey_from_path("m/0").hex(),
+        }
+        for i in range(n_stk)
+    ]
+
+    managers = [
+        {
+            "xpub": m.get_master_xpub(),
+        }
+        for m in [bip32.BIP32.from_seed(os.urandom(32)) for _ in range(n_man)]
+    ]
+
+    return (stakeholders, managers)
 
 
 class UnixSocket(object):
@@ -156,7 +173,7 @@ class UnixDomainSocketRpc(object):
 
         def wrapper(*args, **kwargs):
             if len(args) != 0 and len(kwargs) != 0:
-                raise RpcError("Cannot mix positional and non-positional arguments")
+                raise RpcError(name, {}, "Cannot mix positional and non-positional arguments")
             elif len(args) != 0:
                 return self.call(name, payload=args)
             else:
@@ -209,12 +226,16 @@ class TailableProc(object):
         self.outputDir = outputDir
         self.logsearch_start = 0
 
+        # Set by inherited classes
+        self.cmd_line = []
+        self.prefix = ""
+
         # Should we be logging lines we read from stdout?
         self.verbose = verbose
 
         # A filter function that'll tell us whether to filter out the line (not
         # pass it to the log matcher and not print it to stdout).
-        self.log_filter = lambda line: False
+        self.log_filter = lambda _: False
 
     def start(self, stdin=None, stdout=None, stderr=None):
         """Start the underlying process and start monitoring it.
@@ -272,7 +293,7 @@ class TailableProc(object):
             if self.log_filter(line.decode('ASCII')):
                 continue
             if self.verbose:
-                logging.debug("%s: %s", self.prefix, line.decode().rstrip())
+                logging.debug(f"{self.prefix}: {line.decode().rstrip()}")
             with self.logs_cond:
                 self.logs.append(str(line.rstrip()))
                 self.logs_cond.notifyAll()
@@ -304,9 +325,11 @@ class TailableProc(object):
         If timeout is None, no time-out is applied.
         """
         logging.debug("Waiting for {} in the logs".format(regexs))
+
         exs = [re.compile(r) for r in regexs]
         start_time = time.time()
         pos = self.logsearch_start
+
         while True:
             if timeout is not None and time.time() > start_time + timeout:
                 print("Time-out: can't find {} in logs".format(exs))
@@ -382,7 +405,7 @@ class SimpleBitcoinProxy:
 
 
 class BitcoinD(TailableProc):
-    def __init__(self, bitcoin_dir="/tmp/bitcoind-test", rpcport=None):
+    def __init__(self, bitcoin_dir, rpcport=None):
         TailableProc.__init__(self, bitcoin_dir, verbose=False)
 
         if rpcport is None:
@@ -405,14 +428,19 @@ class BitcoinD(TailableProc):
             '-logtimestamps',
             '-rpcthreads=4',
         ]
-        BITCOIND_REGTEST = {
+        bitcoind_conf = {
             'port': self.p2pport,
             'rpcport': rpcport,
             'debug': 1,
             'fallbackfee': Decimal(1000) / bitcoin.core.COIN,
         }
         self.conf_file = os.path.join(bitcoin_dir, 'bitcoin.conf')
-        write_config(self.conf_file, BITCOIND_REGTEST)
+        with open(self.conf_file, 'w') as f:
+            f.write(f"chain=regtest\n")
+            f.write(f"[regtest]\n")
+            for k, v in bitcoind_conf.items():
+                f.write(f"{k}={v}\n")
+
         self.rpc = SimpleBitcoinProxy(bitcoind_dir=self.bitcoin_dir,
                                       bitcoind_port=self.rpcport)
         self.proxies = []
@@ -445,7 +473,7 @@ class BitcoinD(TailableProc):
             else:
                 wait_for(lambda: len(self.rpc.getrawmempool())
                          >= wait_for_mempool)
-        # As of 0.16, generate() is removed; use generatetoaddress.
+
         addr = self.rpc.getnewaddress()
         return self.rpc.generatetoaddress(numblocks, addr)
 
@@ -498,36 +526,6 @@ class BitcoinD(TailableProc):
                           .format(final_len))
         return hashes
 
-    def pay_to(self, address, amount):
-        self.generate_block(1)
-        # So that we can boutique-compute fees in the tests by assuming we work
-        # with 50 * 10**8 sats outputs.
-        addr = self.rpc.getnewaddress()
-        txid = self.rpc.sendtoaddress(addr, 50)
-        self.generate_block(1, wait_for_mempool=str(txid))
-        txin = self.rpc.listunspent(None, None, [addr], None, None)[-1]
-        tx = self.rpc.createrawtransaction([
-            {"txid": txin["txid"],
-             "vout": txin["vout"],
-             "amount": float(txin["amount"])}
-        ], [
-            {address: float(amount)}
-        ])
-        tx = self.rpc.signrawtransactionwithwallet(tx)["hex"]
-        txid = self.rpc.sendrawtransaction(tx)
-        self.generate_block(1, wait_for_mempool=str(txid))
-        return txid
-
-    def send_tx(self, hex_tx):
-        txid = self.rpc.sendrawtransaction(hex_tx)
-        self.generate_block(1, wait_for_mempool=str(txid))
-
-    def has_utxo(self, address):
-        """Test that we possess an utxo paying to this address."""
-        if address in [utxo["address"] for utxo in self.rpc.listunspent()]:
-            return True
-        return False
-
     def startup(self):
         try:
             self.start()
@@ -537,10 +535,10 @@ class BitcoinD(TailableProc):
 
         info = self.rpc.getnetworkinfo()
 
-        if info['version'] < 160000:
+        if info['version'] < 210000:
             self.rpc.stop()
-            raise ValueError("bitcoind is too old. At least version 16000"
-                             " (v0.16.0) is needed, current version is {}"
+            raise ValueError("bitcoind is too old. At least version 21000"
+                             " (v0.21.0) is needed, current version is {}"
                              .format(info['version']))
 
     def cleanup(self):
@@ -555,7 +553,6 @@ class RevaultD(TailableProc):
     def __init__(self, datadir, ourselves, stakeholders, managers, csv,
                  bitcoind):
         TailableProc.__init__(self, datadir, verbose=False)
-
         bin = os.path.join(os.path.dirname(__file__), "..",
                            "target/debug/revaultd")
         self.conf_file = os.path.join(datadir, "config.toml")
@@ -564,6 +561,7 @@ class RevaultD(TailableProc):
             f"--conf",
             f"{self.conf_file}"
         ]
+        self.prefix = "revaultd"
         socket_path = os.path.join(datadir, "regtest", "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
 
@@ -573,6 +571,7 @@ class RevaultD(TailableProc):
             f.write(f"unvault_csv = {csv}\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
+            f.write(f"log_level = 'trace'\n")
             f.write(f"[bitcoind_config]\n")
             f.write(f"network = \"regtest\"\n")
             f.write(f"cookie_path = '{bitcoind_cookie}'\n")
@@ -596,8 +595,66 @@ class RevaultD(TailableProc):
         TailableProc.start(self)
         self.wait_for_log("revaultd started on network regtest")
         # Be sure to be up to date with bitcoind
-        self.wait_for_logs(["bitcoind now synced", "New tip"])
+        self.wait_for_logs(["bitcoind now synced"])
 
     def cleanup(self):
         self.proc.kill()
         self.proc.wait()
+
+
+class RevaultDFactory:
+    # FIXME: we use a single bitcoind for all the wallets because it's much
+    # more efficient. Eventually, we may have to test with separate ones.
+    def __init__(self, root_dir, bitcoind):
+        self.root_dir = root_dir
+        self.bitcoind = bitcoind
+        self.daemons = []
+
+    def deploy(self, n_stakeholders, n_managers, funding=None, csv=None):
+        """
+        Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
+        managers and optionally fund it with {funding} sats.
+        """
+        (conf_stk, conf_man) = get_participants(n_stakeholders, n_managers)
+        if csv is None:
+            # More than 6 months
+            csv = random.randint(1, 26784)
+
+        stk_nodes = []
+        for i in range(len(conf_stk)):
+            datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
+            os.makedirs(datadir, exist_ok=True)
+
+            ourselves = {
+                "stakeholder_xpub": conf_stk[i]["xpub"],
+            }
+            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
+                              self.bitcoind)
+            daemon.start()
+            stk_nodes.append(daemon)
+
+        man_nodes = []
+        for i in range(len(conf_man)):
+            datadir = os.path.join(self.root_dir, f"revaultd-man-{i}")
+            os.makedirs(datadir, exist_ok=True)
+
+            ourselves = {
+                "manager_xpub": conf_man[i]["xpub"],
+            }
+            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
+                              self.bitcoind)
+            daemon.start()
+            man_nodes.append(daemon)
+
+        if funding is not None:
+            assert isinstance(funding, int)
+            addr = man_nodes[0].rpc.getdepositaddress["address"]
+            txid = self.bitcoind.rpc.sendtoaddress(addr, 49.9999)
+            self.bitcoind.generate_block(6, wait_for_mempool=txid)
+
+        self.daemons += stk_nodes + man_nodes
+        return (stk_nodes, man_nodes)
+
+    def cleanup(self):
+        for n in self.daemons:
+            n.cleanup()

@@ -43,13 +43,13 @@ fn parse_args(mut args: Vec<String>) -> (Option<PathBuf>, String, Vec<String>) {
     }
 }
 
-fn rpc_request(method: String, params: Vec<String>) -> Json {
+fn rpc_request(method: String, params: Vec<String>) -> serde_json::Result<Json> {
     let method = Json::String(method);
     let params = Json::Array(
         params
             .into_iter()
-            .map(|string| Json::String(string))
-            .collect(),
+            .map(|string| serde_json::from_str(&string))
+            .collect::<serde_json::Result<Vec<Json>>>()?,
     );
     let mut object = serde_json::Map::<String, Json>::new();
     object.insert("jsonrpc".to_string(), Json::String("2.0".to_string()));
@@ -60,7 +60,7 @@ fn rpc_request(method: String, params: Vec<String>) -> Json {
     object.insert("method".to_string(), method);
     object.insert("params".to_string(), params);
 
-    Json::Object(object)
+    Ok(Json::Object(object))
 }
 
 fn socket_file(conf_file: Option<PathBuf>) -> PathBuf {
@@ -103,7 +103,10 @@ fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
 fn main() {
     let args = env::args().collect();
     let (conf_file, method, params) = parse_args(args);
-    let request = rpc_request(method, params);
+    let request = rpc_request(method, params).unwrap_or_else(|e| {
+        eprintln!("Invalid parameters: '{}'", e);
+        process::exit(1);
+    });
     let socket_file = socket_file(conf_file);
     let mut raw_response = vec![0; 256];
     let mut response: Json;
@@ -120,15 +123,18 @@ fn main() {
         });
 
     loop {
+        let mut total_read = 0;
         loop {
-            let read = socket.read(&mut raw_response).unwrap_or_else(|e| {
-                eprintln!("Reading from {:?}: '{}'", &socket_file, e);
-                process::exit(1);
-            });
-            if read == raw_response.len() {
-                raw_response.resize(2 * read, 0);
+            total_read += socket
+                .read(&mut raw_response[total_read..])
+                .unwrap_or_else(|e| {
+                    eprintln!("Reading from {:?}: '{}'", &socket_file, e);
+                    process::exit(1);
+                });
+            if total_read == raw_response.len() {
+                raw_response.resize(2 * total_read, 0);
             } else {
-                raw_response = trimmed(raw_response, read);
+                raw_response = trimmed(raw_response, total_read);
                 break;
             }
         }

@@ -19,9 +19,10 @@ use revault_tx::{
 /// transactions
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VaultStatus {
-    // FIXME: More formally analyze the impact of reorgs
-    // FIXME: Min confirms ?
-    /// The deposit transaction is confirmed
+    /// The deposit transaction has less than 6 confirmations
+    Unconfirmed,
+    // FIXME: Do we assume "no reorgs > 6 blocks" ?
+    /// The deposit transaction has more than 6 confirmations
     Funded,
     /// The emergency transaction is signed
     Secured,
@@ -54,18 +55,19 @@ impl TryFrom<u32> for VaultStatus {
 
     fn try_from(n: u32) -> Result<Self, Self::Error> {
         match n {
-            0 => Ok(Self::Funded),
-            1 => Ok(Self::Secured),
-            2 => Ok(Self::Active),
-            3 => Ok(Self::Unvaulting),
-            4 => Ok(Self::Unvaulted),
-            5 => Ok(Self::Canceling),
-            6 => Ok(Self::Canceled),
-            7 => Ok(Self::EmergencyVaulting),
-            8 => Ok(Self::EmergencyVaulted),
-            9 => Ok(Self::Spendable),
-            10 => Ok(Self::Spending),
-            11 => Ok(Self::Spent),
+            0 => Ok(Self::Unconfirmed),
+            1 => Ok(Self::Funded),
+            2 => Ok(Self::Secured),
+            3 => Ok(Self::Active),
+            4 => Ok(Self::Unvaulting),
+            5 => Ok(Self::Unvaulted),
+            6 => Ok(Self::Canceling),
+            7 => Ok(Self::Canceled),
+            8 => Ok(Self::EmergencyVaulting),
+            9 => Ok(Self::EmergencyVaulted),
+            10 => Ok(Self::Spendable),
+            11 => Ok(Self::Spending),
+            12 => Ok(Self::Spent),
             _ => Err(()),
         }
     }
@@ -76,6 +78,7 @@ impl FromStr for VaultStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "unconfirmed" => Ok(Self::Unconfirmed),
             "funded" => Ok(Self::Funded),
             "secured" => Ok(Self::Secured),
             "active" => Ok(Self::Active),
@@ -99,6 +102,7 @@ impl fmt::Display for VaultStatus {
             f,
             "{}",
             match *self {
+                Self::Unconfirmed => "unconfirmed",
                 Self::Funded => "funded",
                 Self::Secured => "secured",
                 Self::Active => "active",
@@ -111,7 +115,6 @@ impl fmt::Display for VaultStatus {
                 Self::Spendable => "spendable",
                 Self::Spending => "spending",
                 Self::Spent => "spent",
-                _ => unreachable!(),
             }
         )
     }
@@ -131,7 +134,7 @@ pub struct CachedVault {
 /// of the pre-signed transactions.
 /// Likewise, depending on our role (manager or stakeholder), we may not have the
 /// emergency transactions.
-pub struct Vault {
+pub struct _Vault {
     /// The deposit utxo and the status of the vault, that we keep in memory
     pub cached_vault: CachedVault,
     pub vault_tx: Option<VaultTransaction>,
@@ -141,13 +144,19 @@ pub struct Vault {
     pub unvault_emergency_tx: Option<UnvaultEmergencyTransaction>,
 }
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub struct BlockchainTip {
+    pub height: u32,
+    pub hash: BlockHash,
+}
+
 /// Our global state
 pub struct RevaultD {
     // Bitcoind stuff
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
     /// Last block we heard about
-    pub tip: Option<(u32, BlockHash)>,
+    pub tip: Option<BlockchainTip>,
 
     // Scripts stuff
     /// Who am i, and where am i in all this mess ?
@@ -161,7 +170,7 @@ pub struct RevaultD {
     /// We don't make an enormous deal of address reuse (we cancel to the same keys),
     /// however we at least try to generate new addresses once they're used.
     // FIXME: think more about desync reconciliation..
-    pub current_unused_index: u32,
+    pub current_unused_index: ChildNumber,
 
     // UTXOs stuff
     /// A cache of known vaults by txid
@@ -174,7 +183,7 @@ pub struct RevaultD {
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
     /// keys used to generate a script from bitcoind while we cannot pass it xpub-expressed
     /// Miniscript descriptors.
-    pub derivation_index_map: HashMap<Script, u32>,
+    pub derivation_index_map: HashMap<Script, ChildNumber>,
 
     // Misc stuff
     /// The id of the wallet used in the db
@@ -247,10 +256,7 @@ impl RevaultD {
         }
         data_dir = fs::canonicalize(data_dir)?;
 
-        let daemon = match config.daemon {
-            Some(false) => false,
-            _ => true,
-        };
+        let daemon = !matches!(config.daemon, Some(false));
 
         Ok(RevaultD {
             vault_descriptor,
@@ -262,7 +268,7 @@ impl RevaultD {
             tip: None,
             ourselves: config.ourselves,
             // Will be updated by the database
-            current_unused_index: 0,
+            current_unused_index: ChildNumber::from(0),
             // FIXME: we don't need SipHash for those, use a faster alternative
             derivation_index_map: HashMap::new(),
             vaults: HashMap::new(),
@@ -280,35 +286,23 @@ impl RevaultD {
         [data_dir_str, file_name].iter().collect()
     }
 
-    pub fn vault_address(&mut self, child_number: u32) -> Address {
-        let addr = self
-            .vault_descriptor
-            .derive(ChildNumber::from(child_number))
+    pub fn vault_address(&self, child_number: ChildNumber) -> Address {
+        self.vault_descriptor
+            .derive(child_number)
             .0
             .address(self.bitcoind_config.network)
-            .expect("vault_descriptor is a wsh");
-        // So we can retrieve it later..
-        self.derivation_index_map
-            .insert(addr.script_pubkey(), child_number);
-
-        addr
+            .expect("vault_descriptor is a wsh")
     }
 
-    pub fn unvault_address(&mut self, child_number: u32) -> Address {
-        let addr = self
-            .unvault_descriptor
-            .derive(ChildNumber::from(child_number))
+    pub fn unvault_address(&self, child_number: ChildNumber) -> Address {
+        self.unvault_descriptor
+            .derive(child_number)
             .0
             .address(self.bitcoind_config.network)
-            .expect("vault_descriptor is a wsh");
-        // So we can retrieve it later..
-        self.derivation_index_map
-            .insert(addr.script_pubkey(), child_number);
-
-        addr
+            .expect("vault_descriptor is a wsh")
     }
 
-    fn gap_limit(&self) -> u32 {
+    pub fn gap_limit(&self) -> u32 {
         100
     }
 
@@ -342,29 +336,43 @@ impl RevaultD {
         self.file_from_datadir("revaultd_rpc")
     }
 
-    pub fn deposit_address(&mut self) -> Address {
+    pub fn deposit_address(&self) -> Address {
         self.vault_address(self.current_unused_index)
     }
 
-    pub fn last_deposit_address(&mut self) -> Address {
-        self.vault_address(self.current_unused_index + self.gap_limit())
+    pub fn last_deposit_address(&self) -> Address {
+        let raw_index: u32 = self.current_unused_index.into();
+        // FIXME: this should fail instead of creating a hardened index
+        self.vault_address(ChildNumber::from(raw_index + self.gap_limit()))
     }
 
-    pub fn last_unvault_address(&mut self) -> Address {
-        self.unvault_address(self.current_unused_index + self.gap_limit())
+    pub fn last_unvault_address(&self) -> Address {
+        let raw_index: u32 = self.current_unused_index.into();
+        // FIXME: this should fail instead of creating a hardened index
+        self.unvault_address(ChildNumber::from(raw_index + self.gap_limit()))
     }
 
     /// All deposit addresses as strings up to the gap limit (100)
     pub fn all_deposit_addresses(&mut self) -> Vec<String> {
-        (0..self.current_unused_index + self.gap_limit())
-            .map(|index| self.vault_address(index).to_string())
+        self.derivation_index_map
+            .keys()
+            .map(|s| {
+                Address::from_script(s, self.bitcoind_config.network)
+                    .expect("Created from P2WSH address")
+                    .to_string()
+            })
             .collect()
     }
 
     /// All unvault addresses as strings up to the gap limit (100)
     pub fn all_unvault_addresses(&mut self) -> Vec<String> {
-        (0..self.current_unused_index + self.gap_limit())
-            .map(|index| self.unvault_address(index).to_string())
+        let raw_index: u32 = self.current_unused_index.into();
+        (0..raw_index + self.gap_limit())
+            .map(|raw_index| {
+                // FIXME: this should fail instead of creating a hardened index
+                self.unvault_address(ChildNumber::from(raw_index))
+                    .to_string()
+            })
             .collect()
     }
 }

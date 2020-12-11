@@ -3,6 +3,8 @@
 revaultd exposes a [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 interface over a Unix Domain socket.
 
+Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubKey`s.
+
 | Command                                   | Description                                          |
 | ----------------------------------------- | ---------------------------------------------------- |
 | [`getinfo`](#getinfo)                     | Display general information                          |
@@ -31,12 +33,25 @@ Display general information about the current daemon state.
 | `sync`        | float   | The synchronization progress as percentage (`0 < sync < 1`)     |
 | `version`     | string  | Version following the [SimVer](http://www.simver.org/) format   |
 
+
+### `getdepositaddress`
+
+Get an address to build a deposit transaction.
+
+#### Response
+
+| Field         | Type   | Description                                                 |
+| ------------- | ------ | ----------------------------------------------------------- |
+| `address`     | string | An address for the N-of-N multisig deposit script           |
+
+
 ## Vault
 
 ### Vault statuses
 
 | Order | Value                | Description                                                                                                  |
 | ----- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 0     | `unconfirmed`        | The vault's deposit transaction is less than 6 blocks-deep in the chain                                      |
 | 1     | `funded`             | The vault is initiated by a vault tx                                                                         |
 | 2     | `secured`            | The vault's emergency transaction is fully signed and shared with the watchtowers                            |
 | 3     | `active`             | The vault's unvault, cancel, and unvault-emergency txs are fully signed and shared with the watchtowers      |

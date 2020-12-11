@@ -24,7 +24,7 @@ name = "revault-cli"
 path = "src/cli/main.rs"
 
 [dependencies]
-revault_tx = { git = "https://github.com/darosior/revault", branch = "update_latest_miniscript" }
+revault_tx = { git = "https://github.com/darosior/revault", branch = "update_miniscript" }
 
 # Don't reinvent the wheel
 dirs = "3.0.1"

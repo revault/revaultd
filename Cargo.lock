@@ -364,8 +364,9 @@ checksum = "0ee1c47aaa256ecabcaea351eae4a9b01ef39ed810004e298d2511ed284b1525"
 
 [[package]]
 name = "miniscript"
-version = "3.0.0"
-source = "git+https://github.com/darosior/rust-miniscript?branch=master#2562f92c442b2f1fbaad5c9a9240976e12825e15"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74ff4ece4ff5498718a232e92d53273903609c739052f5edf2a1a42c59586348"
 dependencies = [
  "bitcoin",
 ]
@@ -520,9 +521,8 @@ dependencies = [
 [[package]]
 name = "revault_tx"
 version = "0.0.1"
-source = "git+https://github.com/darosior/revault?branch=update_latest_miniscript#992cccb687655c5f447780631050b8233100a83d"
+source = "git+https://github.com/darosior/revault?branch=update_miniscript#194a765b43e05965e3b815bbe98a94bf3a3d40c5"
 dependencies = [
- "bitcoin",
  "bitcoinconsensus",
  "miniscript",
 ]

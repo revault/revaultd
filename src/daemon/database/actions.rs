@@ -176,7 +176,7 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
                 .vault_descriptor
                 .derive(index)
                 .0
-                .address(revaultd.bitcoind_config.network)
+                .address(revaultd.bitcoind_config.network, revaultd.xpub_ctx())
                 .expect("vault_descriptor is a wsh")
                 .script_pubkey(),
             index,

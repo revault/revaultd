@@ -3,11 +3,11 @@ use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, Ou
 use std::{collections::HashMap, convert::TryFrom, fmt, fs, path::PathBuf, str::FromStr, vec::Vec};
 
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Address, BlockHash, OutPoint, Script, TxOut},
-    miniscript::descriptor::DescriptorPublicKey,
+    bitcoin::{secp256k1, util::bip32::ChildNumber, Address, BlockHash, OutPoint, Script, TxOut},
+    miniscript::descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
     scripts::{
-        unvault_cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor,
-        UnvaultDescriptor, VaultDescriptor,
+        cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor, UnvaultDescriptor,
+        VaultDescriptor,
     },
     transactions::{
         CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -165,12 +165,14 @@ pub struct RevaultD {
     pub vault_descriptor: VaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of unvault's outputs scripts
     pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
-    /// The miniscript descriptor of unvault's CPFP output scripts
-    pub unvault_cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
+    /// The miniscript descriptor of CPFP output scripts (in unvault and spend transaction)
+    pub cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
     /// We don't make an enormous deal of address reuse (we cancel to the same keys),
     /// however we at least try to generate new addresses once they're used.
     // FIXME: think more about desync reconciliation..
     pub current_unused_index: ChildNumber,
+    /// The secp context required by the xpub one.. We'll eventually use it to verify keys.
+    pub secp_ctx: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
 
     // UTXOs stuff
     /// A cache of known vaults by txid
@@ -241,7 +243,7 @@ impl RevaultD {
             config.unvault_csv,
         )?;
 
-        let unvault_cpfp_descriptor = unvault_cpfp_descriptor(managers_pubkeys)?;
+        let cpfp_descriptor = cpfp_descriptor(managers_pubkeys)?;
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         data_dir.push(config.bitcoind_config.network.to_string());
@@ -258,10 +260,13 @@ impl RevaultD {
 
         let daemon = !matches!(config.daemon, Some(false));
 
+        let secp_ctx = secp256k1::Secp256k1::verification_only();
+
         Ok(RevaultD {
             vault_descriptor,
             unvault_descriptor,
-            unvault_cpfp_descriptor,
+            cpfp_descriptor,
+            secp_ctx,
             data_dir,
             daemon,
             bitcoind_config: config.bitcoind_config,
@@ -286,11 +291,17 @@ impl RevaultD {
         [data_dir_str, file_name].iter().collect()
     }
 
+    /// The context required for deriving keys. We don't use it, as it's redundant with the
+    /// descriptor derivation, therefore the ChildNumber is always 0.
+    pub fn xpub_ctx<'a>(&'a self) -> DescriptorPublicKeyCtx<'a, secp256k1::VerifyOnly> {
+        DescriptorPublicKeyCtx::new(&self.secp_ctx, ChildNumber::from(0))
+    }
+
     pub fn vault_address(&self, child_number: ChildNumber) -> Address {
         self.vault_descriptor
             .derive(child_number)
             .0
-            .address(self.bitcoind_config.network)
+            .address(self.bitcoind_config.network, self.xpub_ctx())
             .expect("vault_descriptor is a wsh")
     }
 
@@ -298,7 +309,7 @@ impl RevaultD {
         self.unvault_descriptor
             .derive(child_number)
             .0
-            .address(self.bitcoind_config.network)
+            .address(self.bitcoind_config.network, self.xpub_ctx())
             .expect("vault_descriptor is a wsh")
     }
 

@@ -9,6 +9,7 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | ----------------------------------------- | ---------------------------------------------------- |
 | [`getinfo`](#getinfo)                     | Display general information                          |
 | [`listvaults`](#listvaults)               | Display a paginated list of vaults                   |
+| [`getonchaintxs`](#getonchaintxs)         | Retrieve the vault on chain transactions             |
 | [`getrevocationtxs`](#getrevocationtxs)   | Retrieve the Revault revocation transactions to sign |
 | [`getunvaulttx`](#getunvaulttx)           | Retrieve the Revault unvault transaction to sign     |
 | [`getspendtx`](#getspendtx)               | Retrieve the Revault spend transaction to sign       |
@@ -67,16 +68,26 @@ Get an address to build a deposit transaction.
 
 ### Vault resource
 
-| Field         | Type   | Description                                                                          |
-| ------------- | ------ | ------------------------------------------------------------------------------------ |
-| `amount`      | int    | Amount of the vault in satoshis                                                      |
-| `status`      | string | Status of the vault (see [vault statuses](#vault-statuses))                          |
-| `txid`        | string | Deposit txid of the vault deposit transaction                                        |
-| `vout`        | vout   | Index of the deposit output in the deposit transaction.                              |
+| Field         | Type   | Description                                                 |
+| ------------- | ------ | ----------------------------------------------------------- |
+| `amount`      | int    | Amount of the vault in satoshis                             |
+| `blockheight` | int    | Blockheight of the deposit transaction block                |
+| `received_at` | int    | Timestamp of the deposit transaction reception time         |
+| `status`      | string | Status of the vault (see [vault statuses](#vault-statuses)) |
+| `txid`        | string | Deposit txid of the vault deposit transaction               |
+| `updated_at`  | int    | Timestamp of the last status change                         |
+| `vout`        | int    | Index of the deposit output in the deposit transaction.     |
 
 Note that the `scriptPubKey` is implicitly known as we have the vault output Miniscript descriptor.
 **TODO** Maybe we should store and give the xpub derivation index as well ?
 
+### Vault Transaction resource
+
+| Field         | Type   | Description                                         |
+| ------------- | ------ | ------------------------------------------------    |
+| `blockheight` | int    | Block height of the transaction                     |
+| `hex`         | string | Hexadecimal format of the transaction               |
+| `received_at` | int    | Timestamp of the reception time of the transaction |
 
 ### `listvaults`
 
@@ -95,6 +106,26 @@ either `status` or deposit `txids`.
 | Field         | Type                                       | Description               |
 | ------------- | ------------------------------------------ | ------------------------- |
 | `vaults`      | array of [vault resource](#vault-resource) | Vaults filtered by status |
+
+### `getonchaintxs`
+
+The `getonchaintxs` RPC Command retrieves the on chain transactions of a
+vault with the given deposit `txid`.
+
+#### Request
+
+| Parameter        | Type    | Description                                     |
+| ---------------- | ------- | ----------------------------------------------- |
+| `txid`           | string  | Deposit txid of the vault                       |
+
+#### Response
+
+| Field         | Type                                                      | Description                                                                |
+| ------------- | --------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `cancel_tx`   | [Vault transaction resource](#vault-transaction-resource) | Cancel transaction -- not present if the vault is cancelling or cancelled  |
+| `deposit_tx`  | [Vault transaction resource](#vault-transaction-resource) | Deposit transaction                                                        |
+| `spend_tx`    | [Vault transaction resource](#vault-transaction-resource) | Spend transaction -- not present if vault is not spending or spent         |
+| `unvault_tx`  | [Vault transaction resource](#vault-transaction-resource) | Unvault transaction -- not present if vault is not unvaulting or unvaulted |
 
 ### `getrevocationtxs`
 

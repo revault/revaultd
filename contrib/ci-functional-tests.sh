@@ -15,4 +15,4 @@ sudo mv $DIR_NAME/bin/bitcoind /usr/local/bin/
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt
-TEST_DEBUG=1 pytest -vvv -n4 tests/
+TEST_DEBUG=1 pytest -vvv -n2 tests/

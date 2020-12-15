@@ -1,7 +1,10 @@
 use crate::{revaultd::VaultStatus, threadmessages::*};
 use common::VERSION;
 
-use revault_tx::bitcoin::{hashes::hex::FromHex, Txid};
+use revault_tx::{
+    bitcoin::{hashes::hex::FromHex, OutPoint, Txid},
+    transactions::RevaultTransaction,
+};
 
 use std::{
     process,
@@ -63,8 +66,17 @@ pub trait RpcApi {
         txids: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
+    /// Get an address to receive funds to the stakeholders' descriptor
     #[rpc(meta, name = "getdepositaddress")]
     fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+
+    /// Get the cancel and both emergency transactions for a vault identified by deposit txid.
+    #[rpc(meta, name = "getrevocationtxs")]
+    fn getrevocationtxs(
+        &self,
+        meta: Self::Metadata,
+        txid: String,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 pub struct RpcImpl;
@@ -192,5 +204,45 @@ impl RpcApi for RpcImpl {
         });
 
         Ok(json!({ "address": address.to_string() }))
+    }
+
+    fn getrevocationtxs(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let outpoint = OutPoint::from_str(&outpoint).map_err(|e| {
+            JsonRpcError::invalid_params(format!(
+                "'{}' is not a valid outpoint ({})",
+                &outpoint,
+                e.to_string()
+            ))
+        })?;
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        meta.tx
+            .send(RpcMessageIn::GetRevocationTxs(outpoint, response_tx))
+            .unwrap_or_else(|e| {
+                log::error!("Sending 'getrevocationtxs' to main thread: {:?}", e);
+                process::exit(1);
+            });
+        let (cancel_tx, emer_tx, unemer_tx) = response_rx
+            .recv()
+            .unwrap_or_else(|e| {
+                log::error!("Receiving 'getrevocationtxs' from main thread: {:?}", e);
+                process::exit(1);
+            })
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(format!(
+                    "'{}' does not refer to a known and confirmed vault",
+                    &outpoint,
+                ))
+            })?;
+
+        Ok(json!({
+            "cancel_tx": cancel_tx.as_psbt_string().unwrap(),
+            "emergency_tx": emer_tx.as_psbt_string().unwrap(),
+            "emergency_unvault_tx": unemer_tx.as_psbt_string().unwrap(),
+        }))
     }
 }

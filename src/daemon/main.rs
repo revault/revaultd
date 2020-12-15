@@ -6,13 +6,13 @@ mod threadmessages;
 
 use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
-    database::actions::setup_db,
+    database::{actions::setup_db, interface::db_tip},
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
-    revaultd::{BlockchainTip, RevaultD},
+    revaultd::{BlockchainTip, RevaultD, VaultStatus},
     threadmessages::*,
 };
 use common::config::Config;
-use database::interface::db_tip;
+use revault_tx::{transactions::transaction_chain, txins::VaultTxIn, txouts::VaultTxOut};
 
 use std::{
     env,
@@ -170,7 +170,7 @@ fn daemon_main(mut revaultd: RevaultD) {
                 }
 
                 response_tx.send(resp).unwrap_or_else(|e| {
-                    log::error!("Sending 'listvaults' result to RPC thread: {:?}", e);
+                    log::error!("Sending 'listvaults' result to RPC thread: {}", e);
                     process::exit(1);
                 });
             }
@@ -179,9 +179,80 @@ fn daemon_main(mut revaultd: RevaultD) {
                 response_tx
                     .send(revaultd.read().unwrap().deposit_address())
                     .unwrap_or_else(|e| {
-                        log::error!("Sending 'depositaddr' result to RPC thread: {:?}", e);
+                        log::error!("Sending 'depositaddr' result to RPC thread: {}", e);
                         process::exit(1);
                     });
+            }
+            RpcMessageIn::GetRevocationTxs(outpoint, response_tx) => {
+                log::trace!("Got 'getrevocationtxs' request from RPC thread");
+                let revaultd = revaultd.read().unwrap();
+                let xpub_ctx = revaultd.xpub_ctx();
+
+                // First, make sure the vault exists and is confirmed.
+                let vault = match revaultd.vaults.get(&outpoint) {
+                    None => None,
+                    Some(vault) => match vault.status {
+                        VaultStatus::Unconfirmed => None,
+                        _ => Some(vault),
+                    },
+                };
+                if let Some(vault) = vault {
+                    // Second, derive the fully-specified deposit txout. Note that we'd probably
+                    // store the index in the cache eventually, but until we get rid of this awful
+                    // mapping let's just use it.
+                    let index = revaultd
+                        .derivation_index_map
+                        .get(&vault.txo.script_pubkey)
+                        .unwrap_or_else(|| {
+                            log::error!("Unknown derivation index for: {:#?}", vault);
+                            process::exit(1);
+                        });
+                    let deposit_descriptor = revaultd.vault_descriptor.derive(*index);
+                    let vault_txin = VaultTxIn::new(
+                        outpoint,
+                        VaultTxOut::new(vault.txo.value, &deposit_descriptor, xpub_ctx),
+                    );
+
+                    // Third, re-derive all the transactions out of it.
+                    let unvault_descriptor = revaultd.unvault_descriptor.derive(*index);
+                    let cpfp_descriptor = revaultd.cpfp_descriptor.derive(*index);
+                    let emer_address = revaultd.emergency_address.clone();
+
+                    let (_, cancel, emergency, unvault_emer) = transaction_chain(
+                        vault_txin,
+                        &deposit_descriptor,
+                        &unvault_descriptor,
+                        &cpfp_descriptor,
+                        emer_address,
+                        xpub_ctx,
+                        revaultd.lock_time,
+                        revaultd.unvault_csv,
+                    )
+                    .unwrap_or_else(|e| {
+                        log::error!(
+                            "Deriving transactions for vault {:#?} (at '{}'): '{}'",
+                            vault,
+                            outpoint,
+                            e
+                        );
+                        process::exit(1);
+                    });
+
+                    response_tx
+                        .send(Some((cancel, emergency, unvault_emer)))
+                        .unwrap_or_else(|e| {
+                            log::error!("Sending 'getrevocationtxs' result to RPC thread: '{}'", e);
+                            process::exit(1);
+                        });
+                } else {
+                    response_tx.send(None).unwrap_or_else(|e| {
+                        log::error!(
+                            "Sending 'getrevocationtxs' (None) result to RPC thread: '{}'",
+                            e
+                        );
+                        process::exit(1);
+                    });
+                }
             }
         }
     }

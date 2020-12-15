@@ -130,7 +130,8 @@ vault with the given deposit `txid`.
 ### `getrevocationtxs`
 
 The `getrevocationtxs` RPC Command builds and returns the revocation transactions
-corresponding to a given vault.
+corresponding to a given vault. The call will fail if the `outpoint` does not refer to a
+known and confirmed ([`funded`](#vault-statuses)) vault.
 
 #### Request
 
@@ -235,7 +236,7 @@ amount of the output.
   | +------sig---------> |                          |
   |                      |                          |
   | <+sign unvault_emer+ |                          |
-  | +------------------> |                          |
+  | +------sig---------> |                          |
   |                      | +---revocationtxs------> |
   |                      |                          |
   +                      | +--+listvaults secure+-> |  // check if the watchtowers has the

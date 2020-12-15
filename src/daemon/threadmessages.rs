@@ -1,5 +1,8 @@
 use crate::revaultd::VaultStatus;
-use revault_tx::bitcoin::{Address, Txid};
+use revault_tx::{
+    bitcoin::{Address, OutPoint, Txid},
+    transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
+};
 
 use std::sync::mpsc::SyncSender;
 
@@ -15,6 +18,17 @@ pub enum RpcMessageIn {
         SyncSender<Vec<(u64, String, String, u32)>>,
     ),
     DepositAddr(SyncSender<Address>),
+    GetRevocationTxs(
+        OutPoint,
+        // None if the deposit does not exist
+        SyncSender<
+            Option<(
+                CancelTransaction,
+                EmergencyTransaction,
+                UnvaultEmergencyTransaction,
+            )>,
+        >,
+    ),
 }
 
 /// Outgoing to the bitcoind poller thread

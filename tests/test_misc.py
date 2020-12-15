@@ -1,11 +1,13 @@
+import json
+import pytest
+import socket
+import time
+
 from fixtures import (
     revaultd_stakeholder, revaultd_manager, bitcoind, directory, test_base_dir,
     test_name, revaultd_factory
 )
-from utils import TIMEOUT, wait_for
-import time
-import json, socket
-
+from utils import TIMEOUT, wait_for, RpcError
 
 def test_revaultd_stakeholder_starts(revaultd_stakeholder):
     revaultd_stakeholder.rpc.call("stop")
@@ -110,3 +112,27 @@ def test_getdepositaddress(revaultd_factory, bitcoind):
         n.wait_for_logs(["Got a new unconfirmed deposit",
                          "Incremented deposit derivation index"])
         assert addr2 == n.rpc.call("getdepositaddress")["address"]
+
+
+def test_getrevocationtxs(revaultd_factory, bitcoind):
+    (stks, mans) = revaultd_factory.deploy(4, 2)
+    addr = stks[0].rpc.call("getdepositaddress")["address"]
+
+    # If the vault isn't known, it'll fail (note: it's racy for others but
+    # behaviour is the same is the vault isn't known)
+    txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)
+    stks[0].wait_for_logs(["Got a new unconfirmed deposit",
+                           "Incremented deposit derivation index"])
+    vault = stks[0].rpc.listvaults()["vaults"][0]
+    for n in stks + mans:
+        with pytest.raises(RpcError, match=".* does not refer to a known and "
+                                           "confirmed vault"):
+            n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+
+    # Now, get it confirmed. They all derived the same transactions
+    bitcoind.generate_block(6, txid)
+    stks[0].wait_for_log(f"Vault at .*{txid}.* is now confirmed")
+    txs = stks[0].rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+    for n in stks[1:] + mans:
+        n.wait_for_log(f"Vault at .*{txid}.* is now confirmed")
+        assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")

@@ -63,6 +63,7 @@ pub trait RpcApi {
         &self,
         meta: Self::Metadata,
         status: Option<Vec<String>>,
+        // FIXME: should be outpoints!!
         txids: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
@@ -240,9 +241,9 @@ impl RpcApi for RpcImpl {
             })?;
 
         Ok(json!({
-            "cancel_tx": cancel_tx.as_psbt_string().unwrap(),
-            "emergency_tx": emer_tx.as_psbt_string().unwrap(),
-            "emergency_unvault_tx": unemer_tx.as_psbt_string().unwrap(),
+            "cancel_tx": cancel_tx.as_psbt_string().expect("We just derived it"),
+            "emergency_tx": emer_tx.as_psbt_string().expect("We just derived it"),
+            "emergency_unvault_tx": unemer_tx.as_psbt_string().expect("We just derived it"),
         }))
     }
 }

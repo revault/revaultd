@@ -144,8 +144,8 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
 
     revaultd.tip = Some(db_tip(&db_path)?);
 
-    //FIXME: Find a way to check if the policies described in the config files are equivalent
-    // to the miniscript in the db.
+    //FIXME: Use the Abstract Miniscript policy to check the policies described in the
+    // config files are equivalent to the miniscript in the db.
     revaultd.vault_descriptor =
         VaultDescriptor(Descriptor::from_str(&wallet.vault_descriptor).map_err(|e| {
             DatabaseError(format!(

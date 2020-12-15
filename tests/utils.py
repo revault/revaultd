@@ -22,7 +22,7 @@ import threading
 import time
 
 
-TIMEOUT = int(os.getenv("TIMEOUT", 40))
+TIMEOUT = int(os.getenv("TIMEOUT", 60))
 TEST_DEBUG = os.getenv("TEST_DEBUG", "0") == "1"
 
 
@@ -569,6 +569,9 @@ class RevaultD(TailableProc):
                                        ".cookie")
         with open(self.conf_file, 'w') as f:
             f.write(f"unvault_csv = {csv}\n")
+            # FIXME: eventually use a real one here
+            f.write("emergency_address = "
+                    "\"bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq\"\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
             f.write(f"log_level = 'trace'\n")

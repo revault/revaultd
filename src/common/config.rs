@@ -1,6 +1,10 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr, vec::Vec};
 
-use revault_tx::{bitcoin::Network, miniscript::descriptor::DescriptorPublicKey};
+use revault_tx::{
+    bitcoin::{Address, Network},
+    miniscript::descriptor::DescriptorPublicKey,
+    scripts::EmergencyAddress,
+};
 
 use serde::{de, Deserialize, Deserializer};
 
@@ -198,6 +202,33 @@ impl<'de> Deserialize<'de> for OurSelves {
     }
 }
 
+// A hack to not upstream serde..
+#[derive(Debug)]
+pub struct ConfigEmergencyAddress(pub EmergencyAddress);
+impl<'de> Deserialize<'de> for ConfigEmergencyAddress {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(ConfigEmergencyAddress(
+            Address::from_str(&String::deserialize(deserializer)?)
+                .map(EmergencyAddress::from)
+                .map_err(|e| {
+                    de::Error::custom(format!(
+                        r#"Invalid "emergency_address" entry in "revault_config": {}"#,
+                        e
+                    ))
+                })?
+                .map_err(|_| {
+                    de::Error::custom(
+                        r#""emergency_address" entry in "revault_config" is not a P2WSH"#
+                            .to_string(),
+                    )
+                })?,
+        ))
+    }
+}
+
 /// Static informations we require to operate
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -211,6 +242,8 @@ pub struct Config {
     pub stakeholders: Vec<Stakeholder>,
     /// The unvault output scripts relative timelock
     pub unvault_csv: u32,
+    /// The emergency address
+    pub emergency_address: ConfigEmergencyAddress,
     /// An optional custom data directory
     pub data_dir: Option<PathBuf>,
     /// Whether to daemonize the process
@@ -302,6 +335,15 @@ impl Config {
             }
         }
 
+        let emer_addr_net = config.emergency_address.0.address().network;
+        let bitcoind_net = config.bitcoind_config.network;
+        if emer_addr_net != bitcoind_net {
+            return Err(ConfigError(format!(
+                r#"Our "emergency_address" is for '{}' but bitcoind is on '{}'"#,
+                emer_addr_net, bitcoind_net
+            )));
+        }
+
         Ok(config)
     }
 }
@@ -316,6 +358,7 @@ mod tests {
         // A valid config
         let toml_str = r#"
             unvault_csv = 42
+            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
 
             data_dir = "/home/wizardsardine/custom/folder/"
 

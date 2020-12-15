@@ -120,12 +120,12 @@ vault with the given deposit `txid`.
 
 #### Response
 
-| Field         | Type                                                      | Description                                                                |
-| ------------- | --------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `cancel_tx`   | [Vault transaction resource](#vault-transaction-resource) | Cancel transaction -- not present if the vault is cancelling or cancelled  |
-| `deposit_tx`  | [Vault transaction resource](#vault-transaction-resource) | Deposit transaction                                                        |
-| `spend_tx`    | [Vault transaction resource](#vault-transaction-resource) | Spend transaction -- not present if vault is not spending or spent         |
-| `unvault_tx`  | [Vault transaction resource](#vault-transaction-resource) | Unvault transaction -- not present if vault is not unvaulting or unvaulted |
+| Field         | Type                                                      | Description                                                           |
+| ------------- | --------------------------------------------------------- | --------------------------------------------------------------------- |
+| `cancel_tx`   | [Vault transaction resource](#vault-transaction-resource) | Cancel transaction -- present if the vault is cancelling or cancelled |
+| `deposit_tx`  | [Vault transaction resource](#vault-transaction-resource) | Deposit transaction                                                   |
+| `spend_tx`    | [Vault transaction resource](#vault-transaction-resource) | Spend transaction -- present if vault is spending or spent            |
+| `unvault_tx`  | [Vault transaction resource](#vault-transaction-resource) | Unvault transaction -- present if vault is unvaulting or unvaulted    |
 
 ### `getrevocationtxs`
 

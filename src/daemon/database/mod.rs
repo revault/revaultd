@@ -1,4 +1,6 @@
 pub mod actions;
+// We don't use all the interfaces just yet
+#[allow(dead_code)]
 pub mod interface;
 mod schema;
 

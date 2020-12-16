@@ -301,7 +301,7 @@ impl RevaultD {
 
     /// The context required for deriving keys. We don't use it, as it's redundant with the
     /// descriptor derivation, therefore the ChildNumber is always 0.
-    pub fn xpub_ctx<'a>(&'a self) -> DescriptorPublicKeyCtx<'a, secp256k1::VerifyOnly> {
+    pub fn xpub_ctx(&self) -> DescriptorPublicKeyCtx<'_, secp256k1::VerifyOnly> {
         DescriptorPublicKeyCtx::new(&self.secp_ctx, ChildNumber::from(0))
     }
 

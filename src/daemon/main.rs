@@ -319,9 +319,11 @@ fn main() {
     });
 
     if revaultd.daemon {
-        let mut daemon = Daemonize::default();
-        // TODO: Make this configurable for inits
-        daemon.pid_file = Some(revaultd.pid_file());
+        let daemon = Daemonize {
+            // TODO: Make this configurable for inits
+            pid_file: Some(revaultd.pid_file()),
+            ..Daemonize::default()
+        };
         daemon.doit().unwrap_or_else(|e| {
             eprintln!("Error daemonizing: {}", e);
             process::exit(1);

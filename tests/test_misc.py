@@ -81,16 +81,18 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert vault_list[0]["txid"] == txid
     assert vault_list[0]["amount"] == amount_sent * 10**8
 
-    # And we can filter the result by txid
-    vault_list = revaultd_manager.rpc.call("listvaults", [[], [txid]])["vaults"]
+    # And we can filter the result by outpoints
+    outpoint = f"{txid}:{vault_list[0]['vout']}"
+    vault_list = revaultd_manager.rpc.call("listvaults",
+                                           [[], [outpoint]])["vaults"]
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
     assert vault_list[0]["amount"] == amount_sent * 10**8
 
-    inexistant_txid = "0" * 64
+    outpoint = f"{txid}:{100}"
     vault_list = revaultd_manager.rpc.call("listvaults",
-                                           [[], [inexistant_txid]])["vaults"]
+                                           [[], [outpoint]])["vaults"]
     assert len(vault_list) == 0
 
 
@@ -134,5 +136,5 @@ def test_getrevocationtxs(revaultd_factory, bitcoind):
     stks[0].wait_for_log(f"Vault at .*{txid}.* is now confirmed")
     txs = stks[0].rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
     for n in stks[1:] + mans:
-        n.wait_for_log(f"Vault at .*{txid}.* is now confirmed")
+        wait_for(lambda: n.rpc.listvaults()["vaults"][0]["status"] == "funded")
         assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")

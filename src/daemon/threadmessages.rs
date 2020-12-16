@@ -1,6 +1,6 @@
 use crate::revaultd::VaultStatus;
 use revault_tx::{
-    bitcoin::{Address, OutPoint, Txid},
+    bitcoin::{Address, OutPoint},
     transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
 };
 
@@ -13,7 +13,7 @@ pub enum RpcMessageIn {
     // Network, blockheight, sync progress
     GetInfo(SyncSender<(String, u32, f64)>),
     ListVaults(
-        (Option<Vec<VaultStatus>>, Option<Vec<Txid>>),
+        (Option<Vec<VaultStatus>>, Option<Vec<OutPoint>>),
         // amount, status, txid, vout
         SyncSender<Vec<(u64, String, String, u32)>>,
     ),

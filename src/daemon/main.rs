@@ -144,7 +144,7 @@ fn daemon_main(mut revaultd: RevaultD) {
                         process::exit(1);
                     });
             }
-            RpcMessageIn::ListVaults((statuses, txids), response_tx) => {
+            RpcMessageIn::ListVaults((statuses, outpoints), response_tx) => {
                 log::trace!("Got listvaults from RPC thread");
 
                 let mut resp = Vec::<(u64, String, String, u32)>::new();
@@ -155,8 +155,8 @@ fn daemon_main(mut revaultd: RevaultD) {
                         }
                     }
 
-                    if let Some(ref txids) = &txids {
-                        if !txids.contains(&outpoint.txid) {
+                    if let Some(ref outpoints) = &outpoints {
+                        if !outpoints.contains(&outpoint) {
                             continue;
                         }
                     }

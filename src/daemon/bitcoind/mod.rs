@@ -1,6 +1,9 @@
 use crate::database::DatabaseError;
 
-use jsonrpc::error::{Error, RpcError};
+use jsonrpc::{
+    error::{Error, RpcError},
+    simple_http,
+};
 
 pub mod actions;
 pub mod interface;
@@ -42,5 +45,11 @@ impl std::error::Error for BitcoindError {}
 impl From<DatabaseError> for BitcoindError {
     fn from(e: DatabaseError) -> Self {
         Self::Custom(format!("Database error in bitcoind thread: {}", e))
+    }
+}
+
+impl From<simple_http::Error> for BitcoindError {
+    fn from(e: simple_http::Error) -> Self {
+        Self::Server(Error::Transport(Box::new(e)))
     }
 }

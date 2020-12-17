@@ -521,8 +521,9 @@ dependencies = [
 [[package]]
 name = "revault_tx"
 version = "0.0.1"
-source = "git+https://github.com/darosior/revault?branch=update_miniscript#194a765b43e05965e3b815bbe98a94bf3a3d40c5"
+source = "git+https://github.com/darosior/revault?branch=refinement#5c17f61b51e64f3cfb32172b25d811a147fa22f1"
 dependencies = [
+ "base64 0.13.0",
  "bitcoinconsensus",
  "miniscript",
 ]

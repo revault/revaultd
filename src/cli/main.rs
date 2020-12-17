@@ -43,14 +43,17 @@ fn parse_args(mut args: Vec<String>) -> (Option<PathBuf>, String, Vec<String>) {
     }
 }
 
-fn rpc_request(method: String, params: Vec<String>) -> serde_json::Result<Json> {
+// Defaults to String Value when parsing fails, as it fails to parse outpoints otherwise...
+fn from_str_hack(token: String) -> Json {
+    match serde_json::from_str(&token) {
+        Ok(json) => json,
+        Err(_) => Json::String(token),
+    }
+}
+
+fn rpc_request(method: String, params: Vec<String>) -> Json {
     let method = Json::String(method);
-    let params = Json::Array(
-        params
-            .into_iter()
-            .map(|string| serde_json::from_str(&string))
-            .collect::<serde_json::Result<Vec<Json>>>()?,
-    );
+    let params = Json::Array(params.into_iter().map(from_str_hack).collect::<Vec<Json>>());
     let mut object = serde_json::Map::<String, Json>::new();
     object.insert("jsonrpc".to_string(), Json::String("2.0".to_string()));
     object.insert(
@@ -60,7 +63,7 @@ fn rpc_request(method: String, params: Vec<String>) -> serde_json::Result<Json> 
     object.insert("method".to_string(), method);
     object.insert("params".to_string(), params);
 
-    Ok(Json::Object(object))
+    Json::Object(object)
 }
 
 fn socket_file(conf_file: Option<PathBuf>) -> PathBuf {
@@ -103,10 +106,7 @@ fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
 fn main() {
     let args = env::args().collect();
     let (conf_file, method, params) = parse_args(args);
-    let request = rpc_request(method, params).unwrap_or_else(|e| {
-        eprintln!("Invalid parameters: '{}'", e);
-        process::exit(1);
-    });
+    let request = rpc_request(method, params);
     let socket_file = socket_file(conf_file);
     let mut raw_response = vec![0; 256];
     let mut response: Json;

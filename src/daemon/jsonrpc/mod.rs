@@ -80,7 +80,7 @@ fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io
 }
 
 // Returns Ok(true) on written data and Ok(false) on non-fatal error but non-written data
-fn write_byte_stream(stream: &mut UnixStream, resp: &String) -> Result<bool, io::Error> {
+fn write_byte_stream(stream: &mut UnixStream, resp: &str) -> Result<bool, io::Error> {
     match stream.write(resp.as_bytes()) {
         Ok(n) => {
             if n < resp.len() {

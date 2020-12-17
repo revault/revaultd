@@ -1,4 +1,5 @@
 unvault_csv = 42
+emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
 
 [bitcoind_config]
 network = "bitcoin"

@@ -92,14 +92,14 @@ Note that the `scriptPubKey` is implicitly known as we have the vault output Min
 ### `listvaults`
 
 The `listvaults` RPC command displays a list of vaults optionally filtered by
-either `status` or deposit `txids`.
+either `status` or deposit `outpoints`.
 
 #### Request
 
-| Parameter | Type         | Description                                                                                     |
-| --------- | ------------ | ----------------------------------------------------------------------------------------------- |
-| `status`  | string array | Vault status -- optional, see [vault statuses](#vault-statuses) for possible values             |
-| `txids`   | string array | Vault IDs -- optional, filter the list with the given vault IDs                                 |
+| Parameter   | Type         | Description                                                                                     |
+| ----------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
+| `status`    | string array | Vault status -- optional, see [vault statuses](#vault-statuses) for possible values             |
 
 #### Response
 
@@ -110,13 +110,13 @@ either `status` or deposit `txids`.
 ### `getonchaintxs`
 
 The `getonchaintxs` RPC Command retrieves the on chain transactions of a
-vault with the given deposit `txid`.
+vault with the given deposit `outpoint`.
 
 #### Request
 
 | Parameter        | Type    | Description                                     |
 | ---------------- | ------- | ----------------------------------------------- |
-| `txid`           | string  | Deposit txid of the vault                       |
+| `outpoint`       | string  | Deposit outpoint of the vault                   |
 
 #### Response
 
@@ -130,13 +130,14 @@ vault with the given deposit `txid`.
 ### `getrevocationtxs`
 
 The `getrevocationtxs` RPC Command builds and returns the revocation transactions
-corresponding to a given vault.
+corresponding to a given vault. The call will fail if the `outpoint` does not refer to a
+known and confirmed ([`funded`](#vault-statuses)) vault.
 
 #### Request
 
-| Parameter        | Type    | Description                                     |
-| ---------------- | ------- | ----------------------------------------------- |
-| `txid`           | string  | Deposit txid of the vault                       |
+| Parameter            | Type    | Description                                     |
+| -------------------- | ------- | ----------------------------------------------- |
+| `outpoint`           | string  | Deposit outpoint of the vault                   |
 
 #### Response
 
@@ -165,9 +166,9 @@ vault.
 
 #### Request
 
-| Parameter        | Type    | Description                           |
-| ---------------- | ------- | ------------------------------------- |
-| `txid`           | string  | Deposit txid of the vault to activate |
+| Parameter        | Type    | Description                               |
+| ---------------- | ------- | ----------------------------------------- |
+| `outpoint`       | string  | Deposit outpoint of the vault to activate |
 
 #### Response
 
@@ -190,10 +191,10 @@ set of vaults to spend.
 
 #### Request
 
-| Parameter | Type                 | Description                                                       |
-| --------- | -------------------- | ----------------------------------------------------------------- |
-| `txid`    | string array         | Vault deposit txids -- vaults must be [`active`](#vault-statuses) |
-| `output`  | map of string to int | Map of Bitcoin addresses to amount                                |
+| Parameter   | Type                 | Description                                                           |
+| ----------- | -------------------- | --------------------------------------------------------------------- |
+| `outpoints` | string array         | Vault deposit outpoints -- vaults must be [`active`](#vault-statuses) |
+| `output`    | map of string to int | Map of Bitcoin addresses to amount                                    |
 
 Fee is deducted from the total amount of the vaults spent minus the total
 amount of the output.
@@ -235,7 +236,7 @@ amount of the output.
   | +------sig---------> |                          |
   |                      |                          |
   | <+sign unvault_emer+ |                          |
-  | +------------------> |                          |
+  | +------sig---------> |                          |
   |                      | +---revocationtxs------> |
   |                      |                          |
   +                      | +--+listvaults secure+-> |  // check if the watchtowers has the

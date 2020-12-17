@@ -22,7 +22,7 @@ import threading
 import time
 
 
-TIMEOUT = int(os.getenv("TIMEOUT", 40))
+TIMEOUT = int(os.getenv("TIMEOUT", 60))
 TEST_DEBUG = os.getenv("TEST_DEBUG", "0") == "1"
 
 
@@ -152,14 +152,14 @@ class UnixDomainSocketRpc(object):
         s = json.dumps(obj, ensure_ascii=False)
         sock.sock.sendall(s.encode())
 
-    def _readobj(self, sock, buff=b''):
-        """Read a JSON object, starting with buff; returns object and any buffer left over."""
+    def _readobj(self, sock):
+        """Read a JSON object"""
+        buff = b""
         while True:
-            [sock], _, _ = select.select([sock.sock], [], [], TIMEOUT)
             n_to_read = max(2048, len(buff))
-            b = sock.recv(n_to_read)
-            buff += b
-            if len(b) != n_to_read:
+            chunk = sock.recv(n_to_read)
+            buff += chunk
+            if len(chunk) != n_to_read:
                 print("Got: {}", buff)
                 return json.loads(buff)
 
@@ -177,7 +177,7 @@ class UnixDomainSocketRpc(object):
             elif len(args) != 0:
                 return self.call(name, payload=args)
             else:
-                return self.call(name, payload=kwargs)
+                return self.call(name, payload=list(kwargs.values()))
         return wrapper
 
     # FIXME: support named parameters on the Rust server!
@@ -569,6 +569,9 @@ class RevaultD(TailableProc):
                                        ".cookie")
         with open(self.conf_file, 'w') as f:
             f.write(f"unvault_csv = {csv}\n")
+            # FIXME: eventually use a real one here
+            f.write("emergency_address = "
+                    "\"bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq\"\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
             f.write(f"log_level = 'trace'\n")

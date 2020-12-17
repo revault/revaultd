@@ -111,8 +111,8 @@ def revaultd_manager(bitcoind, test_base_dir):
 
 
 @pytest.fixture
-def revaultd_factory(directory, bitcoind):
-    factory = RevaultDFactory(directory, bitcoind)
+def revaultd_factory(test_base_dir, bitcoind):
+    factory = RevaultDFactory(test_base_dir, bitcoind)
 
     yield factory
 

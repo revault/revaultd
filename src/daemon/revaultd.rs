@@ -6,8 +6,8 @@ use revault_tx::{
     bitcoin::{secp256k1, util::bip32::ChildNumber, Address, BlockHash, OutPoint, Script, TxOut},
     miniscript::descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
     scripts::{
-        cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor, UnvaultDescriptor,
-        VaultDescriptor,
+        cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor, EmergencyAddress,
+        UnvaultDescriptor, VaultDescriptor,
     },
     transactions::{
         CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -167,12 +167,17 @@ pub struct RevaultD {
     pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of CPFP output scripts (in unvault and spend transaction)
     pub cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
+    pub emergency_address: EmergencyAddress,
     /// We don't make an enormous deal of address reuse (we cancel to the same keys),
     /// however we at least try to generate new addresses once they're used.
     // FIXME: think more about desync reconciliation..
     pub current_unused_index: ChildNumber,
     /// The secp context required by the xpub one.. We'll eventually use it to verify keys.
     pub secp_ctx: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    /// The locktime to use on all created transaction. Always 0 for now.
+    pub lock_time: u32,
+    /// The CSV in the unvault_descriptor. Unfortunately segregated from the descriptor..
+    pub unvault_csv: u32,
 
     // UTXOs stuff
     /// A cache of known vaults by txid
@@ -269,6 +274,9 @@ impl RevaultD {
             secp_ctx,
             data_dir,
             daemon,
+            emergency_address: config.emergency_address.0,
+            lock_time: 0,
+            unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,
             tip: None,
             ourselves: config.ourselves,
@@ -293,7 +301,7 @@ impl RevaultD {
 
     /// The context required for deriving keys. We don't use it, as it's redundant with the
     /// descriptor derivation, therefore the ChildNumber is always 0.
-    pub fn xpub_ctx<'a>(&'a self) -> DescriptorPublicKeyCtx<'a, secp256k1::VerifyOnly> {
+    pub fn xpub_ctx(&self) -> DescriptorPublicKeyCtx<'_, secp256k1::VerifyOnly> {
         DescriptorPublicKeyCtx::new(&self.secp_ctx, ChildNumber::from(0))
     }
 

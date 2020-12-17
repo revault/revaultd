@@ -1,7 +1,10 @@
 unvault_csv = 18
+emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
 
 # We can set random values which'll get ignored
 wizard = "sardine"
+
+# The "daemon" entry is optional
 
 [bitcoind_config]
 network = "bitcoin"

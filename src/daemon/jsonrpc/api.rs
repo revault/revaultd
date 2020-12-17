@@ -1,7 +1,7 @@
 use crate::{revaultd::VaultStatus, threadmessages::*};
 use common::VERSION;
 
-use revault_tx::bitcoin::{hashes::hex::FromHex, Txid};
+use revault_tx::{bitcoin::OutPoint, transactions::RevaultTransaction};
 
 use std::{
     process,
@@ -59,12 +59,21 @@ pub trait RpcApi {
     fn listvaults(
         &self,
         meta: Self::Metadata,
-        status: Option<Vec<String>>,
-        txids: Option<Vec<String>>,
+        statuses: Option<Vec<String>>,
+        outpoints: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
+    /// Get an address to receive funds to the stakeholders' descriptor
     #[rpc(meta, name = "getdepositaddress")]
     fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+
+    /// Get the cancel and both emergency transactions for a vault identified by deposit txid.
+    #[rpc(meta, name = "getrevocationtxs")]
+    fn getrevocationtxs(
+        &self,
+        meta: Self::Metadata,
+        txid: String,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 pub struct RpcImpl;
@@ -102,7 +111,7 @@ impl RpcApi for RpcImpl {
         &self,
         meta: Self::Metadata,
         statuses: Option<Vec<String>>,
-        txids: Option<Vec<String>>,
+        outpoints: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let statuses = if let Some(statuses) = statuses {
             // If they give an empty array, it's not that they don't want any result, but rather
@@ -127,23 +136,23 @@ impl RpcApi for RpcImpl {
         } else {
             None
         };
-        let txids = if let Some(txids) = txids {
+        let outpoints = if let Some(outpoints) = outpoints {
             // If they give an empty array, it's not that they don't want any result, but rather
             // that they don't want this filter to be taken into account!
-            if txids.len() > 0 {
+            if outpoints.len() > 0 {
                 Some(
-                    txids
+                    outpoints
                         .into_iter()
-                        .map(|tx_str| {
-                            Txid::from_hex(&tx_str).map_err(|e| {
+                        .map(|op_str| {
+                            OutPoint::from_str(&op_str).map_err(|e| {
                                 JsonRpcError::invalid_params(format!(
-                                    "'{}' is not a valid txid ({})",
-                                    &tx_str,
+                                    "'{}' is not a valid outpoint ({})",
+                                    &op_str,
                                     e.to_string()
                                 ))
                             })
                         })
-                        .collect::<jsonrpc_core::Result<Vec<Txid>>>()?,
+                        .collect::<jsonrpc_core::Result<Vec<OutPoint>>>()?,
                 )
             } else {
                 None
@@ -154,7 +163,7 @@ impl RpcApi for RpcImpl {
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         meta.tx
-            .send(RpcMessageIn::ListVaults((statuses, txids), response_tx))
+            .send(RpcMessageIn::ListVaults((statuses, outpoints), response_tx))
             .unwrap_or_else(|e| {
                 log::error!("Sending 'listvaults' to main thread: {:?}", e);
                 process::exit(1);
@@ -192,5 +201,45 @@ impl RpcApi for RpcImpl {
         });
 
         Ok(json!({ "address": address.to_string() }))
+    }
+
+    fn getrevocationtxs(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let outpoint = OutPoint::from_str(&outpoint).map_err(|e| {
+            JsonRpcError::invalid_params(format!(
+                "'{}' is not a valid outpoint ({})",
+                &outpoint,
+                e.to_string()
+            ))
+        })?;
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        meta.tx
+            .send(RpcMessageIn::GetRevocationTxs(outpoint, response_tx))
+            .unwrap_or_else(|e| {
+                log::error!("Sending 'getrevocationtxs' to main thread: {:?}", e);
+                process::exit(1);
+            });
+        let (cancel_tx, emer_tx, unemer_tx) = response_rx
+            .recv()
+            .unwrap_or_else(|e| {
+                log::error!("Receiving 'getrevocationtxs' from main thread: {:?}", e);
+                process::exit(1);
+            })
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(format!(
+                    "'{}' does not refer to a known and confirmed vault",
+                    &outpoint,
+                ))
+            })?;
+
+        Ok(json!({
+            "cancel_tx": cancel_tx.as_psbt_string().expect("We just derived it"),
+            "emergency_tx": emer_tx.as_psbt_string().expect("We just derived it"),
+            "emergency_unvault_tx": unemer_tx.as_psbt_string().expect("We just derived it"),
+        }))
     }
 }

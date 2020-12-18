@@ -37,10 +37,14 @@ pub enum VaultStatus {
     Canceling,
     /// The cancel transaction is confirmed
     Canceled,
-    /// One of the emergency transactions has been broadcast
+    /// The first emergency transactions has been broadcast
     EmergencyVaulting,
-    /// One of the emergency transactions is confirmed
+    /// The first emergency transactions is confirmed
     EmergencyVaulted,
+    /// The unvault emergency transactions has been broadcast
+    UnvaultEmergencyVaulting,
+    /// The unvault emergency transactions is confirmed
+    UnvaultEmergencyVaulted,
     /// The unvault transaction CSV is expired
     Spendable,
     /// The spend transaction has been broadcast
@@ -65,9 +69,11 @@ impl TryFrom<u32> for VaultStatus {
             7 => Ok(Self::Canceled),
             8 => Ok(Self::EmergencyVaulting),
             9 => Ok(Self::EmergencyVaulted),
-            10 => Ok(Self::Spendable),
-            11 => Ok(Self::Spending),
-            12 => Ok(Self::Spent),
+            10 => Ok(Self::UnvaultEmergencyVaulting),
+            11 => Ok(Self::UnvaultEmergencyVaulted),
+            12 => Ok(Self::Spendable),
+            13 => Ok(Self::Spending),
+            14 => Ok(Self::Spent),
             _ => Err(()),
         }
     }
@@ -88,6 +94,8 @@ impl FromStr for VaultStatus {
             "canceled" => Ok(Self::Canceled),
             "emergencyvaulting" => Ok(Self::EmergencyVaulting),
             "emergencyvaulted" => Ok(Self::EmergencyVaulted),
+            "unvaultermergencyvaulting" => Ok(Self::UnvaultEmergencyVaulting),
+            "unvaultermergencyvaulted" => Ok(Self::UnvaultEmergencyVaulted),
             "spendable" => Ok(Self::Spendable),
             "spending" => Ok(Self::Spending),
             "spent" => Ok(Self::Spent),
@@ -112,6 +120,8 @@ impl fmt::Display for VaultStatus {
                 Self::Canceled => "canceled",
                 Self::EmergencyVaulting => "emergencyvaulting",
                 Self::EmergencyVaulted => "emergencyvaulted",
+                Self::UnvaultEmergencyVaulting => "unvaultermergencyvaulting",
+                Self::UnvaultEmergencyVaulted => "unvaultermergencyvaulted",
                 Self::Spendable => "spendable",
                 Self::Spending => "spending",
                 Self::Spent => "spent",

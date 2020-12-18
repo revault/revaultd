@@ -524,12 +524,12 @@ impl BitcoinD {
         Ok((new_deposits, confirmed_deposits, spent_deposits))
     }
 
-    /// Get the raw transaction as hex, and the blockheight it was included in if
-    /// it's confirmed.
+    /// Get the raw transaction as hex, the blockheight it was included in if
+    /// it's confirmed, as well as the reception time.
     pub fn get_wallet_transaction(
         &self,
         txid: Txid,
-    ) -> Result<(String, Option<u32>), BitcoindError> {
+    ) -> Result<(String, Option<u32>, u32), BitcoindError> {
         let res = self.make_watchonly_request(
             "gettransaction",
             &params!(serde_json::Value::String(txid.to_string())),
@@ -548,8 +548,23 @@ impl BitcoinD {
             })?
             .to_string();
         let blockheight = res.get("blockheight").map(|bh| bh.as_u64().unwrap() as u32);
+        let received = res
+            .get("timereceived")
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!(
+                    "API break: no 'time_received' in 'gettransaction' result (txid: {})",
+                    txid
+                ))
+            })?
+            .as_u64()
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!(
+                    "API break: invalid 'time_received' in 'gettransaction' result (txid: {})",
+                    txid
+                ))
+            })? as u32;
 
-        Ok((tx_hex, blockheight))
+        Ok((tx_hex, blockheight, received))
     }
 
     // This assumes wallet transactions, will error otherwise !

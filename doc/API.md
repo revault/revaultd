@@ -128,6 +128,7 @@ either `status` or deposit `outpoints`.
 | `blockheight` | int    | Height of the block containing the transaction, `0` if unconfirmed         |
 | `psbt`        | string | base64-serialized BIP174 format of the transaction, if not fully-signed    |
 | `hex`         | string | Hexadecimal of the network-serialized transaction, if fully-signed         |
+| `received_at` | int    | Transaction reception time as UNIX epoch timestamp                         |
 
 
 ### `getrevocationtxs`

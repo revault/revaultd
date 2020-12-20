@@ -67,12 +67,13 @@ pub trait RpcApi {
     #[rpc(meta, name = "getdepositaddress")]
     fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 
-    /// Get the cancel and both emergency transactions for a vault identified by deposit txid.
+    /// Get the cancel and both emergency transactions for a vault identified by its deposit
+    /// outpoint.
     #[rpc(meta, name = "getrevocationtxs")]
     fn getrevocationtxs(
         &self,
         meta: Self::Metadata,
-        txid: String,
+        outpoint: String,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Retrieve the onchain transactions of a vault with the given deposit outpoint

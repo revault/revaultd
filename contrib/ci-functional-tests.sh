@@ -16,4 +16,4 @@ python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt
 # GA is f*ing slow. But free!
-TIMEOUT=120 TEST_DEBUG=1 pytest -vvv tests/
+TIMEOUT=120 TEST_DEBUG=1 pytest -vvv -n2 tests/

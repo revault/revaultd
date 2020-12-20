@@ -29,9 +29,11 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["sync"] == 1.0
     assert res["version"] == "0.0.2"
 
+    wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] > 0)
+    height = revaultd_manager.rpc.call("getinfo")["blockheight"]
     bitcoind.generate_block(1)
     wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"]
-                      == res["blockheight"] + 1)
+                      == height + 1)
 
 
 def test_listvaults(revaultd_manager, bitcoind):
@@ -133,7 +135,7 @@ def test_getrevocationtxs(revaultd_factory, bitcoind):
 
     # Now, get it confirmed. They all derived the same transactions
     bitcoind.generate_block(6, txid)
-    stks[0].wait_for_log(f"Vault at .*{txid}.* is now confirmed")
+    wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
     txs = stks[0].rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
     for n in stks[1:] + mans:
         wait_for(lambda: n.rpc.listvaults()["vaults"][0]["status"] == "funded")

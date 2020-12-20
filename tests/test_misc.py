@@ -140,3 +140,36 @@ def test_getrevocationtxs(revaultd_factory, bitcoind):
     for n in stks[1:] + mans:
         wait_for(lambda: n.rpc.listvaults()["vaults"][0]["status"] == "funded")
         assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+
+
+def test_listtransactions(revaultd_factory, bitcoind):
+    (stks, mans) = revaultd_factory.deploy(4, 2)
+
+    addr = stks[0].rpc.call("getdepositaddress")["address"]
+    txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)
+    wait_for(lambda: len(stks[0].rpc.call("listvaults")["vaults"]) > 0)
+    vault = stks[0].rpc.call("listvaults")["vaults"][0]
+    deposit = f"{vault['txid']}:{vault['vout']}"
+
+    res = stks[0].rpc.listtransactions(deposit)
+    # Sanity check the API
+    assert ("deposit" in res and "unvault" in res and "cancel" in res
+            and "emergency" in res and "unvault_emergency" in res)
+    # The deposit is always fully signed..
+    assert "hex" in res["deposit"]
+    # .. And broadcast
+    assert "received_at" in res["deposit"]
+    # .. But right now it's not confirmed
+    assert "blockheight" not in res["deposit"]
+
+    # Get it confirmed
+    bitcoind.generate_block(6, txid)
+    wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
+    res = stks[0].rpc.listtransactions(deposit)
+    assert "blockheight" in res["deposit"]
+
+    # Sanity check they all output the same transactions..
+    sorted_res = sorted(res.items())
+    for n in stks[1:] + mans:
+        res = n.rpc.listtransactions(deposit)
+        assert sorted(res.items()) == sorted_res

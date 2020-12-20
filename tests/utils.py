@@ -596,9 +596,9 @@ class RevaultD(TailableProc):
 
     def start(self):
         TailableProc.start(self)
-        self.wait_for_log("revaultd started on network regtest")
-        # Be sure to be up to date with bitcoind
-        self.wait_for_logs(["bitcoind now synced"])
+        self.wait_for_logs(["revaultd started on network regtest",
+                            "bitcoind now synced",
+                            "JSONRPC server started"])
 
     def cleanup(self):
         self.proc.kill()

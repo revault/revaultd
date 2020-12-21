@@ -37,7 +37,7 @@ CREATE TABLE transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     vault_id INTEGER NOT NULL,
     type INTEGER NOT NULL,
-    psbt TEXT UNIQUE,
+    psbt BLOB UNIQUE,
     tx BLOB UNIQUE,
     FOREIGN KEY (vault_id) REFERENCES vaults (id)
         ON UPDATE RESTRICT

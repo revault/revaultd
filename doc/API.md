@@ -159,17 +159,29 @@ known and confirmed ([`funded`](#vault-statuses)) vault.
 | `cancel_tx`            | string | Cancel transaction to sign using the PSBT format            |
 | `emergency_unvault_tx` | string | Emergency unvault transaction to sign using the PSBT format |
 
+
 ### `revocationtxs`
 
-The PSBTs once signed must be given back to the daemon.
+Hand signed PSBTs to the daemon. The PSBT may comport multiple signatures, but the call
+will error if the signature for "our" key is not part of this set.  
+This call will not return until having fetched all the signatures for satisfying the
+transactions, and transmitted to its watchtower. See the [flows](#stakeholder-flows) for more information.  
+On error, transactions are **not stored** by any mean and the process must be retried.
 
 #### Request
 
-| Field                  | Type   | Description                                                |
-| ---------------------- | ------ | ---------------------------------------------------------- |
-| `emergency_tx`         | string | Emergency transaction signed using the PSBT format         |
-| `cancel_tx`            | string | Cancel transaction signed using the PSBT format            |
-| `emergency_unvault_tx` | string | Emergency unvault transaction signed using the PSBT format |
+| Field                  | Type   | Description                                                 |
+| ---------------------- | ------ | ----------------------------------------------------------- |
+| `cancel_tx`            | string | Cancel transaction signed using the PSBT format.            |
+| `emergency_tx`         | string | Emergency transaction signed using the PSBT format.         |
+| `unvault_emergency_tx` | string | Emergency unvault transaction signed using the PSBT format. |
+
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
 
 ### `getunvaulttx`
 

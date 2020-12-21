@@ -32,6 +32,16 @@ pub enum RpcMessageIn {
             )>,
         >,
     ),
+    // Returns None if the transactions could all be stored succesfully
+    RevocationTxs(
+        (
+            OutPoint,
+            CancelTransaction,
+            EmergencyTransaction,
+            UnvaultEmergencyTransaction,
+        ),
+        SyncSender<Option<String>>,
+    ),
     ListTransactions(
         Option<Vec<OutPoint>>,
         SyncSender<

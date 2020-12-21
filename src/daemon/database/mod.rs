@@ -15,4 +15,10 @@ impl std::fmt::Display for DatabaseError {
 
 impl std::error::Error for DatabaseError {}
 
+impl From<revault_tx::Error> for DatabaseError {
+    fn from(e: revault_tx::Error) -> Self {
+        Self(format!("Transaction error: {}", e))
+    }
+}
+
 pub const DB_VERSION: u32 = 0;

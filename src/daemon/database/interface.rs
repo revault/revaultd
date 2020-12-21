@@ -341,7 +341,7 @@ pub fn db_transactions(
 
             #[cfg(debug_assertions)]
             {
-                let db_psbt: Option<String> = row.get(3)?;
+                let db_psbt: Option<Vec<u8>> = row.get(3)?;
                 let db_tx: Option<Vec<u8>> = row.get(4)?;
                 assert!(
                     db_psbt.is_some() ^ db_tx.is_some(),
@@ -359,27 +359,27 @@ pub fn db_transactions(
                 }
                 psbt_type => {
                     // For the remaining transactions (which we do create), we store a PSBT.
-                    let tx: String = row.get(3)?;
+                    let tx: Vec<u8> = row.get(3)?;
                     match psbt_type {
                         TransactionType::Deposit => unreachable!(), // The compiler could probably catch this?
                         TransactionType::Unvault => RevaultTx::Unvault(
-                            UnvaultTransaction::from_psbt_str(&tx)
+                            UnvaultTransaction::from_psbt_serialized(&tx)
                                 .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                         ),
                         TransactionType::Cancel => RevaultTx::Cancel(
-                            CancelTransaction::from_psbt_str(&tx)
+                            CancelTransaction::from_psbt_serialized(&tx)
                                 .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                         ),
                         TransactionType::Emergency => RevaultTx::Emergency(
-                            EmergencyTransaction::from_psbt_str(&tx)
+                            EmergencyTransaction::from_psbt_serialized(&tx)
                                 .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                         ),
                         TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
-                            UnvaultEmergencyTransaction::from_psbt_str(&tx)
+                            UnvaultEmergencyTransaction::from_psbt_serialized(&tx)
                                 .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                         ),
                         TransactionType::Spend => RevaultTx::Spend(
-                            SpendTransaction::from_psbt_str(&tx)
+                            SpendTransaction::from_psbt_serialized(&tx)
                                 .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                         ),
                     }

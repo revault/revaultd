@@ -290,6 +290,46 @@ fn daemon_main(mut revaultd: RevaultD) {
                     });
                 }
             }
+            RpcMessageIn::RevocationTxs(
+                (outpoint, mut cancel, mut emer, mut unvault_emer),
+                response_tx,
+            ) => {
+                log::trace!("Got 'revocationtxs' from RPC thread");
+
+                let res = if revaultd.read().unwrap().vaults.get(&outpoint).is_some() {
+                    let _db_vault = db_vault_by_deposit(&db_path, &outpoint)
+                        .unwrap_or_else(|e| {
+                            log::error!("Getting vault from db: {}", e);
+                            process::exit(1);
+                        })
+                        .unwrap_or_else(|| {
+                            log::error!("(Insane db) None vault for '{}'", &outpoint);
+                            process::exit(1);
+                        });
+
+                    if cancel.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
+                        /* TODO: fetch from the SS */
+                    }
+                    if emer.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
+                        /* TODO: fetch from the SS */
+                    }
+                    if unvault_emer
+                        .finalize(&revaultd.read().unwrap().secp_ctx)
+                        .is_err()
+                    { /* TODO: fetch from the SS */ }
+
+                    // TODO: uncomment once above is implemented
+                    //db_store_revocation_txs(&revaultd.read().unwrap().db_file(), db_vault.id, cancel, emer, unvault_emer);
+                    None
+                } else {
+                    Some("Outpoint does not correspond to an existing vault".into())
+                };
+
+                response_tx.send(res).unwrap_or_else(|e| {
+                    log::error!("Sending 'revocationtxs' result to RPC thread: {}", e);
+                    process::exit(1);
+                });
+            }
             RpcMessageIn::ListTransactions(outpoints, response_tx) => {
                 log::trace!("Got 'listtransactions' request from RPC thread");
                 let revaultd = revaultd.read().unwrap();

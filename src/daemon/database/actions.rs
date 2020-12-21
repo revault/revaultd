@@ -6,7 +6,10 @@ use revault_tx::{
     bitcoin::{consensus::encode, util::bip32::ChildNumber, Amount, OutPoint, TxOut},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
-    transactions::VaultTransaction,
+    transactions::{
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
+        VaultTransaction,
+    },
 };
 
 use std::{
@@ -337,6 +340,47 @@ pub fn db_unvault_deposit(db_path: &PathBuf, outpoint: &OutPoint) -> Result<(), 
 
         Ok(())
     })
+}
+
+// Store a set of pre-signed transactions in the `transactions` table for the given vault_id.
+// The transactions MUST ALL be finalized before being passed.
+// Bitcoin transactions are inserted in a single database transaction (atomically).
+macro_rules! db_store_transactions {
+    ($db_path:ident, $vault_id:ident, [$( $tx:ident ),*]) => {
+        db_exec($db_path, |db_tx| {
+            $(
+                // We already do these check in revault_tx's finalize, so only double check on Debug
+                #[cfg(debug_assertions)]
+                {
+                    for i in 0..$tx.inner_tx().inputs.len() {
+                        $tx.verify_input(i)?;
+                    }
+                }
+                let tx_type = TransactionType::from(&$tx);
+                db_tx
+                    .execute(
+                        "INSERT INTO transactions (vault_id, type, tx) VALUES (?1, ?2, ?3)",
+                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?],
+                    )
+                    .map_err(|e| {
+                        DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
+                    })?;
+            )*
+
+            Ok(())
+        })
+    };
+}
+
+/// Store the *fully-signed* revocation transactions for this vault in db.
+pub fn db_store_revocation_txs(
+    db_path: &PathBuf,
+    vault_id: u32,
+    cancel: CancelTransaction,
+    emer: EmergencyTransaction,
+    unvault_emer: UnvaultEmergencyTransaction,
+) -> Result<(), DatabaseError> {
+    db_store_transactions!(db_path, vault_id, [cancel, emer, unvault_emer])
 }
 
 #[cfg(test)]

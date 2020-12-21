@@ -282,6 +282,22 @@ impl TryFrom<u32> for TransactionType {
     }
 }
 
+macro_rules! tx_type_from_tx {
+    ($tx:ident, $tx_type:ident) => {
+        impl From<&$tx> for TransactionType {
+            fn from(_: &$tx) -> Self {
+                Self::$tx_type
+            }
+        }
+    };
+}
+tx_type_from_tx!(VaultTransaction, Deposit);
+tx_type_from_tx!(UnvaultTransaction, Unvault);
+tx_type_from_tx!(CancelTransaction, Cancel);
+tx_type_from_tx!(EmergencyTransaction, Emergency);
+tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
+tx_type_from_tx!(SpendTransaction, Spend);
+
 /// A transaction stored in the 'transactions' table
 #[derive(Debug)]
 pub enum RevaultTx {

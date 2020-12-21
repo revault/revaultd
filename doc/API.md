@@ -107,12 +107,20 @@ either `status` or deposit `outpoints`.
 | ----------- | ------------ | ----------------------------------------------------------------------------------------------- |
 | `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
 
-// FIXME: we could eventually also take an array of transaction types here.
+// FIXME: we could eventually also take an optional array of transaction types here.
 
 ### Response
 
+| Field               | Type                                                     | Description                                                                             |
+| ------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------  |
+| `transactions`      | array of [transactions resource](#transactions-resource) | The set of vaults' transactions corresponding to the query (empty on unknown outpoints) |
+
+
+#### Transactions resource
+
 | Field               | Type                                                 | Description                                                            |
 | ------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------  |
+| `outpoint`          | string                                               | The vault deposit transaction outpoint.                                |
 | `deposit`           | [transaction resource](#transaction-resource) object | The vault deposit transaction                                          |
 | `unvault`           | [transaction resource](#transaction-resource) object | The unvaulting transaction                                             |
 | `spend`             | [transaction resource](#transaction-resource) object | The transaction spending the `unvault`ing one, only present if onchain |

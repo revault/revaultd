@@ -151,10 +151,12 @@ def test_listtransactions(revaultd_factory, bitcoind):
     vault = stks[0].rpc.call("listvaults")["vaults"][0]
     deposit = f"{vault['txid']}:{vault['vout']}"
 
-    res = stks[0].rpc.listtransactions(deposit)
+    res = stks[0].rpc.listtransactions([deposit])["transactions"][0]
     # Sanity check the API
     assert ("deposit" in res and "unvault" in res and "cancel" in res
             and "emergency" in res and "unvault_emergency" in res)
+    assert (stks[0].rpc.listtransactions([deposit]) ==
+            stks[0].rpc.listtransactions())
     # The deposit is always fully signed..
     assert "hex" in res["deposit"]
     # .. And broadcast
@@ -165,11 +167,11 @@ def test_listtransactions(revaultd_factory, bitcoind):
     # Get it confirmed
     bitcoind.generate_block(6, txid)
     wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
-    res = stks[0].rpc.listtransactions(deposit)
+    res = stks[0].rpc.listtransactions([deposit])["transactions"][0]
     assert "blockheight" in res["deposit"]
 
     # Sanity check they all output the same transactions..
     sorted_res = sorted(res.items())
     for n in stks[1:] + mans:
-        res = n.rpc.listtransactions(deposit)
+        res = n.rpc.listtransactions([deposit])["transactions"][0]
         assert sorted(res.items()) == sorted_res

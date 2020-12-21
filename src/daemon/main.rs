@@ -8,7 +8,7 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     database::{
         actions::setup_db,
-        interface::{db_tip, db_transactions, db_vault_by_deposit, RevaultTx},
+        interface::{db_deposits, db_tip, db_transactions, db_vault_by_deposit, RevaultTx},
     },
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
@@ -290,211 +290,225 @@ fn daemon_main(mut revaultd: RevaultD) {
                     });
                 }
             }
-            RpcMessageIn::ListTransactions(outpoint, response_tx) => {
+            RpcMessageIn::ListTransactions(outpoints, response_tx) => {
                 log::trace!("Got 'listtransactions' request from RPC thread");
                 let revaultd = revaultd.read().unwrap();
                 let xpub_ctx = revaultd.xpub_ctx();
 
-                let transactions = if let Some(vault) = revaultd.vaults.get(&outpoint) {
-                    let db_vault = db_vault_by_deposit(&db_path, &outpoint)
+                // If they didn't provide us with a list of outpoints, catch'em all!
+                let outpoints = outpoints.unwrap_or_else(|| {
+                    db_deposits(&db_path)
                         .unwrap_or_else(|e| {
-                            log::error!("Getting vault from db: {}", e);
+                            log::error!("Getting deposits from db: {}", e);
                             process::exit(1);
                         })
-                        .unwrap_or_else(|| {
-                            log::error!("(Insane db) None vault for '{}'", &outpoint);
-                            process::exit(1);
-                        });
-                    let mut txs = db_transactions(&db_path, db_vault.id, &[])
-                        .unwrap_or_else(|e| {
-                            log::error!("Getting transactions (all) from db: {}", e);
-                            process::exit(1);
-                        })
-                        .into_iter();
+                        .into_iter()
+                        .map(|db_vault| db_vault.deposit_outpoint)
+                        .collect()
+                });
 
-                    let deposit_tx = txs
-                        .find(|db_tx| matches!(db_tx.tx, RevaultTx::Deposit(_)))
-                        .map(|tx| assert_tx_type!(tx.tx, Deposit, "We just found it"))
-                        .unwrap_or_else(|| {
-                            log::error!("Vault without deposit tx in db for {}", outpoint);
-                            process::exit(1);
-                        });
-                    let wallet_tx = bitcoind_wallet_tx(&bitcoind_tx, deposit_tx.0.txid());
-                    let deposit = TransactionResource {
-                        wallet_tx,
-                        tx: deposit_tx,
-                        // The deposit is always signed, if we heard about it in
-                        // the first place
-                        is_signed: true,
-                    };
-
-                    // Get the descriptors in case we need to derive the transactions (not signed
-                    // yet, ie not in DB).
-                    // One day, we could try to be smarter wrt free derivation but it's not
-                    // a priority atm.
-                    let index = revaultd
-                        .derivation_index_map
-                        .get(&vault.txo.script_pubkey)
-                        .unwrap_or_else(|| {
-                            log::error!("Unknown derivation index for: {:#?}", vault);
-                            process::exit(1);
-                        });
-                    let deposit_descriptor = revaultd.vault_descriptor.derive(*index);
-                    let vault_txin = VaultTxIn::new(
-                        outpoint,
-                        VaultTxOut::new(vault.txo.value, &deposit_descriptor, xpub_ctx),
-                    );
-                    let unvault_descriptor = revaultd.unvault_descriptor.derive(*index);
-                    let cpfp_descriptor = revaultd.cpfp_descriptor.derive(*index);
-                    let emer_address = revaultd.emergency_address.clone();
-
-                    // We can always re-generate the Unvault out of the descriptor if it's
-                    // not in DB..
-                    let mut unvault_tx = txs
-                        .find(|db_tx| matches!(db_tx.tx, RevaultTx::Unvault(_)))
-                        .map(|tx| assert_tx_type!(tx.tx, Unvault, "We just found it"))
-                        .unwrap_or_else(|| {
-                            UnvaultTransaction::new(
-                                vault_txin.clone(),
-                                &unvault_descriptor,
-                                &cpfp_descriptor,
-                                xpub_ctx,
-                                revaultd.lock_time,
-                            )
+                let mut vaults = Vec::with_capacity(outpoints.len());
+                for outpoint in outpoints {
+                    if let Some(vault) = revaultd.vaults.get(&outpoint) {
+                        let db_vault = db_vault_by_deposit(&db_path, &outpoint)
                             .unwrap_or_else(|e| {
-                                log::error!("Deriving unvault for '{}': {}", outpoint, e);
+                                log::error!("Getting vault from db: {}", e);
                                 process::exit(1);
                             })
-                        });
-                    let unvault_txin = unvault_tx
-                        .unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv)
-                        .expect("Just created it");
-                    let wallet_tx = bitcoind_wallet_tx(
-                        &bitcoind_tx,
-                        unvault_tx.inner_tx().global.unsigned_tx.txid(),
-                    );
-                    // The transaction is signed if we did sign it, or if others did (eg
-                    // non-stakeholder managers) and we noticed it from broadcast.
-                    // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-                    let is_signed =
-                        unvault_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-                    let unvault = TransactionResource {
-                        wallet_tx,
-                        tx: unvault_tx,
-                        is_signed,
-                    };
+                            .unwrap_or_else(|| {
+                                log::error!("(Insane db) None vault for '{}'", &outpoint);
+                                process::exit(1);
+                            });
+                        let mut txs = db_transactions(&db_path, db_vault.id, &[])
+                            .unwrap_or_else(|e| {
+                                log::error!("Getting transactions (all) from db: {}", e);
+                                process::exit(1);
+                            })
+                            .into_iter();
 
-                    // .. But not the spend, as it's dynamically chosen by the managers and
-                    // could be anything!
-                    let spend = if let Some(mut tx) = txs
-                        .find(|db_tx| matches!(db_tx.tx, RevaultTx::Spend(_)))
-                        .map(|tx| assert_tx_type!(tx.tx, Spend, "We just found it"))
-                    {
+                        let deposit_tx = txs
+                            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Deposit(_)))
+                            .map(|tx| assert_tx_type!(tx.tx, Deposit, "We just found it"))
+                            .unwrap_or_else(|| {
+                                log::error!("Vault without deposit tx in db for {}", outpoint);
+                                process::exit(1);
+                            });
+                        let wallet_tx = bitcoind_wallet_tx(&bitcoind_tx, deposit_tx.0.txid());
+                        let deposit = TransactionResource {
+                            wallet_tx,
+                            tx: deposit_tx,
+                            // The deposit is always signed, if we heard about it in
+                            // the first place
+                            is_signed: true,
+                        };
+
+                        // Get the descriptors in case we need to derive the transactions (not signed
+                        // yet, ie not in DB).
+                        // One day, we could try to be smarter wrt free derivation but it's not
+                        // a priority atm.
+                        let index = revaultd
+                            .derivation_index_map
+                            .get(&vault.txo.script_pubkey)
+                            .unwrap_or_else(|| {
+                                log::error!("Unknown derivation index for: {:#?}", vault);
+                                process::exit(1);
+                            });
+                        let deposit_descriptor = revaultd.vault_descriptor.derive(*index);
+                        let vault_txin = VaultTxIn::new(
+                            outpoint,
+                            VaultTxOut::new(vault.txo.value, &deposit_descriptor, xpub_ctx),
+                        );
+                        let unvault_descriptor = revaultd.unvault_descriptor.derive(*index);
+                        let cpfp_descriptor = revaultd.cpfp_descriptor.derive(*index);
+                        let emer_address = revaultd.emergency_address.clone();
+
+                        // We can always re-generate the Unvault out of the descriptor if it's
+                        // not in DB..
+                        let mut unvault_tx = txs
+                            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Unvault(_)))
+                            .map(|tx| assert_tx_type!(tx.tx, Unvault, "We just found it"))
+                            .unwrap_or_else(|| {
+                                UnvaultTransaction::new(
+                                    vault_txin.clone(),
+                                    &unvault_descriptor,
+                                    &cpfp_descriptor,
+                                    xpub_ctx,
+                                    revaultd.lock_time,
+                                )
+                                .unwrap_or_else(|e| {
+                                    log::error!("Deriving unvault for '{}': {}", outpoint, e);
+                                    process::exit(1);
+                                })
+                            });
+                        let unvault_txin = unvault_tx
+                            .unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv)
+                            .expect("Just created it");
                         let wallet_tx = bitcoind_wallet_tx(
                             &bitcoind_tx,
-                            tx.inner_tx().global.unsigned_tx.txid(),
+                            unvault_tx.inner_tx().global.unsigned_tx.txid(),
+                        );
+                        // The transaction is signed if we did sign it, or if others did (eg
+                        // non-stakeholder managers) and we noticed it from broadcast.
+                        // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
+                        let is_signed =
+                            unvault_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
+                        let unvault = TransactionResource {
+                            wallet_tx,
+                            tx: unvault_tx,
+                            is_signed,
+                        };
+
+                        // .. But not the spend, as it's dynamically chosen by the managers and
+                        // could be anything!
+                        let spend = if let Some(mut tx) = txs
+                            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Spend(_)))
+                            .map(|tx| assert_tx_type!(tx.tx, Spend, "We just found it"))
+                        {
+                            let wallet_tx = bitcoind_wallet_tx(
+                                &bitcoind_tx,
+                                tx.inner_tx().global.unsigned_tx.txid(),
+                            );
+                            // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
+                            let is_signed =
+                                tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
+                            Some(TransactionResource {
+                                wallet_tx,
+                                tx,
+                                is_signed,
+                            })
+                        } else {
+                            None
+                        };
+
+                        // The cancel transaction is deterministic, so we can always return it.
+                        let mut cancel_tx = txs
+                            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Cancel(_)))
+                            .map(|tx| assert_tx_type!(tx.tx, Cancel, "We just found it"))
+                            .unwrap_or_else(|| {
+                                CancelTransaction::new(
+                                    unvault_txin.clone(),
+                                    None,
+                                    &deposit_descriptor,
+                                    xpub_ctx,
+                                    revaultd.lock_time,
+                                )
+                            });
+                        let wallet_tx = bitcoind_wallet_tx(
+                            &bitcoind_tx,
+                            cancel_tx.inner_tx().global.unsigned_tx.txid(),
                         );
                         // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
                         let is_signed =
-                            tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-                        Some(TransactionResource {
+                            cancel_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
+                        let cancel = TransactionResource {
                             wallet_tx,
-                            tx,
+                            tx: cancel_tx,
                             is_signed,
-                        })
-                    } else {
-                        None
-                    };
+                        };
 
-                    // The cancel transaction is deterministic, so we can always return it.
-                    let mut cancel_tx = txs
-                        .find(|db_tx| matches!(db_tx.tx, RevaultTx::Cancel(_)))
-                        .map(|tx| assert_tx_type!(tx.tx, Cancel, "We just found it"))
-                        .unwrap_or_else(|| {
-                            CancelTransaction::new(
-                                unvault_txin.clone(),
-                                None,
-                                &deposit_descriptor,
-                                xpub_ctx,
-                                revaultd.lock_time,
-                            )
+                        // The emergency transaction is deterministic, so we can always return it.
+                        let mut emergency_tx = txs
+                            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Emergency(_)))
+                            .map(|tx| assert_tx_type!(tx.tx, Emergency, "We just found it"))
+                            .unwrap_or_else(|| {
+                                EmergencyTransaction::new(
+                                    vault_txin,
+                                    None,
+                                    emer_address,
+                                    revaultd.lock_time,
+                                )
+                            });
+                        let wallet_tx = bitcoind_wallet_tx(
+                            &bitcoind_tx,
+                            emergency_tx.inner_tx().global.unsigned_tx.txid(),
+                        );
+                        // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
+                        let is_signed = emergency_tx.finalize(&revaultd.secp_ctx).is_ok()
+                            || wallet_tx.is_some();
+                        let emergency = TransactionResource {
+                            wallet_tx,
+                            tx: emergency_tx,
+                            is_signed,
+                        };
+
+                        // Same for the second emergency.
+                        let mut unvault_emergency_tx = txs
+                            .find(|db_tx| matches!(db_tx.tx, RevaultTx::UnvaultEmergency(_)))
+                            .map(|tx| assert_tx_type!(tx.tx, UnvaultEmergency, "We just found it"))
+                            .unwrap_or_else(|| {
+                                UnvaultEmergencyTransaction::new(
+                                    unvault_txin,
+                                    None,
+                                    revaultd.emergency_address.clone(),
+                                    revaultd.lock_time,
+                                )
+                            });
+                        let wallet_tx = bitcoind_wallet_tx(
+                            &bitcoind_tx,
+                            unvault_emergency_tx.inner_tx().global.unsigned_tx.txid(),
+                        );
+                        // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
+                        let is_signed = unvault_emergency_tx.finalize(&revaultd.secp_ctx).is_ok()
+                            || wallet_tx.is_some();
+                        let unvault_emergency = TransactionResource {
+                            wallet_tx,
+                            tx: unvault_emergency_tx,
+                            is_signed,
+                        };
+
+                        vaults.push(VaultTransactions {
+                            outpoint,
+                            deposit,
+                            unvault,
+                            spend,
+                            cancel,
+                            emergency,
+                            unvault_emergency,
                         });
-                    let wallet_tx = bitcoind_wallet_tx(
-                        &bitcoind_tx,
-                        cancel_tx.inner_tx().global.unsigned_tx.txid(),
-                    );
-                    // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-                    let is_signed =
-                        cancel_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-                    let cancel = TransactionResource {
-                        wallet_tx,
-                        tx: cancel_tx,
-                        is_signed,
-                    };
+                    }
+                }
 
-                    // The emergency transaction is deterministic, so we can always return it.
-                    let mut emergency_tx = txs
-                        .find(|db_tx| matches!(db_tx.tx, RevaultTx::Emergency(_)))
-                        .map(|tx| assert_tx_type!(tx.tx, Emergency, "We just found it"))
-                        .unwrap_or_else(|| {
-                            EmergencyTransaction::new(
-                                vault_txin,
-                                None,
-                                emer_address,
-                                revaultd.lock_time,
-                            )
-                        });
-                    let wallet_tx = bitcoind_wallet_tx(
-                        &bitcoind_tx,
-                        emergency_tx.inner_tx().global.unsigned_tx.txid(),
-                    );
-                    // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-                    let is_signed =
-                        emergency_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-                    let emergency = TransactionResource {
-                        wallet_tx,
-                        tx: emergency_tx,
-                        is_signed,
-                    };
-
-                    // Same for the second emergency.
-                    let mut unvault_emergency_tx = txs
-                        .find(|db_tx| matches!(db_tx.tx, RevaultTx::UnvaultEmergency(_)))
-                        .map(|tx| assert_tx_type!(tx.tx, UnvaultEmergency, "We just found it"))
-                        .unwrap_or_else(|| {
-                            UnvaultEmergencyTransaction::new(
-                                unvault_txin,
-                                None,
-                                revaultd.emergency_address.clone(),
-                                revaultd.lock_time,
-                            )
-                        });
-                    let wallet_tx = bitcoind_wallet_tx(
-                        &bitcoind_tx,
-                        unvault_emergency_tx.inner_tx().global.unsigned_tx.txid(),
-                    );
-                    // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-                    let is_signed = unvault_emergency_tx.finalize(&revaultd.secp_ctx).is_ok()
-                        || wallet_tx.is_some();
-                    let unvault_emergency = TransactionResource {
-                        wallet_tx,
-                        tx: unvault_emergency_tx,
-                        is_signed,
-                    };
-
-                    Some(VaultTransactions {
-                        deposit,
-                        unvault,
-                        spend,
-                        cancel,
-                        emergency,
-                        unvault_emergency,
-                    })
-                } else {
-                    None
-                };
-
-                response_tx.send(transactions).unwrap_or_else(|e| {
+                response_tx.send(vaults).unwrap_or_else(|e| {
                     log::error!("Sending 'listtransactions' result to RPC thread: {}", e);
                     process::exit(1);
                 });

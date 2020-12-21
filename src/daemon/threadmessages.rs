@@ -33,10 +33,10 @@ pub enum RpcMessageIn {
         >,
     ),
     ListTransactions(
-        OutPoint,
+        Option<Vec<OutPoint>>,
         SyncSender<
             // None if the deposit does not exist
-            Option<VaultTransactions>,
+            Vec<VaultTransactions>,
         >,
     ),
 }
@@ -66,6 +66,7 @@ pub struct TransactionResource<T> {
 
 #[derive(Debug)]
 pub struct VaultTransactions {
+    pub outpoint: OutPoint,
     pub deposit: TransactionResource<VaultTransaction>,
     pub unvault: TransactionResource<UnvaultTransaction>,
     // None if not spending

@@ -48,10 +48,11 @@ fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io
             }
             Ok(n) => {
                 total_read += n;
+                // Note that we don't return if it's appear that we read till the end
+                // here: we always wait for a WouldBlock so that we are sure they are
+                // done writing.
                 if total_read == buf.len() {
                     buf.resize(total_read * 2, 0);
-                } else {
-                    return Ok(Some(trimmed(buf, total_read)));
                 }
             }
             Err(err) => {

@@ -333,6 +333,7 @@ pub fn jsonrpcapi_loop(tx: Sender<RpcMessageIn>, listener: UnixListener) -> Resu
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
     let metadata = JsonRpcMetaData::from_tx(tx);
 
+    log::info!("JSONRPC server started.");
     #[cfg(not(windows))]
     return mio_loop(listener, jsonrpc_io, metadata);
     #[cfg(windows)]

@@ -283,6 +283,7 @@ impl TryFrom<u32> for TransactionType {
 }
 
 /// A transaction stored in the 'transactions' table
+#[derive(Debug)]
 pub enum RevaultTx {
     Deposit(VaultTransaction),
     Unvault(UnvaultTransaction),
@@ -292,14 +293,27 @@ pub enum RevaultTx {
     Spend(SpendTransaction),
 }
 
+/// Boilerplate to get a specific variant of an enum if You Are Confident :TM:
+#[macro_export]
+macro_rules! assert_tx_type {
+    ($tx:expr, $variant:ident, $reason:literal) => {
+        match $tx {
+            RevaultTx::$variant(inner_tx) => inner_tx,
+            _ => unreachable!($reason),
+        }
+    };
+}
+
 /// A row in the "transactions" table
+#[derive(Debug)]
 pub struct DbTransaction {
     pub id: u32,
     pub vault_id: u32,
     pub tx: RevaultTx,
 }
 
-/// Get an optionally-filtered list of transactions stored for this vault.
+/// Get an optionally-filtered list of transactions stored for this vault. Note that only signed
+/// transactions are stored.
 pub fn db_transactions(
     db_path: &PathBuf,
     vault_id: u32,
@@ -320,7 +334,7 @@ pub fn db_transactions(
                     db_tx_type
                 ))))
             })?;
-            if !types_filter.contains(&tx_type) {
+            if !types_filter.is_empty() && !types_filter.contains(&tx_type) {
                 // Not an error, we just don't want it
                 return Ok(None);
             }

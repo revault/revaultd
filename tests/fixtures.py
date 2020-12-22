@@ -9,6 +9,7 @@ import os
 import pytest
 import shutil
 import tempfile
+import time
 
 __attempts = {}
 
@@ -65,6 +66,9 @@ def bitcoind(directory):
 
     while bitcoind.rpc.getbalance() < 50:
         bitcoind.rpc.generatetoaddress(1, bitcoind.rpc.getnewaddress())
+
+    while bitcoind.rpc.getblockcount() <= 1:
+        time.sleep(0.1)
 
     yield bitcoind
 

@@ -11,11 +11,11 @@ use crate::{
         interface::db_wallet,
     },
     revaultd::{RevaultD, VaultStatus},
-    threadmessages::BitcoindMessageOut,
+    threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
-    bitcoin::{consensus::encode, hashes::hex::FromHex, Amount, Network, Transaction},
+    bitcoin::{consensus::encode, hashes::hex::FromHex, Amount, Network, Transaction, Txid},
     transactions::VaultTransaction,
 };
 
@@ -420,6 +420,24 @@ fn update_deposits(
     Ok(())
 }
 
+fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {
+    let res = bitcoind.get_wallet_transaction(txid);
+    if let Ok((hex, blockheight, received_time)) = res {
+        Some(WalletTransaction {
+            hex,
+            blockheight,
+            received_time,
+        })
+    } else {
+        log::trace!(
+            "Got '{:?}' from bitcoind when requesting wallet transaction '{}'",
+            res,
+            txid
+        );
+        None
+    }
+}
+
 /// The bitcoind event loop.
 /// Poll bitcoind every 30 seconds, and update our state accordingly.
 pub fn bitcoind_main_loop(
@@ -456,6 +474,17 @@ pub fn bitcoind_main_loop(
                             e
                         ))
                     })?;
+                }
+                BitcoindMessageOut::WalletTransaction(txid, resp_tx) => {
+                    log::trace!("Received 'wallettransaction' from main thread");
+                    resp_tx
+                        .send(wallet_transaction(&bitcoind, txid))
+                        .map_err(|e| {
+                            BitcoindError::Custom(format!(
+                                "Sending wallet transaction to main thread: {}",
+                                e
+                            ))
+                        })?;
                 }
             },
             Err(TryRecvError::Empty) => {}

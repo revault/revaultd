@@ -10,7 +10,6 @@ description = "Revault wallet daemon"
 exclude = [".github/"]
 
 
-
 [lib]
 name = "common"
 path = "src/common/lib.rs"
@@ -23,6 +22,7 @@ path = "src/daemon/main.rs"
 name = "revault-cli"
 path = "src/cli/main.rs"
 
+
 [dependencies]
 revault_tx = { git = "https://github.com/darosior/revault", branch = "refinement" }
 
@@ -32,9 +32,8 @@ dirs = "3.0.1"
 # It's concise, does the Right Thing, and even supports Windows !
 daemonize-simple = "0.1.4"
 
-# To talk to bitcoind, the most lightweight and capable i could find without
-# reinventing the wheel. Hesitated with ureq.
-jsonrpc = { git = "https://github.com/apoelstra/rust-jsonrpc", branch = "2020-09-basic-client" }
+# To talk to bitcoind
+jsonrpc = { git = "https://github.com/stevenroose/rust-jsonrpc", branch = "transport-fixes" }
 
 # We use it for the cookie file
 base64 = "0.13.0"
@@ -42,7 +41,7 @@ base64 = "0.13.0"
 # We us TOML for the config and JSON for connections
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
-serde_json = "1.0.59"
+serde_json = { version = "1.0", features = ["raw_value"] }
 
 # Logging stuff
 log = "0.4"
@@ -55,7 +54,7 @@ rusqlite = { version = "0.24.1", features = ["bundled"] }
 # For umask..
 libc = "0.2.80"
 
-# For the JSONRPC API
+# For the JSONRPC server
 jsonrpc-core = "15.1.0"
 jsonrpc-derive = "15.1.0"
 [target.'cfg(not(windows))'.dependencies]

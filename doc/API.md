@@ -8,11 +8,11 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | Command                                   | Description                                          |
 | ----------------------------------------- | ---------------------------------------------------- |
 | [`getinfo`](#getinfo)                     | Display general information                          |
-| [`listvaults`](#listvaults)               | Display a paginated list of vaults                   |
-| [`getonchaintxs`](#getonchaintxs)         | Retrieve the vault on chain transactions             |
 | [`getrevocationtxs`](#getrevocationtxs)   | Retrieve the Revault revocation transactions to sign |
 | [`getunvaulttx`](#getunvaulttx)           | Retrieve the Revault unvault transaction to sign     |
 | [`getspendtx`](#getspendtx)               | Retrieve the Revault spend transaction to sign       |
+| [`listtransactions`](#listtransactions)   | List all transactions of a specified vault           |
+| [`listvaults`](#listvaults)               | Display a paginated list of vaults                   |
 | [`revocationtxs`](#revocationtxs)         | Give back the revocation transactions signed         |
 | [`unvaulttx`](#unvaulttx)                 | Give back the unvault transaction signed             |
 | [`spendtx`](#spendtx)                     | Give back the spend transaction signed               |
@@ -81,13 +81,6 @@ Get an address to build a deposit transaction.
 Note that the `scriptPubKey` is implicitly known as we have the vault output Miniscript descriptor.
 **TODO** Maybe we should store and give the xpub derivation index as well ?
 
-### Vault Transaction resource
-
-| Field         | Type   | Description                                         |
-| ------------- | ------ | ------------------------------------------------    |
-| `blockheight` | int    | Block height of the transaction                     |
-| `hex`         | string | Hexadecimal format of the transaction               |
-| `received_at` | int    | Timestamp of the reception time of the transaction |
 
 ### `listvaults`
 
@@ -107,25 +100,44 @@ either `status` or deposit `outpoints`.
 | ------------- | ------------------------------------------ | ------------------------- |
 | `vaults`      | array of [vault resource](#vault-resource) | Vaults filtered by status |
 
-### `getonchaintxs`
 
-The `getonchaintxs` RPC Command retrieves the on chain transactions of a
-vault with the given deposit `outpoint`.
+### `listtransactions`
 
-#### Request
+| Parameter   | Type         | Description                                                                                     |
+| ----------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
 
-| Parameter        | Type    | Description                                     |
-| ---------------- | ------- | ----------------------------------------------- |
-| `outpoint`       | string  | Deposit outpoint of the vault                   |
+// FIXME: we could eventually also take an optional array of transaction types here.
 
-#### Response
+### Response
 
-| Field         | Type                                                      | Description                                                           |
-| ------------- | --------------------------------------------------------- | --------------------------------------------------------------------- |
-| `cancel_tx`   | [Vault transaction resource](#vault-transaction-resource) | Cancel transaction -- present if the vault is cancelling or cancelled |
-| `deposit_tx`  | [Vault transaction resource](#vault-transaction-resource) | Deposit transaction                                                   |
-| `spend_tx`    | [Vault transaction resource](#vault-transaction-resource) | Spend transaction -- present if vault is spending or spent            |
-| `unvault_tx`  | [Vault transaction resource](#vault-transaction-resource) | Unvault transaction -- present if vault is unvaulting or unvaulted    |
+| Field               | Type                                                     | Description                                                                             |
+| ------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------  |
+| `transactions`      | array of [transactions resource](#transactions-resource) | The set of vaults' transactions corresponding to the query (empty on unknown outpoints) |
+
+
+#### Transactions resource
+
+| Field               | Type                                                 | Description                                                            |
+| ------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------  |
+| `outpoint`          | string                                               | The vault deposit transaction outpoint.                                |
+| `deposit`           | [transaction resource](#transaction-resource) object | The vault deposit transaction                                          |
+| `unvault`           | [transaction resource](#transaction-resource) object | The unvaulting transaction                                             |
+| `spend`             | [transaction resource](#transaction-resource) object | The transaction spending the `unvault`ing one, only present if onchain |
+| `cancel`            | [transaction resource](#transaction-resource) object | The "revaulting" transaction                                           |
+| `emergency`         | [transaction resource](#transaction-resource) object | The emergency transaction                                              |
+| `unvault_emergency` | [transaction resource](#transaction-resource) object | The unvaulting emergency transaction                                   |
+
+
+#### Transaction resource
+
+| Field         | Type   | Description                                                                |
+| ------------- | ------ | -------------------------------------------------------------------------  |
+| `blockheight` | int    | Height of the block containing the transaction, `0` if unconfirmed         |
+| `psbt`        | string | base64-serialized BIP174 format of the transaction, if not fully-signed    |
+| `hex`         | string | Hexadecimal of the network-serialized transaction, if fully-signed         |
+| `received_at` | int    | Transaction reception time as UNIX epoch timestamp                         |
+
 
 ### `getrevocationtxs`
 

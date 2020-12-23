@@ -355,51 +355,37 @@ pub fn db_transactions(
                 return Ok(None);
             }
 
-            #[cfg(debug_assertions)]
-            {
-                let db_psbt: Option<Vec<u8>> = row.get(3)?;
-                let db_tx: Option<Vec<u8>> = row.get(4)?;
-                assert!(
-                    db_psbt.is_some() ^ db_tx.is_some(),
-                    "Both or none of the PSBT and the raw transaction were stored in the database."
-                );
-            }
+            let db_tx: Vec<u8> = row.get(3)?;
 
             let tx = match tx_type {
                 TransactionType::Deposit => {
                     // For deposit, we don't (can't really) store a PSBT.
-                    let tx: Vec<u8> = row.get(4)?;
                     RevaultTx::Deposit(VaultTransaction(
-                        encode::deserialize(&tx).map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                        encode::deserialize(&db_tx)
+                            .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                     ))
                 }
-                psbt_type => {
-                    // For the remaining transactions (which we do create), we store a PSBT.
-                    let tx: Vec<u8> = row.get(3)?;
-                    match psbt_type {
-                        TransactionType::Deposit => unreachable!(), // The compiler could probably catch this?
-                        TransactionType::Unvault => RevaultTx::Unvault(
-                            UnvaultTransaction::from_psbt_serialized(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::Cancel => RevaultTx::Cancel(
-                            CancelTransaction::from_psbt_serialized(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::Emergency => RevaultTx::Emergency(
-                            EmergencyTransaction::from_psbt_serialized(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
-                            UnvaultEmergencyTransaction::from_psbt_serialized(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::Spend => RevaultTx::Spend(
-                            SpendTransaction::from_psbt_serialized(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                    }
-                }
+                // For the remaining transactions (which we do create), we store a PSBT.
+                TransactionType::Unvault => RevaultTx::Unvault(
+                    UnvaultTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::Cancel => RevaultTx::Cancel(
+                    CancelTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::Emergency => RevaultTx::Emergency(
+                    EmergencyTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
+                    UnvaultEmergencyTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::Spend => RevaultTx::Spend(
+                    SpendTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
             };
 
             Ok(Some(DbTransaction { id, vault_id, tx }))

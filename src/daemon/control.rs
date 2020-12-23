@@ -11,7 +11,7 @@ use crate::{
     bitcoind::BitcoindError,
     database::{
         actions::db_store_revocation_txs,
-        interface::{db_deposits, db_tip, db_transactions, db_vault_by_deposit},
+        interface::{db_tip, db_transactions, db_vault_by_deposit},
         schema::RevaultTx,
         DatabaseError,
     },
@@ -263,12 +263,8 @@ pub fn handle_rpc_messages(
                 let xpub_ctx = revaultd.xpub_ctx();
 
                 // If they didn't provide us with a list of outpoints, catch'em all!
-                let outpoints = outpoints.unwrap_or(
-                    db_deposits(&db_path)?
-                        .into_iter()
-                        .map(|db_vault| db_vault.deposit_outpoint)
-                        .collect(),
-                );
+                let outpoints =
+                    outpoints.unwrap_or_else(|| revaultd.vaults.keys().copied().collect());
 
                 let mut vaults = Vec::with_capacity(outpoints.len());
                 for outpoint in outpoints {

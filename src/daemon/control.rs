@@ -8,9 +8,11 @@
 
 use crate::{
     assert_tx_type,
+    bitcoind::BitcoindError,
     database::{
         actions::db_store_revocation_txs,
         interface::{db_deposits, db_tip, db_transactions, db_vault_by_deposit, RevaultTx},
+        DatabaseError,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
     threadmessages::*,
@@ -27,36 +29,74 @@ use revault_tx::{
 };
 
 use std::{
+    fmt,
     path::PathBuf,
     process,
     sync::{
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, RecvError, SendError, Sender},
         Arc, RwLock,
     },
     thread::JoinHandle,
 };
 
+/// Any error that could arise during the process of executing the user's will.
+/// Usually fatal.
+#[derive(Debug)]
+pub enum ControlError {
+    ChannelCommunication(String),
+    Database(String),
+    Bitcoind(String),
+    TransactionManagement(String),
+}
+
+impl fmt::Display for ControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl std::error::Error for ControlError {}
+
+impl<T> From<SendError<T>> for ControlError {
+    fn from(e: SendError<T>) -> Self {
+        Self::ChannelCommunication(format!("Sending to channel: '{}'", e))
+    }
+}
+
+impl From<RecvError> for ControlError {
+    fn from(e: RecvError) -> Self {
+        Self::ChannelCommunication(format!("Receiving from channel: '{}'", e))
+    }
+}
+
+impl From<DatabaseError> for ControlError {
+    fn from(e: DatabaseError) -> Self {
+        Self::Database(format!("Database error: {}", e))
+    }
+}
+
+impl From<BitcoindError> for ControlError {
+    fn from(e: BitcoindError) -> Self {
+        Self::Bitcoind(format!("Bitcoind error: {}", e))
+    }
+}
+
+impl From<revault_tx::Error> for ControlError {
+    fn from(e: revault_tx::Error) -> Self {
+        Self::TransactionManagement(format!("Revault transaction error: {}", e))
+    }
+}
+
 // Ask bitcoind for a wallet transaction
 fn bitcoind_wallet_tx(
     bitcoind_tx: &Sender<BitcoindMessageOut>,
     txid: Txid,
-) -> Option<WalletTransaction> {
+) -> Result<Option<WalletTransaction>, ControlError> {
     log::trace!("Sending WalletTx to bitcoind thread for {}", txid);
 
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-    bitcoind_tx
-        .send(BitcoindMessageOut::WalletTransaction(txid, bitrep_tx))
-        .unwrap_or_else(|e| {
-            log::error!("Sending 'wallettransaction' to bitcoind thread: {:?}", e);
-            process::exit(1);
-        });
-    bitrep_rx.recv().unwrap_or_else(|e| {
-        log::error!(
-            "Receiving 'wallettransaction' from bitcoind thread: {:?}",
-            e
-        );
-        process::exit(1);
-    })
+    bitcoind_tx.send(BitcoindMessageOut::WalletTransaction(txid, bitrep_tx))?;
+    bitrep_rx.recv().map_err(|e| e.into())
 }
 
 /// Handle events incoming from the JSONRPC interface.
@@ -68,17 +108,12 @@ pub fn handle_rpc_messages(
     bitcoind_tx: Sender<BitcoindMessageOut>,
     bitcoind_thread: JoinHandle<()>,
     jsonrpc_thread: JoinHandle<()>,
-) {
+) -> Result<(), ControlError> {
     for msg in rpc_rx {
         match msg {
             RpcMessageIn::Shutdown => {
                 log::info!("Stopping revaultd.");
-                bitcoind_tx
-                    .send(BitcoindMessageOut::Shutdown)
-                    .unwrap_or_else(|e| {
-                        log::error!("Sending shutdown to bitcoind thread: {:?}", e);
-                        process::exit(1);
-                    });
+                bitcoind_tx.send(BitcoindMessageOut::Shutdown)?;
 
                 jsonrpc_thread.join().unwrap_or_else(|e| {
                     log::error!("Joining RPC server thread: {:?}", e);
@@ -94,33 +129,16 @@ pub fn handle_rpc_messages(
                 log::trace!("Got getinfo from RPC thread");
 
                 let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-                bitcoind_tx
-                    .send(BitcoindMessageOut::SyncProgress(bitrep_tx))
-                    .unwrap_or_else(|e| {
-                        log::error!("Sending 'syncprogress' to bitcoind thread: {:?}", e);
-                        process::exit(1);
-                    });
-                let progress = bitrep_rx.recv().unwrap_or_else(|e| {
-                    log::error!("Receving 'syncprogress' from bitcoind thread: {:?}", e);
-                    process::exit(1);
-                });
+                bitcoind_tx.send(BitcoindMessageOut::SyncProgress(bitrep_tx))?;
+                let progress = bitrep_rx.recv()?;
 
                 // This means blockheight == 0 for IBD.
                 let BlockchainTip {
                     height: blockheight,
                     ..
-                } = db_tip(&db_path).unwrap_or_else(|e| {
-                    log::error!("Getting tip from db: {:?}", e);
-                    process::exit(1);
-                });
+                } = db_tip(&db_path)?;
 
-                response_tx
-                    .send((network.to_string(), blockheight, progress))
-                    // TODO: a macro for the unwrap_or_else boilerplate..
-                    .unwrap_or_else(|e| {
-                        log::error!("Sending 'getinfo' result to RPC thread: {:?}", e);
-                        process::exit(1);
-                    });
+                response_tx.send((network.to_string(), blockheight, progress))?;
             }
             RpcMessageIn::ListVaults((statuses, outpoints), response_tx) => {
                 log::trace!("Got listvaults from RPC thread");
@@ -147,19 +165,11 @@ pub fn handle_rpc_messages(
                     ));
                 }
 
-                response_tx.send(resp).unwrap_or_else(|e| {
-                    log::error!("Sending 'listvaults' result to RPC thread: {}", e);
-                    process::exit(1);
-                });
+                response_tx.send(resp)?;
             }
             RpcMessageIn::DepositAddr(response_tx) => {
                 log::trace!("Got 'depositaddr' request from RPC thread");
-                response_tx
-                    .send(revaultd.read().unwrap().deposit_address())
-                    .unwrap_or_else(|e| {
-                        log::error!("Sending 'depositaddr' result to RPC thread: {}", e);
-                        process::exit(1);
-                    });
+                response_tx.send(revaultd.read().unwrap().deposit_address())?;
             }
             RpcMessageIn::GetRevocationTxs(outpoint, response_tx) => {
                 log::trace!("Got 'getrevocationtxs' request from RPC thread");
@@ -205,31 +215,11 @@ pub fn handle_rpc_messages(
                         xpub_ctx,
                         revaultd.lock_time,
                         revaultd.unvault_csv,
-                    )
-                    .unwrap_or_else(|e| {
-                        log::error!(
-                            "Deriving transactions for vault {:#?} (at '{}'): '{}'",
-                            vault,
-                            outpoint,
-                            e
-                        );
-                        process::exit(1);
-                    });
+                    )?;
 
-                    response_tx
-                        .send(Some((cancel, emergency, unvault_emer)))
-                        .unwrap_or_else(|e| {
-                            log::error!("Sending 'getrevocationtxs' result to RPC thread: '{}'", e);
-                            process::exit(1);
-                        });
+                    response_tx.send(Some((cancel, emergency, unvault_emer)))?;
                 } else {
-                    response_tx.send(None).unwrap_or_else(|e| {
-                        log::error!(
-                            "Sending 'getrevocationtxs' (None) result to RPC thread: '{}'",
-                            e
-                        );
-                        process::exit(1);
-                    });
+                    response_tx.send(None)?;
                 }
             }
             RpcMessageIn::RevocationTxs(
@@ -239,15 +229,10 @@ pub fn handle_rpc_messages(
                 log::trace!("Got 'revocationtxs' from RPC thread");
 
                 let res = if revaultd.read().unwrap().vaults.get(&outpoint).is_some() {
-                    let db_vault = db_vault_by_deposit(&db_path, &outpoint)
-                        .unwrap_or_else(|e| {
-                            log::error!("Getting vault from db: {}", e);
-                            process::exit(1);
-                        })
-                        .unwrap_or_else(|| {
-                            log::error!("(Insane db) None vault for '{}'", &outpoint);
-                            process::exit(1);
-                        });
+                    let db_vault = db_vault_by_deposit(&db_path, &outpoint)?.unwrap_or_else(|| {
+                        log::error!("(Insane db) None vault for '{}'", &outpoint);
+                        process::exit(1);
+                    });
 
                     if cancel.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
                         /* TODO: fetch from the SS */
@@ -268,18 +253,14 @@ pub fn handle_rpc_messages(
                             cancel,
                             emer,
                             unvault_emer,
-                        )
-                        .unwrap();
+                        )?;
                     }
                     None
                 } else {
                     Some("Outpoint does not correspond to an existing vault".into())
                 };
 
-                response_tx.send(res).unwrap_or_else(|e| {
-                    log::error!("Sending 'revocationtxs' result to RPC thread: {}", e);
-                    process::exit(1);
-                });
+                response_tx.send(res)?;
             }
             RpcMessageIn::ListTransactions(outpoints, response_tx) => {
                 log::trace!("Got 'listtransactions' request from RPC thread");
@@ -287,35 +268,22 @@ pub fn handle_rpc_messages(
                 let xpub_ctx = revaultd.xpub_ctx();
 
                 // If they didn't provide us with a list of outpoints, catch'em all!
-                let outpoints = outpoints.unwrap_or_else(|| {
-                    db_deposits(&db_path)
-                        .unwrap_or_else(|e| {
-                            log::error!("Getting deposits from db: {}", e);
-                            process::exit(1);
-                        })
+                let outpoints = outpoints.unwrap_or(
+                    db_deposits(&db_path)?
                         .into_iter()
                         .map(|db_vault| db_vault.deposit_outpoint)
-                        .collect()
-                });
+                        .collect(),
+                );
 
                 let mut vaults = Vec::with_capacity(outpoints.len());
                 for outpoint in outpoints {
                     if let Some(vault) = revaultd.vaults.get(&outpoint) {
-                        let db_vault = db_vault_by_deposit(&db_path, &outpoint)
-                            .unwrap_or_else(|e| {
-                                log::error!("Getting vault from db: {}", e);
-                                process::exit(1);
-                            })
-                            .unwrap_or_else(|| {
+                        let db_vault =
+                            db_vault_by_deposit(&db_path, &outpoint)?.unwrap_or_else(|| {
                                 log::error!("(Insane db) None vault for '{}'", &outpoint);
                                 process::exit(1);
                             });
-                        let mut txs = db_transactions(&db_path, db_vault.id, &[])
-                            .unwrap_or_else(|e| {
-                                log::error!("Getting transactions (all) from db: {}", e);
-                                process::exit(1);
-                            })
-                            .into_iter();
+                        let mut txs = db_transactions(&db_path, db_vault.id, &[])?.into_iter();
 
                         let deposit_tx = txs
                             .find(|db_tx| matches!(db_tx.tx, RevaultTx::Deposit(_)))
@@ -324,7 +292,7 @@ pub fn handle_rpc_messages(
                                 log::error!("Vault without deposit tx in db for {}", outpoint);
                                 process::exit(1);
                             });
-                        let wallet_tx = bitcoind_wallet_tx(&bitcoind_tx, deposit_tx.0.txid());
+                        let wallet_tx = bitcoind_wallet_tx(&bitcoind_tx, deposit_tx.0.txid())?;
                         let deposit = TransactionResource {
                             wallet_tx,
                             tx: deposit_tx,
@@ -358,26 +326,20 @@ pub fn handle_rpc_messages(
                         let mut unvault_tx = txs
                             .find(|db_tx| matches!(db_tx.tx, RevaultTx::Unvault(_)))
                             .map(|tx| assert_tx_type!(tx.tx, Unvault, "We just found it"))
-                            .unwrap_or_else(|| {
-                                UnvaultTransaction::new(
-                                    vault_txin.clone(),
-                                    &unvault_descriptor,
-                                    &cpfp_descriptor,
-                                    xpub_ctx,
-                                    revaultd.lock_time,
-                                )
-                                .unwrap_or_else(|e| {
-                                    log::error!("Deriving unvault for '{}': {}", outpoint, e);
-                                    process::exit(1);
-                                })
-                            });
+                            .unwrap_or(UnvaultTransaction::new(
+                                vault_txin.clone(),
+                                &unvault_descriptor,
+                                &cpfp_descriptor,
+                                xpub_ctx,
+                                revaultd.lock_time,
+                            )?);
                         let unvault_txin = unvault_tx
                             .unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv)
                             .expect("Just created it");
                         let wallet_tx = bitcoind_wallet_tx(
                             &bitcoind_tx,
                             unvault_tx.inner_tx().global.unsigned_tx.txid(),
-                        );
+                        )?;
                         // The transaction is signed if we did sign it, or if others did (eg
                         // non-stakeholder managers) and we noticed it from broadcast.
                         // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
@@ -398,7 +360,7 @@ pub fn handle_rpc_messages(
                             let wallet_tx = bitcoind_wallet_tx(
                                 &bitcoind_tx,
                                 tx.inner_tx().global.unsigned_tx.txid(),
-                            );
+                            )?;
                             // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
                             let is_signed =
                                 tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
@@ -427,7 +389,7 @@ pub fn handle_rpc_messages(
                         let wallet_tx = bitcoind_wallet_tx(
                             &bitcoind_tx,
                             cancel_tx.inner_tx().global.unsigned_tx.txid(),
-                        );
+                        )?;
                         // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
                         let is_signed =
                             cancel_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
@@ -452,7 +414,7 @@ pub fn handle_rpc_messages(
                         let wallet_tx = bitcoind_wallet_tx(
                             &bitcoind_tx,
                             emergency_tx.inner_tx().global.unsigned_tx.txid(),
-                        );
+                        )?;
                         // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
                         let is_signed = emergency_tx.finalize(&revaultd.secp_ctx).is_ok()
                             || wallet_tx.is_some();
@@ -477,7 +439,7 @@ pub fn handle_rpc_messages(
                         let wallet_tx = bitcoind_wallet_tx(
                             &bitcoind_tx,
                             unvault_emergency_tx.inner_tx().global.unsigned_tx.txid(),
-                        );
+                        )?;
                         // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
                         let is_signed = unvault_emergency_tx.finalize(&revaultd.secp_ctx).is_ok()
                             || wallet_tx.is_some();
@@ -499,11 +461,10 @@ pub fn handle_rpc_messages(
                     }
                 }
 
-                response_tx.send(vaults).unwrap_or_else(|e| {
-                    log::error!("Sending 'listtransactions' result to RPC thread: {}", e);
-                    process::exit(1);
-                });
+                response_tx.send(vaults)?;
             }
         }
     }
+
+    Ok(())
 }

@@ -100,7 +100,11 @@ fn daemon_main(mut revaultd: RevaultD) {
         bitcoind_tx,
         bitcoind_thread,
         rpc_thread,
-    );
+    )
+    .unwrap_or_else(|e| {
+        log::error!("Error in main loop: {}", e);
+        process::exit(1);
+    });
 }
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout

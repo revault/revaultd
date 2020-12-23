@@ -1,3 +1,7 @@
+//! Here we handle messages incoming from the RPC server. We only treat semantic of
+//! *valid* JSONRPC2 commands here. All the communication and parsing is done in the
+//! `server` mod.
+
 use crate::{revaultd::VaultStatus, threadmessages::*};
 use common::{assume_ok, assume_some, VERSION};
 

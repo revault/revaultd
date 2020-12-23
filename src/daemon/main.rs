@@ -9,7 +9,7 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     control::handle_rpc_messages,
     database::actions::setup_db,
-    jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
+    jsonrpc::server::{rpcserver_loop, rpcserver_setup},
     revaultd::RevaultD,
 };
 use common::{assume_ok, config::Config};
@@ -51,7 +51,7 @@ fn daemon_main(mut revaultd: RevaultD) {
 
     log::info!("Starting JSONRPC server");
     let socket = assume_ok!(
-        jsonrpcapi_setup(revaultd.rpc_socket_file()),
+        rpcserver_setup(revaultd.rpc_socket_file()),
         "Setting up JSONRPC server"
     );
 
@@ -67,7 +67,7 @@ fn daemon_main(mut revaultd: RevaultD) {
 
     let rpc_thread = thread::spawn(move || {
         assume_ok!(
-            jsonrpcapi_loop(rpc_tx, socket),
+            rpcserver_loop(rpc_tx, socket),
             "Error in JSONRPC server event loop"
         );
     });

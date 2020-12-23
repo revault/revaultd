@@ -56,7 +56,7 @@ fn db_query<'a, P, F, T>(
     stmt_str: &'a str,
     params: P,
     f: F,
-) -> Result<Vec<rusqlite::Result<T>>, DatabaseError>
+) -> Result<Vec<T>, DatabaseError>
 where
     P: IntoIterator,
     P::Item: ToSql,
@@ -65,31 +65,31 @@ where
     let conn = Connection::open(path)
         .map_err(|e| DatabaseError(format!("Opening database for query: {}", e.to_string())))?;
 
-    let x = Ok(conn
+    // rustc says 'borrowed value does not live long enough'
+    let x = conn
         .prepare(stmt_str)
         .map_err(|e| DatabaseError(format!("Preparing query: '{}'", e.to_string())))?
         .query_map(params, f)
-        .map_err(|e| DatabaseError(format!("Executing query: '{}'", e.to_string())))?
-        .collect::<Vec<rusqlite::Result<T>>>());
+        .map_err(|e| DatabaseError(format!("Mapping query: '{}'", e.to_string())))?
+        .collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(|e| DatabaseError(format!("Executing query: '{}'", e.to_string())));
+
     x
 }
 
 /// Get the database version
 pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
-    let rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
         row.get::<_, u32>(0)
     })?;
 
-    Ok(*rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in version table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting version: '{}'", e.to_string())))?)
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in version table?".to_string()))
 }
 
 /// Get our tip from the database
 pub fn db_tip(db_path: &PathBuf) -> Result<BlockchainTip, DatabaseError> {
-    let rows = db_query(
+    let mut rows = db_query(
         db_path,
         "SELECT blockheight, blockhash FROM tip",
         NO_PARAMS,
@@ -102,30 +102,24 @@ pub fn db_tip(db_path: &PathBuf) -> Result<BlockchainTip, DatabaseError> {
         },
     )?;
 
-    Ok(*rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting tip: '{}'", e.to_string())))?)
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))
 }
 
 /// Get the network this DB was created on
 pub fn db_network(db_path: &PathBuf) -> Result<Network, DatabaseError> {
-    let rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
         Ok(Network::from_str(&row.get::<_, String>(0)?)
             .expect("We only evert insert from to_string"))
     })?;
 
-    Ok(*rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting tip: '{}'", e.to_string())))?)
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
 pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
-    let rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
         let our_man_xpub_str = row.get::<_, Option<String>>(4)?;
         let our_man_xpub = if let Some(ref xpub_str) = our_man_xpub_str {
             Some(
@@ -164,12 +158,8 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         })
     })?;
 
-    Ok(rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in wallet table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting wallet: '{}'", e.to_string())))?
-        .clone())
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in wallet table?".to_string()))
 }
 
 impl TryFrom<&Row<'_>> for DbVault {
@@ -212,10 +202,7 @@ pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
         "SELECT * FROM vaults WHERE status <= (?1)",
         &[VaultStatus::Active as u32],
         |row| row.try_into(),
-    )?
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| DatabaseError(format!("Querying vaults from db: '{}'", e.to_string())))
+    )
 }
 
 /// Get a vault from a deposit outpoint. Returns None if we never heard of such a vault.
@@ -228,11 +215,8 @@ pub fn db_vault_by_deposit(
         "SELECT * FROM vaults WHERE deposit_txid = (?1) AND deposit_vout = (?2)",
         params![deposit.txid.to_vec(), deposit.vout],
         |row| row.try_into(),
-    )?
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()
-    .map(|vault_list| vault_list.get(0).copied())
-    .map_err(|e| DatabaseError(format!("Querying vaults from db: '{}'", e.to_string())))
+    )
+    .map(|mut vault_list| vault_list.pop())
 }
 
 /// Get an optionally-filtered list of transactions stored for this vault. Note that only signed
@@ -242,7 +226,7 @@ pub fn db_transactions(
     vault_id: u32,
     types_filter: &[TransactionType],
 ) -> Result<Vec<DbTransaction>, DatabaseError> {
-    db_query(
+    Ok(db_query(
         db_path,
         "SELECT * FROM transactions WHERE vault_id = (?1)",
         &[vault_id],
@@ -306,15 +290,8 @@ pub fn db_transactions(
     .into_iter()
     // Filter out the unwanted ones
     .filter_map(|maybe_tx| match maybe_tx {
-        Ok(Some(tx)) => Some(Ok(tx)),
-        Ok(None) => None,
-        Err(e) => Some(Err(e)),
+        Some(tx) => Some(tx),
+        None => None,
     })
-    .collect::<Result<Vec<DbTransaction>, _>>()
-    .map_err(|e| {
-        DatabaseError(format!(
-            "Querying transactions with vault_id '{}' from db: '{}'",
-            vault_id, e
-        ))
-    })
+    .collect())
 }

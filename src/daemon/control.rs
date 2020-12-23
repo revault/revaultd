@@ -11,7 +11,8 @@ use crate::{
     bitcoind::BitcoindError,
     database::{
         actions::db_store_revocation_txs,
-        interface::{db_deposits, db_tip, db_transactions, db_vault_by_deposit, RevaultTx},
+        interface::{db_deposits, db_tip, db_transactions, db_vault_by_deposit},
+        schema::RevaultTx,
         DatabaseError,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},

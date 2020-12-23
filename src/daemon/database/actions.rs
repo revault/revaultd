@@ -1,5 +1,9 @@
 use crate::{
-    database::{interface::*, schema::SCHEMA, DatabaseError, DB_VERSION},
+    database::{
+        interface::*,
+        schema::{TransactionType, SCHEMA},
+        DatabaseError, DB_VERSION,
+    },
     revaultd::{BlockchainTip, CachedVault, RevaultD, VaultStatus},
 };
 use revault_tx::{

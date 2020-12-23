@@ -1,5 +1,8 @@
 use crate::{
-    database::DatabaseError,
+    database::{
+        schema::{DbTransaction, DbVault, DbWallet, RevaultTx, TransactionType},
+        DatabaseError,
+    },
     revaultd::{BlockchainTip, VaultStatus},
 };
 use common::config;
@@ -120,17 +123,6 @@ pub fn db_network(db_path: &PathBuf) -> Result<Network, DatabaseError> {
         .map_err(|e| DatabaseError(format!("Getting tip: '{}'", e.to_string())))?)
 }
 
-/// A "wallet" as stored in the database
-#[derive(Clone)]
-pub struct DbWallet {
-    pub id: u32,
-    pub timestamp: u32,
-    pub vault_descriptor: String,
-    pub unvault_descriptor: String,
-    pub ourselves: config::OurSelves,
-    pub deposit_derivation_index: ChildNumber,
-}
-
 /// Get the database wallet. We only support single wallet, so this always return the first row.
 pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
     let rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
@@ -178,18 +170,6 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         .as_ref()
         .map_err(|e| DatabaseError(format!("Getting wallet: '{}'", e.to_string())))?
         .clone())
-}
-
-/// An entry of the "vaults" table
-#[derive(Debug, Clone, Copy)]
-pub struct DbVault {
-    pub id: u32,
-    pub wallet_id: u32,
-    pub status: VaultStatus,
-    pub blockheight: u32,
-    pub deposit_outpoint: OutPoint,
-    pub amount: Amount,
-    pub derivation_index: ChildNumber,
 }
 
 impl TryFrom<&Row<'_>> for DbVault {
@@ -255,79 +235,6 @@ pub fn db_vault_by_deposit(
     .map_err(|e| DatabaseError(format!("Querying vaults from db: '{}'", e.to_string())))
 }
 
-/// The type of the transaction, as stored in the "transactions" table
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TransactionType {
-    Deposit,
-    Unvault,
-    Spend,
-    Cancel,
-    Emergency,
-    UnvaultEmergency,
-}
-
-impl TryFrom<u32> for TransactionType {
-    type Error = ();
-
-    fn try_from(n: u32) -> Result<Self, Self::Error> {
-        match n {
-            0 => Ok(Self::Deposit),
-            1 => Ok(Self::Unvault),
-            2 => Ok(Self::Spend),
-            3 => Ok(Self::Cancel),
-            4 => Ok(Self::Emergency),
-            5 => Ok(Self::UnvaultEmergency),
-            _ => Err(()),
-        }
-    }
-}
-
-macro_rules! tx_type_from_tx {
-    ($tx:ident, $tx_type:ident) => {
-        impl From<&$tx> for TransactionType {
-            fn from(_: &$tx) -> Self {
-                Self::$tx_type
-            }
-        }
-    };
-}
-tx_type_from_tx!(VaultTransaction, Deposit);
-tx_type_from_tx!(UnvaultTransaction, Unvault);
-tx_type_from_tx!(CancelTransaction, Cancel);
-tx_type_from_tx!(EmergencyTransaction, Emergency);
-tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
-tx_type_from_tx!(SpendTransaction, Spend);
-
-/// A transaction stored in the 'transactions' table
-#[derive(Debug)]
-pub enum RevaultTx {
-    Deposit(VaultTransaction),
-    Unvault(UnvaultTransaction),
-    Cancel(CancelTransaction),
-    Emergency(EmergencyTransaction),
-    UnvaultEmergency(UnvaultEmergencyTransaction),
-    Spend(SpendTransaction),
-}
-
-/// Boilerplate to get a specific variant of an enum if You Are Confident :TM:
-#[macro_export]
-macro_rules! assert_tx_type {
-    ($tx:expr, $variant:ident, $reason:literal) => {
-        match $tx {
-            RevaultTx::$variant(inner_tx) => inner_tx,
-            _ => unreachable!($reason),
-        }
-    };
-}
-
-/// A row in the "transactions" table
-#[derive(Debug)]
-pub struct DbTransaction {
-    pub id: u32,
-    pub vault_id: u32,
-    pub tx: RevaultTx,
-}
-
 /// Get an optionally-filtered list of transactions stored for this vault. Note that only signed
 /// transactions are stored.
 pub fn db_transactions(
@@ -388,7 +295,12 @@ pub fn db_transactions(
                 ),
             };
 
-            Ok(Some(DbTransaction { id, vault_id, tx }))
+            Ok(Some(DbTransaction {
+                id,
+                vault_id,
+                tx_type,
+                tx,
+            }))
         },
     )?
     .into_iter()

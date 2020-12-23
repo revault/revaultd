@@ -12,7 +12,7 @@ use crate::{
     jsonrpc::{jsonrpcapi_loop, jsonrpcapi_setup},
     revaultd::RevaultD,
 };
-use common::config::Config;
+use common::{assume_ok, config::Config};
 
 use std::{
     env,
@@ -44,22 +44,16 @@ fn daemon_main(mut revaultd: RevaultD) {
 
     // First and foremost
     log::info!("Setting up database");
-    setup_db(&mut revaultd).unwrap_or_else(|e| {
-        log::error!("Error setting up database: '{}'", e.to_string());
-        process::exit(1);
-    });
+    assume_ok!(setup_db(&mut revaultd), "Error setting up database");
 
     log::info!("Setting up bitcoind connection");
-    let bitcoind = start_bitcoind(&mut revaultd).unwrap_or_else(|e| {
-        log::error!("Error setting up bitcoind: {}", e.to_string());
-        process::exit(1);
-    });
+    let bitcoind = assume_ok!(start_bitcoind(&mut revaultd), "Error setting up bitcoind");
 
     log::info!("Starting JSONRPC server");
-    let socket = jsonrpcapi_setup(revaultd.rpc_socket_file()).unwrap_or_else(|e| {
-        log::error!("Setting up JSONRPC server: {}", e.to_string());
-        process::exit(1);
-    });
+    let socket = assume_ok!(
+        jsonrpcapi_setup(revaultd.rpc_socket_file()),
+        "Setting up JSONRPC server"
+    );
 
     // We start two threads, the JSONRPC one in order to be controlled externally,
     // and the bitcoind one to poll bitcoind until we die.
@@ -72,19 +66,19 @@ fn daemon_main(mut revaultd: RevaultD) {
     let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
 
     let rpc_thread = thread::spawn(move || {
-        jsonrpcapi_loop(rpc_tx, socket).unwrap_or_else(|e| {
-            log::error!("Error in JSONRPC server event loop: {}", e.to_string());
-            process::exit(1)
-        });
+        assume_ok!(
+            jsonrpcapi_loop(rpc_tx, socket),
+            "Error in JSONRPC server event loop"
+        );
     });
 
     let revaultd = Arc::new(RwLock::new(revaultd));
     let bit_revaultd = revaultd.clone();
     let bitcoind_thread = thread::spawn(move || {
-        bitcoind_main_loop(bitcoind_rx, bit_revaultd, &bitcoind).unwrap_or_else(|e| {
-            log::error!("Error in bitcoind main loop: {}", e.to_string());
-            process::exit(1)
-        });
+        assume_ok!(
+            bitcoind_main_loop(bitcoind_rx, bit_revaultd, &bitcoind),
+            "Error in bitcoind main loop"
+        );
     });
 
     log::info!(
@@ -92,19 +86,18 @@ fn daemon_main(mut revaultd: RevaultD) {
         revaultd.read().unwrap().bitcoind_config.network
     );
     // Handle RPC commands until we die.
-    handle_rpc_messages(
-        revaultd,
-        db_path,
-        network,
-        rpc_rx,
-        bitcoind_tx,
-        bitcoind_thread,
-        rpc_thread,
-    )
-    .unwrap_or_else(|e| {
-        log::error!("Error in main loop: {}", e);
-        process::exit(1);
-    });
+    assume_ok!(
+        handle_rpc_messages(
+            revaultd,
+            db_path,
+            network,
+            rpc_rx,
+            bitcoind_tx,
+            bitcoind_thread,
+            rpc_thread,
+        ),
+        "Error in main loop"
+    );
 }
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout

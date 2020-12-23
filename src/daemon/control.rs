@@ -17,6 +17,7 @@ use crate::{
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
     threadmessages::*,
 };
+use common::{assume_ok, assume_some};
 
 use revault_tx::{
     bitcoin::{Network, Txid},
@@ -115,14 +116,8 @@ pub fn handle_rpc_messages(
                 log::info!("Stopping revaultd.");
                 bitcoind_tx.send(BitcoindMessageOut::Shutdown)?;
 
-                jsonrpc_thread.join().unwrap_or_else(|e| {
-                    log::error!("Joining RPC server thread: {:?}", e);
-                    process::exit(1);
-                });
-                bitcoind_thread.join().unwrap_or_else(|e| {
-                    log::error!("Joining bitcoind thread: {:?}", e);
-                    process::exit(1);
-                });
+                assume_ok!(jsonrpc_thread.join(), "Joining RPC server thread");
+                assume_ok!(bitcoind_thread.join(), "Joining bitcoind thread");
                 process::exit(0);
             }
             RpcMessageIn::GetInfo(response_tx) => {
@@ -188,13 +183,11 @@ pub fn handle_rpc_messages(
                     // Second, derive the fully-specified deposit txout. Note that we'd probably
                     // store the index in the cache eventually, but until we get rid of this awful
                     // mapping let's just use it.
-                    let index = revaultd
-                        .derivation_index_map
-                        .get(&vault.txo.script_pubkey)
-                        .unwrap_or_else(|| {
-                            log::error!("Unknown derivation index for: {:#?}", vault);
-                            process::exit(1);
-                        });
+                    let index = assume_some!(
+                        revaultd.derivation_index_map.get(&vault.txo.script_pubkey),
+                        "Unknown derivation index for: {:#?}",
+                        vault
+                    );
                     let deposit_descriptor = revaultd.vault_descriptor.derive(*index);
                     let vault_txin = VaultTxIn::new(
                         outpoint,
@@ -229,10 +222,11 @@ pub fn handle_rpc_messages(
                 log::trace!("Got 'revocationtxs' from RPC thread");
 
                 let res = if revaultd.read().unwrap().vaults.get(&outpoint).is_some() {
-                    let db_vault = db_vault_by_deposit(&db_path, &outpoint)?.unwrap_or_else(|| {
-                        log::error!("(Insane db) None vault for '{}'", &outpoint);
-                        process::exit(1);
-                    });
+                    let db_vault = assume_some!(
+                        db_vault_by_deposit(&db_path, &outpoint)?,
+                        "(Insane db) None vault for '{}'",
+                        &outpoint,
+                    );
 
                     if cancel.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
                         /* TODO: fetch from the SS */
@@ -278,20 +272,19 @@ pub fn handle_rpc_messages(
                 let mut vaults = Vec::with_capacity(outpoints.len());
                 for outpoint in outpoints {
                     if let Some(vault) = revaultd.vaults.get(&outpoint) {
-                        let db_vault =
-                            db_vault_by_deposit(&db_path, &outpoint)?.unwrap_or_else(|| {
-                                log::error!("(Insane db) None vault for '{}'", &outpoint);
-                                process::exit(1);
-                            });
+                        let db_vault = assume_some!(
+                            db_vault_by_deposit(&db_path, &outpoint)?,
+                            "(Insane db) None vault for '{}'",
+                            &outpoint,
+                        );
                         let mut txs = db_transactions(&db_path, db_vault.id, &[])?.into_iter();
 
-                        let deposit_tx = txs
-                            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Deposit(_)))
-                            .map(|tx| assert_tx_type!(tx.tx, Deposit, "We just found it"))
-                            .unwrap_or_else(|| {
-                                log::error!("Vault without deposit tx in db for {}", outpoint);
-                                process::exit(1);
-                            });
+                        let deposit_tx = assume_some!(
+                            txs.find(|db_tx| matches!(db_tx.tx, RevaultTx::Deposit(_)))
+                                .map(|tx| assert_tx_type!(tx.tx, Deposit, "We just found it")),
+                            "Vault without deposit tx in db for {}",
+                            &outpoint,
+                        );
                         let wallet_tx = bitcoind_wallet_tx(&bitcoind_tx, deposit_tx.0.txid())?;
                         let deposit = TransactionResource {
                             wallet_tx,
@@ -305,13 +298,11 @@ pub fn handle_rpc_messages(
                         // yet, ie not in DB).
                         // One day, we could try to be smarter wrt free derivation but it's not
                         // a priority atm.
-                        let index = revaultd
-                            .derivation_index_map
-                            .get(&vault.txo.script_pubkey)
-                            .unwrap_or_else(|| {
-                                log::error!("Unknown derivation index for: {:#?}", vault);
-                                process::exit(1);
-                            });
+                        let index = assume_some!(
+                            revaultd.derivation_index_map.get(&vault.txo.script_pubkey),
+                            "Unknown derivation index for: {:#?}",
+                            vault,
+                        );
                         let deposit_descriptor = revaultd.vault_descriptor.derive(*index);
                         let vault_txin = VaultTxIn::new(
                             outpoint,

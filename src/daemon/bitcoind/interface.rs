@@ -8,6 +8,7 @@ use revault_tx::bitcoin::{Address, Amount, BlockHash, OutPoint, TxOut, Txid};
 use std::{collections::HashMap, fs, str::FromStr, time::Duration};
 
 use jsonrpc::{arg, client::Client, simple_http::SimpleHttpTransport};
+use serde_json::Value as Json;
 
 pub struct BitcoinD {
     node_client: Client,
@@ -71,7 +72,7 @@ impl BitcoinD {
         client: &Client,
         method: &'a str,
         params: &'b [Box<serde_json::value::RawValue>],
-    ) -> Result<serde_json::Value, BitcoindError> {
+    ) -> Result<Json, BitcoindError> {
         let req = client.build_request(method, &params);
         log::trace!("Sending to bitcoind: {:#?}", req);
         let resp = client.send_request(req).map_err(BitcoindError::Server)?;
@@ -85,7 +86,7 @@ impl BitcoinD {
         &self,
         method: &'a str,
         params: &'b [Box<serde_json::value::RawValue>],
-    ) -> Result<serde_json::Value, BitcoindError> {
+    ) -> Result<Json, BitcoindError> {
         self.make_request(&self.node_client, method, params)
     }
 
@@ -93,11 +94,11 @@ impl BitcoinD {
         &self,
         method: &'a str,
         params: &'b [Box<serde_json::value::RawValue>],
-    ) -> Result<serde_json::Value, BitcoindError> {
+    ) -> Result<Json, BitcoindError> {
         self.make_request(&self.watchonly_client, method, params)
     }
 
-    pub fn getblockchaininfo(&self) -> Result<serde_json::Value, BitcoindError> {
+    pub fn getblockchaininfo(&self) -> Result<Json, BitcoindError> {
         self.make_node_request("getblockchaininfo", &[])
     }
 
@@ -164,13 +165,13 @@ impl BitcoinD {
         let res = self.make_node_request(
             "createwallet",
             &params!(
-                serde_json::Value::String(wallet_path),
-                serde_json::Value::Bool(true),             // watchonly
-                serde_json::Value::Bool(false),            // blank
-                serde_json::Value::String("".to_string()), // passphrase,
-                serde_json::Value::Bool(false),            // avoid_reuse
-                serde_json::Value::Bool(true),             // descriptors
-                serde_json::Value::Bool(true),             // load_on_startup
+                Json::String(wallet_path),
+                Json::Bool(true),             // watchonly
+                Json::Bool(false),            // blank
+                Json::String("".to_string()), // passphrase,
+                Json::Bool(false),            // avoid_reuse
+                Json::Bool(true),             // descriptors
+                Json::Bool(true),             // load_on_startup
             ),
         )?;
 
@@ -211,8 +212,8 @@ impl BitcoinD {
         let res = self.make_node_request(
             "loadwallet",
             &params!(
-                serde_json::Value::String(wallet_path),
-                serde_json::Value::Bool(true), // load_on_startup
+                Json::String(wallet_path),
+                Json::Bool(true), // load_on_startup
             ),
         )?;
 
@@ -233,7 +234,7 @@ impl BitcoinD {
         Ok(self
             .make_watchonly_request(
                 "getdescriptorinfo",
-                &params!(serde_json::Value::String(desc_wo_checksum)),
+                &params!(Json::String(desc_wo_checksum)),
             )?
             .get("descriptor")
             .ok_or_else(|| {
@@ -255,36 +256,31 @@ impl BitcoinD {
         label: String,
         fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
-        let all_descriptors: Vec<serde_json::Value> = descriptors
+        let all_descriptors: Vec<Json> = descriptors
             .into_iter()
             .map(|desc| {
                 let mut desc_map = serde_json::Map::with_capacity(3);
-                desc_map.insert("desc".to_string(), serde_json::Value::String(desc));
+                desc_map.insert("desc".to_string(), Json::String(desc));
                 // We set to "now" the timestamp for fresh wallet, as otherwise bitcoind
                 // will rescan the last few blocks for each of them.
                 desc_map.insert(
                     "timestamp".to_string(),
                     if fresh_wallet {
-                        serde_json::Value::String("now".to_string())
+                        Json::String("now".to_string())
                     } else {
                         log::debug!("Not a fresh wallet, rescan *may* take some time.");
-                        serde_json::Value::Number(serde_json::Number::from(timestamp))
+                        Json::Number(serde_json::Number::from(timestamp))
                     },
                 );
-                desc_map.insert(
-                    "label".to_string(),
-                    serde_json::Value::String(label.clone()),
-                );
+                desc_map.insert("label".to_string(), Json::String(label.clone()));
 
-                serde_json::Value::Object(desc_map)
+                Json::Object(desc_map)
             })
             .collect();
 
-        let res = self.make_watchonly_request(
-            "importdescriptors",
-            &params!(serde_json::Value::Array(all_descriptors)),
-        )?;
-        if res.get(0).map(|x| x.get("success")) == Some(Some(&serde_json::Value::Bool(true))) {
+        let res = self
+            .make_watchonly_request("importdescriptors", &params!(Json::Array(all_descriptors)))?;
+        if res.get(0).map(|x| x.get("success")) == Some(Some(&Json::Bool(true))) {
             return Ok(());
         }
 
@@ -328,20 +324,15 @@ impl BitcoinD {
         label: String,
     ) -> Result<(), BitcoindError> {
         let mut desc_map = serde_json::Map::with_capacity(3);
-        desc_map.insert("desc".to_string(), serde_json::Value::String(descriptor));
-        desc_map.insert(
-            "timestamp".to_string(),
-            serde_json::Value::String("now".to_string()),
-        );
-        desc_map.insert("label".to_string(), serde_json::Value::String(label));
+        desc_map.insert("desc".to_string(), Json::String(descriptor));
+        desc_map.insert("timestamp".to_string(), Json::String("now".to_string()));
+        desc_map.insert("label".to_string(), Json::String(label));
 
         let res = self.make_watchonly_request(
             "importdescriptors",
-            &params!(serde_json::Value::Array(vec![serde_json::Value::Object(
-                desc_map,
-            )])),
+            &params!(Json::Array(vec![Json::Object(desc_map,)])),
         )?;
-        if res.get(0).map(|x| x.get("success")) == Some(Some(&serde_json::Value::Bool(true))) {
+        if res.get(0).map(|x| x.get("success")) == Some(Some(&Json::Bool(true))) {
             return Ok(());
         }
 
@@ -360,7 +351,7 @@ impl BitcoinD {
     }
 
     // A routine to get the txid,vout pair out of a listunspent entry
-    fn outpoint_from_utxo(&self, utxo: &serde_json::Value) -> Result<OutPoint, BitcoindError> {
+    fn outpoint_from_utxo(&self, utxo: &Json) -> Result<OutPoint, BitcoindError> {
         let txid = utxo
             .get("txid")
             .ok_or_else(|| {
@@ -419,7 +410,7 @@ impl BitcoinD {
         for utxo in self
             .make_watchonly_request(
                 "listunspent",
-                &params!(serde_json::Value::Number(serde_json::Number::from(0))), // minconf
+                &params!(Json::Number(serde_json::Number::from(0))), // minconf
             )?
             .as_array()
             .ok_or_else(|| {
@@ -428,7 +419,7 @@ impl BitcoinD {
                 )
             })?
         {
-            if utxo.get("label") != Some(&serde_json::Value::String(self.deposit_utxos_label())) {
+            if utxo.get("label") != Some(&Json::String(self.deposit_utxos_label())) {
                 continue;
             }
             let confirmations = utxo
@@ -530,10 +521,8 @@ impl BitcoinD {
         &self,
         txid: Txid,
     ) -> Result<(String, Option<u32>, u32), BitcoindError> {
-        let res = self.make_watchonly_request(
-            "gettransaction",
-            &params!(serde_json::Value::String(txid.to_string())),
-        )?;
+        let res = self
+            .make_watchonly_request("gettransaction", &params!(Json::String(txid.to_string())))?;
         let tx_hex = res
             .get("hex")
             .ok_or_else(|| {
@@ -573,9 +562,9 @@ impl BitcoinD {
             .make_watchonly_request(
                 "gettransaction",
                 &params!(
-                    serde_json::Value::String(outpoint.txid.to_string()),
-                    serde_json::Value::Bool(true), // include_watchonly
-                    serde_json::Value::Bool(true), // verbose
+                    Json::String(outpoint.txid.to_string()),
+                    Json::Bool(true), // include_watchonly
+                    Json::Bool(true), // verbose
                 ),
             )?
             .get("decoded")
@@ -615,9 +604,9 @@ impl BitcoinD {
         let res = self.make_watchonly_request(
             "listunspent",
             &params!(
-                serde_json::Value::Number(serde_json::Number::from(0)), // minconf
-                serde_json::Value::Number(serde_json::Number::from(9999999)), // maxconf (default)
-                serde_json::Value::Array(vec![serde_json::Value::String(unvault_address)]),
+                Json::Number(serde_json::Number::from(0)),       // minconf
+                Json::Number(serde_json::Number::from(9999999)), // maxconf (default)
+                Json::Array(vec![Json::String(unvault_address)]),
             ),
         )?;
         let utxos = res.as_array().ok_or_else(|| {

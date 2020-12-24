@@ -1,12 +1,19 @@
 use crate::{
-    database::{interface::*, schema::SCHEMA, DatabaseError, DB_VERSION},
+    database::{
+        interface::*,
+        schema::{TransactionType, SCHEMA},
+        DatabaseError, DB_VERSION,
+    },
     revaultd::{BlockchainTip, CachedVault, RevaultD, VaultStatus},
 };
 use revault_tx::{
     bitcoin::{consensus::encode, util::bip32::ChildNumber, Amount, OutPoint, TxOut},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
-    transactions::VaultTransaction,
+    transactions::{
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
+        VaultTransaction,
+    },
 };
 
 use std::{
@@ -339,12 +346,56 @@ pub fn db_unvault_deposit(db_path: &PathBuf, outpoint: &OutPoint) -> Result<(), 
     })
 }
 
+// Store a set of pre-signed transactions in the `transactions` table for the given vault_id.
+// The transactions MUST ALL be finalized before being passed.
+// Bitcoin transactions are inserted in a single database transaction (atomically).
+macro_rules! db_store_transactions {
+    ($db_path:ident, $vault_id:ident, [$( $tx:ident ),*]) => {
+        db_exec($db_path, |db_tx| {
+            $(
+                // We already do these check in revault_tx's finalize, so only double check on Debug
+                #[cfg(debug_assertions)]
+                {
+                    for i in 0..$tx.inner_tx().inputs.len() {
+                        $tx.verify_input(i)?;
+                    }
+                }
+                let tx_type = TransactionType::from(&$tx);
+                db_tx
+                    .execute(
+                        "INSERT INTO transactions (vault_id, type, tx) VALUES (?1, ?2, ?3)",
+                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?],
+                    )
+                    .map_err(|e| {
+                        DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
+                    })?;
+            )*
+
+            Ok(())
+        })
+    };
+}
+
+/// Store the *fully-signed* revocation transactions for this vault in db.
+pub fn db_store_revocation_txs(
+    db_path: &PathBuf,
+    vault_id: u32,
+    cancel: CancelTransaction,
+    emer: EmergencyTransaction,
+    unvault_emer: UnvaultEmergencyTransaction,
+) -> Result<(), DatabaseError> {
+    db_store_transactions!(db_path, vault_id, [cancel, emer, unvault_emer])
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::revaultd::RevaultD;
+    use crate::{database::schema::RevaultTx, revaultd::RevaultD};
     use common::config::Config;
-    use revault_tx::bitcoin::{hashes::hex::FromHex, Network, OutPoint};
+    use revault_tx::{
+        bitcoin::{hashes::hex::FromHex, Network, OutPoint},
+        transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
+    };
 
     use std::{fs, path::PathBuf};
 
@@ -511,11 +562,91 @@ mod test {
         clear_datadir(&revaultd.data_dir);
     }
 
+    fn test_db_store_revocation_txs() {
+        let mut revaultd = dummy_revaultd();
+        let db_path = revaultd.db_file();
+
+        setup_db(&mut revaultd).unwrap();
+
+        // Let's insert a deposit
+        let wallet_id = 1;
+        let status = VaultStatus::Funded;
+        let blockheight = 700000;
+        let outpoint = OutPoint::from_str(
+            "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
+        )
+        .unwrap();
+        let amount = Amount::from_sat(123456);
+        let derivation_index = ChildNumber::from(33334);
+        let vault_tx = VaultTransaction(encode::deserialize(&Vec::from_hex("01000000018d02f09e91dee22f854c1f4d5da6c63b424ae61c403a9ca649bc7232b6f52e780a0000006a47304402206badd975c2d9fc3873ef0bf7eded79fd8b2fb04d94eb403fb00fd2da4ce6f10a02202d508ffca05ec2da4bd7aca34f9319905f62b349fb46b7791dc3458125baeaab012102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ffffffff0b1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9acc0106902000000001976a9143e3387cc0f659ac5d9e137a5641d73606a0172ee88ac00000000").unwrap()).unwrap());
+        db_insert_new_vault(
+            &db_path,
+            wallet_id,
+            &status,
+            blockheight,
+            &outpoint,
+            &amount,
+            derivation_index,
+            vault_tx,
+        )
+        .unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
+
+        // We can store fully-signed revocation transactions
+        let emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAIcCAAAAArFynMjrSjRoYgTnYmTh/eya2EpPbOkYdSBK+YSepb5xAAAAAAD9////wwc1PjONWaQ6k8Ff89IO4tjDCOOdeuKikZ5sNkgcBEYAAAAAAP3///8B+GADAAAAAAAiACAc4QQhSEvVjup9r++li+ikFVLc95mFU+iGeCAU7wz5FQAAAAAAAQEriJQDAAAAAAAiACAc4QQhSEvVjup9r++li+ikFVLc95mFU+iGeCAU7wz5FQEI2gQARzBEAiBFBSzPW8a+GyGXrBOGyXX8kNRlI5AKoo6c96mQCnXR9gIgUqpeBYqszcnrS3/TQvGfgYRelf78CzSxlt/Jr5lLSNuBRzBEAiAFDfzvHQQtLTu3LDom1Uo4nt6I7xNr4qgIxLT1a459fAIgfpilxRE82/M2lSvo0EoNmoPt6FKrToAB7T3yITPSETyBR1IhAhwDjK9CjcFGN5YjIRrPavF2FnMnrTsMogehacoHKS0aIQP7X94RPdx3P6Qy0sJa7U6RmkPXIqGiDKtWciD/Ce7D4VKuAAEBH5rdAAAAAAAAFgAUaW37E5hUMCLu61U7VnB//VwedisBCGwCSDBFAiEAppnl4d5gkO3sKSCiJZyXm1n3V5Udr24cCj52BqwXpk8CIG0OaqU5d9oB3Ul7SLKBBpyGv0OuHIwhwieBXAOzZfzYASECqGQbqKq3ulO3U7oBBis9NheNk0Zhq3kGL4J5JA3lvu0AAA==").unwrap();
+        let cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAIcCAAAAAuyFhupGoLqUKY8M4QpTeVaoxLw96bl+2UZqnjwjUkuPAAAAAAD9////wwc1PjONWaQ6k8Ff89IO4tjDCOOdeuKikZ5sNkgcBEYAAAAAAP3///8B0soCAAAAAAAiACAc4QQhSEvVjup9r++li+ikFVLc95mFU+iGeCAU7wz5FQAAAAAAAQErQA0DAAAAAAAiACAWHb8jPz1qlOOjBiB74iByuZvixegBDoMqf8KQ3yUBlwEI/YIBBkcwRAIgB00daH7aJ2LFYfQeuHwvj2m/kSzLTwi3DLc3QscJPU8CIB4f4V6EZ49ajsEMZy++NCMi8yOWUpBsyqtlgA7xVVkUgSED+1/eET3cdz+kMtLCWu1OkZpD1yKhogyrVnIg/wnuw+FHMEQCIFUSHXB+t/eHmIlQePYjdbGMRP+zMbg+mU6a4ygrWkfKAiBfnvJ/V4/GS9M7hywxtVg5gvSClNQmICsNau1TgSiy34EhAhwDjK9CjcFGN5YjIRrPavF2FnMnrTsMogehacoHKS0aAKshAwnCKhSjqfl9G5NEQhvawpcj9v8qBdFLFhW4zSJmXUyXrFGHZHapFMvTdVfBbYudE6mAVG9ipw3MjljBiKxrdqkUdWsiYLDcCQCwNrAIO/hjbwoUnYaIrGyTUodnUiEDa8fElGskCZLM6ODgIPKIOnXC54mzyTjJZqNomUnFxt8hAxLdF6uofuC5OH7yFErtmJOoryiWTe52F8UJsHp7hmJUUq8DwvwAsmgAAQEfmt0AAAAAAAAWABRpbfsTmFQwIu7rVTtWcH/9XB52KwEIbAJIMEUCIQC83pn82XF0nh/Wm+2nZvK7oWWfVUdP/5DOChi/3mdcvAIgEXGgP7TZSGUM7IB4J3HENmAuAqINtmaP2LDELvo9aQIBIQKoZBuoqre6U7dTugEGKz02F42TRmGreQYvgnkkDeW+7QABAUdSIQIcA4yvQo3BRjeWIyEaz2rxdhZzJ607DKIHoWnKByktGiED+1/eET3cdz+kMtLCWu1OkZpD1yKhogyrVnIg/wnuw+FSrgA=").unwrap();
+        let unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAeyFhupGoLqUKY8M4QpTeVaoxLw96bl+2UZqnjwjUkuPAAAAAAD9////AdLKAgAAAAAAIgAgHOEEIUhL1Y7qfa/vpYvopBVS3PeZhVPohnggFO8M+RUAAAAAAAEBK0ANAwAAAAAAIgAgFh2/Iz89apTjowYge+Igcrmb4sXoAQ6DKn/CkN8lAZcBCP2CAQZHMEQCIAdNHWh+2idixWH0Hrh8L49pv5Esy08Itwy3N0LHCT1PAiAeH+FehGePWo7BDGcvvjQjIvMjllKQbMqrZYAO8VVZFIEhA/tf3hE93Hc/pDLSwlrtTpGaQ9cioaIMq1ZyIP8J7sPhRzBEAiBVEh1wfrf3h5iJUHj2I3WxjET/szG4PplOmuMoK1pHygIgX57yf1ePxkvTO4csMbVYOYL0gpTUJiArDWrtU4Eost+BIQIcA4yvQo3BRjeWIyEaz2rxdhZzJ607DKIHoWnKByktGgCrIQMJwioUo6n5fRuTREIb2sKXI/b/KgXRSxYVuM0iZl1Ml6xRh2R2qRTL03VXwW2LnROpgFRvYqcNzI5YwYisa3apFHVrImCw3AkAsDawCDv4Y28KFJ2GiKxsk1KHZ1IhA2vHxJRrJAmSzOjg4CDyiDp1wueJs8k4yWajaJlJxcbfIQMS3RerqH7guTh+8hRK7ZiTqK8olk3udhfFCbB6e4ZiVFKvA8L8ALJoAAA=").unwrap();
+        db_store_revocation_txs(
+            &db_path,
+            db_vault.id,
+            cancel_tx.clone(),
+            emer_tx.clone(),
+            unemer_tx.clone(),
+        )
+        .unwrap();
+
+        // Sanity check we can query them now
+        let db_txs: Vec<RevaultTx> = db_transactions(&db_path, db_vault.id, &[])
+            .unwrap()
+            .into_iter()
+            .map(|x| x.tx)
+            .collect();
+        assert!(db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
+        assert!(db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
+        assert!(db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
+
+        let db_txs: Vec<RevaultTx> =
+            db_transactions(&db_path, db_vault.id, &[TransactionType::Emergency])
+                .unwrap()
+                .into_iter()
+                .map(|x| x.tx)
+                .collect();
+        assert!(db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
+        assert!(!db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
+        assert!(!db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
+
+        let db_txs: Vec<RevaultTx> = db_transactions(
+            &db_path,
+            db_vault.id,
+            &[TransactionType::UnvaultEmergency, TransactionType::Cancel],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|x| x.tx)
+        .collect();
+        assert!(!db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
+        assert!(db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
+        assert!(db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
+
+        clear_datadir(&revaultd.data_dir);
+    }
+
     // We disabled #[test] for the above, as they may erase the db concurrently.
     // Instead, run them sequentially.
     #[test]
     fn db_sequential_test_runner() {
         test_db_creation();
         test_db_fetch_deposits();
+        test_db_store_revocation_txs();
     }
 }

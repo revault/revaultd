@@ -1,5 +1,8 @@
 use crate::{
-    database::DatabaseError,
+    database::{
+        schema::{DbTransaction, DbVault, DbWallet, RevaultTx, TransactionType},
+        DatabaseError,
+    },
     revaultd::{BlockchainTip, VaultStatus},
 };
 use common::config;
@@ -53,7 +56,7 @@ fn db_query<'a, P, F, T>(
     stmt_str: &'a str,
     params: P,
     f: F,
-) -> Result<Vec<rusqlite::Result<T>>, DatabaseError>
+) -> Result<Vec<T>, DatabaseError>
 where
     P: IntoIterator,
     P::Item: ToSql,
@@ -62,31 +65,31 @@ where
     let conn = Connection::open(path)
         .map_err(|e| DatabaseError(format!("Opening database for query: {}", e.to_string())))?;
 
-    let x = Ok(conn
+    // rustc says 'borrowed value does not live long enough'
+    let x = conn
         .prepare(stmt_str)
         .map_err(|e| DatabaseError(format!("Preparing query: '{}'", e.to_string())))?
         .query_map(params, f)
-        .map_err(|e| DatabaseError(format!("Executing query: '{}'", e.to_string())))?
-        .collect::<Vec<rusqlite::Result<T>>>());
+        .map_err(|e| DatabaseError(format!("Mapping query: '{}'", e.to_string())))?
+        .collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(|e| DatabaseError(format!("Executing query: '{}'", e.to_string())));
+
     x
 }
 
 /// Get the database version
 pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
-    let rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
         row.get::<_, u32>(0)
     })?;
 
-    Ok(*rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in version table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting version: '{}'", e.to_string())))?)
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in version table?".to_string()))
 }
 
 /// Get our tip from the database
 pub fn db_tip(db_path: &PathBuf) -> Result<BlockchainTip, DatabaseError> {
-    let rows = db_query(
+    let mut rows = db_query(
         db_path,
         "SELECT blockheight, blockhash FROM tip",
         NO_PARAMS,
@@ -99,41 +102,24 @@ pub fn db_tip(db_path: &PathBuf) -> Result<BlockchainTip, DatabaseError> {
         },
     )?;
 
-    Ok(*rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting tip: '{}'", e.to_string())))?)
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))
 }
 
 /// Get the network this DB was created on
 pub fn db_network(db_path: &PathBuf) -> Result<Network, DatabaseError> {
-    let rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
         Ok(Network::from_str(&row.get::<_, String>(0)?)
             .expect("We only evert insert from to_string"))
     })?;
 
-    Ok(*rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting tip: '{}'", e.to_string())))?)
-}
-
-/// A "wallet" as stored in the database
-#[derive(Clone)]
-pub struct DbWallet {
-    pub id: u32,
-    pub timestamp: u32,
-    pub vault_descriptor: String,
-    pub unvault_descriptor: String,
-    pub ourselves: config::OurSelves,
-    pub deposit_derivation_index: ChildNumber,
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in tip table?".to_string()))
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
 pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
-    let rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
         let our_man_xpub_str = row.get::<_, Option<String>>(4)?;
         let our_man_xpub = if let Some(ref xpub_str) = our_man_xpub_str {
             Some(
@@ -172,24 +158,8 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         })
     })?;
 
-    Ok(rows
-        .get(0)
-        .ok_or_else(|| DatabaseError("No row in wallet table?".to_string()))?
-        .as_ref()
-        .map_err(|e| DatabaseError(format!("Getting wallet: '{}'", e.to_string())))?
-        .clone())
-}
-
-/// An entry of the "vaults" table
-#[derive(Debug, Clone, Copy)]
-pub struct DbVault {
-    pub id: u32,
-    pub wallet_id: u32,
-    pub status: VaultStatus,
-    pub blockheight: u32,
-    pub deposit_outpoint: OutPoint,
-    pub amount: Amount,
-    pub derivation_index: ChildNumber,
+    rows.pop()
+        .ok_or_else(|| DatabaseError("No row in wallet table?".to_string()))
 }
 
 impl TryFrom<&Row<'_>> for DbVault {
@@ -232,10 +202,7 @@ pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
         "SELECT * FROM vaults WHERE status <= (?1)",
         &[VaultStatus::Active as u32],
         |row| row.try_into(),
-    )?
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| DatabaseError(format!("Querying vaults from db: '{}'", e.to_string())))
+    )
 }
 
 /// Get a vault from a deposit outpoint. Returns None if we never heard of such a vault.
@@ -248,68 +215,8 @@ pub fn db_vault_by_deposit(
         "SELECT * FROM vaults WHERE deposit_txid = (?1) AND deposit_vout = (?2)",
         params![deposit.txid.to_vec(), deposit.vout],
         |row| row.try_into(),
-    )?
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()
-    .map(|vault_list| vault_list.get(0).copied())
-    .map_err(|e| DatabaseError(format!("Querying vaults from db: '{}'", e.to_string())))
-}
-
-/// The type of the transaction, as stored in the "transactions" table
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TransactionType {
-    Deposit,
-    Unvault,
-    Spend,
-    Cancel,
-    Emergency,
-    UnvaultEmergency,
-}
-
-impl TryFrom<u32> for TransactionType {
-    type Error = ();
-
-    fn try_from(n: u32) -> Result<Self, Self::Error> {
-        match n {
-            0 => Ok(Self::Deposit),
-            1 => Ok(Self::Unvault),
-            2 => Ok(Self::Spend),
-            3 => Ok(Self::Cancel),
-            4 => Ok(Self::Emergency),
-            5 => Ok(Self::UnvaultEmergency),
-            _ => Err(()),
-        }
-    }
-}
-
-/// A transaction stored in the 'transactions' table
-#[derive(Debug)]
-pub enum RevaultTx {
-    Deposit(VaultTransaction),
-    Unvault(UnvaultTransaction),
-    Cancel(CancelTransaction),
-    Emergency(EmergencyTransaction),
-    UnvaultEmergency(UnvaultEmergencyTransaction),
-    Spend(SpendTransaction),
-}
-
-/// Boilerplate to get a specific variant of an enum if You Are Confident :TM:
-#[macro_export]
-macro_rules! assert_tx_type {
-    ($tx:expr, $variant:ident, $reason:literal) => {
-        match $tx {
-            RevaultTx::$variant(inner_tx) => inner_tx,
-            _ => unreachable!($reason),
-        }
-    };
-}
-
-/// A row in the "transactions" table
-#[derive(Debug)]
-pub struct DbTransaction {
-    pub id: u32,
-    pub vault_id: u32,
-    pub tx: RevaultTx,
+    )
+    .map(|mut vault_list| vault_list.pop())
 }
 
 /// Get an optionally-filtered list of transactions stored for this vault. Note that only signed
@@ -319,7 +226,7 @@ pub fn db_transactions(
     vault_id: u32,
     types_filter: &[TransactionType],
 ) -> Result<Vec<DbTransaction>, DatabaseError> {
-    db_query(
+    Ok(db_query(
         db_path,
         "SELECT * FROM transactions WHERE vault_id = (?1)",
         &[vault_id],
@@ -339,68 +246,52 @@ pub fn db_transactions(
                 return Ok(None);
             }
 
-            #[cfg(debug_assertions)]
-            {
-                let db_psbt: Option<String> = row.get(3)?;
-                let db_tx: Option<Vec<u8>> = row.get(4)?;
-                assert!(
-                    db_psbt.is_some() ^ db_tx.is_some(),
-                    "Both or none of the PSBT and the raw transaction were stored in the database."
-                );
-            }
+            let db_tx: Vec<u8> = row.get(3)?;
 
             let tx = match tx_type {
                 TransactionType::Deposit => {
                     // For deposit, we don't (can't really) store a PSBT.
-                    let tx: Vec<u8> = row.get(4)?;
                     RevaultTx::Deposit(VaultTransaction(
-                        encode::deserialize(&tx).map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                        encode::deserialize(&db_tx)
+                            .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                     ))
                 }
-                psbt_type => {
-                    // For the remaining transactions (which we do create), we store a PSBT.
-                    let tx: String = row.get(3)?;
-                    match psbt_type {
-                        TransactionType::Deposit => unreachable!(), // The compiler could probably catch this?
-                        TransactionType::Unvault => RevaultTx::Unvault(
-                            UnvaultTransaction::from_psbt_str(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::Cancel => RevaultTx::Cancel(
-                            CancelTransaction::from_psbt_str(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::Emergency => RevaultTx::Emergency(
-                            EmergencyTransaction::from_psbt_str(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
-                            UnvaultEmergencyTransaction::from_psbt_str(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                        TransactionType::Spend => RevaultTx::Spend(
-                            SpendTransaction::from_psbt_str(&tx)
-                                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                        ),
-                    }
-                }
+                // For the remaining transactions (which we do create), we store a PSBT.
+                TransactionType::Unvault => RevaultTx::Unvault(
+                    UnvaultTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::Cancel => RevaultTx::Cancel(
+                    CancelTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::Emergency => RevaultTx::Emergency(
+                    EmergencyTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
+                    UnvaultEmergencyTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
+                TransactionType::Spend => RevaultTx::Spend(
+                    SpendTransaction::from_psbt_serialized(&db_tx)
+                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+                ),
             };
 
-            Ok(Some(DbTransaction { id, vault_id, tx }))
+            Ok(Some(DbTransaction {
+                id,
+                vault_id,
+                tx_type,
+                tx,
+            }))
         },
     )?
     .into_iter()
     // Filter out the unwanted ones
     .filter_map(|maybe_tx| match maybe_tx {
-        Ok(Some(tx)) => Some(Ok(tx)),
-        Ok(None) => None,
-        Err(e) => Some(Err(e)),
+        Some(tx) => Some(tx),
+        None => None,
     })
-    .collect::<Result<Vec<DbTransaction>, _>>()
-    .map_err(|e| {
-        DatabaseError(format!(
-            "Querying transactions with vault_id '{}' from db: '{}'",
-            vault_id, e
-        ))
-    })
+    .collect())
 }

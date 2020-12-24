@@ -1,7 +1,16 @@
-use crate::{revaultd::VaultStatus, threadmessages::*};
-use common::VERSION;
+//! Here we handle messages incoming from the RPC server. We only treat semantic of
+//! *valid* JSONRPC2 commands here. All the communication and parsing is done in the
+//! `server` mod.
 
-use revault_tx::{bitcoin::OutPoint, transactions::RevaultTransaction};
+use crate::{revaultd::VaultStatus, threadmessages::*};
+use common::{assume_ok, assume_some, VERSION};
+
+use revault_tx::{
+    bitcoin::OutPoint,
+    transactions::{
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
+    },
+};
 
 use std::{
     process,
@@ -76,6 +85,18 @@ pub trait RpcApi {
         outpoint: String,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
+    /// Give the signed cancel, emergency, and unvault_emergency transactions (as
+    /// base64-encoded PSBTs) for a vault identified by its deposit outpoint.
+    #[rpc(meta, name = "revocationtxs")]
+    fn revocationtxs(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+        cancel_tx: String,
+        emergency_tx: String,
+        emergency_unvault_tx: String,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
     /// Retrieve the onchain transactions of a vault with the given deposit outpoint
     #[rpc(meta, name = "listtransactions")]
     fn listtransactions(
@@ -140,16 +161,14 @@ impl RpcApi for RpcImpl {
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
         let (response_tx, response_rx) = mpsc::sync_channel(0);
-        meta.tx
-            .send(RpcMessageIn::GetInfo(response_tx))
-            .unwrap_or_else(|e| {
-                log::error!("Sending 'getinfo' to main thread: {:?}", e);
-                process::exit(1);
-            });
-        let (net, height, progress) = response_rx.recv().unwrap_or_else(|e| {
-            log::error!("Receiving 'getinfo' result from main thread: {:?}", e);
-            process::exit(1);
-        });
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::GetInfo(response_tx)),
+            "Sending 'getinfo' to main thread"
+        );
+        let (net, height, progress) = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'getinfo' result from main thread"
+        );
 
         Ok(json!({
             "version": VERSION.to_string(),
@@ -184,16 +203,15 @@ impl RpcApi for RpcImpl {
         let outpoints = parse_outpoints!(outpoints);
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
-        meta.tx
-            .send(RpcMessageIn::ListVaults((statuses, outpoints), response_tx))
-            .unwrap_or_else(|e| {
-                log::error!("Sending 'listvaults' to main thread: {:?}", e);
-                process::exit(1);
-            });
-        let vaults = response_rx.recv().unwrap_or_else(|e| {
-            log::error!("Receiving 'listvaults' result from main thread: {:?}", e);
-            process::exit(1);
-        });
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::ListVaults((statuses, outpoints), response_tx)),
+            "Sending 'listvaults' to main thread"
+        );
+        let vaults = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'listvaults' result from main thread"
+        );
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
             .map(|(value, status, txid, vout)| {
@@ -211,16 +229,14 @@ impl RpcApi for RpcImpl {
 
     fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
         let (response_tx, response_rx) = mpsc::sync_channel(0);
-        meta.tx
-            .send(RpcMessageIn::DepositAddr(response_tx))
-            .unwrap_or_else(|e| {
-                log::error!("Sending 'depositaddr' to main thread: {:?}", e);
-                process::exit(1);
-            });
-        let address = response_rx.recv().unwrap_or_else(|e| {
-            log::error!("Receiving 'depositaddr' result from main thread: {:?}", e);
-            process::exit(1);
-        });
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::DepositAddr(response_tx)),
+            "Sending 'depositaddr' to main thread"
+        );
+        let address = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'depositaddr' result from main thread"
+        );
 
         Ok(json!({ "address": address.to_string() }))
     }
@@ -232,30 +248,75 @@ impl RpcApi for RpcImpl {
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let outpoint = parse_outpoint!(outpoint)?;
         let (response_tx, response_rx) = mpsc::sync_channel(0);
-        meta.tx
-            .send(RpcMessageIn::GetRevocationTxs(outpoint, response_tx))
-            .unwrap_or_else(|e| {
-                log::error!("Sending 'getrevocationtxs' to main thread: {:?}", e);
-                process::exit(1);
-            });
-        let (cancel_tx, emer_tx, unemer_tx) = response_rx
-            .recv()
-            .unwrap_or_else(|e| {
-                log::error!("Receiving 'getrevocationtxs' from main thread: {:?}", e);
-                process::exit(1);
-            })
-            .ok_or_else(|| {
-                JsonRpcError::invalid_params(format!(
-                    "'{}' does not refer to a known and confirmed vault",
-                    &outpoint,
-                ))
-            })?;
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::GetRevocationTxs(outpoint, response_tx)),
+            "Sending 'getrevocationtxs' to main thread"
+        );
+        let (cancel_tx, emer_tx, unemer_tx) = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'getrevocationtxs' from main thread"
+        )
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(format!(
+                "'{}' does not refer to a known and confirmed vault",
+                &outpoint,
+            ))
+        })?;
 
         Ok(json!({
             "cancel_tx": cancel_tx.as_psbt_string().expect("We just derived it"),
             "emergency_tx": emer_tx.as_psbt_string().expect("We just derived it"),
             "emergency_unvault_tx": unemer_tx.as_psbt_string().expect("We just derived it"),
         }))
+    }
+
+    fn revocationtxs(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+        cancel_tx: String,
+        emergency_tx: String,
+        unvault_emergency_tx: String,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let outpoint = parse_outpoint!(outpoint)?;
+        let cancel_tx = CancelTransaction::from_psbt_str(&cancel_tx).map_err(|e| {
+            JsonRpcError::invalid_params(format!(
+                "'{}' is not a valid cancel transaction: '{}'",
+                cancel_tx, e,
+            ))
+        })?;
+        let emergency_tx = EmergencyTransaction::from_psbt_str(&emergency_tx).map_err(|e| {
+            JsonRpcError::invalid_params(format!(
+                "'{}' is not a valid emergency transaction: '{}'",
+                emergency_tx, e,
+            ))
+        })?;
+        let unvault_emergency_tx =
+            UnvaultEmergencyTransaction::from_psbt_str(&unvault_emergency_tx).map_err(|e| {
+                JsonRpcError::invalid_params(format!(
+                    "'{}' is not a valid unvault emergency transaction: '{}'",
+                    unvault_emergency_tx, e,
+                ))
+            })?;
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::RevocationTxs(
+                (outpoint, cancel_tx, emergency_tx, unvault_emergency_tx),
+                response_tx,
+            )),
+            "Sending 'revocationtxs' to main thread"
+        );
+
+        if let Some(err_str) =
+            assume_ok!(response_rx.recv(), "Sending 'revocationtxs' to main thread")
+        {
+            // This could not really be related to the params, but hey.
+            return Err(JsonRpcError::invalid_params(err_str));
+        }
+
+        Ok(json!({}))
     }
 
     fn listtransactions(
@@ -266,16 +327,15 @@ impl RpcApi for RpcImpl {
         let outpoints = parse_outpoints!(outpoints);
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
-        meta.tx
-            .send(RpcMessageIn::ListTransactions(outpoints, response_tx))
-            .unwrap_or_else(|e| {
-                log::error!("Sending 'listtransactions' to main thread: {:?}", e);
-                process::exit(1);
-            });
-        let vaults = response_rx.recv().unwrap_or_else(|e| {
-            log::error!("Receiving 'listtransactions' from main thread: {:?}", e);
-            process::exit(1);
-        });
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::ListTransactions(outpoints, response_tx)),
+            "Sending 'listtransactions' to main thread"
+        );
+        let vaults = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'listtransactions' from main thread"
+        );
 
         // Boilerplate to construct a JSON entry out of a RevaultTransaction
         fn tx_entry<T: RevaultTransaction>(tx_res: TransactionResource<T>) -> serde_json::Value {
@@ -320,10 +380,11 @@ impl RpcApi for RpcImpl {
             // RevaultTransaction. Also, it's always signed and therefore always output
             // as 'hex'.
             let mut deposit_entry = serde_json::Map::with_capacity(3);
-            let wallet_tx = vault.deposit.wallet_tx.unwrap_or_else(|| {
-                log::error!("No deposit transaction in wallet for {}", outpoint);
-                process::exit(1);
-            });
+            let wallet_tx = assume_some!(
+                vault.deposit.wallet_tx,
+                "No deposit transaction in wallet for {}",
+                outpoint
+            );
             deposit_entry.insert("hex".to_owned(), wallet_tx.hex.into());
             if let Some(height) = wallet_tx.blockheight {
                 deposit_entry.insert("blockheight".to_string(), height.into());

@@ -126,7 +126,7 @@ tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
 tx_type_from_tx!(SpendTransaction, Spend);
 
 /// A transaction stored in the 'transactions' table
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum RevaultTx {
     Deposit(VaultTransaction),
     Unvault(UnvaultTransaction),

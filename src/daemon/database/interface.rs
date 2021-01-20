@@ -195,6 +195,13 @@ impl TryFrom<&Row<'_>> for DbVault {
     }
 }
 
+/// Get all the vaults we know about from the db
+pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query::<_, _, DbVault>(db_path, "SELECT * FROM vaults", NO_PARAMS, |row| {
+        row.try_into()
+    })
+}
+
 /// Get the vaults that didn't move onchain yet from the DB.
 pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
     db_query(

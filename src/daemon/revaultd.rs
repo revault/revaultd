@@ -3,7 +3,7 @@ use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, Ou
 use std::{collections::HashMap, convert::TryFrom, fmt, fs, path::PathBuf, str::FromStr, vec::Vec};
 
 use revault_tx::{
-    bitcoin::{secp256k1, util::bip32::ChildNumber, Address, BlockHash, OutPoint, Script, TxOut},
+    bitcoin::{secp256k1, util::bip32::ChildNumber, Address, BlockHash, Script, TxOut},
     miniscript::descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
     scripts::{
         cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor, EmergencyAddress,
@@ -130,14 +130,6 @@ impl fmt::Display for VaultStatus {
     }
 }
 
-/// We cache the known vault and their status to avoid too frequent lookups to the DB.
-/// This stores the deposit utxo and the status of the vault.
-#[derive(Debug, Clone)]
-pub struct CachedVault {
-    pub txo: TxOut,
-    pub status: VaultStatus,
-}
-
 /// A vault is defined as a confirmed utxo paying to the Vault Descriptor for which
 /// we have a set of pre-signed transaction (emergency, cancel, unvault).
 /// Depending on its status we may not yet be in possession of part -or the entirety-
@@ -145,8 +137,8 @@ pub struct CachedVault {
 /// Likewise, depending on our role (manager or stakeholder), we may not have the
 /// emergency transactions.
 pub struct _Vault {
-    /// The deposit utxo and the status of the vault, that we keep in memory
-    pub cached_vault: CachedVault,
+    pub deposit_txo: TxOut,
+    pub status: VaultStatus,
     pub vault_tx: Option<VaultTransaction>,
     pub emergency_tx: Option<EmergencyTransaction>,
     pub unvault_tx: Option<UnvaultTransaction>,
@@ -190,8 +182,6 @@ pub struct RevaultD {
     pub unvault_csv: u32,
 
     // UTXOs stuff
-    /// A cache of known vaults by txid
-    pub vaults: HashMap<OutPoint, CachedVault>,
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
     /// keys used to generate a script from bitcoind until we can pass it xpub-expressed
     /// Miniscript descriptors.
@@ -289,7 +279,6 @@ impl RevaultD {
             current_unused_index: ChildNumber::from(0),
             // FIXME: we don't need SipHash for those, use a faster alternative
             derivation_index_map: HashMap::new(),
-            vaults: HashMap::new(),
             // Will be updated soon (:tm:)
             wallet_id: None,
         })

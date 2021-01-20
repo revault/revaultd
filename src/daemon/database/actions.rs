@@ -4,10 +4,10 @@ use crate::{
         schema::{TransactionType, SCHEMA},
         DatabaseError, DB_VERSION,
     },
-    revaultd::{BlockchainTip, CachedVault, RevaultD, VaultStatus},
+    revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, util::bip32::ChildNumber, Amount, OutPoint, TxOut},
+    bitcoin::{consensus::encode, util::bip32::ChildNumber, Amount, OutPoint},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
     transactions::{
@@ -190,23 +190,6 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
         );
     });
     revaultd.wallet_id = Some(wallet.id);
-
-    for vault in db_deposits(&db_path)?.into_iter() {
-        let deposit_script_pubkey = revaultd
-            .vault_address(vault.derivation_index)
-            .script_pubkey();
-        revaultd.vaults.insert(
-            vault.deposit_outpoint,
-            CachedVault {
-                txo: TxOut {
-                    value: vault.amount.as_sat(),
-                    script_pubkey: deposit_script_pubkey,
-                },
-                status: vault.status,
-            },
-        );
-        log::trace!("Loaded deposit '{}' from db", vault.deposit_outpoint);
-    }
 
     // TODO: update vaults-that-are-not-in-deposit-state cache from the database
 

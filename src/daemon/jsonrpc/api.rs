@@ -214,12 +214,12 @@ impl RpcApi for RpcImpl {
         );
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
-            .map(|(value, status, txid, vout)| {
+            .map(|entry| {
                 json!({
-                    "amount": value,
-                    "status": status,
-                    "txid": txid,
-                    "vout": vout,
+                    "amount": entry.amount.as_sat(),
+                    "status": entry.status.to_string(),
+                    "txid": entry.deposit_outpoint.txid.to_string(),
+                    "vout": entry.deposit_outpoint.vout,
                 })
             })
             .collect();

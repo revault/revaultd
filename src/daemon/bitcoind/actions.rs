@@ -1,6 +1,6 @@
 use crate::{
     bitcoind::{
-        interface::{BitcoinD, SyncInfo},
+        interface::{BitcoinD, DepositInfo, SyncInfo},
         BitcoindError,
     },
     database::{
@@ -8,18 +8,22 @@ use crate::{
             db_confirm_deposit, db_insert_new_vault, db_unvault_deposit, db_update_deposit_index,
             db_update_tip,
         },
-        interface::db_wallet,
+        interface::{db_deposits, db_wallet},
     },
     revaultd::{RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
 use common::config::BitcoindConfig;
 use revault_tx::{
-    bitcoin::{consensus::encode, hashes::hex::FromHex, Amount, Network, Transaction, Txid},
+    bitcoin::{
+        consensus::encode, hashes::hex::FromHex, Amount, Network, OutPoint, Transaction, TxOut,
+        Txid,
+    },
     transactions::VaultTransaction,
 };
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         mpsc::{Receiver, TryRecvError},
@@ -246,6 +250,34 @@ fn update_tip(
     Ok(())
 }
 
+// Fill up the deposit UTXOs cache from db vaults
+fn populate_deposit_cache(
+    revaultd: &RevaultD,
+) -> Result<HashMap<OutPoint, DepositInfo>, BitcoindError> {
+    let db_vaults = db_deposits(&revaultd.db_file())?;
+    let mut cache = HashMap::with_capacity(db_vaults.len());
+
+    for db_vault in db_vaults.into_iter() {
+        let script_pubkey = revaultd
+            .vault_address(db_vault.derivation_index)
+            .script_pubkey();
+        let txo = TxOut {
+            script_pubkey,
+            value: db_vault.amount.as_sat(),
+        };
+        cache.insert(
+            db_vault.deposit_outpoint,
+            DepositInfo {
+                txo,
+                status: db_vault.status,
+            },
+        );
+        log::trace!("Loaded deposit '{}' from db", db_vault.deposit_outpoint);
+    }
+
+    Ok(cache)
+}
+
 fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
     let bytes = Vec::from_hex(hex)
         .map_err(|e| BitcoindError::Custom(format!("Parsing tx hex: '{}'", e.to_string())))?;
@@ -257,10 +289,10 @@ fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
 fn update_deposits(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
+    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
 ) -> Result<(), BitcoindError> {
     // Sync deposit of vaults we know have an unspent deposit.
-    let (new_deposits, conf_deposits, spent_deposits) =
-        bitcoind.sync_deposits(&revaultd.read().unwrap().vaults)?;
+    let (new_deposits, conf_deposits, spent_deposits) = bitcoind.sync_deposits(&deposits_cache)?;
 
     for (outpoint, utxo) in new_deposits.into_iter() {
         let derivation_index = *revaultd
@@ -315,7 +347,7 @@ fn update_deposits(
             &utxo.txo.script_pubkey,
             &amount
         );
-        revaultd.write().unwrap().vaults.insert(outpoint, utxo);
+        deposits_cache.insert(outpoint, utxo);
 
         // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
         // FIXME: of course, that's rudimentary
@@ -354,10 +386,7 @@ fn update_deposits(
                 BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
             })?;
         db_confirm_deposit(&revaultd.read().unwrap().db_file(), &outpoint, blockheight)?;
-        revaultd
-            .write()
-            .unwrap()
-            .vaults
+        deposits_cache
             .get_mut(&outpoint)
             .ok_or_else(|| BitcoindError::Custom("An unknown vault got confirmed?".to_string()))?
             .status = VaultStatus::Funded;
@@ -380,21 +409,18 @@ fn update_deposits(
             .to_string();
 
         if let Some(unvault_outpoint) = bitcoind.unvault_from_vault(&outpoint, unvault_addr)? {
+            // Note that it *might* have actually been confirmed during the last 30s, but it's not
+            // a big deal to have it marked as unconfirmed for the next 30s..
+            db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint)?;
+            deposits_cache
+                .get_mut(&outpoint)
+                .expect("We just checked it")
+                .status = VaultStatus::Unvaulting;
             log::debug!(
                 "The deposit utxo created via '{}' was unvaulted via '{}'",
                 &outpoint,
                 &unvault_outpoint
             );
-            // Note that it *might* have actually been confirmed during the last 30s, but it's not
-            // a big deal to have it marked as unconfirmed for the next 30s..
-            db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint)?;
-            revaultd
-                .write()
-                .unwrap()
-                .vaults
-                .get_mut(&outpoint)
-                .expect("We just checked it")
-                .status = VaultStatus::Unvaulting;
         } else if false {
             // TODO: handle bypass and emergency
         } else {
@@ -456,6 +482,8 @@ pub fn bitcoind_main_loop(
         Network::Regtest => Duration::from_secs(3),
         _ => Duration::from_secs(30),
     };
+    // We use a cache for maintaining our deposits' state up-to-date by polling `listunspent`
+    let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())?;
 
     loop {
         let now = Instant::now();
@@ -538,7 +566,7 @@ pub fn bitcoind_main_loop(
         }
 
         last_poll = Some(now);
-        update_deposits(&mut revaultd, &bitcoind)?;
+        update_deposits(&mut revaultd, &bitcoind, &mut deposits_cache)?;
         update_tip(&mut revaultd, &bitcoind)?;
 
         thread::sleep(Duration::from_millis(100));

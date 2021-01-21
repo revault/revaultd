@@ -192,13 +192,8 @@ pub struct RevaultD {
     // UTXOs stuff
     /// A cache of known vaults by txid
     pub vaults: HashMap<OutPoint, CachedVault>,
-    /// A hack, kind of the entire reason why we use Miniscript is to not use patterns
-    /// such as what will follow. If you stumble on this after expectations of seeing
-    /// revaultd a modern Bitcoin wallet, please just bypass this line. Otherwise, be
-    /// brave or help reviewing stuff on bitcoin-core so that we can have modern Bitcoin
-    /// stuff there too.
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
-    /// keys used to generate a script from bitcoind while we cannot pass it xpub-expressed
+    /// keys used to generate a script from bitcoind until we can pass it xpub-expressed
     /// Miniscript descriptors.
     pub derivation_index_map: HashMap<Script, ChildNumber>,
 

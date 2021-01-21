@@ -4,7 +4,7 @@ use revault_tx::{
     bitcoin::{util::bip32::ChildNumber, Amount, OutPoint},
     transactions::{
         CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction, VaultTransaction,
+        UnvaultTransaction,
     },
 };
 
@@ -21,6 +21,10 @@ CREATE TABLE tip (
     blockhash BLOB NOT NULL
 );
 
+/* This stores metadata about our wallet. We only support single wallet for
+ * now (and the foreseeable future). This MUST be in sync with bitcoind's
+ * wallet.
+ */
 CREATE TABLE wallets (
     id INTEGER PRIMARY KEY NOT NULL,
     timestamp INTEGER NOT NULL,
@@ -31,6 +35,11 @@ CREATE TABLE wallets (
     deposit_derivation_index INTEGER NOT NULL
 );
 
+/* This stores the vaults we heard about. The deposit may be unconfirmed,
+ * in which case the blockheight will be 0 (FIXME: should be NULL instead?).
+ * For any vault entry a deposit transaction MUST be present in bitcoind's
+ * wallet.
+ */
 CREATE TABLE vaults (
     id INTEGER PRIMARY KEY NOT NULL,
     wallet_id INTEGER NOT NULL,
@@ -45,11 +54,17 @@ CREATE TABLE vaults (
         ON DELETE RESTRICT
 );
 
+/* This stores fully-signed transactions we presign:
+ * - Emergency (only for stakeholders)
+ * - Unvault (only for active vaults)
+ * - Cancel
+ * - Unvault Emergency (only for stakeholders)
+ */
 CREATE TABLE transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     vault_id INTEGER NOT NULL,
     type INTEGER NOT NULL,
-    tx BLOB UNIQUE NOT NULL,
+    psbt BLOB UNIQUE NOT NULL,
     FOREIGN KEY (vault_id) REFERENCES vaults (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT
@@ -85,7 +100,6 @@ pub struct DbVault {
 /// The type of the transaction, as stored in the "transactions" table
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransactionType {
-    Deposit,
     Unvault,
     Spend,
     Cancel,
@@ -98,12 +112,11 @@ impl TryFrom<u32> for TransactionType {
 
     fn try_from(n: u32) -> Result<Self, Self::Error> {
         match n {
-            0 => Ok(Self::Deposit),
-            1 => Ok(Self::Unvault),
-            2 => Ok(Self::Spend),
-            3 => Ok(Self::Cancel),
-            4 => Ok(Self::Emergency),
-            5 => Ok(Self::UnvaultEmergency),
+            0 => Ok(Self::Unvault),
+            1 => Ok(Self::Spend),
+            2 => Ok(Self::Cancel),
+            3 => Ok(Self::Emergency),
+            4 => Ok(Self::UnvaultEmergency),
             _ => Err(()),
         }
     }
@@ -118,7 +131,6 @@ macro_rules! tx_type_from_tx {
         }
     };
 }
-tx_type_from_tx!(VaultTransaction, Deposit);
 tx_type_from_tx!(UnvaultTransaction, Unvault);
 tx_type_from_tx!(CancelTransaction, Cancel);
 tx_type_from_tx!(EmergencyTransaction, Emergency);
@@ -128,7 +140,6 @@ tx_type_from_tx!(SpendTransaction, Spend);
 /// A transaction stored in the 'transactions' table
 #[derive(Debug, PartialEq)]
 pub enum RevaultTx {
-    Deposit(VaultTransaction),
     Unvault(UnvaultTransaction),
     Cancel(CancelTransaction),
     Emergency(EmergencyTransaction),
@@ -153,5 +164,5 @@ pub struct DbTransaction {
     pub id: u32,
     pub vault_id: u32,
     pub tx_type: TransactionType,
-    pub tx: RevaultTx,
+    pub psbt: RevaultTx,
 }

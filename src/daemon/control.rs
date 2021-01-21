@@ -168,20 +168,11 @@ fn txlist_from_outpoints(
         let deriv_index = db_vault.derivation_index;
         let mut txs = db_transactions(db_file, db_vault.id, &[])?.into_iter();
 
-        let deposit_tx = assume_some!(
-            txs.find(|db_tx| matches!(db_tx.tx, RevaultTx::Deposit(_)))
-                .map(|tx| assert_tx_type!(tx.tx, Deposit, "We just found it")),
+        let deposit = assume_some!(
+            bitcoind_wallet_tx(&bitcoind_tx, outpoint.txid)?,
             "Vault without deposit tx in db for {}",
             &outpoint,
         );
-        let wallet_tx = bitcoind_wallet_tx(&bitcoind_tx, deposit_tx.0.txid())?;
-        let deposit = TransactionResource {
-            wallet_tx,
-            tx: deposit_tx,
-            // The deposit is always signed, if we heard about it in
-            // the first place
-            is_signed: true,
-        };
 
         // Get the descriptors in case we need to derive the transactions (not signed
         // yet, ie not in DB).
@@ -199,8 +190,8 @@ fn txlist_from_outpoints(
         // We can always re-generate the Unvault out of the descriptor if it's
         // not in DB..
         let mut unvault_tx = txs
-            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Unvault(_)))
-            .map(|tx| assert_tx_type!(tx.tx, Unvault, "We just found it"))
+            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Unvault(_)))
+            .map(|tx| assert_tx_type!(tx.psbt, Unvault, "We just found it"))
             .unwrap_or(UnvaultTransaction::new(
                 vault_txin.clone(),
                 &unvault_descriptor,
@@ -228,8 +219,8 @@ fn txlist_from_outpoints(
         // .. But not the spend, as it's dynamically chosen by the managers and
         // could be anything!
         let spend = if let Some(mut tx) = txs
-            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Spend(_)))
-            .map(|tx| assert_tx_type!(tx.tx, Spend, "We just found it"))
+            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Spend(_)))
+            .map(|tx| assert_tx_type!(tx.psbt, Spend, "We just found it"))
         {
             let wallet_tx =
                 bitcoind_wallet_tx(&bitcoind_tx, tx.inner_tx().global.unsigned_tx.txid())?;
@@ -246,8 +237,8 @@ fn txlist_from_outpoints(
 
         // The cancel transaction is deterministic, so we can always return it.
         let mut cancel_tx = txs
-            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Cancel(_)))
-            .map(|tx| assert_tx_type!(tx.tx, Cancel, "We just found it"))
+            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Cancel(_)))
+            .map(|tx| assert_tx_type!(tx.psbt, Cancel, "We just found it"))
             .unwrap_or_else(|| {
                 CancelTransaction::new(
                     unvault_txin.clone(),
@@ -269,8 +260,8 @@ fn txlist_from_outpoints(
 
         // The emergency transaction is deterministic, so we can always return it.
         let mut emergency_tx = txs
-            .find(|db_tx| matches!(db_tx.tx, RevaultTx::Emergency(_)))
-            .map(|tx| assert_tx_type!(tx.tx, Emergency, "We just found it"))
+            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Emergency(_)))
+            .map(|tx| assert_tx_type!(tx.psbt, Emergency, "We just found it"))
             .unwrap_or_else(|| {
                 EmergencyTransaction::new(vault_txin, None, emer_address, revaultd.lock_time)
             });
@@ -288,8 +279,8 @@ fn txlist_from_outpoints(
 
         // Same for the second emergency.
         let mut unvault_emergency_tx = txs
-            .find(|db_tx| matches!(db_tx.tx, RevaultTx::UnvaultEmergency(_)))
-            .map(|tx| assert_tx_type!(tx.tx, UnvaultEmergency, "We just found it"))
+            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::UnvaultEmergency(_)))
+            .map(|tx| assert_tx_type!(tx.psbt, UnvaultEmergency, "We just found it"))
             .unwrap_or_else(|| {
                 UnvaultEmergencyTransaction::new(
                     unvault_txin,

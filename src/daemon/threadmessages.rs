@@ -3,7 +3,7 @@ use revault_tx::{
     bitcoin::{util::bip32::ChildNumber, Address, Amount, OutPoint, Txid},
     transactions::{
         CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction, VaultTransaction,
+        UnvaultTransaction,
     },
 };
 
@@ -61,13 +61,14 @@ pub enum BitcoindMessageOut {
 #[derive(Debug)]
 pub struct WalletTransaction {
     pub hex: String,
+    // None if unconfirmed
     pub blockheight: Option<u32>,
     pub received_time: u32,
 }
 
 #[derive(Debug)]
 pub struct TransactionResource<T> {
-    // None if unconfirmed
+    // None if not broadcast
     pub wallet_tx: Option<WalletTransaction>,
     pub tx: T,
     pub is_signed: bool,
@@ -76,7 +77,7 @@ pub struct TransactionResource<T> {
 #[derive(Debug)]
 pub struct VaultTransactions {
     pub outpoint: OutPoint,
-    pub deposit: TransactionResource<VaultTransaction>,
+    pub deposit: WalletTransaction,
     pub unvault: TransactionResource<UnvaultTransaction>,
     // None if not spending
     pub spend: Option<TransactionResource<SpendTransaction>>,

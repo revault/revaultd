@@ -14,13 +14,7 @@ use crate::{
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
 use common::config::BitcoindConfig;
-use revault_tx::{
-    bitcoin::{
-        consensus::encode, hashes::hex::FromHex, Amount, Network, OutPoint, Transaction, TxOut,
-        Txid,
-    },
-    transactions::VaultTransaction,
-};
+use revault_tx::bitcoin::{Amount, Network, OutPoint, TxOut, Txid};
 
 use std::{
     collections::HashMap,
@@ -278,13 +272,6 @@ fn populate_deposit_cache(
     Ok(cache)
 }
 
-fn tx_from_hex(hex: &str) -> Result<Transaction, BitcoindError> {
-    let bytes = Vec::from_hex(hex)
-        .map_err(|e| BitcoindError::Custom(format!("Parsing tx hex: '{}'", e.to_string())))?;
-    encode::deserialize::<Transaction>(&bytes)
-        .map_err(|e| BitcoindError::Custom(format!("Deserializing tx hex: '{}'", e.to_string())))
-}
-
 // This syncs with bitcoind our incoming deposits, and those that were spent.
 fn update_deposits(
     revaultd: &mut Arc<RwLock<RevaultD>>,
@@ -304,13 +291,6 @@ fn update_deposits(
                 BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
             })?;
         let wallet_tx = bitcoind.get_wallet_transaction(outpoint.txid)?;
-        let vault_tx = VaultTransaction(tx_from_hex(&wallet_tx.0).map_err(|e| {
-            BitcoindError::Custom(format!(
-                "Deserializing tx from hex: '{}'. Transaction: '{}'",
-                e.to_string(),
-                wallet_tx.0
-            ))
-        })?);
         let blockheight = if matches!(utxo.status, VaultStatus::Funded) {
             // It MUST exist if 6+ confs!
             wallet_tx.1.ok_or_else(|| {
@@ -334,7 +314,6 @@ fn update_deposits(
             &outpoint,
             &amount,
             derivation_index,
-            vault_tx,
         )?;
         log::debug!(
             "Got a new {} deposit at {} for {} ({})",

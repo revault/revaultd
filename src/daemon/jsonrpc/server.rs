@@ -57,6 +57,10 @@ fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io
                 // done writing.
                 if total_read == buf.len() {
                     buf.resize(total_read * 2, 0);
+                } else {
+                    // But on windows, we do as we'll never receive a WouldBlock..
+                    #[cfg(windows)]
+                    return Ok(Some(trimmed(buf, total_read)));
                 }
             }
             Err(err) => {

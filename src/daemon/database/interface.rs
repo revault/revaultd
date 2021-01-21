@@ -5,12 +5,12 @@ use crate::{
     },
     revaultd::{BlockchainTip, VaultStatus},
 };
-use common::config;
 use revault_tx::{
     bitcoin::{
-        consensus::encode, util::bip32::ChildNumber, Amount, BlockHash, Network, OutPoint, Txid,
+        consensus::encode,
+        util::bip32::{ChildNumber, ExtendedPubKey},
+        Amount, BlockHash, Network, OutPoint, Txid,
     },
-    miniscript::descriptor::DescriptorPublicKey,
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -123,7 +123,7 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         let our_man_xpub_str = row.get::<_, Option<String>>(4)?;
         let our_man_xpub = if let Some(ref xpub_str) = our_man_xpub_str {
             Some(
-                DescriptorPublicKey::from_str(&xpub_str)
+                ExtendedPubKey::from_str(&xpub_str)
                     .map_err(|e| FromSqlError::Other(Box::new(e)))?,
             )
         } else {
@@ -133,7 +133,7 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         let our_stk_xpub_str = row.get::<_, Option<String>>(5)?;
         let our_stk_xpub = if let Some(ref xpub_str) = our_stk_xpub_str {
             Some(
-                DescriptorPublicKey::from_str(&xpub_str)
+                ExtendedPubKey::from_str(&xpub_str)
                     .map_err(|e| FromSqlError::Other(Box::new(e)))?,
             )
         } else {
@@ -150,10 +150,8 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
             timestamp: row.get(1)?,
             vault_descriptor: row.get(2)?,
             unvault_descriptor: row.get(3)?,
-            ourselves: config::OurSelves {
-                manager_xpub: our_man_xpub,
-                stakeholder_xpub: our_stk_xpub,
-            },
+            our_man_xpub,
+            our_stk_xpub,
             deposit_derivation_index: ChildNumber::from(row.get::<_, u32>(6)?),
         })
     })?;

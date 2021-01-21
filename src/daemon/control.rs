@@ -264,6 +264,7 @@ fn txlist_from_outpoints(
             .map(|tx| assert_tx_type!(tx.psbt, Emergency, "We just found it"))
             .unwrap_or_else(|| {
                 EmergencyTransaction::new(vault_txin, None, emer_address, revaultd.lock_time)
+                    .unwrap() // FIXME
             });
         let wallet_tx = bitcoind_wallet_tx(
             &bitcoind_tx,

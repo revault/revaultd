@@ -1,10 +1,16 @@
-use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
+use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
 
 use std::{collections::HashMap, convert::TryFrom, fmt, fs, path::PathBuf, str::FromStr, vec::Vec};
 
 use revault_tx::{
-    bitcoin::{secp256k1, util::bip32::ChildNumber, Address, BlockHash, Script, TxOut},
-    miniscript::descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
+    bitcoin::{
+        secp256k1,
+        util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey},
+        Address, BlockHash, Script, TxOut,
+    },
+    miniscript::descriptor::{
+        DescriptorPublicKey, DescriptorPublicKeyCtx, DescriptorSinglePub, DescriptorXKey,
+    },
     scripts::{
         cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor, EmergencyAddress,
         UnvaultDescriptor, VaultDescriptor,
@@ -162,7 +168,8 @@ pub struct RevaultD {
 
     // Scripts stuff
     /// Who am i, and where am i in all this mess ?
-    pub ourselves: OurSelves,
+    pub our_stk_xpub: Option<ExtendedPubKey>,
+    pub our_man_xpub: Option<ExtendedPubKey>,
     /// The miniscript descriptor of vault's outputs scripts
     pub vault_descriptor: VaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of unvault's outputs scripts
@@ -214,18 +221,33 @@ fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
     };
 }
 
+fn descriptorxpub_from_xpub(xpubs: Vec<ExtendedPubKey>) -> Vec<DescriptorPublicKey> {
+    xpubs
+        .into_iter()
+        .map(|xpub| {
+            DescriptorPublicKey::XPub(DescriptorXKey {
+                origin: None,
+                xkey: xpub,
+                derivation_path: DerivationPath::from(vec![]),
+                is_wildcard: true,
+            })
+        })
+        .collect()
+}
+
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
-        let managers_pubkeys: Vec<DescriptorPublicKey> =
-            config.managers.into_iter().map(|m| m.xpub).collect();
+        let our_man_xpub = config.manager_config.map(|x| x.xpub);
+        let our_stk_xpub = config.stakeholder_config.map(|x| x.xpub);
 
-        let mut stakeholders_pubkeys = Vec::with_capacity(config.stakeholders.len());
-        let mut cosigners_pubkeys = stakeholders_pubkeys.clone();
-        for non_manager in config.stakeholders.into_iter() {
-            stakeholders_pubkeys.push(non_manager.xpub);
-            cosigners_pubkeys.push(non_manager.cosigner_key);
-        }
+        let managers_pubkeys = descriptorxpub_from_xpub(config.managers_xpubs);
+        let stakeholders_pubkeys = descriptorxpub_from_xpub(config.stakeholders_xpubs);
+        let cosigners_pubkeys = config
+            .cosigners_keys
+            .into_iter()
+            .map(|key| DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key }))
+            .collect();
 
         let vault_descriptor = vault_descriptor(
             managers_pubkeys
@@ -234,7 +256,6 @@ impl RevaultD {
                 .cloned()
                 .collect::<Vec<DescriptorPublicKey>>(),
         )?;
-
         let unvault_descriptor = unvault_descriptor(
             stakeholders_pubkeys,
             managers_pubkeys.clone(),
@@ -242,8 +263,8 @@ impl RevaultD {
             cosigners_pubkeys,
             config.unvault_csv,
         )?;
-
         let cpfp_descriptor = cpfp_descriptor(managers_pubkeys)?;
+        let emergency_address = EmergencyAddress::from(config.emergency_address)?;
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         data_dir.push(config.bitcoind_config.network.to_string());
@@ -263,18 +284,19 @@ impl RevaultD {
         let secp_ctx = secp256k1::Secp256k1::verification_only();
 
         Ok(RevaultD {
+            our_stk_xpub,
+            our_man_xpub,
             vault_descriptor,
             unvault_descriptor,
             cpfp_descriptor,
             secp_ctx,
             data_dir,
             daemon,
-            emergency_address: config.emergency_address.0,
+            emergency_address,
             lock_time: 0,
             unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,
             tip: None,
-            ourselves: config.ourselves,
             // Will be updated by the database
             current_unused_index: ChildNumber::from(0),
             // FIXME: we don't need SipHash for those, use a faster alternative
@@ -400,8 +422,12 @@ mod tests {
     #[test]
     fn test_from_config() {
         let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        path.push("../../test_data/valid_config.toml");
 
+        path.push("../../test_data/invalid_config.toml");
+        Config::from_file(Some(path.clone())).expect_err("Parsing invalid config file");
+
+        path.pop();
+        path.push("valid_config.toml");
         let config = Config::from_file(Some(path)).expect("Parsing valid config file");
         RevaultD::from_config(config).expect("Creating state from config");
         // TODO: test actual fields..

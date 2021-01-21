@@ -1,7 +1,9 @@
 use crate::revaultd::VaultStatus;
-use common::config;
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Amount, OutPoint},
+    bitcoin::{
+        util::bip32::{ChildNumber, ExtendedPubKey},
+        Amount, OutPoint,
+    },
     transactions::{
         CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
@@ -81,7 +83,8 @@ pub struct DbWallet {
     pub timestamp: u32,
     pub vault_descriptor: String,
     pub unvault_descriptor: String,
-    pub ourselves: config::OurSelves,
+    pub our_man_xpub: Option<ExtendedPubKey>,
+    pub our_stk_xpub: Option<ExtendedPubKey>,
     pub deposit_derivation_index: ChildNumber,
 }
 

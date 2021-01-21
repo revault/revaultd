@@ -118,14 +118,21 @@ def bitcoind(directory):
 def revaultd_stakeholder(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
-    stakeholders, managers = get_participants(2, 3)
+    (stk_xpubs, cosig_keys, man_xpubs) = get_participants(2, 3)
 
-    ourselves = {
-        "stakeholder_xpub": stakeholders[0]["xpub"],
+    stk_config = {
+        "xpub": stk_xpubs[0],
+        "watchtowers": [
+            {
+                "host": "127.0.0.1:1",
+                "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                             "5cc6f49a9bddaacf93cd77def697"
+            }
+        ]
     }
     csv = 35
-    revaultd = RevaultD(datadir, ourselves, stakeholders, managers, csv,
-                        bitcoind)
+    revaultd = RevaultD(datadir, stk_xpubs, cosig_keys, man_xpubs, csv,
+                        bitcoind, stk_config=stk_config)
     revaultd.start()
 
     yield revaultd
@@ -137,14 +144,21 @@ def revaultd_stakeholder(bitcoind, directory):
 def revaultd_manager(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
-    stakeholders, managers = get_participants(2, 3)
+    (stk_xpubs, cosig_keys, man_xpubs) = get_participants(2, 3)
 
-    ourselves = {
-        "manager_xpub": managers[0]["xpub"],
+    man_config = {
+        "xpub": man_xpubs[0],
+        "watchtowers": [
+            {
+                "host": "127.0.0.1:1",
+                "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                             "5cc6f49a9bddaacf93cd77def697"
+            }
+        ]
     }
     csv = 35
-    revaultd = RevaultD(datadir, ourselves, stakeholders, managers, csv,
-                        bitcoind)
+    revaultd = RevaultD(datadir, stk_xpubs, cosig_keys, man_xpubs, csv,
+                        bitcoind, man_config=man_config)
     revaultd.start()
 
     yield revaultd

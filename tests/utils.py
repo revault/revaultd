@@ -53,26 +53,20 @@ class RpcError(ValueError):
 
 def get_participants(n_stk, n_man):
     """Get the configuration entries for each participant."""
-    stakeholders_hds = [bip32.BIP32.from_seed(os.urandom(32))
-                        for _ in range(n_stk)]
-    cosigners_hds = [bip32.BIP32.from_seed(os.urandom(32))
-                     for _ in range(n_stk)]
-    stakeholders = [
-        {
-            "xpub": stakeholders_hds[i].get_master_xpub(),
-            "cosigner_key": cosigners_hds[i].get_pubkey_from_path("m/0").hex(),
-        }
-        for i in range(n_stk)
+    stakeholders_xpubs = [
+        bip32.BIP32.from_seed(os.urandom(32)).get_master_xpub()
+        for _ in range(n_stk)
+    ]
+    cosigners_keys = [
+        bip32.BIP32.from_seed(os.urandom(32)).get_pubkey_from_path("m/0").hex()
+        for _ in range(n_stk)
+    ]
+    managers_xpubs = [
+        bip32.BIP32.from_seed(os.urandom(32)).get_master_xpub()
+        for _ in range(n_man)
     ]
 
-    managers = [
-        {
-            "xpub": m.get_master_xpub(),
-        }
-        for m in [bip32.BIP32.from_seed(os.urandom(32)) for _ in range(n_man)]
-    ]
-
-    return (stakeholders, managers)
+    return (stakeholders_xpubs, cosigners_keys, managers_xpubs)
 
 
 class UnixSocket(object):
@@ -550,8 +544,11 @@ class BitcoinD(TailableProc):
 
 
 class RevaultD(TailableProc):
-    def __init__(self, datadir, ourselves, stakeholders, managers, csv,
-                 bitcoind):
+    def __init__(self, datadir, stk_xpubs, cosig_keys, man_xpubs, csv,
+                 bitcoind, stk_config=None, man_config=None):
+        assert stk_config is not None or man_config is not None
+        assert len(stk_xpubs) == len(cosig_keys)
+
         TailableProc.__init__(self, datadir, verbose=False)
         bin = os.path.join(os.path.dirname(__file__), "..",
                            "target/debug/revaultd")
@@ -575,24 +572,49 @@ class RevaultD(TailableProc):
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
             f.write(f"log_level = 'trace'\n")
+
+            # TODO: use a real one
+            f.write("coordinator_host = \"127.0.0.1:1\"\n")
+            f.write("coordinator_noise_key = "
+                    "\"d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402\"\n")
+
+            f.write("stakeholders_xpubs = [")
+            for xpub in stk_xpubs:
+                f.write(f"\"{xpub}\", ")
+            f.write("]\n")
+
+            f.write("managers_xpubs = [")
+            for xpub in man_xpubs:
+                f.write(f"\"{xpub}\", ")
+            f.write("]\n")
+
+            f.write("cosigners_keys = [")
+            for key in cosig_keys:
+                f.write(f"\"{key}\", ")
+            f.write("]\n")
+
             f.write(f"[bitcoind_config]\n")
             f.write(f"network = \"regtest\"\n")
             f.write(f"cookie_path = '{bitcoind_cookie}'\n")
             f.write(f"addr = '127.0.0.1:{bitcoind.rpcport}'\n")
-            f.write(f"[ourselves]\n")
-            stk_xpub = ourselves.get("stakeholder_xpub")
-            if stk_xpub is not None:
-                f.write(f"stakeholder_xpub = '{stk_xpub}'\n")
-                assert ourselves.get("manager_xpub") is None
-            else:
-                f.write(f"manager_xpub = \"{ourselves['manager_xpub']}\"\n")
-            for stk in stakeholders:
-                f.write(f"[[stakeholders]]\n")
-                f.write(f"xpub = \"{stk['xpub']}\"\n")
-                f.write(f"cosigner_key = \"{stk['cosigner_key']}\"\n")
-            for man in managers:
-                f.write(f"[[managers]]\n")
-                f.write(f"xpub = \"{man['xpub']}\"\n")
+
+            if stk_config is not None:
+                f.write("[stakeholder_config]\n")
+                f.write(f"xpub = \"{stk_config['xpub']}\"\n")
+                f.write("watchtowers = [")
+                for wt in stk_config["watchtowers"]:
+                    f.write(f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
+                            f"\"{wt['noise_key']}\" }}, ")
+                f.write("]\n")
+
+            if man_config is not None:
+                f.write("[manager_config]\n")
+                f.write(f"xpub = \"{man_config['xpub']}\"\n")
+                f.write("cosigners = [")
+                for wt in man_config["watchtowers"]:
+                    f.write(f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
+                            f"\"{wt['noise_key']}\" }}, ")
+                f.write("]\n")
 
     def start(self):
         TailableProc.start(self)
@@ -618,34 +640,51 @@ class RevaultDFactory:
         Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
         managers and optionally fund it with {funding} sats.
         """
-        (conf_stk, conf_man) = get_participants(n_stakeholders, n_managers)
+        (stk_xpubs, cosig_keys, man_xpubs) = get_participants(n_stakeholders,
+                                                              n_managers)
         if csv is None:
             # More than 6 months
             csv = random.randint(1, 26784)
 
         stk_nodes = []
-        for i in range(len(conf_stk)):
+        for i in range(len(stk_xpubs)):
             datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
             os.makedirs(datadir, exist_ok=True)
 
-            ourselves = {
-                "stakeholder_xpub": conf_stk[i]["xpub"],
+            stk_config = {
+                "xpub": stk_xpubs[i],
+                # FIXME: Eventually use real ones
+                "watchtowers": [
+                    {
+                        "host": "127.0.0.1:1",
+                        "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                                     "5cc6f49a9bddaacf93cd77def697"
+                    }
+                ]
             }
-            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
-                              self.bitcoind)
+            daemon = RevaultD(datadir, stk_xpubs, cosig_keys, man_xpubs, csv,
+                              self.bitcoind, stk_config=stk_config)
             daemon.start()
             stk_nodes.append(daemon)
 
         man_nodes = []
-        for i in range(len(conf_man)):
+        for i in range(len(man_xpubs)):
             datadir = os.path.join(self.root_dir, f"revaultd-man-{i}")
             os.makedirs(datadir, exist_ok=True)
 
-            ourselves = {
-                "manager_xpub": conf_man[i]["xpub"],
+            man_config = {
+                "xpub": man_xpubs[i],
+                # FIXME: Eventually use real ones
+                "watchtowers": [
+                    {
+                        "host": "127.0.0.1:1",
+                        "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                                     "5cc6f49a9bddaacf93cd77def697"
+                    }
+                ]
             }
-            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
-                              self.bitcoind)
+            daemon = RevaultD(datadir, stk_xpubs, cosig_keys, man_xpubs, csv,
+                              self.bitcoind, man_config=man_config)
             daemon.start()
             man_nodes.append(daemon)
 

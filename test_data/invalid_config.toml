@@ -1,3 +1,5 @@
+log_level = "info"
+
 coordinator_host = "127.0.0.1:1"
 coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
 
@@ -25,8 +27,4 @@ network = "bitcoin"
 cookie_path = "/home/user/.bitcoin/.cookie"
 addr = "127.0.0.1:8332"
 
-
-# We are one of the above managers
-[manager_config]
-xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"
-cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]
+# No info about ourselves!

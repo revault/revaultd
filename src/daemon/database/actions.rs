@@ -66,16 +66,8 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Computing time since epoch: {}", e.to_string())))?;
     let vault_descriptor = revaultd.vault_descriptor.0.to_string();
     let unvault_descriptor = revaultd.unvault_descriptor.0.to_string();
-    let our_man_xpub_str = revaultd
-        .ourselves
-        .manager_xpub
-        .as_ref()
-        .map(|xpub| xpub.to_string());
-    let our_stk_xpub_str = revaultd
-        .ourselves
-        .stakeholder_xpub
-        .as_ref()
-        .map(|xpub| xpub.to_string());
+    let our_man_xpub_str = revaultd.our_man_xpub.as_ref().map(|xpub| xpub.to_string());
+    let our_stk_xpub_str = revaultd.our_stk_xpub.as_ref().map(|xpub| xpub.to_string());
     let raw_unused_index: u32 = revaultd.current_unused_index.into();
 
     // Rusqlite could create it for us, but we want custom permissions

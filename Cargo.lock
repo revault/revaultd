@@ -54,6 +54,7 @@ dependencies = [
  "bech32",
  "bitcoin_hashes",
  "secp256k1",
+ "serde",
 ]
 
 [[package]]
@@ -61,6 +62,9 @@ name = "bitcoin_hashes"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0aaf87b776808e26ae93289bc7d025092b6d909c193f0cdee0b3a86e7bd3c776"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bitcoinconsensus"
@@ -333,6 +337,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74ff4ece4ff5498718a232e92d53273903609c739052f5edf2a1a42c59586348"
 dependencies = [
  "bitcoin",
+ "serde",
 ]
 
 [[package]]
@@ -485,11 +490,12 @@ dependencies = [
 [[package]]
 name = "revault_tx"
 version = "0.0.1"
-source = "git+https://github.com/darosior/revault?branch=refinement#5c17f61b51e64f3cfb32172b25d811a147fa22f1"
+source = "git+https://github.com/re-vault/revault_tx#283f2d133dfdeb967ef5098bff11b3a6d5d11ae5"
 dependencies = [
  "base64",
  "bitcoinconsensus",
  "miniscript",
+ "serde",
 ]
 
 [[package]]
@@ -555,6 +561,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6179428c22c73ac0fbb7b5579a56353ce78ba29759b3b8575183336ea74cdfb"
 dependencies = [
  "secp256k1-sys",
+ "serde",
 ]
 
 [[package]]

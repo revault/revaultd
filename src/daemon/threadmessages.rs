@@ -1,6 +1,6 @@
 use crate::revaultd::VaultStatus;
 use revault_tx::{
-    bitcoin::{Address, Amount, OutPoint, Txid},
+    bitcoin::{util::bip32::ChildNumber, Address, Amount, OutPoint, Txid},
     transactions::{
         CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction, VaultTransaction,
@@ -87,8 +87,9 @@ pub struct VaultTransactions {
 
 #[derive(Debug)]
 pub struct ListVaultsEntry {
-    // amount, status, txid, vout
     pub amount: Amount,
     pub status: VaultStatus,
     pub deposit_outpoint: OutPoint,
+    pub derivation_index: ChildNumber,
+    pub address: Address,
 }

@@ -187,7 +187,7 @@ impl RpcApi for RpcImpl {
         let statuses = if let Some(statuses) = statuses {
             // If they give an empty array, it's not that they don't want any result, but rather
             // that they don't want this filter to be taken into account!
-            if statuses.len() > 0 {
+            if !statuses.is_empty() {
                 Some(
                     statuses
                         .into_iter()
@@ -215,11 +215,14 @@ impl RpcApi for RpcImpl {
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
             .map(|entry| {
+                let derivation_index: u32 = entry.derivation_index.into();
                 json!({
                     "amount": entry.amount.as_sat(),
                     "status": entry.status.to_string(),
                     "txid": entry.deposit_outpoint.txid.to_string(),
                     "vout": entry.deposit_outpoint.vout,
+                    "derivation_index": derivation_index,
+                    "address": entry.address.to_string(),
                 })
             })
             .collect();

@@ -104,11 +104,11 @@ fn bitcoind_wallet_tx(
 // List the vaults from DB, and filter out the info the RPC wants
 // FIXME: we could make this more efficient with smarter SQL queries
 fn listvaults_from_db(
-    db_path: &PathBuf,
+    revaultd: &RevaultD,
     statuses: Option<Vec<VaultStatus>>,
     outpoints: Option<Vec<OutPoint>>,
 ) -> Result<Vec<ListVaultsEntry>, DatabaseError> {
-    db_vaults(db_path).map(|db_vaults| {
+    db_vaults(&revaultd.db_file()).map(|db_vaults| {
         db_vaults
             .into_iter()
             .filter_map(|db_vault| {
@@ -124,10 +124,13 @@ fn listvaults_from_db(
                     }
                 }
 
+                let address = revaultd.vault_address(db_vault.derivation_index);
                 Some(ListVaultsEntry {
                     amount: db_vault.amount,
                     status: db_vault.status,
                     deposit_outpoint: db_vault.deposit_outpoint,
+                    derivation_index: db_vault.derivation_index,
+                    address,
                 })
             })
             .collect()
@@ -359,8 +362,11 @@ pub fn handle_rpc_messages(
             }
             RpcMessageIn::ListVaults((statuses, outpoints), response_tx) => {
                 log::trace!("Got listvaults from RPC thread");
-                let db_file = &revaultd.read().unwrap().db_file();
-                response_tx.send(listvaults_from_db(db_file, statuses, outpoints)?)?;
+                response_tx.send(listvaults_from_db(
+                    &revaultd.read().unwrap(),
+                    statuses,
+                    outpoints,
+                )?)?;
             }
             RpcMessageIn::DepositAddr(response_tx) => {
                 log::trace!("Got 'depositaddr' request from RPC thread");

@@ -11,9 +11,14 @@ curl https://bitcoincore.org/bin/bitcoin-core-$BITCOIND_VERSION/bitcoin-$BITCOIN
 tar -xzf $ARCHIVE_NAME
 sudo mv $DIR_NAME/bin/bitcoind /usr/local/bin/
 
+# Setup the postgres instance for the servers
+sudo apt update && sudo apt install postgresql-12
+sudo systemctl start postgresql
+sudo su -c "psql -c \"CREATE ROLE test CREATEDB LOGIN PASSWORD 'test'\"" - postgres
+
 # Run the functional tests
+cd tests/servers/coordinatord && cargo build && git submodule update --init && cd ../../../
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt
-# GA is f*ing slow. But free!
-TIMEOUT=120 TEST_DEBUG=1 pytest -vvv -n2 tests/
+TIMEOUT=120 TEST_DEBUG=1 POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv -n2 tests/

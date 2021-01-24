@@ -1,0 +1,3 @@
+[submodule "tests/servers/coordinatord"]
+	path = tests/servers/coordinatord
+	url = https://github.com/re-vault/coordinatord

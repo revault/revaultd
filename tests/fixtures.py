@@ -3,8 +3,13 @@ Most of the code here is stolen from C-lightning's test suite. This is surely
 Rusty Russell or Christian Decker who wrote most of this (I'd put some sats on
 cdecker), so credits to them ! (MIT licensed)
 """
-from utils import BitcoinD, RevaultD, get_participants, RevaultDFactory
+from utils import (
+    BitcoinD, ManagerRevaultd, StakeholderRevaultd, get_participants,
+    RevaultNetwork, TEST_DEBUG, POSTGRES_USER, POSTGRES_PASS, POSTGRES_HOST,
+    POSTGRES_IS_SETUP
+)
 
+import logging
 import os
 import pytest
 import shutil
@@ -131,8 +136,12 @@ def revaultd_stakeholder(bitcoind, directory):
         ]
     }
     csv = 35
-    revaultd = RevaultD(datadir, stk_xpubs, cosig_keys, man_xpubs, csv,
-                        bitcoind, stk_config=stk_config)
+    coordinator_noise_key = b"d91563973102454a7830137e92d0548bc83b4e" \
+                            b"a2799f1df04622ca1307381402"
+    revaultd = StakeholderRevaultd(
+        datadir, stk_xpubs, cosig_keys, man_xpubs, csv, os.urandom(32),
+        coordinator_noise_key, bitcoind, stk_config=stk_config
+    )
     revaultd.start()
 
     yield revaultd
@@ -148,7 +157,7 @@ def revaultd_manager(bitcoind, directory):
 
     man_config = {
         "xpub": man_xpubs[0],
-        "watchtowers": [
+        "cosigners": [
             {
                 "host": "127.0.0.1:1",
                 "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
@@ -157,8 +166,12 @@ def revaultd_manager(bitcoind, directory):
         ]
     }
     csv = 35
-    revaultd = RevaultD(datadir, stk_xpubs, cosig_keys, man_xpubs, csv,
-                        bitcoind, man_config=man_config)
+    coordinator_noise_key = b"d91563973102454a7830137e92d0548bc83b4e" \
+                            b"a2799f1df04622ca1307381402"
+    revaultd = ManagerRevaultd(
+        datadir, stk_xpubs, cosig_keys, man_xpubs, csv, os.urandom(32),
+        coordinator_noise_key, bitcoind, man_config=man_config
+    )
     revaultd.start()
 
     yield revaultd
@@ -167,8 +180,13 @@ def revaultd_manager(bitcoind, directory):
 
 
 @pytest.fixture
-def revaultd_factory(directory, bitcoind):
-    factory = RevaultDFactory(directory, bitcoind)
+def revault_network(directory, bitcoind):
+    if not POSTGRES_IS_SETUP:
+        raise ValueError("Please set the POSTGRES_USER, POSTGRES_PASS and "
+                         "POSTGRES_HOST environment variables.")
+
+    factory = RevaultNetwork(directory, bitcoind, POSTGRES_USER, POSTGRES_PASS,
+                             POSTGRES_HOST)
 
     yield factory
 

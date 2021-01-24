@@ -1,13 +1,10 @@
-import json
 import pytest
-import socket
-import time
 
 from fixtures import (
     revaultd_stakeholder, revaultd_manager, bitcoind, directory, test_base_dir,
-    test_name, revaultd_factory
+    test_name, revault_network
 )
-from utils import TIMEOUT, wait_for, RpcError
+from utils import TIMEOUT, wait_for, RpcError, POSTGRES_IS_SETUP
 
 def test_revaultd_stakeholder_starts(revaultd_stakeholder):
     revaultd_stakeholder.rpc.call("stop")
@@ -106,8 +103,9 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 0
 
 
-def test_getdepositaddress(revaultd_factory, bitcoind):
-    (stks, mans) = revaultd_factory.deploy(4, 2)
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_getdepositaddress(revault_network, bitcoind):
+    (stks, mans) = revault_network.deploy(4, 2)
     addr = stks[0].rpc.call("getdepositaddress")["address"]
 
     # If we don't use it, we'll get the same. From us and everyone else
@@ -126,8 +124,9 @@ def test_getdepositaddress(revaultd_factory, bitcoind):
         assert addr2 == n.rpc.call("getdepositaddress")["address"]
 
 
-def test_getrevocationtxs(revaultd_factory, bitcoind):
-    (stks, mans) = revaultd_factory.deploy(4, 2)
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_getrevocationtxs(revault_network, bitcoind):
+    (stks, mans) = revault_network.deploy(4, 2)
     addr = stks[0].rpc.call("getdepositaddress")["address"]
 
     # If the vault isn't known, it'll fail (note: it's racy for others but
@@ -150,8 +149,9 @@ def test_getrevocationtxs(revaultd_factory, bitcoind):
         assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
 
 
-def test_listtransactions(revaultd_factory, bitcoind):
-    (stks, mans) = revaultd_factory.deploy(4, 2)
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_listtransactions(revault_network, bitcoind):
+    (stks, mans) = revault_network.deploy(4, 2)
 
     addr = stks[0].rpc.call("getdepositaddress")["address"]
     txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)

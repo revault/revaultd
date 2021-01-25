@@ -13,6 +13,7 @@ use crate::{
     revaultd::RevaultD,
 };
 use common::{assume_ok, config::Config};
+use revault_tx::bitcoin::hashes::hex::ToHex;
 
 use std::{
     env,
@@ -159,6 +160,10 @@ fn main() {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });
+    log::info!(
+        "Using Noise static public key: '{}'",
+        revaultd.noise_secret.pubkey().0.to_hex()
+    );
 
     if revaultd.daemon {
         let daemon = Daemonize {

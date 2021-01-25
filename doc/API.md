@@ -53,7 +53,7 @@ Get an address to build a deposit transaction.
 | Order | Value                | Description                                                                                                  |
 | ----- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
 | 0     | `unconfirmed`        | The vault's deposit transaction is less than 6 blocks-deep in the chain                                      |
-| 1     | `funded`             | The vault is initiated by a vault tx                                                                         |
+| 1     | `funded`             | The vault is initiated by a deposit transaction                                                              |
 | 2     | `secured`            | The vault's emergency transaction is fully signed and shared with the watchtowers                            |
 | 3     | `active`             | The vault's unvault, cancel, and unvault-emergency txs are fully signed and shared with the watchtowers      |
 | 4     | `unvaulting`         | The vault has its unvault tx broadcasted                                                                     |

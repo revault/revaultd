@@ -1,6 +1,6 @@
 use crate::{
     bitcoind::{BitcoindError, MIN_CONF},
-    revaultd::{BlockchainTip, CachedVault, VaultStatus},
+    revaultd::{BlockchainTip, VaultStatus},
 };
 use common::config::BitcoindConfig;
 use revault_tx::bitcoin::{Address, Amount, BlockHash, OutPoint, TxOut, Txid};
@@ -394,12 +394,12 @@ impl BitcoinD {
     /// We take the currently known utxos, and return both the new deposits and the spent deposits.
     pub fn sync_deposits(
         &self,
-        existing_utxos: &HashMap<OutPoint, CachedVault>,
+        existing_utxos: &HashMap<OutPoint, DepositInfo>,
     ) -> Result<
         (
-            HashMap<OutPoint, CachedVault>, // new
-            HashMap<OutPoint, CachedVault>, // newly confirmed
-            HashMap<OutPoint, CachedVault>, // spent
+            HashMap<OutPoint, DepositInfo>, // new
+            HashMap<OutPoint, DepositInfo>, // newly confirmed
+            HashMap<OutPoint, DepositInfo>, // spent
         ),
         BitcoindError,
     > {
@@ -419,7 +419,7 @@ impl BitcoinD {
                 )
             })?
         {
-            if utxo.get("label") != Some(&Json::String(self.deposit_utxos_label())) {
+            if utxo.get("label") != Some(&self.deposit_utxos_label().into()) {
                 continue;
             }
             let confirmations = utxo
@@ -498,7 +498,7 @@ impl BitcoinD {
 
             new_deposits.insert(
                 outpoint,
-                CachedVault {
+                DepositInfo {
                     txo: TxOut {
                         value,
                         script_pubkey,
@@ -631,4 +631,11 @@ pub struct SyncInfo {
     pub blocks: u64,
     pub ibd: bool,
     pub progress: f64,
+}
+
+// Used in deposits cache for listunspent polling
+#[derive(Debug, Clone)]
+pub struct DepositInfo {
+    pub txo: TxOut,
+    pub status: VaultStatus,
 }

@@ -1,9 +1,9 @@
 use crate::revaultd::VaultStatus;
 use revault_tx::{
-    bitcoin::{Address, OutPoint, Txid},
+    bitcoin::{util::bip32::ChildNumber, Address, Amount, OutPoint, Txid},
     transactions::{
         CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction, VaultTransaction,
+        UnvaultTransaction,
     },
 };
 
@@ -17,8 +17,7 @@ pub enum RpcMessageIn {
     GetInfo(SyncSender<(String, u32, f64)>),
     ListVaults(
         (Option<Vec<VaultStatus>>, Option<Vec<OutPoint>>),
-        // amount, status, txid, vout
-        SyncSender<Vec<(u64, String, String, u32)>>,
+        SyncSender<Vec<ListVaultsEntry>>,
     ),
     DepositAddr(SyncSender<Address>),
     GetRevocationTxs(
@@ -62,13 +61,14 @@ pub enum BitcoindMessageOut {
 #[derive(Debug)]
 pub struct WalletTransaction {
     pub hex: String,
+    // None if unconfirmed
     pub blockheight: Option<u32>,
     pub received_time: u32,
 }
 
 #[derive(Debug)]
 pub struct TransactionResource<T> {
-    // None if unconfirmed
+    // None if not broadcast
     pub wallet_tx: Option<WalletTransaction>,
     pub tx: T,
     pub is_signed: bool,
@@ -77,11 +77,20 @@ pub struct TransactionResource<T> {
 #[derive(Debug)]
 pub struct VaultTransactions {
     pub outpoint: OutPoint,
-    pub deposit: TransactionResource<VaultTransaction>,
+    pub deposit: WalletTransaction,
     pub unvault: TransactionResource<UnvaultTransaction>,
     // None if not spending
     pub spend: Option<TransactionResource<SpendTransaction>>,
     pub cancel: TransactionResource<CancelTransaction>,
     pub emergency: TransactionResource<EmergencyTransaction>,
     pub unvault_emergency: TransactionResource<UnvaultEmergencyTransaction>,
+}
+
+#[derive(Debug)]
+pub struct ListVaultsEntry {
+    pub amount: Amount,
+    pub status: VaultStatus,
+    pub deposit_outpoint: OutPoint,
+    pub derivation_index: ChildNumber,
+    pub address: Address,
 }

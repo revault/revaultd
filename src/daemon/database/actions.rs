@@ -4,15 +4,14 @@ use crate::{
         schema::{TransactionType, SCHEMA},
         DatabaseError, DB_VERSION,
     },
-    revaultd::{BlockchainTip, CachedVault, RevaultD, VaultStatus},
+    revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, util::bip32::ChildNumber, Amount, OutPoint, TxOut},
+    bitcoin::{util::bip32::ChildNumber, Amount, OutPoint},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        VaultTransaction,
     },
 };
 
@@ -191,23 +190,6 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     });
     revaultd.wallet_id = Some(wallet.id);
 
-    for vault in db_deposits(&db_path)?.into_iter() {
-        let deposit_script_pubkey = revaultd
-            .vault_address(vault.derivation_index)
-            .script_pubkey();
-        revaultd.vaults.insert(
-            vault.deposit_outpoint,
-            CachedVault {
-                txo: TxOut {
-                    value: vault.amount.as_sat(),
-                    script_pubkey: deposit_script_pubkey,
-                },
-                status: vault.status,
-            },
-        );
-        log::trace!("Loaded deposit '{}' from db", vault.deposit_outpoint);
-    }
-
     // TODO: update vaults-that-are-not-in-deposit-state cache from the database
 
     Ok(())
@@ -259,8 +241,7 @@ pub fn db_update_deposit_index(
     })
 }
 
-/// Insert a new deposit in the database (atomically record both the vault and the deposit
-/// transaction).
+/// Insert a new deposit in the database
 #[allow(clippy::too_many_arguments)]
 pub fn db_insert_new_vault(
     db_path: &PathBuf,
@@ -270,7 +251,6 @@ pub fn db_insert_new_vault(
     deposit_outpoint: &OutPoint,
     amount: &Amount,
     derivation_index: ChildNumber,
-    vault_tx: VaultTransaction,
 ) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         let derivation_index: u32 = derivation_index.into();
@@ -289,18 +269,6 @@ pub fn db_insert_new_vault(
             ],
         )
         .map_err(|e| DatabaseError(format!("Inserting vault: {}", e.to_string())))?;
-
-        let vault_id = tx.last_insert_rowid();
-
-        tx.execute(
-            "INSERT INTO transactions (vault_id, type, tx) VALUES (?1, ?2, ?3)",
-            params![
-                vault_id,
-                TransactionType::Deposit as u32,
-                encode::serialize(&vault_tx.0)
-            ],
-        )
-        .map_err(|e| DatabaseError(format!("Inserting vault transaction: {}", e.to_string())))?;
 
         Ok(())
     })
@@ -363,7 +331,7 @@ macro_rules! db_store_transactions {
                 let tx_type = TransactionType::from(&$tx);
                 db_tx
                     .execute(
-                        "INSERT INTO transactions (vault_id, type, tx) VALUES (?1, ?2, ?3)",
+                        "INSERT INTO transactions (vault_id, type, psbt) VALUES (?1, ?2, ?3)",
                         params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?],
                     )
                     .map_err(|e| {
@@ -393,7 +361,7 @@ mod test {
     use crate::{database::schema::RevaultTx, revaultd::RevaultD};
     use common::config::Config;
     use revault_tx::{
-        bitcoin::{hashes::hex::FromHex, Network, OutPoint},
+        bitcoin::{Network, OutPoint},
         transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
     };
 
@@ -464,7 +432,6 @@ mod test {
         .unwrap();
         let amount = Amount::from_sat(123456);
         let derivation_index = ChildNumber::from(3);
-        let vault_tx = VaultTransaction(encode::deserialize(&Vec::from_hex("01000000018d02f09e91dee22f854c1f4d5da6c63b424ae61c403a9ca649bc7232b6f52e780a0000006a47304402206badd975c2d9fc3873ef0bf7eded79fd8b2fb04d94eb403fb00fd2da4ce6f10a02202d508ffca05ec2da4bd7aca34f9319905f62b349fb46b7791dc3458125baeaab012102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ffffffff0b1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9acc0106902000000001976a9143e3387cc0f659ac5d9e137a5641d73606a0172ee88ac00000000").unwrap()).unwrap());
         db_insert_new_vault(
             &db_path,
             wallet_id,
@@ -473,7 +440,6 @@ mod test {
             &first_deposit_outpoint,
             &amount,
             derivation_index,
-            vault_tx,
         )
         .unwrap();
 
@@ -486,7 +452,6 @@ mod test {
         .unwrap();
         let amount = Amount::from_sat(456789);
         let derivation_index = ChildNumber::from(12);
-        let vault_tx = VaultTransaction(encode::deserialize(&Vec::from_hex("020000000001013337e39b850fadd0264673e9d70ecae8a2dfa6f373571de0fafce4dbae020bf901000000171600141aa8b21429f9d1fabb880ab0c3ff5c4004d3a4a0feffffff027d1080600500000017a914b7d46105439a4cb89740eecb2cd8071b86097a0087eed013000000000017a914f54db0418a675090f70b5ab57b1fa7de4d1f3b7c87024730440220228f1de3c2e036bd255b2471003a9eedc1f53ce0c1b2b18b83cdc15c1dda231c022036287b99b302e77c394b1cf5862e00b834c538413da7ef1f7971aba3d8908b7e01210258ac070e3a2653dbb908d703223d09f6d06ef7145775dd9a8028fd708f7b600a4bcd1c00").unwrap()).unwrap());
         db_insert_new_vault(
             &db_path,
             wallet_id,
@@ -495,7 +460,6 @@ mod test {
             &second_deposit_outpoint,
             &amount,
             derivation_index,
-            vault_tx,
         )
         .unwrap();
 
@@ -508,7 +472,6 @@ mod test {
         .unwrap();
         let amount = Amount::from_sat(428000);
         let derivation_index = ChildNumber::from(15);
-        let vault_tx = VaultTransaction(encode::deserialize(&Vec::from_hex("01000000000105af45796fb9a23d6f8da5a07c454ab7f7389d44fc3ee9d8ae9206c37857859a410500000000ffffffff09654613689cfd335e27586ad6d63f9f656b66e1c97437d6d7881421484a75540200000000ffffffff50cb13707cc02bbf6c748cc7e52ee4f67fd3849074cf38c0ce29cde3922fe1660400000000ffffffff6058513de33d705fa853f02fbaa90c773fe3d770738fb42c12cd0d5aa7c820ad0400000000ffffffffa83604a33de69e02dd93144f340c00553946f4758889dccf49231b6122c36ace0200000000ffffffff0540420f0000000000160014338c75df6ab88f0017c97eae7f37b067b39ddddc40420f000000000016001448052f93aa57c3ba797a250acc27cd207d18346d40420f000000000016001454a5b3e09aa2e783bca90a9522c02189ef002da340420f00000000001600149657de4bd76ee8ef5c5cf855e1298fa4104d9e9940420f0000000000160014c86321f7131e03400c7a4f9c82f33994bd072ab402473044022077a35282dfce498cadd378dadd77fb1aa734d6ed5df9f6d60b28ce1a6a9f5bc4022031f69ba6e35f182600e2dbf2494fe9da3f34c784700836c4012c10a207e4c6f30121032ae7ed94fc714d9e883c36dfa1804b9cb4d64f64540e670e4c55c2a29049ee4f02483045022100b7fadf8bfc0b50b07f54f876445bdc7fab830f9696a372d04c6b5f045021fac90220059bade2d8cddd77eb81f653e123e5db72df41da2e9e85cb81b2f5a5bc2c2aab012102c254b246037d7b979072eee4b1d1536aadb8a64cd00eb12246ad8bff590cdc3f02473044022072105afbc95b3e37d0b779aaae9b6b77c2ef18b6711297f76fc3b67e2c3025f402204c73be24853a7114a37a388d79c269b151f0cf67f4acaec5581612786618511101210387b70c65d4f5068589952985e6d8c43c005127801a713931564cf1702a21cdb90247304402206d765fb6f07a9becb8a43cf64d81eef995a5d66d2cb222264f07c80b54aef4a002206b644922dc37189c867cc0c9e6cdf2fd266511b0038a1c0ed82a0f07c2178d860121033f38c01b0ed6c04d2c7e9636ededd92de79624f31a7b29c8d857620ddf2f0765024730440220381d3fe5a83da00a173fe6f137f015345798cd820590180136ba173ae65fabef02203c54de5d5ffebaa0a04e88152bdded6cd5319f05024c3dc860898568810ca54b01210294652741695124b2bafc07da3fe6f16b8175e8ba6e48299a2360af0650d3bc5100000000").unwrap()).unwrap());
         db_insert_new_vault(
             &db_path,
             wallet_id,
@@ -517,7 +480,6 @@ mod test {
             &third_deposit_outpoint,
             &amount,
             derivation_index,
-            vault_tx.clone(),
         )
         .unwrap();
 
@@ -531,7 +493,6 @@ mod test {
             &third_deposit_outpoint,
             &amount,
             derivation_index,
-            vault_tx,
         )
         .unwrap_err();
 
@@ -578,7 +539,6 @@ mod test {
         .unwrap();
         let amount = Amount::from_sat(123456);
         let derivation_index = ChildNumber::from(33334);
-        let vault_tx = VaultTransaction(encode::deserialize(&Vec::from_hex("01000000018d02f09e91dee22f854c1f4d5da6c63b424ae61c403a9ca649bc7232b6f52e780a0000006a47304402206badd975c2d9fc3873ef0bf7eded79fd8b2fb04d94eb403fb00fd2da4ce6f10a02202d508ffca05ec2da4bd7aca34f9319905f62b349fb46b7791dc3458125baeaab012102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ffffffff0b1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9ac1027000000000000232102c8431929d7493a7feb0e397c88a6a1651f1709cb2b420b55e7d732ebc31041e9acc0106902000000001976a9143e3387cc0f659ac5d9e137a5641d73606a0172ee88ac00000000").unwrap()).unwrap());
         db_insert_new_vault(
             &db_path,
             wallet_id,
@@ -587,7 +547,6 @@ mod test {
             &outpoint,
             &amount,
             derivation_index,
-            vault_tx,
         )
         .unwrap();
         let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
@@ -609,7 +568,7 @@ mod test {
         let db_txs: Vec<RevaultTx> = db_transactions(&db_path, db_vault.id, &[])
             .unwrap()
             .into_iter()
-            .map(|x| x.tx)
+            .map(|x| x.psbt)
             .collect();
         assert!(db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
         assert!(db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
@@ -619,7 +578,7 @@ mod test {
             db_transactions(&db_path, db_vault.id, &[TransactionType::Emergency])
                 .unwrap()
                 .into_iter()
-                .map(|x| x.tx)
+                .map(|x| x.psbt)
                 .collect();
         assert!(db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
         assert!(!db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
@@ -632,7 +591,7 @@ mod test {
         )
         .unwrap()
         .into_iter()
-        .map(|x| x.tx)
+        .map(|x| x.psbt)
         .collect();
         assert!(!db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
         assert!(db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));

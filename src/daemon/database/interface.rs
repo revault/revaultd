@@ -13,7 +13,7 @@ use revault_tx::{
     miniscript::descriptor::DescriptorPublicKey,
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
-        UnvaultEmergencyTransaction, UnvaultTransaction, VaultTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -195,6 +195,13 @@ impl TryFrom<&Row<'_>> for DbVault {
     }
 }
 
+/// Get all the vaults we know about from the db
+pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query::<_, _, DbVault>(db_path, "SELECT * FROM vaults", NO_PARAMS, |row| {
+        row.try_into()
+    })
+}
+
 /// Get the vaults that didn't move onchain yet from the DB.
 pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
     db_query(
@@ -246,35 +253,27 @@ pub fn db_transactions(
                 return Ok(None);
             }
 
-            let db_tx: Vec<u8> = row.get(3)?;
-
-            let tx = match tx_type {
-                TransactionType::Deposit => {
-                    // For deposit, we don't (can't really) store a PSBT.
-                    RevaultTx::Deposit(VaultTransaction(
-                        encode::deserialize(&db_tx)
-                            .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                    ))
-                }
+            let db_psbt: Vec<u8> = row.get(3)?;
+            let psbt = match tx_type {
                 // For the remaining transactions (which we do create), we store a PSBT.
                 TransactionType::Unvault => RevaultTx::Unvault(
-                    UnvaultTransaction::from_psbt_serialized(&db_tx)
+                    UnvaultTransaction::from_psbt_serialized(&db_psbt)
                         .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                 ),
                 TransactionType::Cancel => RevaultTx::Cancel(
-                    CancelTransaction::from_psbt_serialized(&db_tx)
+                    CancelTransaction::from_psbt_serialized(&db_psbt)
                         .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                 ),
                 TransactionType::Emergency => RevaultTx::Emergency(
-                    EmergencyTransaction::from_psbt_serialized(&db_tx)
+                    EmergencyTransaction::from_psbt_serialized(&db_psbt)
                         .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                 ),
                 TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
-                    UnvaultEmergencyTransaction::from_psbt_serialized(&db_tx)
+                    UnvaultEmergencyTransaction::from_psbt_serialized(&db_psbt)
                         .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                 ),
                 TransactionType::Spend => RevaultTx::Spend(
-                    SpendTransaction::from_psbt_serialized(&db_tx)
+                    SpendTransaction::from_psbt_serialized(&db_psbt)
                         .map_err(|e| FromSqlError::Other(Box::new(e)))?,
                 ),
             };
@@ -283,7 +282,7 @@ pub fn db_transactions(
                 id,
                 vault_id,
                 tx_type,
-                tx,
+                psbt,
             }))
         },
     )?

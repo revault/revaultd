@@ -3,7 +3,7 @@
 //! `server` mod.
 
 use crate::{revaultd::VaultStatus, threadmessages::*};
-use common::{assume_ok, assume_some, VERSION};
+use common::{assume_ok, VERSION};
 
 use revault_tx::{
     bitcoin::OutPoint,
@@ -187,7 +187,7 @@ impl RpcApi for RpcImpl {
         let statuses = if let Some(statuses) = statuses {
             // If they give an empty array, it's not that they don't want any result, but rather
             // that they don't want this filter to be taken into account!
-            if statuses.len() > 0 {
+            if !statuses.is_empty() {
                 Some(
                     statuses
                         .into_iter()
@@ -214,12 +214,15 @@ impl RpcApi for RpcImpl {
         );
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
-            .map(|(value, status, txid, vout)| {
+            .map(|entry| {
+                let derivation_index: u32 = entry.derivation_index.into();
                 json!({
-                    "amount": value,
-                    "status": status,
-                    "txid": txid,
-                    "vout": vout,
+                    "amount": entry.amount.as_sat(),
+                    "status": entry.status.to_string(),
+                    "txid": entry.deposit_outpoint.txid.to_string(),
+                    "vout": entry.deposit_outpoint.vout,
+                    "derivation_index": derivation_index,
+                    "address": entry.address.to_string(),
                 })
             })
             .collect();
@@ -380,16 +383,14 @@ impl RpcApi for RpcImpl {
             // RevaultTransaction. Also, it's always signed and therefore always output
             // as 'hex'.
             let mut deposit_entry = serde_json::Map::with_capacity(3);
-            let wallet_tx = assume_some!(
-                vault.deposit.wallet_tx,
-                "No deposit transaction in wallet for {}",
-                outpoint
-            );
-            deposit_entry.insert("hex".to_owned(), wallet_tx.hex.into());
-            if let Some(height) = wallet_tx.blockheight {
+            deposit_entry.insert("hex".to_owned(), vault.deposit.hex.into());
+            if let Some(height) = vault.deposit.blockheight {
                 deposit_entry.insert("blockheight".to_string(), height.into());
             }
-            deposit_entry.insert("received_at".to_string(), wallet_tx.received_time.into());
+            deposit_entry.insert(
+                "received_at".to_string(),
+                vault.deposit.received_time.into(),
+            );
             txs_map.insert("deposit".to_string(), deposit_entry.into());
 
             txs_map.insert("unvault".to_string(), tx_entry(vault.unvault));

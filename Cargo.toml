@@ -25,6 +25,7 @@ path = "src/cli/main.rs"
 
 [dependencies]
 revault_tx = { git = "https://github.com/re-vault/revault_tx", features = ["use-serde"] }
+revault_net = { git = "https://github.com/re-vault/revault_net" }
 
 # Don't reinvent the wheel
 dirs = "3.0.1"

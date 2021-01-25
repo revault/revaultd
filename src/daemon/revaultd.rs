@@ -1,7 +1,16 @@
 use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
 
-use std::{collections::HashMap, convert::TryFrom, fmt, fs, path::PathBuf, str::FromStr, vec::Vec};
+use std::{
+    collections::HashMap,
+    convert::TryFrom,
+    fmt, fs,
+    io::{self, Read, Write},
+    path::PathBuf,
+    str::FromStr,
+    vec::Vec,
+};
 
+use revault_net::{noise::NoisePrivKey, sodiumoxide};
 use revault_tx::{
     bitcoin::{
         secp256k1,
@@ -136,6 +145,64 @@ impl fmt::Display for VaultStatus {
     }
 }
 
+#[derive(Debug)]
+enum NoiseError {
+    LibsodiumInit,
+    ReadingKey(io::Error),
+    WritingKey(io::Error),
+}
+
+impl fmt::Display for NoiseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl std::error::Error for NoiseError {}
+
+// The communication keys are (for now) hot, so we just create it ourselves on first run.
+fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, NoiseError> {
+    let mut noise_secret = NoisePrivKey([0; 32]);
+
+    if !secret_file.as_path().exists() {
+        log::info!(
+            "No Noise private key at '{:?}', generating a new one",
+            secret_file
+        );
+
+        sodiumoxide::init().map_err(|_| NoiseError::LibsodiumInit)?;
+        noise_secret
+            .0
+            .copy_from_slice(&sodiumoxide::randombytes::randombytes(32));
+        // We create it in read-only but open it in write only.
+        let mut options = fs::OpenOptions::new();
+        options = options.write(true).create_new(true).clone();
+        // FIXME: handle Windows ACLs
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options = options.mode(0o400).clone();
+        }
+
+        let mut fd = options
+            .open(secret_file.clone())
+            .map_err(|e| NoiseError::WritingKey(e))?;
+        fd.write_all(&noise_secret.0)
+            .map_err(|e| NoiseError::WritingKey(e))?;
+    } else {
+        let mut noise_secret_fd =
+            fs::File::open(secret_file).map_err(|e| NoiseError::ReadingKey(e))?;
+        noise_secret_fd
+            .read_exact(&mut noise_secret.0)
+            .map_err(|e| NoiseError::ReadingKey(e))?;
+    }
+
+    // TODO: have a decent memory management and mlock() the key
+
+    assert!(noise_secret.0 != [0; 32]);
+    Ok(noise_secret)
+}
+
 /// A vault is defined as a confirmed utxo paying to the Vault Descriptor for which
 /// we have a set of pre-signed transaction (emergency, cancel, unvault).
 /// Depending on its status we may not yet be in possession of part -or the entirety-
@@ -188,13 +255,16 @@ pub struct RevaultD {
     /// The CSV in the unvault_descriptor. Unfortunately segregated from the descriptor..
     pub unvault_csv: u32,
 
-    // UTXOs stuff
+    // Network stuff
+    /// The static private key we use to establish connections to servers. We reuse it, but Trevor
+    /// said it's fine! https://github.com/noiseprotocol/noise_spec/blob/master/noise.md#14-security-considerations
+    pub noise_secret: NoisePrivKey,
+
+    // Misc stuff
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
     /// keys used to generate a script from bitcoind until we can pass it xpub-expressed
     /// Miniscript descriptors.
     pub derivation_index_map: HashMap<Script, ChildNumber>,
-
-    // Misc stuff
     /// The id of the wallet used in the db
     pub wallet_id: Option<u32>,
     /// We store all our data in one place, that's here.
@@ -279,6 +349,12 @@ impl RevaultD {
         }
         data_dir = fs::canonicalize(data_dir)?;
 
+        let data_dir_str = data_dir
+            .to_str()
+            .expect("Impossible: the datadir path is valid unicode");
+        let noise_secret_file = [data_dir_str, "noise_secret"].iter().collect();
+        let noise_secret = read_or_create_noise_key(noise_secret_file)?;
+
         let daemon = !matches!(config.daemon, Some(false));
 
         let secp_ctx = secp256k1::Secp256k1::verification_only();
@@ -293,6 +369,7 @@ impl RevaultD {
             data_dir,
             daemon,
             emergency_address,
+            noise_secret,
             lock_time: 0,
             unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,

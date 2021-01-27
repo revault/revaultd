@@ -99,4 +99,5 @@ pub struct ListVaultsEntry {
     pub deposit_outpoint: OutPoint,
     pub derivation_index: ChildNumber,
     pub address: Address,
+    pub updated_at: u32,
 }

@@ -147,6 +147,7 @@ fn listvaults_from_db(
                     status: db_vault.status,
                     deposit_outpoint: db_vault.deposit_outpoint,
                     derivation_index: db_vault.derivation_index,
+                    updated_at: db_vault.updated_at,
                     address,
                 })
             })

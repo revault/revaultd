@@ -241,6 +241,7 @@ impl RpcApi for RpcImpl {
                     "vout": entry.deposit_outpoint.vout,
                     "derivation_index": derivation_index,
                     "address": entry.address.to_string(),
+                    "updated_at": entry.updated_at,
                 })
             })
             .collect();

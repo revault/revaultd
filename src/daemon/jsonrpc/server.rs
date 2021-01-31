@@ -43,7 +43,7 @@ fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io
     let mut total_read = 0;
 
     loop {
-        match stream.read(&mut buf) {
+        match stream.read(&mut buf[total_read..]) {
             Ok(0) => {
                 if total_read == 0 {
                     return Ok(None);
@@ -267,7 +267,7 @@ fn windows_loop(
         let mut stream = stream?;
 
         // Ok, so we got something to read (we don't respond to garbage)
-        while let Some(bytes) = read_bytes_from_stream(&stream)? {
+        while let Some(bytes) = read_bytes_from_stream(&mut stream)? {
             // Is it actually readable?
             match String::from_utf8(bytes) {
                 Ok(string) => {

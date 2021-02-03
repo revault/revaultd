@@ -319,13 +319,7 @@ impl RevaultD {
             .map(|key| DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key }))
             .collect();
 
-        let vault_descriptor = vault_descriptor(
-            managers_pubkeys
-                .iter()
-                .chain(stakeholders_pubkeys.iter())
-                .cloned()
-                .collect::<Vec<DescriptorPublicKey>>(),
-        )?;
+        let vault_descriptor = vault_descriptor(stakeholders_pubkeys.clone())?;
         let unvault_descriptor = unvault_descriptor(
             stakeholders_pubkeys,
             managers_pubkeys.clone(),

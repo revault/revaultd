@@ -911,21 +911,32 @@ class PSBT(object):
         return True
 
 # Sighash serializations
-def sighash_witness(script_code, psbt, i):
+def sighash_all_witness(script_code, psbt, i, acp=False):
+    """
+    Compute the ALL signature hash of the {psbt} 's input {i}.
+
+    :param acp: if True, use ALL | ANYONECANPAY behaviour.
+    """
     # Calculate hashPrevouts and hashSequence
-    prevouts_preimage = b""
-    sequence_preimage = b""
-    for inputs in psbt.tx.vin:
-        prevouts_preimage += inputs.prevout.serialize()
-        sequence_preimage += struct.pack("<I", inputs.nSequence)
-    hashPrevouts = hash256(prevouts_preimage)
-    hashSequence = hash256(sequence_preimage)
+    if not acp:
+        prevouts_preimage = b""
+        sequence_preimage = b""
+        for inputs in psbt.tx.vin:
+            prevouts_preimage += inputs.prevout.serialize()
+            sequence_preimage += struct.pack("<I", inputs.nSequence)
+        hashPrevouts = hash256(prevouts_preimage)
+        hashSequence = hash256(sequence_preimage)
+    else:
+        hashPrevouts = b"\x00" * 32
+        hashSequence = b"\x00" * 32
 
     # Calculate hashOutputs
     outputs_preimage = b""
     for output in psbt.tx.vout:
         outputs_preimage += output.serialize()
     hashOutputs = hash256(outputs_preimage)
+
+    sighash_type = b"\x01\x00\x00\x00" if not acp else b"\x81\x00\x00\x00"
 
     # Make sighash preimage
     preimage = b""
@@ -938,19 +949,7 @@ def sighash_witness(script_code, psbt, i):
     preimage += struct.pack("<I", psbt.tx.vin[i].nSequence)
     preimage += hashOutputs
     preimage += struct.pack("<I", psbt.tx.nLockTime)
-    preimage += b"\x01\x00\x00\x00"
+    preimage += sighash_type
 
     # hash it
     return hash256(preimage)
-
-def sighash_non_witness(script_code, psbt, i):
-
-    blank_tx = CTransaction(psbt.tx)
-    blank_tx.vin[i].scriptSig = script_code
-
-    # Serialize and add sighash ALL
-    ser_tx = blank_tx.serialize_without_witness()
-    ser_tx += b"\x01\x00\x00\x00"
-
-    # Hash it
-    return hash256(ser_tx)

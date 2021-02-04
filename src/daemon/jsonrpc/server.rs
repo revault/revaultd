@@ -2,7 +2,10 @@
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
 use crate::{
-    jsonrpc::api::{JsonRpcMetaData, RpcApi, RpcImpl},
+    jsonrpc::{
+        api::{JsonRpcMetaData, RpcApi, RpcImpl},
+        UserRole,
+    },
     threadmessages::RpcMessageIn,
 };
 
@@ -336,10 +339,14 @@ pub fn rpcserver_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error> 
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
-pub fn rpcserver_loop(tx: Sender<RpcMessageIn>, listener: UnixListener) -> Result<(), io::Error> {
+pub fn rpcserver_loop(
+    tx: Sender<RpcMessageIn>,
+    listener: UnixListener,
+    user_role: UserRole,
+) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
-    let metadata = JsonRpcMetaData::from_tx(tx);
+    let metadata = JsonRpcMetaData::new(tx, user_role);
 
     log::info!("JSONRPC server started.");
     #[cfg(not(windows))]
@@ -350,7 +357,7 @@ pub fn rpcserver_loop(tx: Sender<RpcMessageIn>, listener: UnixListener) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed};
+    use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, UserRole};
     use crate::threadmessages::RpcMessageIn;
 
     use std::{
@@ -376,7 +383,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let socket = rpcserver_setup(path.clone()).unwrap();
         thread::spawn(move || {
-            rpcserver_loop(tx, socket).unwrap_or_else(|e| {
+            rpcserver_loop(tx, socket, UserRole::Stakeholder).unwrap_or_else(|e| {
                 panic!("Error in JSONRPC server event loop: {}", e.to_string());
             })
         });

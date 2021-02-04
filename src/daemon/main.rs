@@ -9,7 +9,10 @@ use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     control::handle_rpc_messages,
     database::actions::setup_db,
-    jsonrpc::server::{rpcserver_loop, rpcserver_setup},
+    jsonrpc::{
+        server::{rpcserver_loop, rpcserver_setup},
+        UserRole,
+    },
     revaultd::RevaultD,
 };
 use common::{assume_ok, config::Config};
@@ -42,6 +45,12 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
 
 fn daemon_main(mut revaultd: RevaultD) {
     let (db_path, network) = (revaultd.db_file(), revaultd.bitcoind_config.network);
+    let user_role = match (revaultd.is_stakeholder(), revaultd.is_manager()) {
+        (true, false) => UserRole::Stakeholder,
+        (false, true) => UserRole::Manager,
+        (true, true) => UserRole::ManagerStakeholder,
+        _ => unreachable!(),
+    };
 
     // First and foremost
     log::info!("Setting up database");
@@ -68,7 +77,7 @@ fn daemon_main(mut revaultd: RevaultD) {
 
     let rpc_thread = thread::spawn(move || {
         assume_ok!(
-            rpcserver_loop(rpc_tx, socket),
+            rpcserver_loop(rpc_tx, socket, user_role),
             "Error in JSONRPC server event loop"
         );
     });

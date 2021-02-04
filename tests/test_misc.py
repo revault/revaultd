@@ -129,13 +129,17 @@ def test_getrevocationtxs(revault_network, bitcoind):
     (stks, mans) = revault_network.deploy(4, 2)
     addr = stks[0].rpc.call("getdepositaddress")["address"]
 
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+         mans[0].rpc.getrevocationtxs("whatever_doesnt_matter")
+
     # If the vault isn't known, it'll fail (note: it's racy for others but
     # behaviour is the same is the vault isn't known)
     txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)
     stks[0].wait_for_logs(["Got a new unconfirmed deposit",
                            "Incremented deposit derivation index"])
     vault = stks[0].rpc.listvaults()["vaults"][0]
-    for n in stks + mans:
+    for n in stks:
         with pytest.raises(RpcError, match=".* does not refer to a known and "
                                            "confirmed vault"):
             n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
@@ -144,7 +148,7 @@ def test_getrevocationtxs(revault_network, bitcoind):
     bitcoind.generate_block(6, txid)
     wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
     txs = stks[0].rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
-    for n in stks[1:] + mans:
+    for n in stks[1:]:
         wait_for(lambda: n.rpc.listvaults()["vaults"][0]["status"] == "funded")
         assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
 

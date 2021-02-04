@@ -442,6 +442,14 @@ impl RevaultD {
         self.file_from_datadir("revaultd_rpc")
     }
 
+    pub fn is_stakeholder(&self) -> bool {
+        self.our_stk_xpub.is_some()
+    }
+
+    pub fn is_manager(&self) -> bool {
+        self.our_man_xpub.is_some()
+    }
+
     pub fn deposit_address(&self) -> Address {
         self.vault_address(self.current_unused_index)
     }

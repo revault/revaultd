@@ -74,3 +74,18 @@ To run the server-requiring tests, pass the postgres credentials to the framewor
 ```
 POSTGRES_USER="test" POSTGRES_PASS="test" TEST_DEBUG=1 pytest -vvv -n8
 ```
+
+
+### Tips and tricks
+#### Logging
+
+We use the [Live Logging](https://docs.pytest.org/en/latest/logging.html#live-logs)
+functionality from pytest. It is configured in (`pyproject.toml`)[../pyproject.toml] to
+output `INFO`-level to the console. If a test fails, the entire `DEBUG` log is output.
+
+You can override the config at runtime with the `--log-cli-level` option:
+```
+POSTGRES_USER=test POSTGRES_PASS=test pytest -vvv --log-cli-level=DEBUG -k test_getrevocationtxs
+```
+
+Note that we log each daemon log, and we start them with `log_level = "trace"`.

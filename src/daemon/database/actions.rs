@@ -329,6 +329,12 @@ macro_rules! db_store_transactions {
                     .map_err(|e| {
                         DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
                     })?;
+                db_tx.execute("UPDATE vaults SET status = (?1) WHERE id = (?2)",
+                        params![VaultStatus::Secured as u32, $vault_id],
+                    )
+                    .map_err(|e| {
+                        DatabaseError(format!("Marking vault '{}' as secure: {}", $vault_id, e))
+                    })?;
             )*
 
             Ok(())

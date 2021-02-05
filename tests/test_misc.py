@@ -1,9 +1,9 @@
+import copy
+import logging
 import pytest
+import serializations
 
-from fixtures import (
-    revaultd_stakeholder, revaultd_manager, bitcoind, directory, test_base_dir,
-    test_name, revault_network
-)
+from fixtures import *
 from utils import TIMEOUT, wait_for, RpcError, POSTGRES_IS_SETUP
 
 def test_revaultd_stakeholder_starts(revaultd_stakeholder):
@@ -189,3 +189,163 @@ def test_listtransactions(revault_network, bitcoind):
     # for n in stks[1:] + mans:
         # res = n.rpc.listtransactions([deposit])["transactions"][0]
         # assert sorted(res.items()) == sorted_res
+
+
+def psbt_add_input(psbt_str):
+    psbt = serializations.PSBT()
+    psbt.deserialize(psbt_str)
+    assert len(psbt.inputs) == 1
+    psbt.inputs.append(serializations.PartiallySignedInput())
+    psbt.inputs[1].witness_utxo = copy.copy(psbt.inputs[0].witness_utxo)
+    psbt.inputs[1].witness_utxo.nValue = 12398
+    psbt.inputs[1].witness_script = psbt.inputs[0].witness_script
+    psbt.tx.vin.append(serializations.CTxIn())
+    return psbt.serialize()
+
+
+def psbt_add_invalid_sig(psbt_str):
+    psbt = serializations.PSBT()
+    psbt.deserialize(psbt_str)
+    assert len(psbt.inputs) == 1
+    pk = bytes.fromhex("02c83dc7fb3ed0a5dd33cf35d891ba4fcbde"
+                       "90ede809a0b247a46f4d989dd14411")
+    sig = bytes.fromhex("3045022100894f5c61d1c297227a9a094ea471fd9d84b"
+                        "61d4fc78eb71376621758df8c4946022073f5c11e62add56c4c9"
+                        "10bc90d0eadb154919e0c6c67b909897bda13cae3620d")
+    psbt.inputs[0].partial_sigs[pk] = sig
+    return psbt.serialize()
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_revocationtxs_sanity_checks(revault_network):
+    revault_network.deploy(6, 2)
+    mans = revault_network.man_wallets
+    stks = revault_network.stk_wallets
+
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+         mans[0].rpc.revocationtxs("whatever_doesnt_matter", "a", "n", "dd")
+
+    vault = revault_network.fund(10)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    child_index = vault["derivation_index"]
+    stks[0].wait_for_deposit(deposit)
+    psbts = stks[0].rpc.getrevocationtxs(deposit)
+
+    # TODO (upstream): mixing up psbts should fail at parsing time
+
+    # We must provide all revocation txs at once
+    with pytest.raises(RpcError, match="Invalid params.*"):
+         stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
+                                   psbts["emergency_tx"])
+
+    # We can't send it for an unknown vault
+    with pytest.raises(RpcError, match="Outpoint does not correspond to an "
+                                       "existing vault"):
+        stks[0].rpc.revocationtxs(deposit[:-1] + "18", psbts["cancel_tx"],
+                                   psbts["emergency_tx"],
+                                   psbts["emergency_unvault_tx"])
+
+    # We can't give it random PSBTs (revocation txs at pre-signing stage always
+    # have a single input)
+    mal_cancel = psbt_add_input(psbts["cancel_tx"])
+    print(mal_cancel)
+    with pytest.raises(RpcError, match="Cancel tx: expected a single input"):
+        stks[0].rpc.revocationtxs(deposit, mal_cancel,
+                                  psbts["emergency_tx"],
+                                  psbts["emergency_unvault_tx"])
+    mal_emer = psbt_add_input(psbts["emergency_tx"])
+    with pytest.raises(RpcError, match="Emergency tx: expected a single input"):
+        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
+                                  mal_emer,
+                                  psbts["emergency_unvault_tx"])
+    mal_unemer = psbt_add_input(psbts["emergency_unvault_tx"])
+    with pytest.raises(RpcError, match="Unvault Emergency tx: expected a single input"):
+        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
+                                  psbts["emergency_tx"], mal_unemer)
+    # TODO: add more checks once upstream checks PSBTS at parsing time!!
+
+    # We must provide a signature for ourselves
+    with pytest.raises(RpcError, match="No signature for ourselves.*Cancel"):
+        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
+                                  psbts["emergency_tx"],
+                                  psbts["emergency_unvault_tx"])
+    cancel_psbt = stks[0].stk_keychain.sign_revocation_psbt(psbts["cancel_tx"],
+                                                            child_index)
+    with pytest.raises(RpcError, match="No signature for ourselves.*Emergency"):
+        stks[0].rpc.revocationtxs(deposit, cancel_psbt, psbts["emergency_tx"],
+                                  psbts["emergency_unvault_tx"])
+    emer_psbt = stks[0].stk_keychain.sign_revocation_psbt(psbts["emergency_tx"],
+                                                          child_index)
+    with pytest.raises(RpcError, match="No signature for ourselves.*UnvaultEmergency"):
+        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt,
+                                  psbts["emergency_unvault_tx"])
+    unemer_psbt = stks[0].stk_keychain.sign_revocation_psbt(
+        psbts["emergency_unvault_tx"], child_index
+    )
+
+    # We refuse any random invalid signature
+    mal_cancel = psbt_add_invalid_sig(cancel_psbt)
+    with pytest.raises(RpcError, match="Invalid signature in Cancel"):
+        stks[0].rpc.revocationtxs(deposit, mal_cancel, emer_psbt, unemer_psbt)
+    mal_emer = psbt_add_invalid_sig(emer_psbt)
+    with pytest.raises(RpcError, match="Invalid signature in Emergency"):
+        stks[0].rpc.revocationtxs(deposit, cancel_psbt, mal_emer, unemer_psbt)
+    mal_unemer = psbt_add_invalid_sig(unemer_psbt)
+    with pytest.raises(RpcError, match="Invalid signature in Unvault Emergency"):
+        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, mal_unemer)
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_sig_sharing(revault_network, executor):
+    revault_network.deploy(5, 3)
+    stks = revault_network.stk_wallets
+
+    vault = revault_network.fund(10)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    child_index = vault["derivation_index"]
+
+    # We can just get everyone to sign it out of band and a single one handing
+    # it to the sync server.
+    # TODO: after background polling, check all of them eventually get all the
+    # sigs
+    stks[0].wait_for_deposit(deposit)
+    psbts = stks[0].rpc.getrevocationtxs(deposit)
+    cancel_psbt = psbts["cancel_tx"]
+    emer_psbt = psbts["emergency_tx"]
+    unemer_psbt = psbts["emergency_unvault_tx"]
+    for stk in stks:
+        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(cancel_psbt,
+                                                            child_index)
+        emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt,
+                                                          child_index)
+        unemer_psbt = stk.stk_keychain.sign_revocation_psbt(unemer_psbt,
+                                                            child_index)
+    stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+    assert stks[0].rpc.listvaults()["vaults"][0]["status"] == "secured"
+    # Note that we can't pass it twice
+    with pytest.raises(RpcError, match="Invalid vault status"):
+        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+
+
+    vault = revault_network.fund(20)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    child_index = vault["derivation_index"]
+
+    # Or everyone can sign on their end and push to the sync server
+    pollers = []
+    for stk in stks:
+        stk.wait_for_deposit(deposit)
+        psbts = stk.rpc.getrevocationtxs(deposit)
+        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(psbts["cancel_tx"],
+                                                            child_index)
+        emer_psbt = stk.stk_keychain.sign_revocation_psbt(psbts["emergency_tx"],
+                                                          child_index)
+        unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
+            psbts["emergency_unvault_tx"], child_index
+        )
+        pollers.append(executor.submit(stk.rpc.revocationtxs, deposit,
+                                       cancel_psbt, emer_psbt, unemer_psbt))
+    for p in pollers:
+        # TODO: poll in the background and don't stuck the RPC call!
+        p.result()

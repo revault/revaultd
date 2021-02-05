@@ -540,6 +540,7 @@ pub fn bitcoind_main_loop(
         // When bitcoind isn't synced, poll each 30s
         if let Some(last_poll) = last_poll {
             if now.duration_since(last_poll) < poll_interval {
+                thread::sleep(poll_interval - now.duration_since(last_poll));
                 continue;
             }
         }
@@ -547,7 +548,5 @@ pub fn bitcoind_main_loop(
         last_poll = Some(now);
         update_deposits(&mut revaultd, &bitcoind, &mut deposits_cache)?;
         update_tip(&mut revaultd, &bitcoind)?;
-
-        thread::sleep(Duration::from_millis(100));
     }
 }

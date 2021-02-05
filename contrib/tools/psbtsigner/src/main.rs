@@ -58,7 +58,7 @@ fn parse_args(args: Vec<String>) -> (PrivateKey, Psbt, usize) {
     (key, psbt, input_index)
 }
 
-fn sighash(psbt: &Psbt, input_index: usize) -> SigHash {
+fn sighash(psbt: &Psbt, input_index: usize) -> (SigHash, SigHashType) {
     let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
     let psbtin = psbt.inputs.get(input_index).unwrap_or_else(|| {
         eprintln!("Psbt has no input at index '{}'", input_index);
@@ -81,19 +81,21 @@ fn sighash(psbt: &Psbt, input_index: usize) -> SigHash {
         SigHashType::All
     });
 
-    cache.signature_hash(input_index, &script_code, prev_value, sighash_type)
+    (
+        cache.signature_hash(input_index, &script_code, prev_value, sighash_type),
+        sighash_type,
+    )
 }
 
 fn sign_psbt(key: PrivateKey, psbt: &mut Psbt, input_index: usize) {
     let secp = secp256k1::Secp256k1::signing_only();
-    let sighash = sighash(&psbt, input_index);
+    let (sighash, sighash_type) = sighash(&psbt, input_index);
     let sighash = secp256k1::Message::from_slice(&sighash).expect("Sighash is 32 bytes");
 
-    let signature = secp.sign(&sighash, &key.key);
+    let mut signature = secp.sign(&sighash, &key.key).serialize_der().to_vec();
+    signature.push(sighash_type.as_u32() as u8);
     let pubkey = key.public_key(&secp);
-    psbt.inputs[0]
-        .partial_sigs
-        .insert(pubkey, signature.serialize_der().to_vec());
+    psbt.inputs[0].partial_sigs.insert(pubkey, signature);
 }
 
 fn main() {

@@ -6,3 +6,4 @@ github-merge.py
 regtest/
 test*.py
 venv/
+pytest.log

@@ -1,5 +1,5 @@
 python-bitcoinlib==0.11.0
-pytest==5.3.5
+pytest==6.2
 pytest-xdist==1.31.0
 pytest-timeout==1.3.4
 ephemeral_port_reserve==1.1.1

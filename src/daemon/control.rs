@@ -20,8 +20,16 @@ use crate::{
 };
 use common::{assume_ok, assume_some};
 
+use revault_net::{
+    message::server::{GetSigs, RevaultSignature, Sig, Sigs},
+    transport::KKTransport,
+};
 use revault_tx::{
-    bitcoin::{Network, OutPoint, Txid},
+    bitcoin::{
+        hashes::Hash,
+        secp256k1::{self, Signature},
+        Network, OutPoint, PublicKey as BitcoinPubKey, Script, SigHashType, Txid,
+    },
     transactions::{
         transaction_chain, CancelTransaction, EmergencyTransaction, RevaultTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -31,6 +39,7 @@ use revault_tx::{
 };
 
 use std::{
+    collections::BTreeMap,
     fmt,
     path::PathBuf,
     process,
@@ -53,7 +62,12 @@ pub enum ControlError {
 
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self)
+        match self {
+            Self::ChannelCommunication(s) => write!(f, "Channel communication error: '{}'", s),
+            Self::Database(s) => write!(f, "Database error: '{}'", s),
+            Self::Bitcoind(s) => write!(f, "Bitcoind error: '{}'", s),
+            Self::TransactionManagement(s) => write!(f, "Transaction management error: '{}'", s),
+        }
     }
 }
 
@@ -317,6 +331,224 @@ fn txlist_from_outpoints(
     Ok(tx_list)
 }
 
+// The signature hash of a revocation transaction (ie Cancel, Emergency, or UnvaultEmergency)
+fn revocation_tx_sighash(tx: &impl RevaultTransaction, script_code: &Script) -> secp256k1::Message {
+    // Revocation transactions (at this stage) only have one input.
+    // If we were passed a >1 input transaction, something went really bad and it's better to
+    // crash.
+    assert!(tx.inner_tx().global.unsigned_tx.input.len() == 1);
+
+    tx.signature_hash(0, script_code, SigHashType::AllPlusAnyoneCanPay)
+        .map(|sighash| {
+            secp256k1::Message::from_slice(&sighash.as_hash().into_inner())
+                .expect("sighash is a 32 bytes hash")
+        })
+        .expect("Asserted above")
+}
+
+/// An error thrown when the verification of a ALL|ANYONECANPAY signature fails
+#[derive(Debug)]
+enum ACPSigError {
+    InvalidLength,
+    InvalidSighash,
+    VerifError(secp256k1::Error),
+}
+
+impl std::fmt::Display for ACPSigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::InvalidLength => write!(f, "Invalid length of signature"),
+            Self::InvalidSighash => write!(f, "Invalid SIGHASH type"),
+            Self::VerifError(e) => write!(f, "Signature verification error: '{}'", e),
+        }
+    }
+}
+
+impl std::error::Error for ACPSigError {}
+
+impl From<secp256k1::Error> for ACPSigError {
+    fn from(e: secp256k1::Error) -> Self {
+        Self::VerifError(e)
+    }
+}
+
+// Check all complete signatures for revocation transactions (ie Cancel, Emergency,
+// or UnvaultEmergency)
+fn check_revocation_signatures(
+    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    tx: &impl RevaultTransaction,
+    script_code: &Script,
+    sigs: &BTreeMap<BitcoinPubKey, Vec<u8>>,
+) -> Result<(), ACPSigError> {
+    let sighash = revocation_tx_sighash(tx, script_code);
+
+    for (pubkey, sig) in sigs {
+        let (sighash_type, sig) = sig.split_last().unwrap();
+        if *sighash_type != SigHashType::AllPlusAnyoneCanPay as u8 {
+            return Err(ACPSigError::InvalidSighash);
+        }
+        secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
+    }
+
+    Ok(())
+}
+
+// Check a raw (without SIGHASH type) revocation tx (ie Cancel, Emergency, or
+// UnvaultEmergency) signature
+fn check_revocation_signature(
+    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    tx: &impl RevaultTransaction,
+    script_code: &Script,
+    pubkey: BitcoinPubKey,
+    sig: &Signature,
+) -> Result<(), secp256k1::Error> {
+    let sighash = revocation_tx_sighash(tx, script_code);
+
+    secp.verify(&sighash, sig, &pubkey.key)?;
+
+    Ok(())
+}
+
+// Send a `sig` (https://github.com/re-vault/practical-revault/blob/master/messages.md#sig-1)
+// message to the server for all the sigs of this mapping.
+// Note that we are looping, but most (if not all) will only have a single signature
+// attached. We are called by the `revocationtxs` RPC, sent after a `getrevocationtxs`
+// which generates fresh unsigned transactions.
+//
+// `sigs` MUST contain valid signatures (including the attached sighash type)
+fn send_sig_msg(
+    transport: &mut KKTransport,
+    id: Txid,
+    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // FIXME: use pop_last() once it's stable
+    for (pubkey, sig) in sigs.into_iter() {
+        let pubkey = pubkey.key;
+        let (sigtype, sig) = sig
+            .split_last()
+            .expect("They must provide valid signatures");
+        assert_eq!(*sigtype, SigHashType::AllPlusAnyoneCanPay as u8);
+
+        let signature = RevaultSignature::PlaintextSig(
+            Signature::from_der(&sig).expect("They must provide valid signatures"),
+        );
+        let sig_msg = Sig {
+            pubkey,
+            signature,
+            id,
+        };
+        log::trace!(
+            "Sending sig '{:?}' to sync server: '{}'",
+            sig_msg,
+            serde_json::to_string(&sig_msg)?,
+        );
+        // FIXME: here or upstream, we should retry until timeout
+        transport.write(&serde_json::to_vec(&sig_msg)?)?;
+    }
+
+    Ok(())
+}
+
+// Send the signatures for the 3 revocation txs to the Coordinator
+fn share_signatures(
+    revaultd: &RevaultD,
+    cancel: (&CancelTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
+    emer: (&EmergencyTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
+    unvault_emer: (
+        &UnvaultEmergencyTransaction,
+        BTreeMap<BitcoinPubKey, Vec<u8>>,
+    ),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut transport = KKTransport::connect(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+    )?;
+
+    let cancel_txid = cancel.0.inner_tx().global.unsigned_tx.txid();
+    send_sig_msg(&mut transport, cancel_txid, cancel.1)?;
+    let emer_txid = emer.0.inner_tx().global.unsigned_tx.txid();
+    send_sig_msg(&mut transport, emer_txid, emer.1)?;
+    let unvault_emer_txid = unvault_emer.0.inner_tx().global.unsigned_tx.txid();
+    send_sig_msg(&mut transport, unvault_emer_txid, unvault_emer.1)?;
+
+    Ok(())
+}
+
+// Get all signatures required to finalize the single-input revocation `tx`. This
+// will finalize `tx` in place.
+fn fetch_revocation_signatures(
+    revaultd: &RevaultD,
+    tx: &mut impl RevaultTransaction,
+    script_code: &Script,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut transport = KKTransport::connect(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+    )?;
+    let secp_ctx = &revaultd.secp_ctx;
+    let id = tx.inner_tx().global.unsigned_tx.txid();
+    let getsigs_msg = GetSigs { id };
+
+    // Revocation transactions (at this stage) only have one input. If we were
+    // passed a >1 input transaction, we'd never get out of the loop.
+    assert!(tx.inner_tx().global.unsigned_tx.input.len() == 1);
+
+    loop {
+        log::trace!(
+            "Sending to sync server: '{}'",
+            serde_json::to_string(&getsigs_msg)?,
+        );
+        transport.write(&serde_json::to_vec(&getsigs_msg)?)?;
+        let recvd_raw = transport.read()?;
+        log::trace!(
+            "Receiving from sync server: '{}'",
+            &String::from_utf8_lossy(&recvd_raw)
+        );
+        let Sigs { signatures } = serde_json::from_slice(&recvd_raw)?;
+
+        for (key, sig) in signatures {
+            let pubkey = BitcoinPubKey {
+                compressed: true,
+                key,
+            };
+            if !tx.inner_tx().inputs[0].partial_sigs.contains_key(&pubkey) {
+                log::debug!(
+                    "Adding signature '{:?}' for pubkey '{}' for tx '{}'",
+                    sig,
+                    pubkey,
+                    id
+                );
+                match sig {
+                    RevaultSignature::PlaintextSig(sig) => {
+                        check_revocation_signature(secp_ctx, tx, script_code, pubkey, &sig)?;
+                        // We just checked signature validity for ALL | ACP
+                        tx.add_signature(0, pubkey, (sig, SigHashType::AllPlusAnyoneCanPay))?;
+                    }
+                    // We never share encrypted signatures. Of course it's broken as we don't
+                    // trust the server.
+                    // FIXME: either implement encrypted signatures or remove it from the types
+                    // upstream. See https://github.com/re-vault/practical-revault/issues/72
+                    RevaultSignature::EncryptedSig { .. } => unreachable!(),
+                }
+            }
+        }
+
+        let res = tx.finalize(&revaultd.secp_ctx);
+        log::trace!("Finalization result: {:?}", res);
+        if res.is_ok() {
+            log::debug!("Got all signatures for '{}'", id);
+            return Ok(());
+        }
+
+        log::debug!("Still waiting for signatures for '{}'", id);
+        // We assume other signers are actively performing the routine signing.
+        // FIXME: of course, it's bad..
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 /// Handle events incoming from the JSONRPC interface.
 pub fn handle_rpc_messages(
     revaultd: Arc<RwLock<RevaultD>>,
@@ -410,40 +642,218 @@ pub fn handle_rpc_messages(
                 }
             }
             RpcMessageIn::RevocationTxs(
-                (outpoint, mut cancel, mut emer, mut unvault_emer),
+                (outpoint, mut cancel_tx, mut emer_tx, mut unvault_emer_tx),
                 response_tx,
             ) => {
                 log::trace!("Got 'revocationtxs' from RPC thread");
-                let db_path = &revaultd.read().unwrap().db_file();
+                let revaultd = revaultd.read().unwrap();
+                let secp_ctx = &revaultd.secp_ctx;
 
-                let res = if let Some(db_vault) = db_vault_by_deposit(db_path, &outpoint)? {
-                    if cancel.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
-                        /* TODO: fetch from the SS */
-                    }
-                    if emer.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
-                        /* TODO: fetch from the SS */
-                    }
-                    if unvault_emer
-                        .finalize(&revaultd.read().unwrap().secp_ctx)
-                        .is_err()
-                    { /* TODO: fetch from the SS */ }
+                // Checked by the RPC server
+                assert!(revaultd.is_stakeholder());
 
-                    // TODO: unimplemented
-                    if false {
-                        db_store_revocation_txs(
-                            &revaultd.read().unwrap().db_file(),
-                            db_vault.id,
-                            cancel,
-                            emer,
-                            unvault_emer,
-                        )?;
+                // They may only send revocation transactions for confirmed and not-yet-presigned
+                // vaults.
+                let db_vault = match db_vault_by_deposit(&revaultd.db_file(), &outpoint)? {
+                    Some(v) => match v.status {
+                        VaultStatus::Funded => v,
+                        status => {
+                            response_tx.send(Some(format!(
+                                "Invalid vault status: expected {} but got {}",
+                                VaultStatus::Funded,
+                                status
+                            )))?;
+                            continue;
+                        }
+                    },
+                    None => {
+                        response_tx.send(Some(
+                            "Outpoint does not correspond to an existing vault".to_string(),
+                        ))?;
+                        continue;
                     }
-                    None
-                } else {
-                    Some("Outpoint does not correspond to an existing vault".into())
                 };
 
-                response_tx.send(res)?;
+                // Revocation transactions may only have an additional input for fee-bumping, which
+                // is completely out of the scope of this call (pre-signing routine)
+                if cancel_tx.inner_tx().global.unsigned_tx.input.len() != 1 {
+                    response_tx.send(Some(format!(
+                        "Invalid Cancel tx: expected a single input but got '{}'",
+                        cancel_tx.inner_tx().inputs.len()
+                    )))?;
+                    continue;
+                }
+                if emer_tx.inner_tx().global.unsigned_tx.input.len() != 1 {
+                    response_tx.send(Some(format!(
+                        "Invalid Emergency tx: expected a single input but got '{}'",
+                        emer_tx.inner_tx().inputs.len()
+                    )))?;
+                    continue;
+                }
+                if unvault_emer_tx.inner_tx().global.unsigned_tx.input.len() != 1 {
+                    response_tx.send(Some(format!(
+                        "Invalid Unvault Emergency tx: expected a single input but got '{}'",
+                        emer_tx.inner_tx().inputs.len()
+                    )))?;
+                    continue;
+                }
+
+                let deriv_index = db_vault.derivation_index;
+                let cancel_sigs = cancel_tx
+                    .inner_tx()
+                    .inputs
+                    .get(0)
+                    .expect("Cancel tx has a single input, inbefore fee bumping.")
+                    .partial_sigs
+                    .clone();
+                let emer_sigs = emer_tx
+                    .inner_tx()
+                    .inputs
+                    .get(0)
+                    .expect("Emergency tx has a single input, inbefore fee bumping.")
+                    .partial_sigs
+                    .clone();
+                let unvault_emer_sigs = unvault_emer_tx
+                    .inner_tx()
+                    .inputs
+                    .get(0)
+                    .expect("UnvaultEmergency tx has a single input, inbefore fee bumping.")
+                    .partial_sigs
+                    .clone();
+                let deposit_script_code = revaultd
+                    .vault_descriptor
+                    .0
+                    .derive(deriv_index)
+                    .script_code(revaultd.xpub_ctx());
+                let unvault_script_code = revaultd
+                    .unvault_descriptor
+                    .0
+                    .derive(deriv_index)
+                    .script_code(revaultd.xpub_ctx());
+
+                // They must have included *at least* a signature for our pubkey
+                let our_pubkey = revaultd
+                    .our_stk_xpub
+                    .expect("We are a stakeholder")
+                    .derive_pub(secp_ctx, &[deriv_index])
+                    .expect("The derivation index stored in the database is sane (unhardened)")
+                    .public_key;
+                if !cancel_sigs.contains_key(&our_pubkey) {
+                    response_tx.send(Some(format!(
+                        "No signature for ourselves ({}) in Cancel transaction",
+                        our_pubkey
+                    )))?;
+                    continue;
+                }
+                // We use the same public key across the transaction chain, that's pretty
+                // neat from an usability perspective.
+                if !emer_sigs.contains_key(&our_pubkey) {
+                    response_tx.send(Some(
+                        "No signature for ourselves in Emergency transaction".to_string(),
+                    ))?;
+                    continue;
+                }
+                if !unvault_emer_sigs.contains_key(&our_pubkey) {
+                    response_tx.send(Some(
+                        "No signature for ourselves in UnvaultEmergency transaction".to_string(),
+                    ))?;
+                    continue;
+                }
+
+                // Don't share anything if we were given invalid signatures. This
+                // checks for the presence of a SIGHASH type flag.
+                if let Err(e) = check_revocation_signatures(
+                    secp_ctx,
+                    &cancel_tx,
+                    &unvault_script_code,
+                    &cancel_sigs,
+                ) {
+                    response_tx.send(Some(format!(
+                        "Invalid signature in Cancel transaction: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+                if let Err(e) = check_revocation_signatures(
+                    secp_ctx,
+                    &emer_tx,
+                    &deposit_script_code,
+                    &emer_sigs,
+                ) {
+                    response_tx.send(Some(format!(
+                        "Invalid signature in Emergency transaction: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+                if let Err(e) = check_revocation_signatures(
+                    secp_ctx,
+                    &unvault_emer_tx,
+                    &unvault_script_code,
+                    &unvault_emer_sigs,
+                ) {
+                    response_tx.send(Some(format!(
+                        "Invalid signature in Unvault Emergency transaction: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+
+                // Ok, signatures look legit. Share them with our felow stakeholders.
+                if let Err(e) = share_signatures(
+                    &revaultd,
+                    (&cancel_tx, cancel_sigs),
+                    (&emer_tx, emer_sigs),
+                    (&unvault_emer_tx, unvault_emer_sigs),
+                ) {
+                    response_tx.send(Some(format!("Error while sharing signatures: {}", e)))?;
+                    continue;
+                }
+
+                // Now, fetch others' signatures
+                // FIXME: do that in a background process.
+                if let Err(e) =
+                    fetch_revocation_signatures(&revaultd, &mut cancel_tx, &unvault_script_code)
+                {
+                    response_tx.send(Some(format!(
+                        "Error while fetching Cancel signatures: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+                if let Err(e) =
+                    fetch_revocation_signatures(&revaultd, &mut emer_tx, &deposit_script_code)
+                {
+                    response_tx.send(Some(format!(
+                        "Error while fetching Emergency signatures: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+                if let Err(e) = fetch_revocation_signatures(
+                    &revaultd,
+                    &mut unvault_emer_tx,
+                    &unvault_script_code,
+                ) {
+                    response_tx.send(Some(format!(
+                        "Error while fetching UnvaultEmergency signatures: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+
+                // We are now all set, with valid revocation transactions, life is good, bitcoins
+                // are safe.
+                db_store_revocation_txs(
+                    &revaultd.db_file(),
+                    db_vault.id,
+                    cancel_tx,
+                    emer_tx,
+                    unvault_emer_tx,
+                )?;
+
+                // Ok, RPC server, tell them that everything is fine.
+                response_tx.send(None)?;
             }
             RpcMessageIn::ListTransactions(outpoints, response_tx) => {
                 log::trace!("Got 'listtransactions' request from RPC thread");

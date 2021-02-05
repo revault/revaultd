@@ -21,4 +21,4 @@ cd tests/servers/coordinatord && cargo build && git submodule update --init && c
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt
-TIMEOUT=120 TEST_DEBUG=1 POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv -n2 tests/
+TIMEOUT=120 TEST_DEBUG=1 POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv -n2 --log-cli-level=DEBUG tests/

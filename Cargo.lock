@@ -745,7 +745,7 @@ dependencies = [
 [[package]]
 name = "revault_net"
 version = "0.0.1"
-source = "git+https://github.com/re-vault/revault_net#b6f444a88c65ec468ce665088a081d196ab74e19"
+source = "git+https://github.com/re-vault/revault_net#e8e614b0cb30736c2d9596c6c6c7a06596b060d6"
 dependencies = [
  "revault_tx",
  "serde",

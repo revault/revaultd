@@ -2,17 +2,22 @@ use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
 
 use std::{
     collections::HashMap,
-    convert::TryFrom,
+    convert::{TryFrom, TryInto},
     fmt, fs,
     io::{self, Read, Write},
+    net::SocketAddr,
     path::PathBuf,
     str::FromStr,
     vec::Vec,
 };
 
-use revault_net::{noise::NoisePrivKey, sodiumoxide};
+use revault_net::{
+    noise::{NoisePrivKey, NoisePubKey},
+    sodiumoxide,
+};
 use revault_tx::{
     bitcoin::{
+        hashes::hex::FromHex,
         secp256k1,
         util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey},
         Address, BlockHash, Script, TxOut,
@@ -145,23 +150,28 @@ impl fmt::Display for VaultStatus {
     }
 }
 
+// An error related to the initialization of communication keys
 #[derive(Debug)]
-enum NoiseError {
-    LibsodiumInit,
+enum KeyError {
     ReadingKey(io::Error),
     WritingKey(io::Error),
+    InvalidKeySize,
 }
 
-impl fmt::Display for NoiseError {
+impl fmt::Display for KeyError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self)
+        match self {
+            Self::ReadingKey(e) => write!(f, "Error reading Noise key: '{}'", e),
+            Self::WritingKey(e) => write!(f, "Error writing Noise key: '{}'", e),
+            Self::InvalidKeySize => write!(f, "Invalid Noise key length"),
+        }
     }
 }
 
-impl std::error::Error for NoiseError {}
+impl std::error::Error for KeyError {}
 
 // The communication keys are (for now) hot, so we just create it ourselves on first run.
-fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, NoiseError> {
+fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, KeyError> {
     let mut noise_secret = NoisePrivKey([0; 32]);
 
     if !secret_file.as_path().exists() {
@@ -170,7 +180,6 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, NoiseE
             secret_file
         );
 
-        sodiumoxide::init().map_err(|_| NoiseError::LibsodiumInit)?;
         noise_secret
             .0
             .copy_from_slice(&sodiumoxide::randombytes::randombytes(32));
@@ -184,17 +193,14 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, NoiseE
             options = options.mode(0o400).clone();
         }
 
-        let mut fd = options
-            .open(secret_file.clone())
-            .map_err(|e| NoiseError::WritingKey(e))?;
+        let mut fd = options.open(secret_file).map_err(KeyError::WritingKey)?;
         fd.write_all(&noise_secret.0)
-            .map_err(|e| NoiseError::WritingKey(e))?;
+            .map_err(KeyError::WritingKey)?;
     } else {
-        let mut noise_secret_fd =
-            fs::File::open(secret_file).map_err(|e| NoiseError::ReadingKey(e))?;
+        let mut noise_secret_fd = fs::File::open(secret_file).map_err(KeyError::ReadingKey)?;
         noise_secret_fd
             .read_exact(&mut noise_secret.0)
-            .map_err(|e| NoiseError::ReadingKey(e))?;
+            .map_err(KeyError::ReadingKey)?;
     }
 
     // TODO: have a decent memory management and mlock() the key
@@ -259,6 +265,10 @@ pub struct RevaultD {
     /// The static private key we use to establish connections to servers. We reuse it, but Trevor
     /// said it's fine! https://github.com/noiseprotocol/noise_spec/blob/master/noise.md#14-security-considerations
     pub noise_secret: NoisePrivKey,
+    /// The ip:port the coordinator is listening on. TODO: Tor
+    pub coordinator_host: SocketAddr,
+    /// The static public key to enact the Noise channel with the Coordinator
+    pub coordinator_noisekey: NoisePubKey,
 
     // Misc stuff
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
@@ -309,7 +319,9 @@ impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
         let our_man_xpub = config.manager_config.map(|x| x.xpub);
-        let our_stk_xpub = config.stakeholder_config.map(|x| x.xpub);
+        let our_stk_xpub = config.stakeholder_config.as_ref().map(|x| x.xpub);
+        // Config should have checked that!
+        assert!(our_man_xpub.is_some() || our_stk_xpub.is_some());
 
         let managers_pubkeys = descriptorxpub_from_xpub(config.managers_xpubs);
         let stakeholders_pubkeys = descriptorxpub_from_xpub(config.stakeholders_xpubs);
@@ -349,6 +361,16 @@ impl RevaultD {
         let noise_secret_file = [data_dir_str, "noise_secret"].iter().collect();
         let noise_secret = read_or_create_noise_key(noise_secret_file)?;
 
+        // TODO: support hidden services
+        let coordinator_host = SocketAddr::from_str(&config.coordinator_host)?;
+        let raw_key: Vec<u8> = FromHex::from_hex(&config.coordinator_noise_key)?;
+        let coordinator_noisekey = NoisePubKey(
+            raw_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| KeyError::InvalidKeySize)?,
+        );
+
         let daemon = !matches!(config.daemon, Some(false));
 
         let secp_ctx = secp256k1::Secp256k1::verification_only();
@@ -364,6 +386,8 @@ impl RevaultD {
             daemon,
             emergency_address,
             noise_secret,
+            coordinator_host,
+            coordinator_noisekey,
             lock_time: 0,
             unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,

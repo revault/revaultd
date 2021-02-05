@@ -56,24 +56,25 @@ CREATE TABLE vaults (
         ON DELETE RESTRICT
 );
 
-/* This stores fully-signed transactions we presign:
+/* This stores transactions we presign:
  * - Emergency (only for stakeholders)
- * - Unvault (only for active vaults)
+ * - Unvault
  * - Cancel
  * - Unvault Emergency (only for stakeholders)
  */
-CREATE TABLE transactions (
+CREATE TABLE presigned_transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     vault_id INTEGER NOT NULL,
     type INTEGER NOT NULL,
     psbt BLOB UNIQUE NOT NULL,
+    fullysigned BOOLEAN NOT NULL CHECK (fullysigned IN (0,1)),
     FOREIGN KEY (vault_id) REFERENCES vaults (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT
 );
 
 CREATE INDEX vault_status ON vaults (status);
-CREATE INDEX vault_transactions ON transactions (vault_id);
+CREATE INDEX vault_transactions ON presigned_transactions (vault_id);
 ";
 
 /// A row in the "wallets" table
@@ -168,4 +169,5 @@ pub struct DbTransaction {
     pub vault_id: u32,
     pub tx_type: TransactionType,
     pub psbt: RevaultTx,
+    pub is_fully_signed: bool,
 }

@@ -233,7 +233,7 @@ pub fn db_transactions(
 ) -> Result<Vec<DbTransaction>, DatabaseError> {
     Ok(db_query(
         db_path,
-        "SELECT * FROM transactions WHERE vault_id = (?1)",
+        "SELECT * FROM presigned_transactions WHERE vault_id = (?1)",
         &[vault_id],
         |row| {
             let id: u32 = row.get(0)?;
@@ -276,11 +276,14 @@ pub fn db_transactions(
                 ),
             };
 
+            let is_fully_signed: bool = row.get(4)?;
+
             Ok(Some(DbTransaction {
                 id,
                 vault_id,
                 tx_type,
                 psbt,
+                is_fully_signed,
             }))
         },
     )?

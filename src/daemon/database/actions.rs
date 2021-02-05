@@ -323,8 +323,8 @@ macro_rules! db_store_transactions {
                 let tx_type = TransactionType::from(&$tx);
                 db_tx
                     .execute(
-                        "INSERT INTO transactions (vault_id, type, psbt) VALUES (?1, ?2, ?3)",
-                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?],
+                        "INSERT INTO presigned_transactions (vault_id, type, psbt, fullysigned) VALUES (?1, ?2, ?3 , ?4)",
+                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?, true as u32],
                     )
                     .map_err(|e| {
                         DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
@@ -370,11 +370,18 @@ mod test {
         datadir_path.push("../../../test_data/datadir");
         let mut config_path = datadir_path.clone();
         config_path.push("config.toml");
+        let mut db_path = datadir_path.clone();
+        db_path.push("revaultd.sqlite3");
 
         let config = Config::from_file(Some(config_path)).expect("Parsing valid config file");
         let mut revaultd = RevaultD::from_config(config).expect("Creating state from config");
         // Tweak the datadir, or it'll create it at ~/.revault/
         revaultd.data_dir = datadir_path.clone();
+
+        // Just in case there is a leftover from a previous run
+        fs::remove_file(db_path).unwrap_or_else(|_| {
+            eprintln!("No leftover");
+        });
 
         revaultd
     }

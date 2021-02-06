@@ -5,8 +5,8 @@ use crate::{
     },
     database::{
         actions::{
-            db_confirm_deposit, db_insert_new_vault, db_unvault_deposit, db_update_deposit_index,
-            db_update_tip,
+            db_confirm_deposit, db_insert_new_unconfirmed_vault, db_unvault_deposit,
+            db_update_deposit_index, db_update_tip,
         },
         interface::{db_deposits, db_wallet},
     },
@@ -290,19 +290,11 @@ fn update_deposits(
             .ok_or_else(|| {
                 BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
             })?;
-        let wallet_tx = bitcoind.get_wallet_transaction(outpoint.txid)?;
-        let blockheight = if matches!(utxo.status, VaultStatus::Funded) {
-            // It MUST exist if 6+ confs!
-            wallet_tx.1.ok_or_else(|| {
-                BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
-            })?
-        } else {
-            // Don't record it at all as we treat it as unconfirmed
-            0
-        };
 
+        // Note that the deposit *might* have already MIN_CONF confirmations, that's fine. We'll
+        // confim it during the next poll.
         let amount = Amount::from_sat(utxo.txo.value);
-        db_insert_new_vault(
+        db_insert_new_unconfirmed_vault(
             &revaultd.read().unwrap().db_file(),
             revaultd
                 .read()
@@ -310,18 +302,12 @@ fn update_deposits(
                 .wallet_id
                 .expect("Wallet id is set at startup in setup_db()"),
             &utxo.status,
-            blockheight,
             &outpoint,
             &amount,
             derivation_index,
         )?;
         log::debug!(
-            "Got a new {} deposit at {} for {} ({})",
-            if blockheight == 0 {
-                "unconfirmed"
-            } else {
-                "confirmed"
-            },
+            "Got a new unconfirmed deposit at {} for {} ({})",
             &outpoint,
             &utxo.txo.script_pubkey,
             &amount

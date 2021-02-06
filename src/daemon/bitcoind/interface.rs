@@ -503,11 +503,7 @@ impl BitcoinD {
                         value,
                         script_pubkey,
                     },
-                    status: if confirmations < MIN_CONF {
-                        VaultStatus::Unconfirmed
-                    } else {
-                        VaultStatus::Funded
-                    },
+                    status: VaultStatus::Unconfirmed,
                 },
             );
         }

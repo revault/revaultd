@@ -235,11 +235,10 @@ pub fn db_update_deposit_index(
 
 /// Insert a new deposit in the database
 #[allow(clippy::too_many_arguments)]
-pub fn db_insert_new_vault(
+pub fn db_insert_new_unconfirmed_vault(
     db_path: &PathBuf,
     wallet_id: u32,
     status: &VaultStatus,
-    blockheight: u32,
     deposit_outpoint: &OutPoint,
     amount: &Amount,
     derivation_index: ChildNumber,
@@ -253,7 +252,7 @@ pub fn db_insert_new_vault(
             params![
                 wallet_id,
                 *status as u32,
-                blockheight,
+                0, // FIXME: it should probably be NULL instead, but no big deal
                 deposit_outpoint.txid.to_vec(),
                 deposit_outpoint.vout,
                 amount.as_sat() as u32, // FIXME: update to next rusqlite!!
@@ -430,18 +429,16 @@ mod test {
 
         let wallet_id = 1;
         let status = VaultStatus::Funded;
-        let blockheight = 100;
         let first_deposit_outpoint = OutPoint::from_str(
             "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
         )
         .unwrap();
         let amount = Amount::from_sat(123456);
         let derivation_index = ChildNumber::from(3);
-        db_insert_new_vault(
+        db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
             &status,
-            blockheight,
             &first_deposit_outpoint,
             &amount,
             derivation_index,
@@ -450,18 +447,16 @@ mod test {
 
         let wallet_id = 1;
         let status = VaultStatus::Funded;
-        let blockheight = 150;
         let second_deposit_outpoint = OutPoint::from_str(
             "e56808d17a866de5a1d0874894c84a759a7cabc8763694966cc6423f4c597a7f:0",
         )
         .unwrap();
         let amount = Amount::from_sat(456789);
         let derivation_index = ChildNumber::from(12);
-        db_insert_new_vault(
+        db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
             &status,
-            blockheight,
             &second_deposit_outpoint,
             &amount,
             derivation_index,
@@ -470,18 +465,16 @@ mod test {
 
         let wallet_id = 1;
         let status = VaultStatus::Unvaulting;
-        let blockheight = 122;
         let third_deposit_outpoint = OutPoint::from_str(
             "616efc37747c8cafc2f99692177a5400bad81b671d8d35ffa347d84b246e9a83:0",
         )
         .unwrap();
         let amount = Amount::from_sat(428000);
         let derivation_index = ChildNumber::from(15);
-        db_insert_new_vault(
+        db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
             &status,
-            blockheight,
             &third_deposit_outpoint,
             &amount,
             derivation_index,
@@ -490,11 +483,10 @@ mod test {
 
         // By the way, trying to insert for an inexistant wallet will fail the
         // db constraint
-        db_insert_new_vault(
+        db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id + 1,
             &status,
-            blockheight,
             &third_deposit_outpoint,
             &amount,
             derivation_index,
@@ -537,18 +529,16 @@ mod test {
         // Let's insert a deposit
         let wallet_id = 1;
         let status = VaultStatus::Funded;
-        let blockheight = 700000;
         let outpoint = OutPoint::from_str(
             "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
         )
         .unwrap();
         let amount = Amount::from_sat(123456);
         let derivation_index = ChildNumber::from(33334);
-        db_insert_new_vault(
+        db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
             &status,
-            blockheight,
             &outpoint,
             &amount,
             derivation_index,

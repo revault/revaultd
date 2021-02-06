@@ -17,7 +17,7 @@ sudo systemctl start postgresql
 sudo su -c "psql -c \"CREATE ROLE test CREATEDB LOGIN PASSWORD 'test'\"" - postgres
 
 # Run the functional tests
-cd tests/servers/coordinatord && cargo build && git submodule update --init && cd ../../../
+cd tests/servers/coordinatord && git submodule update --init && cargo build && cd ../../../
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt

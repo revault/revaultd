@@ -1,21 +1,23 @@
 use crate::{
     database::{
         interface::*,
-        schema::{TransactionType, SCHEMA},
+        schema::{DbTransaction, RevaultTx, TransactionType, SCHEMA},
         DatabaseError, DB_VERSION,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Amount, OutPoint},
+    bitcoin::{secp256k1, util::bip32::ChildNumber, Amount, OutPoint, PublicKey as BitcoinPubKey},
     miniscript::Descriptor,
     scripts::{UnvaultDescriptor, VaultDescriptor},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
 };
 
 use std::{
+    collections::BTreeMap,
     convert::TryInto,
     fs,
     path::PathBuf,
@@ -265,24 +267,61 @@ pub fn db_insert_new_unconfirmed_vault(
     })
 }
 
-/// Mark an unconfirmed deposit as being in 'Funded' state (confirmed)
+macro_rules! db_store_unsigned_transactions {
+    ($db_tx:ident, $vault_id:ident, [$( $tx:ident ),*]) => {
+            $(
+                // We store the transactions without any feebump input. Note that this assertion
+                // would fail if/when we implement multi-inputs Unvaults.
+                assert_eq!($tx.inner_tx().inputs.len(), 1);
+                // They must be freshly generated..
+                assert!($tx.inner_tx().inputs[0].partial_sigs.is_empty());
+
+                let tx_type = TransactionType::from($tx);
+                $db_tx
+                    .execute(
+                        "INSERT INTO presigned_transactions (vault_id, type, psbt, fullysigned) VALUES (?1, ?2, ?3 , ?4)",
+                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?, false as u32],
+                    )
+                    .map_err(|e| {
+                        DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
+                    })?;
+            )*
+    };
+}
+
+/// Mark an unconfirmed deposit as being in 'Funded' state (confirmed), as well as storing the
+/// unsigned "presigned-transactions".
 pub fn db_confirm_deposit(
     db_path: &PathBuf,
     outpoint: &OutPoint,
     blockheight: u32,
+    unvault_tx: &UnvaultTransaction,
+    cancel_tx: &CancelTransaction,
+    emer_tx: &EmergencyTransaction,
+    unemer_tx: &UnvaultEmergencyTransaction,
 ) -> Result<(), DatabaseError> {
-    db_exec(db_path, |tx| {
-        tx.execute(
-            "UPDATE vaults SET status = (?1), blockheight = (?2) WHERE deposit_txid = (?3) \
-             AND deposit_vout = (?4) ",
-            params![
-                VaultStatus::Funded as u32,
-                blockheight,
-                outpoint.txid.to_vec(),
-                outpoint.vout
-            ],
-        )
-        .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
+    let vault_id = db_vault_by_deposit(db_path, outpoint)?
+        .ok_or_else(|| {
+            DatabaseError(format!(
+                "Confirming '{}' but it does not exist in db?",
+                outpoint
+            ))
+        })?
+        .id;
+
+    db_exec(db_path, |db_tx| {
+        db_tx
+            .execute(
+                "UPDATE vaults SET status = (?1), blockheight = (?2) WHERE id = (?3)",
+                params![VaultStatus::Funded as u32, blockheight, vault_id,],
+            )
+            .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
+
+        db_store_unsigned_transactions!(
+            db_tx,
+            vault_id,
+            [unvault_tx, cancel_tx, emer_tx, unemer_tx]
+        );
 
         Ok(())
     })
@@ -305,51 +344,78 @@ pub fn db_unvault_deposit(db_path: &PathBuf, outpoint: &OutPoint) -> Result<(), 
     })
 }
 
-// Store a set of pre-signed transactions in the `transactions` table for the given vault_id.
-// The transactions MUST ALL be finalized before being passed.
-// Bitcoin transactions are inserted in a single database transaction (atomically).
-macro_rules! db_store_transactions {
-    ($db_path:ident, $vault_id:ident, [$( $tx:ident ),*]) => {
-        db_exec($db_path, |db_tx| {
-            $(
-                // We already do these check in revault_tx's finalize, so only double check on Debug
-                #[cfg(debug_assertions)]
-                {
-                    for i in 0..$tx.inner_tx().inputs.len() {
-                        $tx.verify_input(i)?;
-                    }
-                }
-                let tx_type = TransactionType::from(&$tx);
-                db_tx
-                    .execute(
-                        "INSERT INTO presigned_transactions (vault_id, type, psbt, fullysigned) VALUES (?1, ?2, ?3 , ?4)",
-                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?, true as u32],
-                    )
-                    .map_err(|e| {
-                        DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
-                    })?;
-                db_tx.execute("UPDATE vaults SET status = (?1) WHERE id = (?2)",
-                        params![VaultStatus::Secured as u32, $vault_id],
-                    )
-                    .map_err(|e| {
-                        DatabaseError(format!("Marking vault '{}' as secure: {}", $vault_id, e))
-                    })?;
-            )*
-
-            Ok(())
-        })
-    };
+fn revault_tx_merge_sigs(
+    tx: &mut impl RevaultTransaction,
+    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
+    secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+) -> Result<(bool, Vec<u8>), DatabaseError> {
+    tx.inner_tx_mut().inputs[0].partial_sigs.extend(sigs);
+    let fully_signed = tx.finalize(secp_ctx).is_ok();
+    let raw_psbt = tx.as_psbt_serialized()?;
+    Ok((fully_signed, raw_psbt))
 }
 
-/// Store the *fully-signed* revocation transactions for this vault in db.
-pub fn db_store_revocation_txs(
+/// Update the presigned transaction in-db. If the transaction is valid and no more revocation
+/// transactions are remaining unsigned for this vault, it will update the vault status as well in
+/// the same database transaction.
+pub fn db_update_presigned_tx(
     db_path: &PathBuf,
     vault_id: u32,
-    cancel: CancelTransaction,
-    emer: EmergencyTransaction,
-    unvault_emer: UnvaultEmergencyTransaction,
+    tx_db_id: u32,
+    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
+    secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
 ) -> Result<(), DatabaseError> {
-    db_store_transactions!(db_path, vault_id, [cancel, emer, unvault_emer])
+    db_exec(db_path, move |db_tx| {
+        // Fetch the PSBT in the transaction, to avoid someone else to modify it under our feet..
+        let presigned_tx: DbTransaction = db_tx
+            .prepare("SELECT * FROM presigned_transactions WHERE id = (?1)")?
+            // All presigned transactions but the Unvault are revocation txs
+            .query(params![tx_db_id])?
+            .next()?
+            .ok_or_else(|| {
+                DatabaseError(format!(
+                    "Transaction with id '{}' (vault id '{}') not found in db",
+                    tx_db_id, vault_id
+                ))
+            })?
+            .try_into()?;
+        // Now we are safe merging the signatures on what is the latest version of the PSBT
+        let (fully_signed, raw_psbt) = match presigned_tx.psbt {
+            RevaultTx::Cancel(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
+            RevaultTx::Emergency(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
+
+            RevaultTx::UnvaultEmergency(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
+            RevaultTx::Unvault(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
+        };
+
+        db_tx.execute(
+            "UPDATE presigned_transactions SET psbt = (?1), fullysigned = (?2) WHERE id = (?3)",
+            params![raw_psbt, fully_signed, tx_db_id],
+        )?;
+
+        // If this one was entirely signed, are there some remaining unsigned ones ?
+        if fully_signed
+            && db_tx
+                .prepare(
+                    "SELECT * FROM presigned_transactions WHERE fullysigned = 0 AND type != (?1)",
+                )?
+                // All presigned transactions but the Unvault are revocation txs
+                .query(params![TransactionType::Unvault as u32])?
+                .next()?
+                .is_none()
+        {
+            db_tx
+                .execute(
+                    "UPDATE vaults SET status = (?1) WHERE id = (?2) ",
+                    params![VaultStatus::Secured as u32, vault_id],
+                )
+                .map_err(|e| {
+                    DatabaseError(format!("Updating vault to 'secured': {}", e.to_string()))
+                })?;
+        }
+
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -358,11 +424,11 @@ mod test {
     use crate::{database::schema::RevaultTx, revaultd::RevaultD};
     use common::config::Config;
     use revault_tx::{
-        bitcoin::{Network, OutPoint},
+        bitcoin::{Network, OutPoint, PublicKey},
         transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
     };
 
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, str::FromStr};
 
     fn dummy_revaultd() -> RevaultD {
         let mut datadir_path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
@@ -390,6 +456,22 @@ mod test {
         let mut db_path = datadir_path.clone();
         db_path.push("revaultd.sqlite3");
         fs::remove_file(db_path).expect("Removing db path");
+    }
+
+    fn revault_tx_add_dummy_sig(tx: &mut impl RevaultTransaction, input_index: usize) {
+        let pubkey = PublicKey::from_str(
+            "022634c3c8001a9e7700905281ae601dd73a4375e0e7801c22ffcc0443f5599935",
+        )
+        .unwrap();
+        let sig = vec![
+            48, 68, 2, 32, 104, 77, 230, 162, 30, 201, 33, 78, 96, 13, 165, 229, 132, 246, 129,
+            200, 125, 122, 177, 58, 8, 201, 76, 192, 149, 116, 228, 71, 144, 48, 41, 92, 2, 32, 30,
+            61, 121, 165, 139, 95, 6, 255, 221, 169, 135, 102, 29, 158, 231, 222, 117, 31, 200, 27,
+            178, 145, 230, 171, 54, 181, 12, 196, 182, 23, 175, 86, 129,
+        ];
+        tx.inner_tx_mut().inputs[input_index]
+            .partial_sigs
+            .insert(pubkey, sig);
     }
 
     fn test_db_creation() {
@@ -520,7 +602,7 @@ mod test {
         clear_datadir(&revaultd.data_dir);
     }
 
-    fn test_db_store_revocation_txs() {
+    fn test_db_store_presigned_txs() {
         let mut revaultd = dummy_revaultd();
         let db_path = revaultd.db_file();
 
@@ -546,21 +628,70 @@ mod test {
         .unwrap();
         let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
 
-        // We can store fully-signed revocation transactions
-        let emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAIcCAAAAArFynMjrSjRoYgTnYmTh/eya2EpPbOkYdSBK+YSepb5xAAAAAAD9////wwc1PjONWaQ6k8Ff89IO4tjDCOOdeuKikZ5sNkgcBEYAAAAAAP3///8B+GADAAAAAAAiACAc4QQhSEvVjup9r++li+ikFVLc95mFU+iGeCAU7wz5FQAAAAAAAQEriJQDAAAAAAAiACAc4QQhSEvVjup9r++li+ikFVLc95mFU+iGeCAU7wz5FQEI2gQARzBEAiBFBSzPW8a+GyGXrBOGyXX8kNRlI5AKoo6c96mQCnXR9gIgUqpeBYqszcnrS3/TQvGfgYRelf78CzSxlt/Jr5lLSNuBRzBEAiAFDfzvHQQtLTu3LDom1Uo4nt6I7xNr4qgIxLT1a459fAIgfpilxRE82/M2lSvo0EoNmoPt6FKrToAB7T3yITPSETyBR1IhAhwDjK9CjcFGN5YjIRrPavF2FnMnrTsMogehacoHKS0aIQP7X94RPdx3P6Qy0sJa7U6RmkPXIqGiDKtWciD/Ce7D4VKuAAEBH5rdAAAAAAAAFgAUaW37E5hUMCLu61U7VnB//VwedisBCGwCSDBFAiEAppnl4d5gkO3sKSCiJZyXm1n3V5Udr24cCj52BqwXpk8CIG0OaqU5d9oB3Ul7SLKBBpyGv0OuHIwhwieBXAOzZfzYASECqGQbqKq3ulO3U7oBBis9NheNk0Zhq3kGL4J5JA3lvu0AAA==").unwrap();
-        let cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAIcCAAAAAuyFhupGoLqUKY8M4QpTeVaoxLw96bl+2UZqnjwjUkuPAAAAAAD9////wwc1PjONWaQ6k8Ff89IO4tjDCOOdeuKikZ5sNkgcBEYAAAAAAP3///8B0soCAAAAAAAiACAc4QQhSEvVjup9r++li+ikFVLc95mFU+iGeCAU7wz5FQAAAAAAAQErQA0DAAAAAAAiACAWHb8jPz1qlOOjBiB74iByuZvixegBDoMqf8KQ3yUBlwEI/YIBBkcwRAIgB00daH7aJ2LFYfQeuHwvj2m/kSzLTwi3DLc3QscJPU8CIB4f4V6EZ49ajsEMZy++NCMi8yOWUpBsyqtlgA7xVVkUgSED+1/eET3cdz+kMtLCWu1OkZpD1yKhogyrVnIg/wnuw+FHMEQCIFUSHXB+t/eHmIlQePYjdbGMRP+zMbg+mU6a4ygrWkfKAiBfnvJ/V4/GS9M7hywxtVg5gvSClNQmICsNau1TgSiy34EhAhwDjK9CjcFGN5YjIRrPavF2FnMnrTsMogehacoHKS0aAKshAwnCKhSjqfl9G5NEQhvawpcj9v8qBdFLFhW4zSJmXUyXrFGHZHapFMvTdVfBbYudE6mAVG9ipw3MjljBiKxrdqkUdWsiYLDcCQCwNrAIO/hjbwoUnYaIrGyTUodnUiEDa8fElGskCZLM6ODgIPKIOnXC54mzyTjJZqNomUnFxt8hAxLdF6uofuC5OH7yFErtmJOoryiWTe52F8UJsHp7hmJUUq8DwvwAsmgAAQEfmt0AAAAAAAAWABRpbfsTmFQwIu7rVTtWcH/9XB52KwEIbAJIMEUCIQC83pn82XF0nh/Wm+2nZvK7oWWfVUdP/5DOChi/3mdcvAIgEXGgP7TZSGUM7IB4J3HENmAuAqINtmaP2LDELvo9aQIBIQKoZBuoqre6U7dTugEGKz02F42TRmGreQYvgnkkDeW+7QABAUdSIQIcA4yvQo3BRjeWIyEaz2rxdhZzJ607DKIHoWnKByktGiED+1/eET3cdz+kMtLCWu1OkZpD1yKhogyrVnIg/wnuw+FSrgA=").unwrap();
-        let unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAeyFhupGoLqUKY8M4QpTeVaoxLw96bl+2UZqnjwjUkuPAAAAAAD9////AdLKAgAAAAAAIgAgHOEEIUhL1Y7qfa/vpYvopBVS3PeZhVPohnggFO8M+RUAAAAAAAEBK0ANAwAAAAAAIgAgFh2/Iz89apTjowYge+Igcrmb4sXoAQ6DKn/CkN8lAZcBCP2CAQZHMEQCIAdNHWh+2idixWH0Hrh8L49pv5Esy08Itwy3N0LHCT1PAiAeH+FehGePWo7BDGcvvjQjIvMjllKQbMqrZYAO8VVZFIEhA/tf3hE93Hc/pDLSwlrtTpGaQ9cioaIMq1ZyIP8J7sPhRzBEAiBVEh1wfrf3h5iJUHj2I3WxjET/szG4PplOmuMoK1pHygIgX57yf1ePxkvTO4csMbVYOYL0gpTUJiArDWrtU4Eost+BIQIcA4yvQo3BRjeWIyEaz2rxdhZzJ607DKIHoWnKByktGgCrIQMJwioUo6n5fRuTREIb2sKXI/b/KgXRSxYVuM0iZl1Ml6xRh2R2qRTL03VXwW2LnROpgFRvYqcNzI5YwYisa3apFHVrImCw3AkAsDawCDv4Y28KFJ2GiKxsk1KHZ1IhA2vHxJRrJAmSzOjg4CDyiDp1wueJs8k4yWajaJlJxcbfIQMS3RerqH7guTh+8hRK7ZiTqK8olk3udhfFCbB6e4ZiVFKvA8L8ALJoAAA=").unwrap();
-        db_store_revocation_txs(
+        // We can store unsigned transactions
+        let mut emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAVqQwvZ+XLjEW+P90WnqdbVWkC1riPNhF8j9Ca4dM0RiAAAAAAD9////AfhgAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK4iUAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQBAwSBAAAAAQVHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4AAA==").unwrap();
+        let mut cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAEBR1IhA9+bpoeRoYk6Fehku5U6JFn6v0b8vq0SPVzELn/n6DqBIQPRrV6R4VL8XI/QyVm2kb8+fQjbDMB9jRL5kWvIHNlkZFKuAA==").unwrap();
+        let mut unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAA=").unwrap();
+        let  unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAcRWqIPG85zGye1nuRlbwWKkko4g91Vd/508Ff6vKklpAAAAAAD9////AkANAwAAAAAAIgAgsT7u0Lo8o2WEfxS1nXWtQzsdJTMJnnOC5fwg0nYPvpowdQAAAAAAACIAIAx0DegrXfBr4D0XdetrGgAT2Q3AZANYm0rJL8L/Epp/AAAAAAABASuIlAMAAAAAACIAIGaHQ5brMNbT+WCtfE/WPW8gkmMir5NXAKRsQZAs9cT2AQMEAQAAAAEFR1IhAwYSJ4FeXdf/XPw6lFHpeMFeGvh88f+rWN2VtnaW75TNIQOn5Sg6nytLwT5FT9z5KmV/LMN1pZRsqbworUMwRdRN0lKuAAEBqiEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYdkdqkUNlKGE2FxZM1sR08UC7GJfzRqXlSIrGt2qRQoTG+3hS6ElXzBw+21PRDtEJ9sKoisbJNSh2dSIQNiqGzCWTbNvmnTm7l6YNTctgzoP5xaOW6hiXSWVkoClCEC/w0jRRlaB3Oa5c0OPrRAxbxE1kdfzV24OWsaSCGLgIVSrwLWNLJoAAEBJSEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYcA").unwrap();
+
+        let blockheight = 700000;
+        db_confirm_deposit(
             &db_path,
-            db_vault.id,
-            cancel_tx.clone(),
-            emer_tx.clone(),
-            unemer_tx.clone(),
+            &outpoint,
+            blockheight,
+            &unvault_tx,
+            &cancel_tx,
+            &emer_tx,
+            &unemer_tx,
         )
         .unwrap();
 
-        // Sanity check we can query them now
-        let db_txs: Vec<RevaultTx> = db_transactions(&db_path, db_vault.id, &[])
+        // Sanity check we can add sigs to them now
+        let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        revault_tx_add_dummy_sig(&mut cancel_tx, 0);
+        db_update_presigned_tx(
+            &db_path,
+            db_vault.id,
+            tx_db_id,
+            cancel_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            &revaultd.secp_ctx,
+        )
+        .unwrap();
+        let (_, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+
+        let (tx_db_id, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        revault_tx_add_dummy_sig(&mut emer_tx, 0);
+        db_update_presigned_tx(
+            &db_path,
+            db_vault.id,
+            tx_db_id,
+            emer_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            &revaultd.secp_ctx,
+        )
+        .unwrap();
+        let (_, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+
+        let (tx_db_id, stored_unemer_tx) =
+            db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        revault_tx_add_dummy_sig(&mut unemer_tx, 0);
+        db_update_presigned_tx(
+            &db_path,
+            db_vault.id,
+            tx_db_id,
+            unemer_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            &revaultd.secp_ctx,
+        )
+        .unwrap();
+        let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+
+        // They can also be queried by listtransactions
+        let db_txs: Vec<RevaultTx> = db_presigned_transactions_filtered(&db_path, db_vault.id, &[])
             .unwrap()
             .into_iter()
             .map(|x| x.psbt)
@@ -569,17 +700,20 @@ mod test {
         assert!(db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
         assert!(db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
 
-        let db_txs: Vec<RevaultTx> =
-            db_transactions(&db_path, db_vault.id, &[TransactionType::Emergency])
-                .unwrap()
-                .into_iter()
-                .map(|x| x.psbt)
-                .collect();
+        let db_txs: Vec<RevaultTx> = db_presigned_transactions_filtered(
+            &db_path,
+            db_vault.id,
+            &[TransactionType::Emergency],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|x| x.psbt)
+        .collect();
         assert!(db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
         assert!(!db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
         assert!(!db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
 
-        let db_txs: Vec<RevaultTx> = db_transactions(
+        let db_txs: Vec<RevaultTx> = db_presigned_transactions_filtered(
             &db_path,
             db_vault.id,
             &[TransactionType::UnvaultEmergency, TransactionType::Cancel],
@@ -601,6 +735,6 @@ mod test {
     fn db_sequential_test_runner() {
         test_db_creation();
         test_db_fetch_deposits();
-        test_db_store_revocation_txs();
+        test_db_store_presigned_txs();
     }
 }

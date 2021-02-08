@@ -58,6 +58,12 @@ pub enum BitcoindMessageOut {
     WalletTransaction(Txid, SyncSender<Option<WalletTransaction>>),
 }
 
+/// Outgoing to the signature fetcher thread
+#[derive(Debug)]
+pub enum SigFetcherMessageOut {
+    Shutdown,
+}
+
 #[derive(Debug)]
 pub struct WalletTransaction {
     pub hex: String,

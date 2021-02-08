@@ -3,6 +3,7 @@ mod control;
 mod database;
 mod jsonrpc;
 mod revaultd;
+mod sigfetcher;
 mod threadmessages;
 
 use crate::{
@@ -14,6 +15,7 @@ use crate::{
         UserRole,
     },
     revaultd::RevaultD,
+    sigfetcher::signature_fetcher_loop,
 };
 use common::{assume_ok, config::Config};
 use revault_net::sodiumoxide;
@@ -66,15 +68,19 @@ fn daemon_main(mut revaultd: RevaultD) {
         "Setting up JSONRPC server"
     );
 
-    // We start two threads, the JSONRPC one in order to be controlled externally,
-    // and the bitcoind one to poll bitcoind until we die.
-    // We may get requests from the RPC one, and send requests to the bitcoind one.
+    // We start three threads, the JSONRPC one in order to be controlled externally,
+    // the bitcoind one to poll bitcoind for chain updates, and the sigfetcher one to
+    // poll the coordinator for missing signatures for pre-signed transactions.
+    // We may get requests from the RPC one, and send requests to the two others.
 
     // The communication from them to us
     let (rpc_tx, rpc_rx) = mpsc::channel();
 
     // The communication from us to the bitcoind thread
     let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
+
+    // The communication from us to the signature poller
+    let (sigfetcher_tx, sigfetcher_rx) = mpsc::channel();
 
     let rpc_thread = thread::spawn(move || {
         assume_ok!(
@@ -92,6 +98,14 @@ fn daemon_main(mut revaultd: RevaultD) {
         );
     });
 
+    let sigfetcher_revaultd = revaultd.clone();
+    let sigfetcher_thread = thread::spawn(move || {
+        assume_ok!(
+            signature_fetcher_loop(sigfetcher_rx, sigfetcher_revaultd),
+            "Error in signature fetcher thread"
+        )
+    });
+
     log::info!(
         "revaultd started on network {}",
         revaultd.read().unwrap().bitcoind_config.network
@@ -103,9 +117,11 @@ fn daemon_main(mut revaultd: RevaultD) {
             db_path,
             network,
             rpc_rx,
+            rpc_thread,
             bitcoind_tx,
             bitcoind_thread,
-            rpc_thread,
+            sigfetcher_tx,
+            sigfetcher_thread
         ),
         "Error in main loop"
     );

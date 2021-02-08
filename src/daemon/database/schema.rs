@@ -5,8 +5,7 @@ use revault_tx::{
         Amount, OutPoint,
     },
     transactions::{
-        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -101,11 +100,10 @@ pub struct DbVault {
     pub derivation_index: ChildNumber,
 }
 
-/// The type of the transaction, as stored in the "transactions" table
+/// The type of the transaction, as stored in the "presigned_transactions" table
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransactionType {
     Unvault,
-    Spend,
     Cancel,
     Emergency,
     UnvaultEmergency,
@@ -117,10 +115,9 @@ impl TryFrom<u32> for TransactionType {
     fn try_from(n: u32) -> Result<Self, Self::Error> {
         match n {
             0 => Ok(Self::Unvault),
-            1 => Ok(Self::Spend),
-            2 => Ok(Self::Cancel),
-            3 => Ok(Self::Emergency),
-            4 => Ok(Self::UnvaultEmergency),
+            1 => Ok(Self::Cancel),
+            2 => Ok(Self::Emergency),
+            3 => Ok(Self::UnvaultEmergency),
             _ => Err(()),
         }
     }
@@ -139,16 +136,14 @@ tx_type_from_tx!(UnvaultTransaction, Unvault);
 tx_type_from_tx!(CancelTransaction, Cancel);
 tx_type_from_tx!(EmergencyTransaction, Emergency);
 tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
-tx_type_from_tx!(SpendTransaction, Spend);
 
-/// A transaction stored in the 'transactions' table
+/// A transaction stored in the 'presigned_transactions' table
 #[derive(Debug, PartialEq)]
 pub enum RevaultTx {
     Unvault(UnvaultTransaction),
     Cancel(CancelTransaction),
     Emergency(EmergencyTransaction),
     UnvaultEmergency(UnvaultEmergencyTransaction),
-    Spend(SpendTransaction),
 }
 
 /// Boilerplate to get a specific variant of the RevaultTx enum if You Are Confident :TM:
@@ -162,6 +157,7 @@ macro_rules! assert_tx_type {
     };
 }
 
+// FIXME: naming it "db transaction" was ambiguous..
 /// A row in the "transactions" table
 #[derive(Debug)]
 pub struct DbTransaction {

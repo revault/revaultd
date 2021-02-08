@@ -8,7 +8,7 @@ use crate::{
 
 use std::{
     collections::{HashMap, VecDeque},
-    io::{self, Read, Write},
+    io::{self, Write},
     path::PathBuf,
     sync::{mpsc::Sender, Arc, RwLock},
 };
@@ -38,7 +38,7 @@ fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
 }
 
 // Returns an error only on a fatal one, and None on recoverable ones.
-fn read_bytes_from_stream(mut stream: &UnixStream) -> Result<Option<Vec<u8>>, io::Error> {
+fn read_bytes_from_stream(stream: &mut dyn io::Read) -> Result<Option<Vec<u8>>, io::Error> {
     let mut buf = vec![0; 512];
     let mut total_read = 0;
 
@@ -350,11 +350,11 @@ pub fn rpcserver_loop(tx: Sender<RpcMessageIn>, listener: UnixListener) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{rpcserver_loop, rpcserver_setup, trimmed};
+    use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed};
     use crate::threadmessages::RpcMessageIn;
 
     use std::{
-        io::{Read, Write},
+        io::{Cursor, Read, Write},
         path::PathBuf,
         sync::mpsc,
         thread,
@@ -405,6 +405,18 @@ mod tests {
         match rx.recv() {
             Ok(RpcMessageIn::Shutdown) => {}
             _ => panic!("Didn't receive shutdown"),
+        }
+    }
+
+    #[test]
+    fn test_bytes_reader() {
+        let samples = [vec![22; 22], vec![1; 522], vec![189; 28903]];
+
+        // TODO: read_bytes_from_stream() would make a great fuzz target..
+        for data in samples.iter() {
+            let mut stream = Cursor::new(data.clone());
+            let res = read_bytes_from_stream(&mut stream);
+            assert_eq!(&res.unwrap().unwrap(), data);
         }
     }
 }

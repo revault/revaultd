@@ -164,9 +164,7 @@ known and confirmed ([`funded`](#vault-statuses)) vault.
 
 Hand signed PSBTs to the daemon. The PSBT may comport multiple signatures, but the call
 will error if the signature for "our" key is not part of this set.  
-This call will not return until having fetched all the signatures for satisfying the
-transactions, and transmitted to its watchtower. See the [flows](#stakeholder-flows) for more information.  
-On error, transactions are **not stored** by any mean and the process must be retried.
+See the [flows](#stakeholder-flows) for more information.  
 
 #### Request
 

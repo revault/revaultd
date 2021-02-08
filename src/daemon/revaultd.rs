@@ -8,6 +8,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     str::FromStr,
+    time,
     vec::Vec,
 };
 
@@ -269,14 +270,17 @@ pub struct RevaultD {
     pub coordinator_host: SocketAddr,
     /// The static public key to enact the Noise channel with the Coordinator
     pub coordinator_noisekey: NoisePubKey,
+    pub coordinator_poll_interval: time::Duration,
 
-    // Misc stuff
+    // 'Wallet' stuff
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
     /// keys used to generate a script from bitcoind until we can pass it xpub-expressed
     /// Miniscript descriptors.
     pub derivation_index_map: HashMap<Script, ChildNumber>,
     /// The id of the wallet used in the db
     pub wallet_id: Option<u32>,
+
+    // Misc stuff
     /// We store all our data in one place, that's here.
     pub data_dir: PathBuf,
     /// Should we run as a daemon? (Default: yes)
@@ -370,6 +374,8 @@ impl RevaultD {
                 .try_into()
                 .map_err(|_| KeyError::InvalidKeySize)?,
         );
+        let coordinator_poll_interval =
+            time::Duration::from_secs(config.coordinator_poll_seconds.unwrap_or(60));
 
         let daemon = !matches!(config.daemon, Some(false));
 
@@ -388,6 +394,7 @@ impl RevaultD {
             noise_secret,
             coordinator_host,
             coordinator_noisekey,
+            coordinator_poll_interval,
             lock_time: 0,
             unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,

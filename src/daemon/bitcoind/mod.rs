@@ -53,3 +53,9 @@ impl From<simple_http::Error> for BitcoindError {
         Self::Server(Error::Transport(Box::new(e)))
     }
 }
+
+impl From<revault_tx::Error> for BitcoindError {
+    fn from(e: revault_tx::Error) -> Self {
+        Self::Custom(format!("revault_tx error in bitcoind thread: {}", e))
+    }
+}

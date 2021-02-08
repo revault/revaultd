@@ -14,7 +14,15 @@ use crate::{
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
 use common::config::BitcoindConfig;
-use revault_tx::bitcoin::{Amount, Network, OutPoint, TxOut, Txid};
+use revault_tx::{
+    bitcoin::{Amount, Network, OutPoint, TxOut, Txid},
+    transactions::{
+        transaction_chain, CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
+    },
+    txins::VaultTxIn,
+    txouts::VaultTxOut,
+};
 
 use std::{
     collections::HashMap,
@@ -244,6 +252,51 @@ fn update_tip(
     Ok(())
 }
 
+// Get fresh to-be-presigned transactions for this deposit utxo
+fn presigned_transactions(
+    revaultd: &RevaultD,
+    outpoint: &OutPoint,
+    utxo: &DepositInfo,
+) -> Result<
+    (
+        UnvaultTransaction,
+        CancelTransaction,
+        EmergencyTransaction,
+        UnvaultEmergencyTransaction,
+    ),
+    BitcoindError,
+> {
+    // We use the same derivation index for all descriptors.
+    let derivation_index = *revaultd
+        .derivation_index_map
+        .get(&utxo.txo.script_pubkey)
+        .ok_or_else(|| {
+            BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
+        })?;
+    let deposit_descriptor = revaultd.vault_descriptor.derive(derivation_index);
+    let unvault_descriptor = revaultd.unvault_descriptor.derive(derivation_index);
+    let cpfp_descriptor = revaultd.cpfp_descriptor.derive(derivation_index);
+    let emer_address = revaultd.emergency_address.clone(); // FIXME: should be valid for manager
+
+    // Reconstruct the deposit UTXO and derive all pre-signed transactions out of it.
+    let vault_txin = VaultTxIn::new(
+        *outpoint,
+        VaultTxOut::new(utxo.txo.value, &deposit_descriptor, revaultd.xpub_ctx()),
+    );
+    let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
+        vault_txin,
+        &deposit_descriptor,
+        &unvault_descriptor,
+        &cpfp_descriptor,
+        emer_address,
+        revaultd.xpub_ctx(),
+        revaultd.lock_time,
+        revaultd.unvault_csv,
+    )?;
+
+    Ok((unvault_tx, cancel_tx, emer_tx, unemer_tx))
+}
+
 // Fill up the deposit UTXOs cache from db vaults
 fn populate_deposit_cache(
     revaultd: &RevaultD,
@@ -343,14 +396,25 @@ fn update_deposits(
         }
     }
 
-    for (outpoint, _) in conf_deposits.into_iter() {
+    for (outpoint, utxo) in conf_deposits.into_iter() {
         let blockheight = bitcoind
             .get_wallet_transaction(outpoint.txid)?
             .1
             .ok_or_else(|| {
                 BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
             })?;
-        db_confirm_deposit(&revaultd.read().unwrap().db_file(), &outpoint, blockheight)?;
+        let (unvault_tx, cancel_tx, emer_tx, unemer_tx) =
+            presigned_transactions(&revaultd.read().unwrap(), &outpoint, &utxo)?;
+        // FIXME: emergencies should be optional (managers)
+        db_confirm_deposit(
+            &revaultd.read().unwrap().db_file(),
+            &outpoint,
+            blockheight,
+            &unvault_tx,
+            &cancel_tx,
+            &emer_tx,
+            &unemer_tx,
+        )?;
         deposits_cache
             .get_mut(&outpoint)
             .ok_or_else(|| BitcoindError::Custom("An unknown vault got confirmed?".to_string()))?

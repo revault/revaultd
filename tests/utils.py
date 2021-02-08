@@ -627,6 +627,7 @@ class Revaultd(TailableProc):
 
             f.write("coordinator_host = \"127.0.0.1:8383\"\n")
             f.write(f"coordinator_noise_key = \"{coordinator_noise_key}\"\n")
+            f.write(f"coordinator_poll_seconds = 1\n")
 
             f.write("stakeholders_xpubs = [")
             for stk in stks:
@@ -669,8 +670,8 @@ class Revaultd(TailableProc):
                 f.write("]\n")
 
     def wait_for_deposit(self, outpoint):
-        """Polls listvaults until we acknowledge the vault at {outpoint}"""
-        wait_for(lambda: len(self.rpc.listvaults([], [outpoint])["vaults"]) > 0)
+        """Polls listvaults until we acknowledge the confirmed vault at {outpoint}"""
+        wait_for(lambda: len(self.rpc.listvaults(["funded"], [outpoint])["vaults"]) > 0)
 
     def start(self):
         TailableProc.start(self)

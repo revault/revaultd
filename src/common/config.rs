@@ -66,6 +66,8 @@ pub struct Config {
     pub coordinator_host: String,
     /// The Noise static public key of the sync server
     pub coordinator_noise_key: String,
+    /// The poll intervals for signature fetching (default: 1min)
+    pub coordinator_poll_seconds: Option<u64>,
     /// An optional custom data directory
     pub data_dir: Option<PathBuf>,
     /// Whether to daemonize the process

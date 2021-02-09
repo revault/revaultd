@@ -16,6 +16,7 @@ use std::{
     path::PathBuf,
     process,
     sync::{mpsc::Sender, Arc, RwLock},
+    thread,
 };
 
 #[cfg(not(windows))]
@@ -27,6 +28,9 @@ use mio::{
 use uds_windows::{UnixListener, UnixStream};
 
 use jsonrpc_core::{futures::Future, Call, MethodCall, Response};
+
+// Maximum number of concurrent handlers for incoming RPC commands
+const MAX_HANDLER_THREADS: usize = 4;
 
 // Remove trailing newlines from utf-8 byte stream
 fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
@@ -123,6 +127,31 @@ fn write_byte_stream(stream: &mut UnixStream, resp: &str) -> Result<bool, io::Er
 #[cfg(not(windows))]
 type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>;
 
+fn handle_single_request(
+    jsonrpc_io: Arc<RwLock<jsonrpc_core::MetaIoHandler<JsonRpcMetaData>>>,
+    metadata: JsonRpcMetaData,
+    resp_queue: Arc<RwLock<VecDeque<String>>>,
+    message: MethodCall,
+) {
+    let message_id = message.id.clone();
+
+    let res = assume_some!(
+        jsonrpc_io
+            .read()
+            .unwrap()
+            .handle_call(Call::MethodCall(message), metadata)
+            .wait()
+            .expect("jsonrpc_core says: Handler calls can never fail."),
+        "This is a method call, there is always a response."
+    );
+    let resp = Response::Single(res);
+    let resp_str =
+        serde_json::to_string(&resp).expect("jsonrpc_core says: This should never fail.");
+
+    log::trace!("Responding to method {:?} with '{}'", message_id, resp_str);
+    resp_queue.write().unwrap().push_back(resp_str);
+}
+
 // Read request from the stream, parse it as JSON and handle the JSONRPC command.
 // Returns true if parsed correctly, false otherwise.
 // Extend the cache with data read from the stream, and parse it as a set of JSONRPC requests (no
@@ -133,11 +162,10 @@ fn read_handle_request(
     cache: &mut Vec<u8>,
     stream: &mut UnixStream,
     resp_queue: &mut Arc<RwLock<VecDeque<String>>>,
-    jsonrpc_io: &jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
+    jsonrpc_io: &Arc<RwLock<jsonrpc_core::MetaIoHandler<JsonRpcMetaData>>>,
     metadata: &JsonRpcMetaData,
-) -> Result<bool, io::Error> {
-    // Set to true if we succesfully read something
-    let mut read_something = false;
+    handler_threads: &mut VecDeque<thread::JoinHandle<()>>,
+) -> Result<(), io::Error> {
     // We use an optional index if there is some left unparsed bytes, because borrow checker :)
     let mut leftover = None;
 
@@ -145,7 +173,7 @@ fn read_handle_request(
         cache.extend(new);
     } else {
         // Nothing new? We can short-circuit.
-        return Ok(false);
+        return Ok(());
     }
 
     let mut de = serde_json::Deserializer::from_slice(cache).into_iter::<MethodCall>();
@@ -155,20 +183,23 @@ fn read_handle_request(
         match method_call {
             // Get a response and append it to the response queue
             Ok(m) => {
-                let res = assume_some!(
-                    jsonrpc_io
-                        .handle_call(Call::MethodCall(m), metadata.clone())
-                        .wait()
-                        .expect("jsonrpc_core says: Handler calls can never fail."),
-                    "This is a method call, there is always a response."
-                );
-                let resp = Response::Single(res);
-                let resp_str = serde_json::to_string(&resp)
-                    .expect("jsonrpc_core says: This should never fail.");
+                let t_io_handler = jsonrpc_io.clone();
+                let t_meta = metadata.clone();
+                let t_queue = resp_queue.clone();
 
-                log::trace!("Responding with '{}'", resp_str);
-                resp_queue.write().unwrap().push_back(resp_str);
-                read_something = true;
+                // If there are too many threads spawned, wait for the oldest one to complete.
+                // FIXME: we can be smarter than that..
+                if handler_threads.len() >= MAX_HANDLER_THREADS {
+                    handler_threads
+                        .pop_front()
+                        .expect("Just checked the length")
+                        .join()
+                        .unwrap();
+                }
+
+                handler_threads.push_back(thread::spawn(move || {
+                    handle_single_request(t_io_handler, t_meta, t_queue, m)
+                }));
             }
             // Parsing error? Assume it's a message we'll be able to read later.
             Err(e) => {
@@ -188,7 +219,7 @@ fn read_handle_request(
         cache.clear();
     }
 
-    Ok(read_something)
+    Ok(())
 }
 
 // For all but Windows, we use Mio.
@@ -208,6 +239,9 @@ fn mio_loop(
 
     // Cache what we read from the socket, in case we read only half a message.
     let mut read_cache = Vec::with_capacity(1024);
+    let jsonrpc_io = Arc::from(RwLock::from(jsonrpc_io));
+    // Handle to thread currently handling commands we were sent.
+    let mut handler_threads = VecDeque::with_capacity(MAX_HANDLER_THREADS);
 
     poller
         .registry()
@@ -253,7 +287,8 @@ fn mio_loop(
                     }
                 }
             } else if connections_map.contains_key(&event.token()) {
-                if event.is_read_closed() {
+                // TODO: determine if it shoudl include event.is_write_closed()
+                if event.is_read_closed() || event.is_error() {
                     log::trace!("Dropping connection for {:?}", event.token());
                     connections_map.remove(&event.token());
 
@@ -266,36 +301,37 @@ fn mio_loop(
                     continue;
                 }
 
+                // Under normal circumstances we are always interested in both
+                // Writable (do we got something for them from the resp_queue?)
+                // and Readable (do they have something for us?) events
+                let (stream, resp_queue) = connections_map
+                    .get_mut(&event.token())
+                    .expect("We checked it existed just above.");
+                poller.registry().reregister(
+                    stream,
+                    event.token(),
+                    Interest::READABLE.add(Interest::WRITABLE),
+                )?;
+
                 if event.is_readable() {
                     log::trace!("Readable event for {:?}", event.token());
 
-                    let (stream, resp_queue) = connections_map
-                        .get_mut(&event.token())
-                        .expect("We checked it existed just above.");
-
-                    if read_handle_request(
+                    read_handle_request(
                         &mut read_cache,
                         stream,
                         resp_queue,
                         &jsonrpc_io,
                         &metadata,
-                    )? {
-                        // We always respond to requests (even on error), so if a request was
-                        // succesfully parsed, tell Mio we'd like to eventually write to this token
-                        poller.registry().reregister(
-                            stream,
-                            event.token(),
-                            Interest::READABLE.add(Interest::WRITABLE),
-                        )?;
-                    }
-                    // Else: we don't respond to garbage
+                        &mut handler_threads,
+                    )?;
                 }
 
                 if event.is_writable() {
-                    log::trace!("Writable event for {:?}", event.token());
-                    let (stream, resp_queue) = connections_map
-                        .get_mut(&event.token())
-                        .expect("We checked it existed just above.");
+                    log::trace!(
+                        "Writable event for {:?}, len of write queue: '{}'",
+                        event.token(),
+                        resp_queue.read().unwrap().len()
+                    );
 
                     // FIFO
                     loop {

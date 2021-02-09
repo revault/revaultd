@@ -119,6 +119,37 @@ fn write_byte_stream(stream: &mut UnixStream, resp: &str) -> Result<bool, io::Er
 #[cfg(not(windows))]
 type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>;
 
+// Read request from the stream, parse it as JSON and handle the JSONRPC command.
+// Returns true if parsed correctly, false otherwise.
+fn read_handle_request(
+    stream: &mut UnixStream,
+    resp_queue: &mut Arc<RwLock<VecDeque<String>>>,
+    jsonrpc_io: &jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
+    metadata: &JsonRpcMetaData,
+) -> Result<bool, io::Error> {
+    if let Some(bytes) = read_bytes_from_stream(stream)? {
+        // Is it actually readable?
+        match String::from_utf8(bytes) {
+            Ok(string) => {
+                // FIXME: Spawn it in a thread
+                if let Some(resp) = jsonrpc_io.handle_request_sync(&string, metadata.clone()) {
+                    // If we got a response, append it to the response queue
+                    resp_queue.write().unwrap().push_back(resp);
+                    return Ok(true);
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "JSONRPC server: error interpreting request: '{}'",
+                    e.to_string()
+                );
+            }
+        }
+    }
+
+    Ok(false)
+}
+
 // For all but Windows, we use Mio.
 #[cfg(not(windows))]
 fn mio_loop(
@@ -198,33 +229,16 @@ fn mio_loop(
                         .get_mut(&event.token())
                         .expect("We checked it existed just above.");
 
-                    // Ok, so we got something to read (we don't respond to garbage)
-                    if let Some(bytes) = read_bytes_from_stream(stream)? {
-                        // Is it actually readable?
-                        match String::from_utf8(bytes) {
-                            Ok(string) => {
-                                // FIXME: Spawn it in a thread
-                                if let Some(resp) =
-                                    jsonrpc_io.handle_request_sync(&string, metadata.clone())
-                                {
-                                    // If we got a response, append it to the response queue
-                                    resp_queue.write().unwrap().push_back(resp);
-                                    // And tell Mio we'd like to write it
-                                    poller.registry().reregister(
-                                        stream,
-                                        event.token(),
-                                        Interest::READABLE.add(Interest::WRITABLE),
-                                    )?;
-                                }
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "JSONRPC server: error interpreting request: '{}'",
-                                    e.to_string()
-                                );
-                            }
-                        }
+                    if read_handle_request(stream, resp_queue, &jsonrpc_io, &metadata)? {
+                        // We always respond to requests (even on error), so if a request was
+                        // succesfully parsed, tell Mio we'd like to eventually write to this token
+                        poller.registry().reregister(
+                            stream,
+                            event.token(),
+                            Interest::READABLE.add(Interest::WRITABLE),
+                        )?;
                     }
+                    // Else: we don't respond to garbage
                 }
 
                 if event.is_writable() {

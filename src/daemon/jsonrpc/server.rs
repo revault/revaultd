@@ -8,11 +8,13 @@ use crate::{
     },
     threadmessages::RpcMessageIn,
 };
+use common::assume_some;
 
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, Write},
     path::PathBuf,
+    process,
     sync::{mpsc::Sender, Arc, RwLock},
 };
 
@@ -23,6 +25,8 @@ use mio::{
 };
 #[cfg(windows)]
 use uds_windows::{UnixListener, UnixStream};
+
+use jsonrpc_core::{futures::Future, Call, MethodCall, Response};
 
 // Remove trailing newlines from utf-8 byte stream
 fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
@@ -121,33 +125,70 @@ type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>
 
 // Read request from the stream, parse it as JSON and handle the JSONRPC command.
 // Returns true if parsed correctly, false otherwise.
+// Extend the cache with data read from the stream, and parse it as a set of JSONRPC requests (no
+// notification). If there are remaining bytes not interpretable as a valid JSONRPC request, leave
+// it in the cache.
+// Will return true if we read at least one valid JSONRPC request.
 fn read_handle_request(
+    cache: &mut Vec<u8>,
     stream: &mut UnixStream,
     resp_queue: &mut Arc<RwLock<VecDeque<String>>>,
     jsonrpc_io: &jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
     metadata: &JsonRpcMetaData,
 ) -> Result<bool, io::Error> {
-    if let Some(bytes) = read_bytes_from_stream(stream)? {
-        // Is it actually readable?
-        match String::from_utf8(bytes) {
-            Ok(string) => {
-                // FIXME: Spawn it in a thread
-                if let Some(resp) = jsonrpc_io.handle_request_sync(&string, metadata.clone()) {
-                    // If we got a response, append it to the response queue
-                    resp_queue.write().unwrap().push_back(resp);
-                    return Ok(true);
-                }
-            }
-            Err(e) => {
-                log::error!(
-                    "JSONRPC server: error interpreting request: '{}'",
-                    e.to_string()
+    // Set to true if we succesfully read something
+    let mut read_something = false;
+    // We use an optional index if there is some left unparsed bytes, because borrow checker :)
+    let mut leftover = None;
+
+    if let Some(new) = read_bytes_from_stream(stream)? {
+        cache.extend(new);
+    } else {
+        // Nothing new? We can short-circuit.
+        return Ok(false);
+    }
+
+    let mut de = serde_json::Deserializer::from_slice(cache).into_iter::<MethodCall>();
+
+    while let Some(method_call) = de.next() {
+        log::trace!("Got JSONRPC request '{:#?}", method_call);
+        match method_call {
+            // Get a response and append it to the response queue
+            Ok(m) => {
+                let res = assume_some!(
+                    jsonrpc_io
+                        .handle_call(Call::MethodCall(m), metadata.clone())
+                        .wait()
+                        .expect("jsonrpc_core says: Handler calls can never fail."),
+                    "This is a method call, there is always a response."
                 );
+                let resp = Response::Single(res);
+                let resp_str = serde_json::to_string(&resp)
+                    .expect("jsonrpc_core says: This should never fail.");
+
+                log::trace!("Responding with '{}'", resp_str);
+                resp_queue.write().unwrap().push_back(resp_str);
+                read_something = true;
+            }
+            // Parsing error? Assume it's a message we'll be able to read later.
+            Err(e) => {
+                if e.is_eof() {
+                    leftover = Some(de.byte_offset());
+                }
+                log::debug!("Error reading JSON: '{}'", e);
+                break;
             }
         }
     }
 
-    Ok(false)
+    if let Some(leftover) = leftover {
+        let s = &cache[leftover..];
+        *cache = s.to_vec();
+    } else {
+        cache.clear();
+    }
+
+    Ok(read_something)
 }
 
 // For all but Windows, we use Mio.
@@ -164,6 +205,9 @@ fn mio_loop(
     // UID per connection
     let mut unique_token = Token(JSONRPC_SERVER.0 + 1);
     let mut connections_map: ConnectionMap = HashMap::with_capacity(32);
+
+    // Cache what we read from the socket, in case we read only half a message.
+    let mut read_cache = Vec::with_capacity(1024);
 
     poller
         .registry()
@@ -229,7 +273,13 @@ fn mio_loop(
                         .get_mut(&event.token())
                         .expect("We checked it existed just above.");
 
-                    if read_handle_request(stream, resp_queue, &jsonrpc_io, &metadata)? {
+                    if read_handle_request(
+                        &mut read_cache,
+                        stream,
+                        resp_queue,
+                        &jsonrpc_io,
+                        &metadata,
+                    )? {
                         // We always respond to requests (even on error), so if a request was
                         // succesfully parsed, tell Mio we'd like to eventually write to this token
                         poller.registry().reregister(
@@ -400,7 +450,7 @@ mod tests {
         thread::sleep(Duration::from_secs(2));
         let mut sock = UnixStream::connect(path).unwrap();
 
-        // Write an invalid JSONRPC message
+        // Write a valid JSONRPC message (but invalid command)
         // For some reasons it takes '{}' as non-empty parameters ON UNIX BUT NOT WINDOWS WTF..
         let invalid_msg =
             String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": {"a": "b"}}"#);
@@ -413,6 +463,38 @@ mod tests {
                 r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid parameters: No parameters were expected","data":"Map({\"a\": String(\"b\")})"},"id":0}"#
             )
         );
+
+        // TODO: support this for Windows..
+        #[cfg(not(windows))]
+        {
+            // Write valid JSONRPC message with a half-written one afterward
+            let msg = String::from(
+                r#"{"jsonrpc": "2.0", "id": 1, "method": "aaa", "params": []} {"jsonrpc": "2.0", "id": 2, "#,
+            );
+            let mut response = vec![0; 256];
+            sock.write(msg.as_bytes()).unwrap();
+            let read = sock.read(&mut response).unwrap();
+            assert_eq!(
+            response[..read],
+            String::from(
+                r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":1}"#
+            )
+            .as_bytes()[..read]
+        );
+
+            // Write the other half of the message
+            let msg = String::from(r#" "method": "bbbb", "params": []}"#);
+            let mut response = vec![0; 256];
+            sock.write(msg.as_bytes()).unwrap();
+            let read = sock.read(&mut response).unwrap();
+            assert_eq!(
+            response[..read],
+            String::from(
+                r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":2}"#
+            )
+            .as_bytes()[..read]
+        );
+        }
 
         // Tell it to stop, should send us a Shutdown message
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);

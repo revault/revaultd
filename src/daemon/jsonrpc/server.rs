@@ -130,12 +130,8 @@ fn mio_loop(
     let mut poller = Poll::new()?;
     let mut events = Events::with_capacity(16);
 
-    // Edge case: we might close the socket before writing the response to the
-    // 'stop' call that made us shutdown. This tracks that we answer politely.
-    let mut stop_token = Token(JSONRPC_SERVER.0 + 1);
-
     // UID per connection
-    let mut unique_token = Token(stop_token.0 + 1);
+    let mut unique_token = Token(JSONRPC_SERVER.0 + 1);
     let mut connections_map: ConnectionMap = HashMap::with_capacity(32);
 
     poller
@@ -148,12 +144,10 @@ fn mio_loop(
         for event in &events {
             // A connection was established; loop to process all the messages
             if event.token() == JSONRPC_SERVER && event.is_readable() {
-                // This is not a while !metadata.is_shutdown() on purpose: if we are told
-                // to stop, we finish what we were previously told to.
-                loop {
+                while !metadata.is_shutdown() {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            let curr_token = Token(unique_token.0); // Hopefully this copies?
+                            let curr_token = Token(unique_token.0);
                             unique_token.0 += 1;
 
                             // So we actually know they want to discuss :)
@@ -188,14 +182,18 @@ fn mio_loop(
                     log::trace!("Dropping connection for {:?}", event.token());
                     connections_map.remove(&event.token());
 
-                    if event.token() == stop_token {
+                    // If this was the last connection alive and we are shutting down,
+                    // actually shut down.
+                    if metadata.is_shutdown() && connections_map.is_empty() {
                         return Ok(());
                     }
+
                     continue;
                 }
 
                 if event.is_readable() {
                     log::trace!("Readable event for {:?}", event.token());
+
                     let (stream, resp_queue) = connections_map
                         .get_mut(&event.token())
                         .expect("We checked it existed just above.");
@@ -217,10 +215,6 @@ fn mio_loop(
                                         event.token(),
                                         Interest::READABLE.add(Interest::WRITABLE),
                                     )?;
-
-                                    if metadata.is_shutdown() {
-                                        stop_token = event.token();
-                                    }
                                 }
                             }
                             Err(e) => {
@@ -409,7 +403,7 @@ mod tests {
         // Tell it to stop, should send us a Shutdown message
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);
         sock.write(msg.as_bytes()).unwrap();
-        match rx.recv() {
+        match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(RpcMessageIn::Shutdown) => {}
             _ => panic!("Didn't receive shutdown"),
         }

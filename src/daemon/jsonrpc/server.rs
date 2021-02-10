@@ -19,13 +19,10 @@ use std::{
     thread,
 };
 
-#[cfg(not(windows))]
 use mio::{
     net::{UnixListener, UnixStream},
     Events, Interest, Poll, Token,
 };
-#[cfg(windows)]
-use uds_windows::{UnixListener, UnixStream};
 
 use jsonrpc_core::{futures::Future, Call, MethodCall, Response};
 
@@ -124,7 +121,6 @@ fn write_byte_stream(stream: &mut UnixStream, resp: &str) -> Result<bool, io::Er
 
 // Used to check if, when receiving an event for a token, we have an ongoing connection and stream
 // for it.
-#[cfg(not(windows))]
 type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>;
 
 fn handle_single_request(
@@ -223,7 +219,6 @@ fn read_handle_request(
 }
 
 // For all but Windows, we use Mio.
-#[cfg(not(windows))]
 fn mio_loop(
     mut listener: UnixListener,
     jsonrpc_io: jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
@@ -359,46 +354,6 @@ fn mio_loop(
     }
 }
 
-// For windows, we don't: Mio UDS support for Windows is not yet implemented.
-#[cfg(windows)]
-fn windows_loop(
-    listener: UnixListener,
-    jsonrpc_io: jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
-    metadata: JsonRpcMetaData,
-) -> Result<(), io::Error> {
-    for mut stream in listener.incoming() {
-        let mut stream = stream?;
-
-        // Ok, so we got something to read (we don't respond to garbage)
-        while let Some(bytes) = read_bytes_from_stream(&mut stream)? {
-            // Is it actually readable?
-            match String::from_utf8(bytes) {
-                Ok(string) => {
-                    // If it is and wants a response, write it directly
-                    if let Some(resp) = jsonrpc_io.handle_request_sync(&string, metadata.clone()) {
-                        while !write_byte_stream(&mut stream, &resp)? {}
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "JSONRPC server: error interpreting request: '{}'",
-                        e.to_string()
-                    );
-                }
-            }
-        }
-
-        // We can't loop until is_shutdown() as we block until we got a message.
-        // So, to handle shutdown the cleanest way is to check if the above handler
-        // just set shutdown.
-        if metadata.is_shutdown() {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
 // Tries to bind to the socket, if we are told it's already in use try to connect
 // to check there is actually someone listening and it's not a leftover from a
 // crash.
@@ -449,10 +404,7 @@ pub fn rpcserver_loop(
     let metadata = JsonRpcMetaData::new(tx, user_role);
 
     log::info!("JSONRPC server started.");
-    #[cfg(not(windows))]
-    return mio_loop(listener, jsonrpc_io, metadata);
-    #[cfg(windows)]
-    return windows_loop(listener, jsonrpc_io, metadata);
+    mio_loop(listener, jsonrpc_io, metadata)
 }
 
 #[cfg(test)]

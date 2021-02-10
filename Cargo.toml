@@ -59,7 +59,8 @@ libc = "0.2.80"
 # For the JSONRPC server
 jsonrpc-core = "15.1.0"
 jsonrpc-derive = "15.1.0"
-[target.'cfg(not(windows))'.dependencies]
-mio = { version = "0.7.5", features = ["default", "os-poll", "os-util", "uds"] }
+mio = { version = "0.7", features = ["net", "os-poll"] }
+
+[dev-dependencies]
 [target.'cfg(windows)'.dependencies]
 uds_windows = "0.1.5"

@@ -235,10 +235,10 @@ fn mio_loop(
 
     // UID per connection
     let mut unique_token = Token(JSONRPC_SERVER.0 + 1);
-    let mut connections_map: ConnectionMap = HashMap::with_capacity(32);
+    let mut connections_map: ConnectionMap = HashMap::with_capacity(8);
 
     // Cache what we read from the socket, in case we read only half a message.
-    let mut read_cache = Vec::with_capacity(1024);
+    let mut read_cache_map: HashMap<Token, Vec<u8>> = HashMap::with_capacity(8);
     let jsonrpc_io = Arc::from(RwLock::from(jsonrpc_io));
     // Handle to thread currently handling commands we were sent.
     let mut handler_threads = VecDeque::with_capacity(MAX_HANDLER_THREADS);
@@ -274,6 +274,8 @@ fn mio_loop(
                                     Arc::new(RwLock::new(VecDeque::<String>::with_capacity(32))),
                                 ),
                             );
+
+                            read_cache_map.insert(curr_token, Vec::with_capacity(1024));
                         }
                         Err(e) => {
                             // Ok; next time then!
@@ -315,9 +317,13 @@ fn mio_loop(
 
                 if event.is_readable() {
                     log::trace!("Readable event for {:?}", event.token());
+                    let read_cache = assume_some!(
+                        read_cache_map.get_mut(&event.token()),
+                        "Entry is always set when connection_map's entry is"
+                    );
 
                     read_handle_request(
-                        &mut read_cache,
+                        read_cache,
                         stream,
                         resp_queue,
                         &jsonrpc_io,

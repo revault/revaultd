@@ -3,16 +3,23 @@ mod control;
 mod database;
 mod jsonrpc;
 mod revaultd;
+mod sigfetcher;
 mod threadmessages;
 
 use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
     control::handle_rpc_messages,
     database::actions::setup_db,
-    jsonrpc::server::{rpcserver_loop, rpcserver_setup},
+    jsonrpc::{
+        server::{rpcserver_loop, rpcserver_setup},
+        UserRole,
+    },
     revaultd::RevaultD,
+    sigfetcher::signature_fetcher_loop,
 };
 use common::{assume_ok, config::Config};
+use revault_net::sodiumoxide;
+use revault_tx::bitcoin::hashes::hex::ToHex;
 
 use std::{
     env,
@@ -41,6 +48,12 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
 
 fn daemon_main(mut revaultd: RevaultD) {
     let (db_path, network) = (revaultd.db_file(), revaultd.bitcoind_config.network);
+    let user_role = match (revaultd.is_stakeholder(), revaultd.is_manager()) {
+        (true, false) => UserRole::Stakeholder,
+        (false, true) => UserRole::Manager,
+        (true, true) => UserRole::ManagerStakeholder,
+        _ => unreachable!(),
+    };
 
     // First and foremost
     log::info!("Setting up database");
@@ -55,9 +68,10 @@ fn daemon_main(mut revaultd: RevaultD) {
         "Setting up JSONRPC server"
     );
 
-    // We start two threads, the JSONRPC one in order to be controlled externally,
-    // and the bitcoind one to poll bitcoind until we die.
-    // We may get requests from the RPC one, and send requests to the bitcoind one.
+    // We start three threads, the JSONRPC one in order to be controlled externally,
+    // the bitcoind one to poll bitcoind for chain updates, and the sigfetcher one to
+    // poll the coordinator for missing signatures for pre-signed transactions.
+    // We may get requests from the RPC one, and send requests to the two others.
 
     // The communication from them to us
     let (rpc_tx, rpc_rx) = mpsc::channel();
@@ -65,9 +79,12 @@ fn daemon_main(mut revaultd: RevaultD) {
     // The communication from us to the bitcoind thread
     let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
 
+    // The communication from us to the signature poller
+    let (sigfetcher_tx, sigfetcher_rx) = mpsc::channel();
+
     let rpc_thread = thread::spawn(move || {
         assume_ok!(
-            rpcserver_loop(rpc_tx, socket),
+            rpcserver_loop(rpc_tx, socket, user_role),
             "Error in JSONRPC server event loop"
         );
     });
@@ -81,6 +98,14 @@ fn daemon_main(mut revaultd: RevaultD) {
         );
     });
 
+    let sigfetcher_revaultd = revaultd.clone();
+    let sigfetcher_thread = thread::spawn(move || {
+        assume_ok!(
+            signature_fetcher_loop(sigfetcher_rx, sigfetcher_revaultd),
+            "Error in signature fetcher thread"
+        )
+    });
+
     log::info!(
         "revaultd started on network {}",
         revaultd.read().unwrap().bitcoind_config.network
@@ -92,9 +117,11 @@ fn daemon_main(mut revaultd: RevaultD) {
             db_path,
             network,
             rpc_rx,
+            rpc_thread,
             bitcoind_tx,
             bitcoind_thread,
-            rpc_thread,
+            sigfetcher_tx,
+            sigfetcher_thread
         ),
         "Error in main loop"
     );
@@ -131,6 +158,12 @@ fn main() {
     let args = env::args().collect();
     let conf_file = parse_args(args);
 
+    // We use libsodium for Noise keys and Noise channels (through revault_net)
+    sodiumoxide::init().unwrap_or_else(|_| {
+        eprintln!("Error init'ing libsodium");
+        process::exit(1);
+    });
+
     let config = Config::from_file(conf_file).unwrap_or_else(|e| {
         eprintln!("Error parsing config: {}", e);
         process::exit(1);
@@ -159,6 +192,14 @@ fn main() {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });
+    log::info!(
+        "Using Noise static public key: '{}'",
+        revaultd.noise_secret.pubkey().0.to_hex()
+    );
+    log::debug!(
+        "Coordinator static public key: '{}'",
+        revaultd.coordinator_noisekey.0.to_hex()
+    );
 
     if revaultd.daemon {
         let daemon = Daemonize {

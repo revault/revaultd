@@ -10,18 +10,29 @@ use crate::{
     assert_tx_type,
     bitcoind::BitcoindError,
     database::{
-        actions::db_store_revocation_txs,
-        interface::{db_tip, db_transactions, db_vault_by_deposit, db_vaults},
+        actions::db_update_presigned_tx,
+        interface::{
+            db_cancel_transaction, db_emer_transaction, db_presigned_transactions_filtered, db_tip,
+            db_unvault_emer_transaction, db_vault_by_deposit, db_vaults,
+        },
         schema::RevaultTx,
         DatabaseError,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
+    sigfetcher::revocation_tx_sighash,
     threadmessages::*,
 };
 use common::{assume_ok, assume_some};
 
+use revault_net::{
+    message::server::{RevaultSignature, Sig},
+    transport::KKTransport,
+};
 use revault_tx::{
-    bitcoin::{Network, OutPoint, Txid},
+    bitcoin::{
+        secp256k1::{self, Signature},
+        Network, OutPoint, PublicKey as BitcoinPubKey, SigHashType, Txid,
+    },
     transactions::{
         transaction_chain, CancelTransaction, EmergencyTransaction, RevaultTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -31,6 +42,7 @@ use revault_tx::{
 };
 
 use std::{
+    collections::BTreeMap,
     fmt,
     path::PathBuf,
     process,
@@ -53,7 +65,12 @@ pub enum ControlError {
 
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self)
+        match self {
+            Self::ChannelCommunication(s) => write!(f, "Channel communication error: '{}'", s),
+            Self::Database(s) => write!(f, "Database error: '{}'", s),
+            Self::Bitcoind(s) => write!(f, "Bitcoind error: '{}'", s),
+            Self::TransactionManagement(s) => write!(f, "Transaction management error: '{}'", s),
+        }
     }
 }
 
@@ -166,7 +183,7 @@ fn txlist_from_outpoints(
     for db_vault in db_vaults {
         let outpoint = db_vault.deposit_outpoint;
         let deriv_index = db_vault.derivation_index;
-        let mut txs = db_transactions(db_file, db_vault.id, &[])?.into_iter();
+        let mut txs = db_presigned_transactions_filtered(db_file, db_vault.id, &[])?.into_iter();
 
         let deposit = assume_some!(
             bitcoind_wallet_tx(&bitcoind_tx, outpoint.txid)?,
@@ -216,24 +233,8 @@ fn txlist_from_outpoints(
             is_signed,
         };
 
-        // .. But not the spend, as it's dynamically chosen by the managers and
-        // could be anything!
-        let spend = if let Some(mut tx) = txs
-            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Spend(_)))
-            .map(|tx| assert_tx_type!(tx.psbt, Spend, "We just found it"))
-        {
-            let wallet_tx =
-                bitcoind_wallet_tx(&bitcoind_tx, tx.inner_tx().global.unsigned_tx.txid())?;
-            // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-            let is_signed = tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-            Some(TransactionResource {
-                wallet_tx,
-                tx,
-                is_signed,
-            })
-        } else {
-            None
-        };
+        // TODO: unimplemented!
+        let spend = None;
 
         // The cancel transaction is deterministic, so we can always return it.
         let mut cancel_tx = txs
@@ -264,6 +265,7 @@ fn txlist_from_outpoints(
             .map(|tx| assert_tx_type!(tx.psbt, Emergency, "We just found it"))
             .unwrap_or_else(|| {
                 EmergencyTransaction::new(vault_txin, None, emer_address, revaultd.lock_time)
+                    .unwrap() // FIXME
             });
         let wallet_tx = bitcoind_wallet_tx(
             &bitcoind_tx,
@@ -316,24 +318,141 @@ fn txlist_from_outpoints(
     Ok(tx_list)
 }
 
+/// An error thrown when the verification of a ALL|ANYONECANPAY signature fails
+#[derive(Debug)]
+enum ACPSigError {
+    InvalidLength,
+    InvalidSighash,
+    VerifError(secp256k1::Error),
+}
+
+impl std::fmt::Display for ACPSigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::InvalidLength => write!(f, "Invalid length of signature"),
+            Self::InvalidSighash => write!(f, "Invalid SIGHASH type"),
+            Self::VerifError(e) => write!(f, "Signature verification error: '{}'", e),
+        }
+    }
+}
+
+impl std::error::Error for ACPSigError {}
+
+impl From<secp256k1::Error> for ACPSigError {
+    fn from(e: secp256k1::Error) -> Self {
+        Self::VerifError(e)
+    }
+}
+
+// Check all complete signatures for revocation transactions (ie Cancel, Emergency,
+// or UnvaultEmergency)
+fn check_revocation_signatures(
+    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    tx: &impl RevaultTransaction,
+    sigs: &BTreeMap<BitcoinPubKey, Vec<u8>>,
+) -> Result<(), ACPSigError> {
+    let sighash = revocation_tx_sighash(tx);
+
+    for (pubkey, sig) in sigs {
+        let (sighash_type, sig) = sig.split_last().unwrap();
+        if *sighash_type != SigHashType::AllPlusAnyoneCanPay as u8 {
+            return Err(ACPSigError::InvalidSighash);
+        }
+        secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
+    }
+
+    Ok(())
+}
+
+// Send a `sig` (https://github.com/re-vault/practical-revault/blob/master/messages.md#sig-1)
+// message to the server for all the sigs of this mapping.
+// Note that we are looping, but most (if not all) will only have a single signature
+// attached. We are called by the `revocationtxs` RPC, sent after a `getrevocationtxs`
+// which generates fresh unsigned transactions.
+//
+// `sigs` MUST contain valid signatures (including the attached sighash type)
+fn send_sig_msg(
+    transport: &mut KKTransport,
+    id: Txid,
+    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // FIXME: use pop_last() once it's stable
+    for (pubkey, sig) in sigs.into_iter() {
+        let pubkey = pubkey.key;
+        let (sigtype, sig) = sig
+            .split_last()
+            .expect("They must provide valid signatures");
+        assert_eq!(*sigtype, SigHashType::AllPlusAnyoneCanPay as u8);
+
+        let signature = RevaultSignature::PlaintextSig(
+            Signature::from_der(&sig).expect("They must provide valid signatures"),
+        );
+        let sig_msg = Sig {
+            pubkey,
+            signature,
+            id,
+        };
+        log::trace!(
+            "Sending sig '{:?}' to sync server: '{}'",
+            sig_msg,
+            serde_json::to_string(&sig_msg)?,
+        );
+        // FIXME: here or upstream, we should retry until timeout
+        transport.write(&serde_json::to_vec(&sig_msg)?)?;
+    }
+
+    Ok(())
+}
+
+// Send the signatures for the 3 revocation txs to the Coordinator
+fn share_signatures(
+    revaultd: &RevaultD,
+    cancel: (&CancelTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
+    emer: (&EmergencyTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
+    unvault_emer: (
+        &UnvaultEmergencyTransaction,
+        BTreeMap<BitcoinPubKey, Vec<u8>>,
+    ),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut transport = KKTransport::connect(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+    )?;
+
+    let cancel_txid = cancel.0.inner_tx().global.unsigned_tx.txid();
+    send_sig_msg(&mut transport, cancel_txid, cancel.1)?;
+    let emer_txid = emer.0.inner_tx().global.unsigned_tx.txid();
+    send_sig_msg(&mut transport, emer_txid, emer.1)?;
+    let unvault_emer_txid = unvault_emer.0.inner_tx().global.unsigned_tx.txid();
+    send_sig_msg(&mut transport, unvault_emer_txid, unvault_emer.1)?;
+
+    Ok(())
+}
+
 /// Handle events incoming from the JSONRPC interface.
 pub fn handle_rpc_messages(
     revaultd: Arc<RwLock<RevaultD>>,
     db_path: PathBuf,
     network: Network,
     rpc_rx: Receiver<RpcMessageIn>,
+    jsonrpc_thread: JoinHandle<()>,
     bitcoind_tx: Sender<BitcoindMessageOut>,
     bitcoind_thread: JoinHandle<()>,
-    jsonrpc_thread: JoinHandle<()>,
+    sigfetcher_tx: Sender<SigFetcherMessageOut>,
+    sigfetcher_thread: JoinHandle<()>,
 ) -> Result<(), ControlError> {
     for msg in rpc_rx {
         match msg {
             RpcMessageIn::Shutdown => {
                 log::info!("Stopping revaultd.");
                 bitcoind_tx.send(BitcoindMessageOut::Shutdown)?;
+                sigfetcher_tx.send(SigFetcherMessageOut::Shutdown)?;
 
                 assume_ok!(jsonrpc_thread.join(), "Joining RPC server thread");
                 assume_ok!(bitcoind_thread.join(), "Joining bitcoind thread");
+                assume_ok!(sigfetcher_thread.join(), "Joining bitcoind thread");
+
                 process::exit(0);
             }
             RpcMessageIn::GetInfo(response_tx) => {
@@ -409,40 +528,187 @@ pub fn handle_rpc_messages(
                 }
             }
             RpcMessageIn::RevocationTxs(
-                (outpoint, mut cancel, mut emer, mut unvault_emer),
+                (outpoint, cancel_tx, emer_tx, unvault_emer_tx),
                 response_tx,
             ) => {
                 log::trace!("Got 'revocationtxs' from RPC thread");
-                let db_path = &revaultd.read().unwrap().db_file();
+                let revaultd = revaultd.read().unwrap();
+                let secp_ctx = &revaultd.secp_ctx;
 
-                let res = if let Some(db_vault) = db_vault_by_deposit(db_path, &outpoint)? {
-                    if cancel.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
-                        /* TODO: fetch from the SS */
-                    }
-                    if emer.finalize(&revaultd.read().unwrap().secp_ctx).is_err() {
-                        /* TODO: fetch from the SS */
-                    }
-                    if unvault_emer
-                        .finalize(&revaultd.read().unwrap().secp_ctx)
-                        .is_err()
-                    { /* TODO: fetch from the SS */ }
+                // Checked by the RPC server
+                assert!(revaultd.is_stakeholder());
 
-                    // TODO: unimplemented
-                    if false {
-                        db_store_revocation_txs(
-                            &revaultd.read().unwrap().db_file(),
-                            db_vault.id,
-                            cancel,
-                            emer,
-                            unvault_emer,
-                        )?;
+                // They may only send revocation transactions for confirmed and not-yet-presigned
+                // vaults.
+                let db_vault = match db_vault_by_deposit(&revaultd.db_file(), &outpoint)? {
+                    Some(v) => match v.status {
+                        VaultStatus::Funded => v,
+                        status => {
+                            response_tx.send(Some(format!(
+                                "Invalid vault status: expected {} but got {}",
+                                VaultStatus::Funded,
+                                status
+                            )))?;
+                            continue;
+                        }
+                    },
+                    None => {
+                        response_tx.send(Some(
+                            "Outpoint does not correspond to an existing vault".to_string(),
+                        ))?;
+                        continue;
                     }
-                    None
-                } else {
-                    Some("Outpoint does not correspond to an existing vault".into())
                 };
 
-                response_tx.send(res)?;
+                // Sanity check they didn't send us garbaged PSBTs
+                let (cancel_db_id, db_cancel_tx) =
+                    db_cancel_transaction(&revaultd.db_file(), db_vault.id)?;
+                let rpc_txid = cancel_tx.inner_tx().global.unsigned_tx.wtxid();
+                let db_txid = db_cancel_tx.inner_tx().global.unsigned_tx.wtxid();
+                if rpc_txid != db_txid {
+                    response_tx.send(Some(format!(
+                        "Invalid Cancel tx: db wtxid is '{}' but this PSBT's is '{}' ",
+                        db_txid, rpc_txid
+                    )))?;
+                    continue;
+                }
+                let (emer_db_id, db_emer_tx) =
+                    db_emer_transaction(&revaultd.db_file(), db_vault.id)?;
+                let rpc_txid = emer_tx.inner_tx().global.unsigned_tx.wtxid();
+                let db_txid = db_emer_tx.inner_tx().global.unsigned_tx.wtxid();
+                if rpc_txid != db_txid {
+                    response_tx.send(Some(format!(
+                        "Invalid Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
+                        db_txid, rpc_txid
+                    )))?;
+                    continue;
+                }
+                let (unvault_emer_db_id, db_unemer_tx) =
+                    db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)?;
+                let rpc_txid = unvault_emer_tx.inner_tx().global.unsigned_tx.wtxid();
+                let db_txid = db_unemer_tx.inner_tx().global.unsigned_tx.wtxid();
+                if rpc_txid != db_txid {
+                    response_tx.send(Some(format!(
+                        "Invalid Unvault Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
+                        db_txid, rpc_txid
+                    )))?;
+                    continue;
+                }
+
+                let deriv_index = db_vault.derivation_index;
+                let cancel_sigs = cancel_tx
+                    .inner_tx()
+                    .inputs
+                    .get(0)
+                    .expect("Cancel tx has a single input, inbefore fee bumping.")
+                    .partial_sigs
+                    .clone();
+                let emer_sigs = emer_tx
+                    .inner_tx()
+                    .inputs
+                    .get(0)
+                    .expect("Emergency tx has a single input, inbefore fee bumping.")
+                    .partial_sigs
+                    .clone();
+                let unvault_emer_sigs = unvault_emer_tx
+                    .inner_tx()
+                    .inputs
+                    .get(0)
+                    .expect("UnvaultEmergency tx has a single input, inbefore fee bumping.")
+                    .partial_sigs
+                    .clone();
+
+                // They must have included *at least* a signature for our pubkey
+                let our_pubkey = revaultd
+                    .our_stk_xpub
+                    .expect("We are a stakeholder")
+                    .derive_pub(secp_ctx, &[deriv_index])
+                    .expect("The derivation index stored in the database is sane (unhardened)")
+                    .public_key;
+                if !cancel_sigs.contains_key(&our_pubkey) {
+                    response_tx.send(Some(format!(
+                        "No signature for ourselves ({}) in Cancel transaction",
+                        our_pubkey
+                    )))?;
+                    continue;
+                }
+                // We use the same public key across the transaction chain, that's pretty
+                // neat from an usability perspective.
+                if !emer_sigs.contains_key(&our_pubkey) {
+                    response_tx.send(Some(
+                        "No signature for ourselves in Emergency transaction".to_string(),
+                    ))?;
+                    continue;
+                }
+                if !unvault_emer_sigs.contains_key(&our_pubkey) {
+                    response_tx.send(Some(
+                        "No signature for ourselves in UnvaultEmergency transaction".to_string(),
+                    ))?;
+                    continue;
+                }
+
+                // Don't share anything if we were given invalid signatures. This
+                // checks for the presence (and the validity!) of a SIGHASH type flag.
+                if let Err(e) = check_revocation_signatures(secp_ctx, &cancel_tx, &cancel_sigs) {
+                    response_tx.send(Some(format!(
+                        "Invalid signature in Cancel transaction: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+                if let Err(e) = check_revocation_signatures(secp_ctx, &emer_tx, &emer_sigs) {
+                    response_tx.send(Some(format!(
+                        "Invalid signature in Emergency transaction: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+                if let Err(e) =
+                    check_revocation_signatures(secp_ctx, &unvault_emer_tx, &unvault_emer_sigs)
+                {
+                    response_tx.send(Some(format!(
+                        "Invalid signature in Unvault Emergency transaction: {}",
+                        e
+                    )))?;
+                    continue;
+                }
+
+                // Ok, signatures look legit. Add them to the PSBTs in database.
+                db_update_presigned_tx(
+                    &revaultd.db_file(),
+                    db_vault.id,
+                    cancel_db_id,
+                    cancel_sigs.clone(),
+                    secp_ctx,
+                )?;
+                db_update_presigned_tx(
+                    &revaultd.db_file(),
+                    db_vault.id,
+                    emer_db_id,
+                    emer_sigs.clone(),
+                    secp_ctx,
+                )?;
+                db_update_presigned_tx(
+                    &revaultd.db_file(),
+                    db_vault.id,
+                    unvault_emer_db_id,
+                    unvault_emer_sigs.clone(),
+                    secp_ctx,
+                )?;
+
+                // Share them with our felow stakeholders.
+                if let Err(e) = share_signatures(
+                    &revaultd,
+                    (&cancel_tx, cancel_sigs),
+                    (&emer_tx, emer_sigs),
+                    (&unvault_emer_tx, unvault_emer_sigs),
+                ) {
+                    response_tx.send(Some(format!("Error while sharing signatures: {}", e)))?;
+                    continue;
+                }
+
+                // Ok, RPC server, tell them that everything is fine.
+                response_tx.send(None)?;
             }
             RpcMessageIn::ListTransactions(outpoints, response_tx) => {
                 log::trace!("Got 'listtransactions' request from RPC thread");

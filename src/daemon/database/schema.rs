@@ -1,10 +1,11 @@
 use crate::revaultd::VaultStatus;
-use common::config;
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Amount, OutPoint},
+    bitcoin::{
+        util::bip32::{ChildNumber, ExtendedPubKey},
+        Amount, OutPoint,
+    },
     transactions::{
-        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -54,24 +55,25 @@ CREATE TABLE vaults (
         ON DELETE RESTRICT
 );
 
-/* This stores fully-signed transactions we presign:
+/* This stores transactions we presign:
  * - Emergency (only for stakeholders)
- * - Unvault (only for active vaults)
+ * - Unvault
  * - Cancel
  * - Unvault Emergency (only for stakeholders)
  */
-CREATE TABLE transactions (
+CREATE TABLE presigned_transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     vault_id INTEGER NOT NULL,
     type INTEGER NOT NULL,
     psbt BLOB UNIQUE NOT NULL,
+    fullysigned BOOLEAN NOT NULL CHECK (fullysigned IN (0,1)),
     FOREIGN KEY (vault_id) REFERENCES vaults (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT
 );
 
 CREATE INDEX vault_status ON vaults (status);
-CREATE INDEX vault_transactions ON transactions (vault_id);
+CREATE INDEX vault_transactions ON presigned_transactions (vault_id);
 ";
 
 /// A row in the "wallets" table
@@ -81,7 +83,8 @@ pub struct DbWallet {
     pub timestamp: u32,
     pub vault_descriptor: String,
     pub unvault_descriptor: String,
-    pub ourselves: config::OurSelves,
+    pub our_man_xpub: Option<ExtendedPubKey>,
+    pub our_stk_xpub: Option<ExtendedPubKey>,
     pub deposit_derivation_index: ChildNumber,
 }
 
@@ -97,11 +100,10 @@ pub struct DbVault {
     pub derivation_index: ChildNumber,
 }
 
-/// The type of the transaction, as stored in the "transactions" table
+/// The type of the transaction, as stored in the "presigned_transactions" table
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransactionType {
     Unvault,
-    Spend,
     Cancel,
     Emergency,
     UnvaultEmergency,
@@ -113,10 +115,9 @@ impl TryFrom<u32> for TransactionType {
     fn try_from(n: u32) -> Result<Self, Self::Error> {
         match n {
             0 => Ok(Self::Unvault),
-            1 => Ok(Self::Spend),
-            2 => Ok(Self::Cancel),
-            3 => Ok(Self::Emergency),
-            4 => Ok(Self::UnvaultEmergency),
+            1 => Ok(Self::Cancel),
+            2 => Ok(Self::Emergency),
+            3 => Ok(Self::UnvaultEmergency),
             _ => Err(()),
         }
     }
@@ -135,16 +136,14 @@ tx_type_from_tx!(UnvaultTransaction, Unvault);
 tx_type_from_tx!(CancelTransaction, Cancel);
 tx_type_from_tx!(EmergencyTransaction, Emergency);
 tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
-tx_type_from_tx!(SpendTransaction, Spend);
 
-/// A transaction stored in the 'transactions' table
+/// A transaction stored in the 'presigned_transactions' table
 #[derive(Debug, PartialEq)]
 pub enum RevaultTx {
     Unvault(UnvaultTransaction),
     Cancel(CancelTransaction),
     Emergency(EmergencyTransaction),
     UnvaultEmergency(UnvaultEmergencyTransaction),
-    Spend(SpendTransaction),
 }
 
 /// Boilerplate to get a specific variant of the RevaultTx enum if You Are Confident :TM:
@@ -158,6 +157,7 @@ macro_rules! assert_tx_type {
     };
 }
 
+// FIXME: naming it "db transaction" was ambiguous..
 /// A row in the "transactions" table
 #[derive(Debug)]
 pub struct DbTransaction {
@@ -165,4 +165,5 @@ pub struct DbTransaction {
     pub vault_id: u32,
     pub tx_type: TransactionType,
     pub psbt: RevaultTx,
+    pub is_fully_signed: bool,
 }

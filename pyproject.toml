@@ -1,0 +1,7 @@
+# Log few messages to the console, and details to a log file
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "INFO"
+# FIXME: disabled for now but it might be handy.
+#log_file = "pytest.log"
+#log_file_level = "DEBUG"

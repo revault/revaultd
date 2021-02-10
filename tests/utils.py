@@ -1,29 +1,38 @@
 """
-Most of the code here is stolen from C-lightning's test suite. This is surely
+Lot of the code here is stolen from C-lightning's test suite. This is surely
 Rusty Russell or Christian Decker who wrote most of this (I'd put some sats on
 cdecker), so credits to them ! (MIT licensed)
 """
-from bitcoin.rpc import RawProxy as BitcoinProxy
-from decimal import Decimal
-from ephemeral_port_reserve import reserve
-from typing import Optional
-
 import bip32
 import bitcoin
+import coincurve
 import json
 import logging
+import psycopg2
 import os
 import random
 import re
 import select
+import serializations
 import socket
 import subprocess
 import threading
 import time
 
+from bitcoin.rpc import RawProxy as BitcoinProxy
+from decimal import Decimal
+from ephemeral_port_reserve import reserve
+from nacl.public import PrivateKey as Curve25519Private
+from typing import Optional
+
 
 TIMEOUT = int(os.getenv("TIMEOUT", 60))
 TEST_DEBUG = os.getenv("TEST_DEBUG", "0") == "1"
+EXECUTOR_WORKERS = os.getenv("EXECUTOR_WORKERS", 10)
+POSTGRES_USER = os.getenv("POSTGRES_USER", "")
+POSTGRES_PASS = os.getenv("POSTGRES_PASS", "")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_IS_SETUP = (POSTGRES_USER and POSTGRES_PASS and POSTGRES_HOST)
 
 
 def wait_for(success, timeout=TIMEOUT):
@@ -51,28 +60,56 @@ class RpcError(ValueError):
         self.error = error
 
 
+class Participant:
+    def __init__(self):
+        self.hd = bip32.BIP32.from_seed(os.urandom(32))
+
+
+class User(Participant):
+    def __init__(self):
+        super(User, self).__init__()
+
+    def get_xpub(self):
+        return self.hd.get_master_xpub()
+
+    def sign_revocation_psbt(self, psbt_str, deriv_index):
+        """Attach a signature to the PSBT with the key at {deriv_index}"""
+        assert isinstance(psbt_str, str)
+
+        psbt = serializations.PSBT()
+        psbt.deserialize(psbt_str)
+        assert len(psbt.inputs) == 1, "Invalid revocation PSBT"
+        assert (serializations.make_p2wsh(psbt.inputs[0].witness_script)
+                == psbt.inputs[0].witness_utxo.scriptPubKey)
+
+        script_code = psbt.inputs[0].witness_script
+        sighash = serializations.sighash_all_witness(script_code, psbt, 0, True)
+        privkey = coincurve.PrivateKey(
+            self.hd.get_privkey_from_path([deriv_index])
+        )
+        sig = privkey.sign(sighash, hasher=None) + b'\x81'  # ALL | ACP
+
+        pubkey = self.hd.get_pubkey_from_path([deriv_index])
+        psbt.inputs[0].partial_sigs[pubkey] = sig
+
+        return psbt.serialize()
+
+
+class Cosig(Participant):
+    def __init__(self):
+        super(Cosig, self).__init__()
+
+    def get_static_key(self):
+        return self.hd.get_pubkey_from_path("m/0")
+
+
 def get_participants(n_stk, n_man):
     """Get the configuration entries for each participant."""
-    stakeholders_hds = [bip32.BIP32.from_seed(os.urandom(32))
-                        for _ in range(n_stk)]
-    cosigners_hds = [bip32.BIP32.from_seed(os.urandom(32))
-                     for _ in range(n_stk)]
-    stakeholders = [
-        {
-            "xpub": stakeholders_hds[i].get_master_xpub(),
-            "cosigner_key": cosigners_hds[i].get_pubkey_from_path("m/0").hex(),
-        }
-        for i in range(n_stk)
-    ]
+    stakeholders = [User() for _ in range(n_stk)]
+    cosigs = [Cosig() for _ in range(n_stk)]
+    managers = [User() for _ in range(n_man)]
 
-    managers = [
-        {
-            "xpub": m.get_master_xpub(),
-        }
-        for m in [bip32.BIP32.from_seed(os.urandom(32)) for _ in range(n_man)]
-    ]
-
-    return (stakeholders, managers)
+    return (stakeholders, cosigs, managers)
 
 
 class UnixSocket(object):
@@ -160,7 +197,6 @@ class UnixDomainSocketRpc(object):
             chunk = sock.recv(n_to_read)
             buff += chunk
             if len(chunk) != n_to_read:
-                print("Got: {}", buff)
                 return json.loads(buff)
 
     def __getattr__(self, name):
@@ -549,9 +585,18 @@ class BitcoinD(TailableProc):
         self.proc.wait()
 
 
-class RevaultD(TailableProc):
-    def __init__(self, datadir, ourselves, stakeholders, managers, csv,
-                 bitcoind):
+class Revaultd(TailableProc):
+    def __init__(self, datadir, stks, cosigs, mans, csv, noise_priv,
+                 coordinator_noise_key, bitcoind, stk_config=None,
+                 man_config=None):
+        assert stk_config is not None or man_config is not None
+        assert len(stks) == len(cosigs)
+
+        # The data is stored in a per-network directory. We need to create it
+        # in order to write the Noise private key
+        datadir_with_network = os.path.join(datadir, "regtest")
+        os.makedirs(datadir_with_network, exist_ok=True)
+
         TailableProc.__init__(self, datadir, verbose=False)
         bin = os.path.join(os.path.dirname(__file__), "..",
                            "target/debug/revaultd")
@@ -562,8 +607,12 @@ class RevaultD(TailableProc):
             f"{self.conf_file}"
         ]
         self.prefix = "revaultd"
-        socket_path = os.path.join(datadir, "regtest", "revaultd_rpc")
+        socket_path = os.path.join(datadir_with_network, "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
+
+        noise_secret_file = os.path.join(datadir_with_network, "noise_secret")
+        with open(noise_secret_file, 'wb') as f:
+            f.write(noise_priv)
 
         bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest",
                                        ".cookie")
@@ -575,24 +624,54 @@ class RevaultD(TailableProc):
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
             f.write(f"log_level = 'trace'\n")
+
+            f.write("coordinator_host = \"127.0.0.1:8383\"\n")
+            f.write(f"coordinator_noise_key = \"{coordinator_noise_key}\"\n")
+            f.write(f"coordinator_poll_seconds = 1\n")
+
+            f.write("stakeholders_xpubs = [")
+            for stk in stks:
+                f.write(f"\"{stk.get_xpub()}\", ")
+            f.write("]\n")
+
+            f.write("managers_xpubs = [")
+            for man in mans:
+                f.write(f"\"{man.get_xpub()}\", ")
+            f.write("]\n")
+
+            f.write("cosigners_keys = [")
+            for cosig in cosigs:
+                f.write(f"\"{cosig.get_static_key().hex()}\", ")
+            f.write("]\n")
+
             f.write(f"[bitcoind_config]\n")
             f.write(f"network = \"regtest\"\n")
             f.write(f"cookie_path = '{bitcoind_cookie}'\n")
             f.write(f"addr = '127.0.0.1:{bitcoind.rpcport}'\n")
-            f.write(f"[ourselves]\n")
-            stk_xpub = ourselves.get("stakeholder_xpub")
-            if stk_xpub is not None:
-                f.write(f"stakeholder_xpub = '{stk_xpub}'\n")
-                assert ourselves.get("manager_xpub") is None
-            else:
-                f.write(f"manager_xpub = \"{ourselves['manager_xpub']}\"\n")
-            for stk in stakeholders:
-                f.write(f"[[stakeholders]]\n")
-                f.write(f"xpub = \"{stk['xpub']}\"\n")
-                f.write(f"cosigner_key = \"{stk['cosigner_key']}\"\n")
-            for man in managers:
-                f.write(f"[[managers]]\n")
-                f.write(f"xpub = \"{man['xpub']}\"\n")
+
+            if stk_config is not None:
+                f.write("[stakeholder_config]\n")
+                self.stk_keychain = stk_config['keychain']
+                f.write(f"xpub = \"{self.stk_keychain.get_xpub()}\"\n")
+                f.write("watchtowers = [")
+                for wt in stk_config["watchtowers"]:
+                    f.write(f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
+                            f"\"{wt['noise_key']}\" }}, ")
+                f.write("]\n")
+
+            if man_config is not None:
+                f.write("[manager_config]\n")
+                self.man_keychain = man_config['keychain']
+                f.write(f"xpub = \"{self.man_keychain.get_xpub()}\"\n")
+                f.write("cosigners = [")
+                for wt in man_config["cosigners"]:
+                    f.write(f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
+                            f"\"{wt['noise_key']}\" }}, ")
+                f.write("]\n")
+
+    def wait_for_deposit(self, outpoint):
+        """Polls listvaults until we acknowledge the confirmed vault at {outpoint}"""
+        wait_for(lambda: len(self.rpc.listvaults(["funded"], [outpoint])["vaults"]) > 0)
 
     def start(self):
         TailableProc.start(self)
@@ -601,62 +680,244 @@ class RevaultD(TailableProc):
                             "JSONRPC server started"])
 
     def cleanup(self):
-        self.proc.kill()
-        self.proc.wait()
+        try:
+            self.stop()
+        except Exception:
+            self.proc.kill()
 
 
-class RevaultDFactory:
+class ManagerRevaultd(Revaultd):
+    def __init__(self, datadir, stks, cosigs, mans, csv, noise_priv,
+                 coordinator_noise_key, bitcoind, man_config):
+        """The wallet daemon for a manager.
+        Needs to know all xpubs, and needs to be able to connect to the
+        coordinator and the cosigners.
+        """
+        super(ManagerRevaultd, self).__init__(datadir, stks, cosigs, mans, csv,
+                                              noise_priv, coordinator_noise_key,
+                                              bitcoind, man_config=man_config)
+        assert self.man_keychain is not None
+
+
+class StakeholderRevaultd(Revaultd):
+    def __init__(self, datadir, stks, cosigs, mans, csv, noise_priv,
+                 coordinator_noise_key, bitcoind, stk_config):
+        """The wallet daemon for a stakeholder.
+        Needs to know all xpubs, and needs to be able to connect to the
+        coordinator and its watchtower(s).
+        """
+        super(StakeholderRevaultd, self).__init__(datadir, stks, cosigs, mans,
+                                                  csv, noise_priv,
+                                                  coordinator_noise_key, bitcoind,
+                                                  stk_config=stk_config)
+        assert self.stk_keychain is not None
+
+
+class Coordinatord(TailableProc):
+    def __init__(self, datadir, noise_priv, managers_keys, stakeholders_keys,
+                 watchtowers_keys, postgres_user, postgres_pass,
+                 postgres_host="localhost"):
+        TailableProc.__init__(self, datadir, verbose=False)
+        bin = os.path.join(os.path.dirname(__file__), "servers",
+                           "coordinatord", "target/debug/revault_coordinatord")
+        self.conf_file = os.path.join(datadir, "config.toml")
+        self.cmd_line = [
+            bin,
+            f"--conf",
+            f"{self.conf_file}"
+        ]
+        self.prefix = "coordinatord"
+
+        self.postgres_user = postgres_user
+        self.postgres_pass = postgres_pass
+        self.postgres_host = postgres_host
+        # Use the directory fixture uid
+        uid = os.path.basename(os.path.dirname(datadir))
+        self.db_name = f"revault_coordinatord_{uid}"
+        self.postgres_exec(f"CREATE DATABASE {self.db_name} OWNER {postgres_user}")
+
+        noise_secret_file = os.path.join(datadir, "noise_secret")
+        with open(noise_secret_file, 'wb') as f:
+            f.write(noise_priv)
+
+        with open(self.conf_file, 'w') as f:
+            f.write("daemon = false\n")
+            f.write(f"data_dir = \"{datadir}\"\n")
+            f.write(f"log_level = \"trace\"\n")
+
+            uri = f"postgresql://{postgres_user}:{postgres_pass}" \
+                  f"@{postgres_host}/{self.db_name}"
+            f.write(f"postgres_uri = \"{uri}\"\n")
+
+            f.write("managers = [")
+            for k in managers_keys:
+                f.write(f"\"{k.hex()}\", ")
+            f.write("]\n")
+
+            f.write("stakeholders = [")
+            for k in stakeholders_keys:
+                f.write(f"\"{k.hex()}\", ")
+            f.write("]\n")
+
+            f.write("watchtowers = [")
+            for k in watchtowers_keys:
+                f.write(f"\"{k.hex()}\", ")
+            f.write("]\n")
+
+    def postgres_exec(self, sql):
+        conn = psycopg2.connect(f"dbname=postgres host={self.postgres_host} "
+                                f"user={self.postgres_user} "
+                                f"password={self.postgres_pass}")
+        conn.autocommit = True
+        conn.cursor().execute(sql)
+        conn.close()
+
+    def start(self):
+        TailableProc.start(self)
+        self.wait_for_logs(["Started revault_coordinatord"])
+
+    def cleanup(self):
+        try:
+            self.stop()
+        except Exception:
+            self.proc.kill()
+        self.postgres_exec(f"DROP DATABASE {self.db_name}")
+
+
+class RevaultNetwork:
     # FIXME: we use a single bitcoind for all the wallets because it's much
     # more efficient. Eventually, we may have to test with separate ones.
-    def __init__(self, root_dir, bitcoind):
+    def __init__(self, root_dir, bitcoind, postgres_user, postgres_pass,
+                 postgres_host="localhost"):
         self.root_dir = root_dir
         self.bitcoind = bitcoind
         self.daemons = []
 
-    def deploy(self, n_stakeholders, n_managers, funding=None, csv=None):
+        self.postgres_user = postgres_user
+        self.postgres_pass = postgres_pass
+        self.postgres_host = postgres_host
+
+        self.stk_wallets = []
+        self.man_wallets = []
+
+    def deploy(self, n_stakeholders, n_managers, csv=None):
         """
         Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
         managers and optionally fund it with {funding} sats.
         """
-        (conf_stk, conf_man) = get_participants(n_stakeholders, n_managers)
+        (stks, cosigs, mans) = get_participants(n_stakeholders, n_managers)
         if csv is None:
             # More than 6 months
             csv = random.randint(1, 26784)
 
-        stk_nodes = []
-        for i in range(len(conf_stk)):
+        # The Noise keys are interdependant, so generate everything in advance
+        # to avoid roundtrips
+        coordinator_noisepriv = os.urandom(32)
+        coordinator_noisepub = bytes(
+            Curve25519Private(coordinator_noisepriv).public_key
+        )
+        (stk_noiseprivs, stk_noisepubs) = ([], [])
+        (wt_noiseprivs, wt_noisepubs) = ([], [])
+        for i in range(len(stks)):
+            stk_noiseprivs.append(os.urandom(32))
+            stk_noisepubs.append(bytes(
+                Curve25519Private(stk_noiseprivs[i]).public_key
+            ))
+            # Unused yet
+            wt_noiseprivs.append(os.urandom(32))
+            wt_noisepubs.append(bytes(
+                Curve25519Private(wt_noiseprivs[i]).public_key
+            ))
+        (man_noiseprivs, man_noisepubs) = ([], [])
+        for i in range(len(stks)):
+            man_noiseprivs.append(os.urandom(32))
+            man_noisepubs.append(bytes(
+                Curve25519Private(man_noiseprivs[i]).public_key
+            ))
+        logging.debug(f"Using Noise pubkeys:\n- Stakeholders: {stk_noisepubs}"
+                      f"\n- Managers: {man_noisepubs}\n- Watchtowers:"
+                      f"{wt_noisepubs}\n")
+
+        # Spin up the "Sync Server"
+        coord_datadir = os.path.join(self.root_dir, "coordinatord")
+        os.makedirs(coord_datadir, exist_ok=True)
+        coordinatord = Coordinatord(coord_datadir, coordinator_noisepriv,
+                                    man_noisepubs, stk_noisepubs,
+                                    wt_noisepubs, self.postgres_user,
+                                    self.postgres_pass, self.postgres_host)
+        coordinatord.start()
+        self.daemons.append(coordinatord)
+
+        # Spin up the stakeholders wallets
+        for i in range(len(stks)):
             datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
             os.makedirs(datadir, exist_ok=True)
 
-            ourselves = {
-                "stakeholder_xpub": conf_stk[i]["xpub"],
+            stk_config = {
+                "keychain": stks[i],
+                # FIXME: Eventually use real ones
+                "watchtowers": [
+                    {
+                        "host": "127.0.0.1:1",
+                        "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                                     "5cc6f49a9bddaacf93cd77def697"
+                    }
+                ]
             }
-            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
-                              self.bitcoind)
+            daemon = StakeholderRevaultd(
+                datadir, stks, cosigs, mans, csv, stk_noiseprivs[i],
+                coordinator_noisepub.hex(), self.bitcoind, stk_config
+            )
             daemon.start()
-            stk_nodes.append(daemon)
+            self.stk_wallets.append(daemon)
 
-        man_nodes = []
-        for i in range(len(conf_man)):
+        # Spin up the managers wallets
+        for i in range(len(mans)):
             datadir = os.path.join(self.root_dir, f"revaultd-man-{i}")
             os.makedirs(datadir, exist_ok=True)
 
-            ourselves = {
-                "manager_xpub": conf_man[i]["xpub"],
+            man_config = {
+                "keychain": mans[i],
+                # FIXME: Eventually use real ones
+                "cosigners": [
+                    {
+                        "host": "127.0.0.1:1",
+                        "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                                     "5cc6f49a9bddaacf93cd77def697"
+                    }
+                ]
             }
-            daemon = RevaultD(datadir, ourselves, conf_stk, conf_man, csv,
-                              self.bitcoind)
+            daemon = ManagerRevaultd(
+                datadir, stks, cosigs, mans, csv, man_noiseprivs[i],
+                coordinator_noisepub.hex(), self.bitcoind, man_config
+            )
             daemon.start()
-            man_nodes.append(daemon)
+            self.man_wallets.append(daemon)
 
-        if funding is not None:
-            assert isinstance(funding, int)
-            addr = man_nodes[0].rpc.getdepositaddress["address"]
-            txid = self.bitcoind.rpc.sendtoaddress(addr, 49.9999)
-            self.bitcoind.generate_block(6, wait_for_mempool=txid)
+        self.daemons += self.stk_wallets + self.man_wallets
+        # FIXME: we should not return them, they should access our members
+        return (self.stk_wallets, self.man_wallets)
 
-        self.daemons += stk_nodes + man_nodes
-        return (stk_nodes, man_nodes)
+    def get_vault(self, address):
+        """Get a vault entry by outpoint or by address"""
+        for v in self.man_wallets[0].rpc.listvaults()["vaults"]:
+            if v["address"] == address:
+                return v
+
+    def fund(self, amount=None):
+        """Deposit coins into the architectures, by paying to the deposit
+        descriptor and getting the tx 6 blocks confirmations."""
+        assert len(self.man_wallets) > 0, "You must have deploy()ed first"
+
+        if amount is None:
+            amount = 49.9999
+
+        addr = self.man_wallets[0].rpc.getdepositaddress()["address"]
+        txid = self.bitcoind.rpc.sendtoaddress(addr, amount)
+        self.bitcoind.generate_block(6, wait_for_mempool=txid)
+        wait_for(lambda: self.get_vault(addr) is not None)
+
+        return self.get_vault(addr)
 
     def cleanup(self):
         for n in self.daemons:

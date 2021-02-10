@@ -1,9 +1,14 @@
 """
-Most of the code here is stolen from C-lightning's test suite. This is surely
-Rusty Russell or Christian Decker who wrote most of this (I'd put some sats on
-cdecker), so credits to them ! (MIT licensed)
+Most of the code here was initially stolen from C-lightning's test suite.
+Credits to Rusty Russell and Christian Decker from Blockstream who wrote most
+of the file i originally copied! (MIT licensed)
 """
-from utils import BitcoinD, RevaultD, get_participants, RevaultDFactory
+from concurrent import futures
+from utils import (
+    BitcoinD, ManagerRevaultd, StakeholderRevaultd, get_participants,
+    RevaultNetwork, POSTGRES_USER, POSTGRES_PASS, POSTGRES_HOST,
+    POSTGRES_IS_SETUP, EXECUTOR_WORKERS
+)
 
 import os
 import pytest
@@ -30,6 +35,19 @@ def test_base_dir():
         print(f"Leaving base dir '{directory}' as it still contains {content}")
 
 
+# Taken from https://docs.pytest.org/en/latest/example/simple.html#making-test-result-information-available-in-fixtures
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    # execute all other hooks to obtain the report object
+    outcome = yield
+    rep = outcome.get_result()
+
+    # set a report attribute for each phase of a call, which can
+    # be "setup", "call", "teardown"
+
+    setattr(item, "rep_" + rep.when, rep)
+
+
 @pytest.fixture
 def directory(request, test_base_dir, test_name):
     """Return a per-test specific directory.
@@ -42,20 +60,21 @@ def directory(request, test_base_dir, test_name):
     __attempts[test_name] = __attempts.get(test_name, 0) + 1
     directory = os.path.join(test_base_dir,
                              "{}_{}".format(test_name, __attempts[test_name]))
-    request.node.has_errors = False
 
     if not os.path.exists(directory):
         os.makedirs(directory)
 
     yield directory
 
-    # This uses the status set in conftest.pytest_runtest_makereport to
-    # determine whether we succeeded or failed. Outcome can be None if the
-    # failure occurs during the setup phase, hence the use to getattr instead
-    # of accessing it directly.
-    rep_call = getattr(request.node, 'rep_call', None)
-    outcome = 'passed' if rep_call is None else rep_call.outcome
-    failed = not outcome or request.node.has_errors or outcome != 'passed'
+    # Taken from the doc, as is the hook above.
+    # request.node is an "item" because we use the default
+    # "function" scope
+    failed = False
+    # FIXME: somehow the doc example is invalid.
+    # if request.node.rep_setup.failed:
+        # failed = True
+    # elif request.node.rep_call.failed:
+        # failed = True
 
     if not failed:
         try:
@@ -68,32 +87,17 @@ def directory(request, test_base_dir, test_name):
         print(f"Test failed, leaving directory '{directory}' intact")
 
 
-@pytest.fixture(autouse=True)
-def setup_logging():
-    """Enable logging before a test, and remove all handlers afterwards.
-
-    This "fixes" the issue with pytest swapping out sys.stdout and sys.stderr
-    in order to capture the output, but then doesn't wait for the handlers to
-    terminate before closing the buffers. It just iterates through all
-    loggers, and removes any handlers that might be pointing at sys.stdout or
-    sys.stderr.
-
-    """
-    if TEST_DEBUG:
-        logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
-
-    yield
-
-    loggers = [logging.getLogger()] + list(logging.Logger.manager.loggerDict.values())
-    for logger in loggers:
-        handlers = getattr(logger, 'handlers', [])
-        for handler in handlers:
-            logger.removeHandler(handler)
-
-
 @pytest.fixture
 def test_name(request):
     yield request.function.__name__
+
+
+@pytest.fixture
+def executor(test_name):
+    ex = futures.ThreadPoolExecutor(max_workers=EXECUTOR_WORKERS,
+                                    thread_name_prefix=test_name)
+    yield ex
+    ex.shutdown(wait=False)
 
 
 @pytest.fixture
@@ -118,14 +122,25 @@ def bitcoind(directory):
 def revaultd_stakeholder(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
-    stakeholders, managers = get_participants(2, 3)
+    (stks, cosigs, mans) = get_participants(2, 3)
 
-    ourselves = {
-        "stakeholder_xpub": stakeholders[0]["xpub"],
+    stk_config = {
+        "keychain": stks[0],
+        "watchtowers": [
+            {
+                "host": "127.0.0.1:1",
+                "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                             "5cc6f49a9bddaacf93cd77def697"
+            }
+        ]
     }
     csv = 35
-    revaultd = RevaultD(datadir, ourselves, stakeholders, managers, csv,
-                        bitcoind)
+    coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4e" \
+                            "a2799f1df04622ca1307381402"
+    revaultd = StakeholderRevaultd(
+        datadir, stks, cosigs, mans, csv, os.urandom(32),
+        coordinator_noise_key, bitcoind, stk_config=stk_config
+    )
     revaultd.start()
 
     yield revaultd
@@ -137,14 +152,25 @@ def revaultd_stakeholder(bitcoind, directory):
 def revaultd_manager(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
-    stakeholders, managers = get_participants(2, 3)
+    (stks, cosigs, mans) = get_participants(2, 3)
 
-    ourselves = {
-        "manager_xpub": managers[0]["xpub"],
+    man_config = {
+        "keychain": mans[0],
+        "cosigners": [
+            {
+                "host": "127.0.0.1:1",
+                "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
+                             "5cc6f49a9bddaacf93cd77def697"
+            }
+        ]
     }
     csv = 35
-    revaultd = RevaultD(datadir, ourselves, stakeholders, managers, csv,
-                        bitcoind)
+    coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4e" \
+                            "a2799f1df04622ca1307381402"
+    revaultd = ManagerRevaultd(
+        datadir, stks, cosigs, mans, csv, os.urandom(32),
+        coordinator_noise_key, bitcoind, man_config=man_config
+    )
     revaultd.start()
 
     yield revaultd
@@ -153,8 +179,13 @@ def revaultd_manager(bitcoind, directory):
 
 
 @pytest.fixture
-def revaultd_factory(directory, bitcoind):
-    factory = RevaultDFactory(directory, bitcoind)
+def revault_network(directory, bitcoind):
+    if not POSTGRES_IS_SETUP:
+        raise ValueError("Please set the POSTGRES_USER, POSTGRES_PASS and "
+                         "POSTGRES_HOST environment variables.")
+
+    factory = RevaultNetwork(directory, bitcoind, POSTGRES_USER, POSTGRES_PASS,
+                             POSTGRES_HOST)
 
     yield factory
 

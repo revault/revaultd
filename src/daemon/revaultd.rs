@@ -1,10 +1,31 @@
-use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, OurSelves};
+use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
 
-use std::{collections::HashMap, convert::TryFrom, fmt, fs, path::PathBuf, str::FromStr, vec::Vec};
+use std::{
+    collections::HashMap,
+    convert::{TryFrom, TryInto},
+    fmt, fs,
+    io::{self, Read, Write},
+    net::SocketAddr,
+    path::PathBuf,
+    str::FromStr,
+    time,
+    vec::Vec,
+};
 
+use revault_net::{
+    noise::{NoisePrivKey, NoisePubKey},
+    sodiumoxide,
+};
 use revault_tx::{
-    bitcoin::{secp256k1, util::bip32::ChildNumber, Address, BlockHash, Script, TxOut},
-    miniscript::descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
+    bitcoin::{
+        hashes::hex::FromHex,
+        secp256k1,
+        util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey},
+        Address, BlockHash, Script, TxOut,
+    },
+    miniscript::descriptor::{
+        DescriptorPublicKey, DescriptorPublicKeyCtx, DescriptorSinglePub, DescriptorXKey,
+    },
     scripts::{
         cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor, EmergencyAddress,
         UnvaultDescriptor, VaultDescriptor,
@@ -130,6 +151,65 @@ impl fmt::Display for VaultStatus {
     }
 }
 
+// An error related to the initialization of communication keys
+#[derive(Debug)]
+enum KeyError {
+    ReadingKey(io::Error),
+    WritingKey(io::Error),
+    InvalidKeySize,
+}
+
+impl fmt::Display for KeyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::ReadingKey(e) => write!(f, "Error reading Noise key: '{}'", e),
+            Self::WritingKey(e) => write!(f, "Error writing Noise key: '{}'", e),
+            Self::InvalidKeySize => write!(f, "Invalid Noise key length"),
+        }
+    }
+}
+
+impl std::error::Error for KeyError {}
+
+// The communication keys are (for now) hot, so we just create it ourselves on first run.
+fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, KeyError> {
+    let mut noise_secret = NoisePrivKey([0; 32]);
+
+    if !secret_file.as_path().exists() {
+        log::info!(
+            "No Noise private key at '{:?}', generating a new one",
+            secret_file
+        );
+
+        noise_secret
+            .0
+            .copy_from_slice(&sodiumoxide::randombytes::randombytes(32));
+        // We create it in read-only but open it in write only.
+        let mut options = fs::OpenOptions::new();
+        options = options.write(true).create_new(true).clone();
+        // FIXME: handle Windows ACLs
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options = options.mode(0o400).clone();
+        }
+
+        let mut fd = options.open(secret_file).map_err(KeyError::WritingKey)?;
+        fd.write_all(&noise_secret.0)
+            .map_err(KeyError::WritingKey)?;
+    } else {
+        let mut noise_secret_fd = fs::File::open(secret_file).map_err(KeyError::ReadingKey)?;
+        noise_secret_fd
+            .read_exact(&mut noise_secret.0)
+            .map_err(KeyError::ReadingKey)?;
+    }
+
+    // TODO: have a decent memory management and mlock() the key
+
+    assert!(noise_secret.0 != [0; 32]);
+    Ok(noise_secret)
+}
+
 /// A vault is defined as a confirmed utxo paying to the Vault Descriptor for which
 /// we have a set of pre-signed transaction (emergency, cancel, unvault).
 /// Depending on its status we may not yet be in possession of part -or the entirety-
@@ -162,7 +242,8 @@ pub struct RevaultD {
 
     // Scripts stuff
     /// Who am i, and where am i in all this mess ?
-    pub ourselves: OurSelves,
+    pub our_stk_xpub: Option<ExtendedPubKey>,
+    pub our_man_xpub: Option<ExtendedPubKey>,
     /// The miniscript descriptor of vault's outputs scripts
     pub vault_descriptor: VaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of unvault's outputs scripts
@@ -181,15 +262,25 @@ pub struct RevaultD {
     /// The CSV in the unvault_descriptor. Unfortunately segregated from the descriptor..
     pub unvault_csv: u32,
 
-    // UTXOs stuff
+    // Network stuff
+    /// The static private key we use to establish connections to servers. We reuse it, but Trevor
+    /// said it's fine! https://github.com/noiseprotocol/noise_spec/blob/master/noise.md#14-security-considerations
+    pub noise_secret: NoisePrivKey,
+    /// The ip:port the coordinator is listening on. TODO: Tor
+    pub coordinator_host: SocketAddr,
+    /// The static public key to enact the Noise channel with the Coordinator
+    pub coordinator_noisekey: NoisePubKey,
+    pub coordinator_poll_interval: time::Duration,
+
+    // 'Wallet' stuff
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
     /// keys used to generate a script from bitcoind until we can pass it xpub-expressed
     /// Miniscript descriptors.
     pub derivation_index_map: HashMap<Script, ChildNumber>,
-
-    // Misc stuff
     /// The id of the wallet used in the db
     pub wallet_id: Option<u32>,
+
+    // Misc stuff
     /// We store all our data in one place, that's here.
     pub data_dir: PathBuf,
     /// Should we run as a daemon? (Default: yes)
@@ -214,27 +305,37 @@ fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
     };
 }
 
+fn descriptorxpub_from_xpub(xpubs: Vec<ExtendedPubKey>) -> Vec<DescriptorPublicKey> {
+    xpubs
+        .into_iter()
+        .map(|xpub| {
+            DescriptorPublicKey::XPub(DescriptorXKey {
+                origin: None,
+                xkey: xpub,
+                derivation_path: DerivationPath::from(vec![]),
+                is_wildcard: true,
+            })
+        })
+        .collect()
+}
+
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
-        let managers_pubkeys: Vec<DescriptorPublicKey> =
-            config.managers.into_iter().map(|m| m.xpub).collect();
+        let our_man_xpub = config.manager_config.map(|x| x.xpub);
+        let our_stk_xpub = config.stakeholder_config.as_ref().map(|x| x.xpub);
+        // Config should have checked that!
+        assert!(our_man_xpub.is_some() || our_stk_xpub.is_some());
 
-        let mut stakeholders_pubkeys = Vec::with_capacity(config.stakeholders.len());
-        let mut cosigners_pubkeys = stakeholders_pubkeys.clone();
-        for non_manager in config.stakeholders.into_iter() {
-            stakeholders_pubkeys.push(non_manager.xpub);
-            cosigners_pubkeys.push(non_manager.cosigner_key);
-        }
+        let managers_pubkeys = descriptorxpub_from_xpub(config.managers_xpubs);
+        let stakeholders_pubkeys = descriptorxpub_from_xpub(config.stakeholders_xpubs);
+        let cosigners_pubkeys = config
+            .cosigners_keys
+            .into_iter()
+            .map(|key| DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key }))
+            .collect();
 
-        let vault_descriptor = vault_descriptor(
-            managers_pubkeys
-                .iter()
-                .chain(stakeholders_pubkeys.iter())
-                .cloned()
-                .collect::<Vec<DescriptorPublicKey>>(),
-        )?;
-
+        let vault_descriptor = vault_descriptor(stakeholders_pubkeys.clone())?;
         let unvault_descriptor = unvault_descriptor(
             stakeholders_pubkeys,
             managers_pubkeys.clone(),
@@ -242,8 +343,8 @@ impl RevaultD {
             cosigners_pubkeys,
             config.unvault_csv,
         )?;
-
         let cpfp_descriptor = cpfp_descriptor(managers_pubkeys)?;
+        let emergency_address = EmergencyAddress::from(config.emergency_address)?;
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         data_dir.push(config.bitcoind_config.network.to_string());
@@ -258,23 +359,46 @@ impl RevaultD {
         }
         data_dir = fs::canonicalize(data_dir)?;
 
+        let data_dir_str = data_dir
+            .to_str()
+            .expect("Impossible: the datadir path is valid unicode");
+        let noise_secret_file = [data_dir_str, "noise_secret"].iter().collect();
+        let noise_secret = read_or_create_noise_key(noise_secret_file)?;
+
+        // TODO: support hidden services
+        let coordinator_host = SocketAddr::from_str(&config.coordinator_host)?;
+        let raw_key: Vec<u8> = FromHex::from_hex(&config.coordinator_noise_key)?;
+        let coordinator_noisekey = NoisePubKey(
+            raw_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| KeyError::InvalidKeySize)?,
+        );
+        let coordinator_poll_interval =
+            time::Duration::from_secs(config.coordinator_poll_seconds.unwrap_or(60));
+
         let daemon = !matches!(config.daemon, Some(false));
 
         let secp_ctx = secp256k1::Secp256k1::verification_only();
 
         Ok(RevaultD {
+            our_stk_xpub,
+            our_man_xpub,
             vault_descriptor,
             unvault_descriptor,
             cpfp_descriptor,
             secp_ctx,
             data_dir,
             daemon,
-            emergency_address: config.emergency_address.0,
+            emergency_address,
+            noise_secret,
+            coordinator_host,
+            coordinator_noisekey,
+            coordinator_poll_interval,
             lock_time: 0,
             unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,
             tip: None,
-            ourselves: config.ourselves,
             // Will be updated by the database
             current_unused_index: ChildNumber::from(0),
             // FIXME: we don't need SipHash for those, use a faster alternative
@@ -349,6 +473,14 @@ impl RevaultD {
         self.file_from_datadir("revaultd_rpc")
     }
 
+    pub fn is_stakeholder(&self) -> bool {
+        self.our_stk_xpub.is_some()
+    }
+
+    pub fn is_manager(&self) -> bool {
+        self.our_man_xpub.is_some()
+    }
+
     pub fn deposit_address(&self) -> Address {
         self.vault_address(self.current_unused_index)
     }
@@ -400,8 +532,12 @@ mod tests {
     #[test]
     fn test_from_config() {
         let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        path.push("../../test_data/valid_config.toml");
 
+        path.push("../../test_data/invalid_config.toml");
+        Config::from_file(Some(path.clone())).expect_err("Parsing invalid config file");
+
+        path.pop();
+        path.push("valid_config.toml");
         let config = Config::from_file(Some(path)).expect("Parsing valid config file");
         RevaultD::from_config(config).expect("Creating state from config");
         // TODO: test actual fields..

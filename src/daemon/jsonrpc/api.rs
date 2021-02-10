@@ -2,7 +2,7 @@
 //! *valid* JSONRPC2 commands here. All the communication and parsing is done in the
 //! `server` mod.
 
-use crate::{revaultd::VaultStatus, threadmessages::*};
+use crate::{jsonrpc::UserRole, revaultd::VaultStatus, threadmessages::*};
 use common::{assume_ok, VERSION};
 
 use revault_tx::{
@@ -30,14 +30,16 @@ use serde_json::json;
 pub struct JsonRpcMetaData {
     pub tx: Sender<RpcMessageIn>,
     pub shutdown: Arc<AtomicBool>,
+    pub role: UserRole,
 }
 impl jsonrpc_core::Metadata for JsonRpcMetaData {}
 
 impl JsonRpcMetaData {
-    pub fn from_tx(tx: Sender<RpcMessageIn>) -> Self {
+    pub fn new(tx: Sender<RpcMessageIn>, role: UserRole) -> Self {
         JsonRpcMetaData {
             tx,
             shutdown: Arc::from(AtomicBool::from(false)),
+            role,
         }
     }
 
@@ -104,6 +106,22 @@ pub trait RpcApi {
         meta: Self::Metadata,
         outpoints: Option<Vec<String>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+}
+
+// TODO: we should probably make this a proc macro and apply it above?
+macro_rules! stakeholder_only {
+    ($meta:ident) => {
+        match $meta.role {
+            UserRole::Manager => {
+                // TODO: we should declare some custom error codes instead of
+                // abusing -32602
+                return Err(JsonRpcError::invalid_params(
+                    "This is a stakeholder command".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    };
 }
 
 // Some parsing boilerplate
@@ -249,6 +267,8 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoint: String,
     ) -> jsonrpc_core::Result<serde_json::Value> {
+        stakeholder_only!(meta);
+
         let outpoint = parse_outpoint!(outpoint)?;
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
@@ -282,6 +302,8 @@ impl RpcApi for RpcImpl {
         emergency_tx: String,
         unvault_emergency_tx: String,
     ) -> jsonrpc_core::Result<serde_json::Value> {
+        stakeholder_only!(meta);
+
         let outpoint = parse_outpoint!(outpoint)?;
         let cancel_tx = CancelTransaction::from_psbt_str(&cancel_tx).map_err(|e| {
             JsonRpcError::invalid_params(format!(

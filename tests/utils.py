@@ -373,8 +373,6 @@ class TailableProc(object):
                     if self.is_in_log(r):
                         print("({} was previously in logs!)".format(r))
                 raise TimeoutError('Unable to find "{}" in logs.'.format(exs))
-            elif not self.running:
-                raise ValueError('Process died while waiting for logs')
 
             with self.logs_cond:
                 if pos >= len(self.logs):
@@ -390,6 +388,9 @@ class TailableProc(object):
                 if len(exs) == 0:
                     return self.logs[pos]
                 pos += 1
+
+            if not self.running:
+                raise ValueError('Process died while waiting for logs')
 
     def wait_for_log(self, regex, timeout=TIMEOUT):
         """Look for `regex` in the logs.
@@ -677,7 +678,8 @@ class Revaultd(TailableProc):
         TailableProc.start(self)
         self.wait_for_logs(["revaultd started on network regtest",
                             "bitcoind now synced",
-                            "JSONRPC server started"])
+                            "JSONRPC server started",
+                            "Signature fetcher thread started"])
 
     def cleanup(self):
         try:

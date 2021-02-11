@@ -249,8 +249,8 @@ pub fn db_insert_new_unconfirmed_vault(
         let derivation_index: u32 = derivation_index.into();
         tx.execute(
             "INSERT INTO vaults (wallet_id, status, blockheight, deposit_txid, \
-             deposit_vout, amount, derivation_index) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             deposit_vout, amount, derivation_index, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))",
             params![
                 wallet_id,
                 *status as u32,
@@ -312,7 +312,7 @@ pub fn db_confirm_deposit(
     db_exec(db_path, |db_tx| {
         db_tx
             .execute(
-                "UPDATE vaults SET status = (?1), blockheight = (?2) WHERE id = (?3)",
+                "UPDATE vaults SET status = (?1), blockheight = (?2), updated_at = strftime('%s','now') WHERE id = (?3)",
                 params![VaultStatus::Funded as u32, blockheight, vault_id,],
             )
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
@@ -331,7 +331,7 @@ pub fn db_confirm_deposit(
 pub fn db_unvault_deposit(db_path: &PathBuf, outpoint: &OutPoint) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1) WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
             params![
                 VaultStatus::Unvaulting as u32,
                 outpoint.txid.to_vec(),

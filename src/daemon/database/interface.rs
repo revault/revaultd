@@ -181,6 +181,7 @@ impl TryFrom<&Row<'_>> for DbVault {
         };
         let amount = Amount::from_sat(row.get::<_, u32>(6)?.into());
         let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
+        let updated_at = row.get(8)?;
 
         Ok(DbVault {
             id,
@@ -190,22 +191,26 @@ impl TryFrom<&Row<'_>> for DbVault {
             deposit_outpoint,
             amount,
             derivation_index,
+            updated_at,
         })
     }
 }
 
 /// Get all the vaults we know about from the db
 pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
-    db_query::<_, _, DbVault>(db_path, "SELECT * FROM vaults", NO_PARAMS, |row| {
-        row.try_into()
-    })
+    db_query::<_, _, DbVault>(
+        db_path,
+        "SELECT * FROM vaults ORDER BY updated_at DESC",
+        NO_PARAMS,
+        |row| row.try_into(),
+    )
 }
 
 /// Get the vaults that didn't move onchain yet from the DB.
 pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
     db_query(
         db_path,
-        "SELECT * FROM vaults WHERE status <= (?1)",
+        "SELECT * FROM vaults WHERE status <= (?1) ORDER BY updated_at DESC",
         &[VaultStatus::Active as u32],
         |row| row.try_into(),
     )

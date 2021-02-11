@@ -740,7 +740,7 @@ dependencies = [
 [[package]]
 name = "revault_tx"
 version = "0.0.1"
-source = "git+https://github.com/re-vault/revault_tx#7a13866cc09e0ee7e582f5f50f7ab5d6702f3723"
+source = "git+https://github.com/re-vault/revault_tx#95fe842230f148cf2987927685c3ed300da7b56a"
 dependencies = [
  "base64",
  "bitcoinconsensus",

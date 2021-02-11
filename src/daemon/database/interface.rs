@@ -149,7 +149,7 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
         Ok(DbWallet {
             id: row.get(0)?,
             timestamp: row.get(1)?,
-            vault_descriptor: row.get(2)?,
+            deposit_descriptor: row.get(2)?,
             unvault_descriptor: row.get(3)?,
             our_man_xpub,
             our_stk_xpub,

@@ -9,7 +9,7 @@ use crate::{
 use revault_tx::{
     bitcoin::{secp256k1, util::bip32::ChildNumber, Amount, OutPoint, PublicKey as BitcoinPubKey},
     miniscript::Descriptor,
-    scripts::{UnvaultDescriptor, VaultDescriptor},
+    scripts::{DepositDescriptor, UnvaultDescriptor},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
@@ -66,7 +66,7 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .duration_since(UNIX_EPOCH)
         .map(|dur| timestamp_to_u32(dur.as_secs()))
         .map_err(|e| DatabaseError(format!("Computing time since epoch: {}", e.to_string())))?;
-    let vault_descriptor = revaultd.vault_descriptor.0.to_string();
+    let deposit_descriptor = revaultd.deposit_descriptor.0.to_string();
     let unvault_descriptor = revaultd.unvault_descriptor.0.to_string();
     let our_man_xpub_str = revaultd.our_man_xpub.as_ref().map(|xpub| xpub.to_string());
     let our_stk_xpub_str = revaultd.our_stk_xpub.as_ref().map(|xpub| xpub.to_string());
@@ -94,12 +94,12 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         )
         .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
         tx.execute(
-            "INSERT INTO wallets (timestamp, vault_descriptor, unvault_descriptor,\
+            "INSERT INTO wallets (timestamp, deposit_descriptor, unvault_descriptor,\
             our_manager_xpub, our_stakeholder_xpub, deposit_derivation_index) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 timestamp,
-                vault_descriptor,
+                deposit_descriptor,
                 unvault_descriptor,
                 our_man_xpub_str,
                 our_stk_xpub_str,
@@ -146,14 +146,15 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
 
     //FIXME: Use the Abstract Miniscript policy to check the policies described in the
     // config files are equivalent to the miniscript in the db.
-    revaultd.vault_descriptor =
-        VaultDescriptor(Descriptor::from_str(&wallet.vault_descriptor).map_err(|e| {
+    revaultd.deposit_descriptor = DepositDescriptor(
+        Descriptor::from_str(&wallet.deposit_descriptor).map_err(|e| {
             DatabaseError(format!(
                 "Interpreting database vault descriptor '{}': {}",
-                wallet.vault_descriptor,
+                wallet.deposit_descriptor,
                 e.to_string()
             ))
-        })?);
+        })?,
+    );
     revaultd.unvault_descriptor = UnvaultDescriptor(
         Descriptor::from_str(&wallet.unvault_descriptor).map_err(|e| {
             DatabaseError(format!(
@@ -173,11 +174,11 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
         let index = ChildNumber::from(i);
         revaultd.derivation_index_map.insert(
             revaultd
-                .vault_descriptor
+                .deposit_descriptor
                 .derive(index)
                 .0
                 .address(revaultd.bitcoind_config.network, revaultd.xpub_ctx())
-                .expect("vault_descriptor is a wsh")
+                .expect("deposit_descriptor is a wsh")
                 .script_pubkey(),
             index,
         );

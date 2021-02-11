@@ -29,7 +29,7 @@ CREATE TABLE tip (
 CREATE TABLE wallets (
     id INTEGER PRIMARY KEY NOT NULL,
     timestamp INTEGER NOT NULL,
-    vault_descriptor TEXT NOT NULL,
+    deposit_descriptor TEXT NOT NULL,
     unvault_descriptor TEXT NOT NULL,
     our_manager_xpub TEXT,
     our_stakeholder_xpub TEXT,
@@ -82,7 +82,7 @@ CREATE INDEX vault_transactions ON presigned_transactions (vault_id);
 pub struct DbWallet {
     pub id: u32,
     pub timestamp: u32,
-    pub vault_descriptor: String,
+    pub deposit_descriptor: String,
     pub unvault_descriptor: String,
     pub our_man_xpub: Option<ExtendedPubKey>,
     pub our_stk_xpub: Option<ExtendedPubKey>,

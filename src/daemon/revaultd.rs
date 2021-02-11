@@ -27,12 +27,12 @@ use revault_tx::{
         DescriptorPublicKey, DescriptorPublicKeyCtx, DescriptorSinglePub, DescriptorXKey,
     },
     scripts::{
-        cpfp_descriptor, unvault_descriptor, vault_descriptor, CpfpDescriptor, EmergencyAddress,
-        UnvaultDescriptor, VaultDescriptor,
+        cpfp_descriptor, deposit_descriptor, unvault_descriptor, CpfpDescriptor, DepositDescriptor,
+        EmergencyAddress, UnvaultDescriptor,
     },
     transactions::{
-        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
-        VaultTransaction,
+        CancelTransaction, DepositTransaction, EmergencyTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
 };
 
@@ -219,7 +219,7 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, KeyErr
 pub struct _Vault {
     pub deposit_txo: TxOut,
     pub status: VaultStatus,
-    pub vault_tx: Option<VaultTransaction>,
+    pub vault_tx: Option<DepositTransaction>,
     pub emergency_tx: Option<EmergencyTransaction>,
     pub unvault_tx: Option<UnvaultTransaction>,
     pub cancel_tx: Option<CancelTransaction>,
@@ -245,7 +245,7 @@ pub struct RevaultD {
     pub our_stk_xpub: Option<ExtendedPubKey>,
     pub our_man_xpub: Option<ExtendedPubKey>,
     /// The miniscript descriptor of vault's outputs scripts
-    pub vault_descriptor: VaultDescriptor<DescriptorPublicKey>,
+    pub deposit_descriptor: DepositDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of unvault's outputs scripts
     pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of CPFP output scripts (in unvault and spend transaction)
@@ -335,7 +335,7 @@ impl RevaultD {
             .map(|key| DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key }))
             .collect();
 
-        let vault_descriptor = vault_descriptor(stakeholders_pubkeys.clone())?;
+        let deposit_descriptor = deposit_descriptor(stakeholders_pubkeys.clone())?;
         let unvault_descriptor = unvault_descriptor(
             stakeholders_pubkeys,
             managers_pubkeys.clone(),
@@ -384,7 +384,7 @@ impl RevaultD {
         Ok(RevaultD {
             our_stk_xpub,
             our_man_xpub,
-            vault_descriptor,
+            deposit_descriptor,
             unvault_descriptor,
             cpfp_descriptor,
             secp_ctx,
@@ -424,11 +424,11 @@ impl RevaultD {
     }
 
     pub fn vault_address(&self, child_number: ChildNumber) -> Address {
-        self.vault_descriptor
+        self.deposit_descriptor
             .derive(child_number)
             .0
             .address(self.bitcoind_config.network, self.xpub_ctx())
-            .expect("vault_descriptor is a wsh")
+            .expect("deposit_descriptor is a wsh")
     }
 
     pub fn unvault_address(&self, child_number: ChildNumber) -> Address {
@@ -436,7 +436,7 @@ impl RevaultD {
             .derive(child_number)
             .0
             .address(self.bitcoind_config.network, self.xpub_ctx())
-            .expect("vault_descriptor is a wsh")
+            .expect("unvault_descriptor is a wsh")
     }
 
     pub fn gap_limit(&self) -> u32 {

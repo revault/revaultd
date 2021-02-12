@@ -8,17 +8,21 @@ from utils import TIMEOUT, wait_for, RpcError, POSTGRES_IS_SETUP
 
 def test_revaultd_stakeholder_starts(revaultd_stakeholder):
     revaultd_stakeholder.rpc.call("stop")
-    revaultd_stakeholder.wait_for_log("Stopping revaultd.")
-    revaultd_stakeholder.wait_for_log("Bitcoind received shutdown.")
-    revaultd_stakeholder.wait_for_log("Signature fetcher thread received shutdown.")
+    revaultd_stakeholder.wait_for_logs([
+        "Stopping revaultd.",
+        "Bitcoind received shutdown.",
+        "Signature fetcher thread received shutdown.",
+    ])
     revaultd_stakeholder.proc.wait(TIMEOUT)
 
 
 def test_revaultd_manager_starts(revaultd_manager):
     revaultd_manager.rpc.call("stop")
-    revaultd_manager.wait_for_log("Stopping revaultd.")
-    revaultd_manager.wait_for_log("Bitcoind received shutdown.")
-    revaultd_manager.wait_for_log("Signature fetcher thread received shutdown.")
+    revaultd_manager.wait_for_logs([
+        "Stopping revaultd.",
+        "Bitcoind received shutdown.",
+        "Signature fetcher thread received shutdown.",
+    ])
     revaultd_manager.proc.wait(TIMEOUT)
 
 

@@ -20,8 +20,8 @@ use revault_tx::{
         transaction_chain, CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
     },
-    txins::VaultTxIn,
-    txouts::VaultTxOut,
+    txins::DepositTxIn,
+    txouts::DepositTxOut,
 };
 
 use std::{
@@ -273,18 +273,18 @@ fn presigned_transactions(
         .ok_or_else(|| {
             BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
         })?;
-    let deposit_descriptor = revaultd.vault_descriptor.derive(derivation_index);
+    let deposit_descriptor = revaultd.deposit_descriptor.derive(derivation_index);
     let unvault_descriptor = revaultd.unvault_descriptor.derive(derivation_index);
     let cpfp_descriptor = revaultd.cpfp_descriptor.derive(derivation_index);
     let emer_address = revaultd.emergency_address.clone(); // FIXME: should be valid for manager
 
     // Reconstruct the deposit UTXO and derive all pre-signed transactions out of it.
-    let vault_txin = VaultTxIn::new(
+    let deposit_txin = DepositTxIn::new(
         *outpoint,
-        VaultTxOut::new(utxo.txo.value, &deposit_descriptor, revaultd.xpub_ctx()),
+        DepositTxOut::new(utxo.txo.value, &deposit_descriptor, revaultd.xpub_ctx()),
     );
     let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
-        vault_txin,
+        deposit_txin,
         &deposit_descriptor,
         &unvault_descriptor,
         &cpfp_descriptor,

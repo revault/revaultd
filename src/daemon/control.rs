@@ -37,8 +37,8 @@ use revault_tx::{
         transaction_chain, CancelTransaction, EmergencyTransaction, RevaultTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
     },
-    txins::VaultTxIn,
-    txouts::VaultTxOut,
+    txins::DepositTxIn,
+    txouts::DepositTxOut,
 };
 
 use std::{
@@ -196,10 +196,10 @@ fn txlist_from_outpoints(
         // yet, ie not in DB).
         // One day, we could try to be smarter wrt free derivation but it's not
         // a priority atm.
-        let deposit_descriptor = revaultd.vault_descriptor.derive(deriv_index);
-        let vault_txin = VaultTxIn::new(
+        let deposit_descriptor = revaultd.deposit_descriptor.derive(deriv_index);
+        let vault_txin = DepositTxIn::new(
             db_vault.deposit_outpoint,
-            VaultTxOut::new(db_vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
+            DepositTxOut::new(db_vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
         );
         let unvault_descriptor = revaultd.unvault_descriptor.derive(deriv_index);
         let cpfp_descriptor = revaultd.cpfp_descriptor.derive(deriv_index);
@@ -500,10 +500,10 @@ pub fn handle_rpc_messages(
                 if let Some(vault) = vault {
                     // Second, derive the fully-specified deposit txout.
                     let deposit_descriptor =
-                        revaultd.vault_descriptor.derive(vault.derivation_index);
-                    let vault_txin = VaultTxIn::new(
+                        revaultd.deposit_descriptor.derive(vault.derivation_index);
+                    let deposit_txin = DepositTxIn::new(
                         outpoint,
-                        VaultTxOut::new(vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
+                        DepositTxOut::new(vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
                     );
 
                     // Third, re-derive all the transactions out of it.
@@ -513,7 +513,7 @@ pub fn handle_rpc_messages(
                     let emer_address = revaultd.emergency_address.clone();
 
                     let (_, cancel, emergency, unvault_emer) = transaction_chain(
-                        vault_txin,
+                        deposit_txin,
                         &deposit_descriptor,
                         &unvault_descriptor,
                         &cpfp_descriptor,

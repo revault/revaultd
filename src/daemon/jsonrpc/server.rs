@@ -8,12 +8,15 @@ use crate::{
     },
     threadmessages::RpcMessageIn,
 };
+use common::assume_some;
 
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, Write},
     path::PathBuf,
+    process,
     sync::{mpsc::Sender, Arc, RwLock},
+    thread,
 };
 
 #[cfg(not(windows))]
@@ -23,6 +26,11 @@ use mio::{
 };
 #[cfg(windows)]
 use uds_windows::{UnixListener, UnixStream};
+
+use jsonrpc_core::{futures::Future, Call, MethodCall, Response};
+
+// Maximum number of concurrent handlers for incoming RPC commands
+const MAX_HANDLER_THREADS: usize = 4;
 
 // Remove trailing newlines from utf-8 byte stream
 fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
@@ -119,6 +127,101 @@ fn write_byte_stream(stream: &mut UnixStream, resp: &str) -> Result<bool, io::Er
 #[cfg(not(windows))]
 type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>;
 
+fn handle_single_request(
+    jsonrpc_io: Arc<RwLock<jsonrpc_core::MetaIoHandler<JsonRpcMetaData>>>,
+    metadata: JsonRpcMetaData,
+    resp_queue: Arc<RwLock<VecDeque<String>>>,
+    message: MethodCall,
+) {
+    let message_id = message.id.clone();
+
+    let res = assume_some!(
+        jsonrpc_io
+            .read()
+            .unwrap()
+            .handle_call(Call::MethodCall(message), metadata)
+            .wait()
+            .expect("jsonrpc_core says: Handler calls can never fail."),
+        "This is a method call, there is always a response."
+    );
+    let resp = Response::Single(res);
+    let resp_str =
+        serde_json::to_string(&resp).expect("jsonrpc_core says: This should never fail.");
+
+    log::trace!("Responding to method {:?} with '{}'", message_id, resp_str);
+    resp_queue.write().unwrap().push_back(resp_str);
+}
+
+// Read request from the stream, parse it as JSON and handle the JSONRPC command.
+// Returns true if parsed correctly, false otherwise.
+// Extend the cache with data read from the stream, and parse it as a set of JSONRPC requests (no
+// notification). If there are remaining bytes not interpretable as a valid JSONRPC request, leave
+// it in the cache.
+// Will return true if we read at least one valid JSONRPC request.
+fn read_handle_request(
+    cache: &mut Vec<u8>,
+    stream: &mut UnixStream,
+    resp_queue: &mut Arc<RwLock<VecDeque<String>>>,
+    jsonrpc_io: &Arc<RwLock<jsonrpc_core::MetaIoHandler<JsonRpcMetaData>>>,
+    metadata: &JsonRpcMetaData,
+    handler_threads: &mut VecDeque<thread::JoinHandle<()>>,
+) -> Result<(), io::Error> {
+    // We use an optional index if there is some left unparsed bytes, because borrow checker :)
+    let mut leftover = None;
+
+    if let Some(new) = read_bytes_from_stream(stream)? {
+        cache.extend(new);
+    } else {
+        // Nothing new? We can short-circuit.
+        return Ok(());
+    }
+
+    let mut de = serde_json::Deserializer::from_slice(cache).into_iter::<MethodCall>();
+
+    while let Some(method_call) = de.next() {
+        log::trace!("Got JSONRPC request '{:#?}", method_call);
+        match method_call {
+            // Get a response and append it to the response queue
+            Ok(m) => {
+                let t_io_handler = jsonrpc_io.clone();
+                let t_meta = metadata.clone();
+                let t_queue = resp_queue.clone();
+
+                // If there are too many threads spawned, wait for the oldest one to complete.
+                // FIXME: we can be smarter than that..
+                if handler_threads.len() >= MAX_HANDLER_THREADS {
+                    handler_threads
+                        .pop_front()
+                        .expect("Just checked the length")
+                        .join()
+                        .unwrap();
+                }
+
+                handler_threads.push_back(thread::spawn(move || {
+                    handle_single_request(t_io_handler, t_meta, t_queue, m)
+                }));
+            }
+            // Parsing error? Assume it's a message we'll be able to read later.
+            Err(e) => {
+                if e.is_eof() {
+                    leftover = Some(de.byte_offset());
+                }
+                log::debug!("Error reading JSON: '{}'", e);
+                break;
+            }
+        }
+    }
+
+    if let Some(leftover) = leftover {
+        let s = &cache[leftover..];
+        *cache = s.to_vec();
+    } else {
+        cache.clear();
+    }
+
+    Ok(())
+}
+
 // For all but Windows, we use Mio.
 #[cfg(not(windows))]
 fn mio_loop(
@@ -130,13 +233,15 @@ fn mio_loop(
     let mut poller = Poll::new()?;
     let mut events = Events::with_capacity(16);
 
-    // Edge case: we might close the socket before writing the response to the
-    // 'stop' call that made us shutdown. This tracks that we answer politely.
-    let mut stop_token = Token(JSONRPC_SERVER.0 + 1);
-
     // UID per connection
-    let mut unique_token = Token(stop_token.0 + 1);
-    let mut connections_map: ConnectionMap = HashMap::with_capacity(32);
+    let mut unique_token = Token(JSONRPC_SERVER.0 + 1);
+    let mut connections_map: ConnectionMap = HashMap::with_capacity(8);
+
+    // Cache what we read from the socket, in case we read only half a message.
+    let mut read_cache_map: HashMap<Token, Vec<u8>> = HashMap::with_capacity(8);
+    let jsonrpc_io = Arc::from(RwLock::from(jsonrpc_io));
+    // Handle to thread currently handling commands we were sent.
+    let mut handler_threads = VecDeque::with_capacity(MAX_HANDLER_THREADS);
 
     poller
         .registry()
@@ -148,12 +253,10 @@ fn mio_loop(
         for event in &events {
             // A connection was established; loop to process all the messages
             if event.token() == JSONRPC_SERVER && event.is_readable() {
-                // This is not a while !metadata.is_shutdown() on purpose: if we are told
-                // to stop, we finish what we were previously told to.
-                loop {
+                while !metadata.is_shutdown() {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            let curr_token = Token(unique_token.0); // Hopefully this copies?
+                            let curr_token = Token(unique_token.0);
                             unique_token.0 += 1;
 
                             // So we actually know they want to discuss :)
@@ -171,6 +274,8 @@ fn mio_loop(
                                     Arc::new(RwLock::new(VecDeque::<String>::with_capacity(32))),
                                 ),
                             );
+
+                            read_cache_map.insert(curr_token, Vec::with_capacity(1024));
                         }
                         Err(e) => {
                             // Ok; next time then!
@@ -184,60 +289,55 @@ fn mio_loop(
                     }
                 }
             } else if connections_map.contains_key(&event.token()) {
-                if event.is_read_closed() {
+                // TODO: determine if it shoudl include event.is_write_closed()
+                if event.is_read_closed() || event.is_error() {
                     log::trace!("Dropping connection for {:?}", event.token());
                     connections_map.remove(&event.token());
 
-                    if event.token() == stop_token {
+                    // If this was the last connection alive and we are shutting down,
+                    // actually shut down.
+                    if metadata.is_shutdown() && connections_map.is_empty() {
                         return Ok(());
                     }
+
                     continue;
                 }
 
+                // Under normal circumstances we are always interested in both
+                // Writable (do we got something for them from the resp_queue?)
+                // and Readable (do they have something for us?) events
+                let (stream, resp_queue) = connections_map
+                    .get_mut(&event.token())
+                    .expect("We checked it existed just above.");
+                poller.registry().reregister(
+                    stream,
+                    event.token(),
+                    Interest::READABLE.add(Interest::WRITABLE),
+                )?;
+
                 if event.is_readable() {
                     log::trace!("Readable event for {:?}", event.token());
-                    let (stream, resp_queue) = connections_map
-                        .get_mut(&event.token())
-                        .expect("We checked it existed just above.");
+                    let read_cache = assume_some!(
+                        read_cache_map.get_mut(&event.token()),
+                        "Entry is always set when connection_map's entry is"
+                    );
 
-                    // Ok, so we got something to read (we don't respond to garbage)
-                    if let Some(bytes) = read_bytes_from_stream(stream)? {
-                        // Is it actually readable?
-                        match String::from_utf8(bytes) {
-                            Ok(string) => {
-                                // FIXME: Spawn it in a thread
-                                if let Some(resp) =
-                                    jsonrpc_io.handle_request_sync(&string, metadata.clone())
-                                {
-                                    // If we got a response, append it to the response queue
-                                    resp_queue.write().unwrap().push_back(resp);
-                                    // And tell Mio we'd like to write it
-                                    poller.registry().reregister(
-                                        stream,
-                                        event.token(),
-                                        Interest::READABLE.add(Interest::WRITABLE),
-                                    )?;
-
-                                    if metadata.is_shutdown() {
-                                        stop_token = event.token();
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "JSONRPC server: error interpreting request: '{}'",
-                                    e.to_string()
-                                );
-                            }
-                        }
-                    }
+                    read_handle_request(
+                        read_cache,
+                        stream,
+                        resp_queue,
+                        &jsonrpc_io,
+                        &metadata,
+                        &mut handler_threads,
+                    )?;
                 }
 
                 if event.is_writable() {
-                    log::trace!("Writable event for {:?}", event.token());
-                    let (stream, resp_queue) = connections_map
-                        .get_mut(&event.token())
-                        .expect("We checked it existed just above.");
+                    log::trace!(
+                        "Writable event for {:?}, len of write queue: '{}'",
+                        event.token(),
+                        resp_queue.read().unwrap().len()
+                    );
 
                     // FIFO
                     loop {
@@ -392,7 +492,7 @@ mod tests {
         thread::sleep(Duration::from_secs(2));
         let mut sock = UnixStream::connect(path).unwrap();
 
-        // Write an invalid JSONRPC message
+        // Write a valid JSONRPC message (but invalid command)
         // For some reasons it takes '{}' as non-empty parameters ON UNIX BUT NOT WINDOWS WTF..
         let invalid_msg =
             String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": {"a": "b"}}"#);
@@ -406,10 +506,42 @@ mod tests {
             )
         );
 
+        // TODO: support this for Windows..
+        #[cfg(not(windows))]
+        {
+            // Write valid JSONRPC message with a half-written one afterward
+            let msg = String::from(
+                r#"{"jsonrpc": "2.0", "id": 1, "method": "aaa", "params": []} {"jsonrpc": "2.0", "id": 2, "#,
+            );
+            let mut response = vec![0; 256];
+            sock.write(msg.as_bytes()).unwrap();
+            let read = sock.read(&mut response).unwrap();
+            assert_eq!(
+            response[..read],
+            String::from(
+                r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":1}"#
+            )
+            .as_bytes()[..read]
+        );
+
+            // Write the other half of the message
+            let msg = String::from(r#" "method": "bbbb", "params": []}"#);
+            let mut response = vec![0; 256];
+            sock.write(msg.as_bytes()).unwrap();
+            let read = sock.read(&mut response).unwrap();
+            assert_eq!(
+            response[..read],
+            String::from(
+                r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":2}"#
+            )
+            .as_bytes()[..read]
+        );
+        }
+
         // Tell it to stop, should send us a Shutdown message
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);
         sock.write(msg.as_bytes()).unwrap();
-        match rx.recv() {
+        match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(RpcMessageIn::Shutdown) => {}
             _ => panic!("Didn't receive shutdown"),
         }

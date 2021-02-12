@@ -214,6 +214,7 @@ pub fn signature_fetcher_loop(
     let mut last_poll = time::Instant::now();
     let poll_interval = revaultd.read().unwrap().coordinator_poll_interval;
 
+    log::info!("Signature fetcher thread started.");
     loop {
         // Process any message from master first
         match rx.try_recv() {

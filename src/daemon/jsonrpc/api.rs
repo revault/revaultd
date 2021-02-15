@@ -289,9 +289,9 @@ impl RpcApi for RpcImpl {
         })?;
 
         Ok(json!({
-            "cancel_tx": cancel_tx.as_psbt_string().expect("We just derived it"),
-            "emergency_tx": emer_tx.as_psbt_string().expect("We just derived it"),
-            "emergency_unvault_tx": unemer_tx.as_psbt_string().expect("We just derived it"),
+            "cancel_tx": cancel_tx.as_psbt_string(),
+            "emergency_tx": emer_tx.as_psbt_string(),
+            "emergency_unvault_tx": unemer_tx.as_psbt_string(),
         }))
     }
 
@@ -378,18 +378,11 @@ impl RpcApi for RpcImpl {
                     entry.insert("received_at".to_string(), wallet_tx.received_time.into());
                 } else {
                     // It's fully signed but not broadcast yet
-                    entry.insert("hex".to_string(), tx_res.tx.hex().expect("From db").into());
+                    entry.insert("hex".to_string(), tx_res.tx.hex().into());
                 }
             } else {
                 // It's not even fully signed yet, chances are we just derived it
-                entry.insert(
-                    "psbt".to_string(),
-                    tx_res
-                        .tx
-                        .as_psbt_string()
-                        .expect("From db or derived")
-                        .into(),
-                );
+                entry.insert("psbt".to_string(), tx_res.tx.as_psbt_string().into());
             }
 
             entry.into()

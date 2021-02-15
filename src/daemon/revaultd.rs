@@ -1,8 +1,8 @@
-use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
+use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, NoisePubkeyHex};
 
 use std::{
     collections::HashMap,
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     fmt, fs,
     io::{self, Read, Write},
     net::SocketAddr,
@@ -13,12 +13,11 @@ use std::{
 };
 
 use revault_net::{
-    noise::{NoisePrivKey, NoisePubKey},
-    sodiumoxide,
+    noise::{PublicKey as NoisePubKey, SecretKey as NoisePrivKey},
+    sodiumoxide::{self, crypto::scalarmult::curve25519},
 };
 use revault_tx::{
     bitcoin::{
-        hashes::hex::FromHex,
         secp256k1,
         util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey},
         Address, BlockHash, Script, TxOut,
@@ -180,10 +179,8 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, KeyErr
             "No Noise private key at '{:?}', generating a new one",
             secret_file
         );
+        noise_secret = sodiumoxide::crypto::box_::gen_keypair().1;
 
-        noise_secret
-            .0
-            .copy_from_slice(&sodiumoxide::randombytes::randombytes(32));
         // We create it in read-only but open it in write only.
         let mut options = fs::OpenOptions::new();
         options = options.write(true).create_new(true).clone();
@@ -195,7 +192,7 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, KeyErr
         }
 
         let mut fd = options.open(secret_file).map_err(KeyError::WritingKey)?;
-        fd.write_all(&noise_secret.0)
+        fd.write_all(&noise_secret.as_ref())
             .map_err(KeyError::WritingKey)?;
     } else {
         let mut noise_secret_fd = fs::File::open(secret_file).map_err(KeyError::ReadingKey)?;
@@ -367,13 +364,7 @@ impl RevaultD {
 
         // TODO: support hidden services
         let coordinator_host = SocketAddr::from_str(&config.coordinator_host)?;
-        let raw_key: Vec<u8> = FromHex::from_hex(&config.coordinator_noise_key)?;
-        let coordinator_noisekey = NoisePubKey(
-            raw_key
-                .as_slice()
-                .try_into()
-                .map_err(|_| KeyError::InvalidKeySize)?,
-        );
+        let coordinator_noisekey = config.coordinator_noise_key.key;
         let coordinator_poll_interval =
             time::Duration::from_secs(config.coordinator_poll_seconds.unwrap_or(60));
 
@@ -421,6 +412,12 @@ impl RevaultD {
     /// descriptor derivation, therefore the ChildNumber is always 0.
     pub fn xpub_ctx(&self) -> DescriptorPublicKeyCtx<'_, secp256k1::VerifyOnly> {
         DescriptorPublicKeyCtx::new(&self.secp_ctx, ChildNumber::from(0))
+    }
+
+    /// Our Noise static public key
+    pub fn noise_pubkey(&self) -> NoisePubKey {
+        let scalar = curve25519::Scalar(self.noise_secret.0);
+        NoisePubKey(curve25519::scalarmult_base(&scalar).0)
     }
 
     pub fn vault_address(&self, child_number: ChildNumber) -> Address {

@@ -281,7 +281,7 @@ macro_rules! db_store_unsigned_transactions {
                 $db_tx
                     .execute(
                         "INSERT INTO presigned_transactions (vault_id, type, psbt, fullysigned) VALUES (?1, ?2, ?3 , ?4)",
-                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?, false as u32],
+                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized(), false as u32],
                     )
                     .map_err(|e| {
                         DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
@@ -352,7 +352,7 @@ fn revault_tx_merge_sigs(
 ) -> Result<(bool, Vec<u8>), DatabaseError> {
     tx.inner_tx_mut().inputs[0].partial_sigs.extend(sigs);
     let fully_signed = tx.finalize(secp_ctx).is_ok();
-    let raw_psbt = tx.as_psbt_serialized()?;
+    let raw_psbt = tx.as_psbt_serialized();
     Ok((fully_signed, raw_psbt))
 }
 

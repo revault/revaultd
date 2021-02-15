@@ -24,10 +24,7 @@ use crate::{
 };
 use common::{assume_ok, assume_some};
 
-use revault_net::{
-    message::server::{RevaultSignature, Sig},
-    transport::KKTransport,
-};
+use revault_net::{message::server::Sig, transport::KKTransport};
 use revault_tx::{
     bitcoin::{
         secp256k1::{self, Signature},
@@ -103,6 +100,12 @@ impl From<BitcoindError> for ControlError {
 impl From<revault_tx::Error> for ControlError {
     fn from(e: revault_tx::Error) -> Self {
         Self::TransactionManagement(format!("Revault transaction error: {}", e))
+    }
+}
+
+impl From<revault_tx::error::TransactionCreationError> for ControlError {
+    fn from(e: revault_tx::error::TransactionCreationError) -> Self {
+        Self::TransactionManagement(format!("Revault transaction creation error: {}", e))
     }
 }
 
@@ -217,9 +220,8 @@ fn txlist_from_outpoints(
                 xpub_ctx,
                 revaultd.lock_time,
             )?);
-        let unvault_txin = unvault_tx
-            .unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv)
-            .expect("Just created it");
+        let unvault_txin =
+            unvault_tx.unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv);
         let wallet_tx = bitcoind_wallet_tx(
             &bitcoind_tx,
             unvault_tx.inner_tx().global.unsigned_tx.txid(),
@@ -377,17 +379,14 @@ fn send_sig_msg(
     id: Txid,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // FIXME: use pop_last() once it's stable
-    for (pubkey, sig) in sigs.into_iter() {
+    for (pubkey, sig) in sigs {
         let pubkey = pubkey.key;
         let (sigtype, sig) = sig
             .split_last()
             .expect("They must provide valid signatures");
         assert_eq!(*sigtype, SigHashType::AllPlusAnyoneCanPay as u8);
 
-        let signature = RevaultSignature::PlaintextSig(
-            Signature::from_der(&sig).expect("They must provide valid signatures"),
-        );
+        let signature = Signature::from_der(&sig).expect("They must provide valid signatures");
         let sig_msg = Sig {
             pubkey,
             signature,

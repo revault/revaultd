@@ -1,8 +1,56 @@
 use std::{net::SocketAddr, path::PathBuf, vec::Vec};
 
-use revault_tx::bitcoin::{util::bip32, Address, Network, PublicKey};
+use revault_net::noise::PublicKey as NoisePubKey;
+use revault_tx::bitcoin::{hashes::hex::FromHex, util::bip32, Address, Network, PublicKey};
 
-use serde::Deserialize;
+use serde::{de, Deserialize};
+
+#[derive(Debug, Clone)]
+pub struct NoisePubkeyHex {
+    pub key: NoisePubKey,
+}
+
+impl<'de> de::Visitor<'de> for NoisePubkeyHex {
+    type Value = NoisePubkeyHex;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "a hex encoded string")
+    }
+
+    fn visit_str<E>(self, data: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        FromHex::from_hex(data)
+            .map_err(|e| de::Error::custom(e))
+            .map(|hex| NoisePubkeyHex {
+                key: NoisePubKey(hex),
+            })
+    }
+
+    fn visit_borrowed_str<E>(self, data: &'de str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        FromHex::from_hex(data)
+            .map_err(|e| de::Error::custom(e))
+            .map(|hex| NoisePubkeyHex {
+                key: NoisePubKey(hex),
+            })
+    }
+}
+
+impl<'de> Deserialize<'de> for NoisePubkeyHex {
+    fn deserialize<D>(deserializer: D) -> Result<NoisePubkeyHex, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let pk = NoisePubkeyHex {
+            key: NoisePubKey([0u8; 32]),
+        };
+        deserializer.deserialize_str(pk)
+    }
+}
 
 /// Everything we need to know for talking to bitcoind serenely
 #[derive(Debug, Clone, Deserialize)]
@@ -65,7 +113,7 @@ pub struct Config {
     /// The host of the sync server (may be an IP or a hidden service)
     pub coordinator_host: String,
     /// The Noise static public key of the sync server
-    pub coordinator_noise_key: String,
+    pub coordinator_noise_key: NoisePubkeyHex,
     /// The poll intervals for signature fetching (default: 1min)
     pub coordinator_poll_seconds: Option<u64>,
     /// An optional custom data directory

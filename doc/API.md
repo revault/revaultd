@@ -118,15 +118,15 @@ either `status` or deposit `outpoints`.
 
 #### Transactions resource
 
-| Field               | Type                                                 | Description                                                            |
-| ------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------  |
-| `outpoint`          | string                                               | The vault deposit transaction outpoint.                                |
-| `deposit`           | [transaction resource](#transaction-resource) object | The vault deposit transaction                                          |
-| `unvault`           | [transaction resource](#transaction-resource) object | The unvaulting transaction                                             |
-| `spend`             | [transaction resource](#transaction-resource) object | The transaction spending the `unvault`ing one, only present if onchain |
-| `cancel`            | [transaction resource](#transaction-resource) object | The "revaulting" transaction                                           |
-| `emergency`         | [transaction resource](#transaction-resource) object | The emergency transaction                                              |
-| `unvault_emergency` | [transaction resource](#transaction-resource) object | The unvaulting emergency transaction                                   |
+| Field               | Type                                                           | Description                                                              |
+| ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `outpoint`          | string                                                         | The vault deposit transaction outpoint.                                  |
+| `deposit`           | [transaction resource](#transaction-resource) object           | The vault deposit transaction                                            |
+| `unvault`           | [transaction resource](#transaction-resource) object           | The unvaulting transaction                                               |
+| `spend`             | [transaction resource](#transaction-resource) object           | The transaction spending the `unvault`ing one, only present if onchain   |
+| `cancel`            | [transaction resource](#transaction-resource) object           | The "revaulting" transaction                                             |
+| `emergency`         | [transaction resource](#transaction-resource) object or `null` | The Emergency transaction, or `null` if we are not a stakeholder         |
+| `unvault_emergency` | [transaction resource](#transaction-resource) object or `null` | The Unvault Emergency transaction, or `null` if we are not a stakeholder |
 
 
 #### Transaction resource

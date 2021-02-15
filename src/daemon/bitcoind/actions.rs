@@ -13,12 +13,12 @@ use crate::{
     revaultd::{RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
-use common::config::BitcoindConfig;
+use common::{assume_some, config::BitcoindConfig};
 use revault_tx::{
     bitcoin::{Amount, Network, OutPoint, TxOut, Txid},
     transactions::{
-        transaction_chain, CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        transaction_chain, transaction_chain_manager, CancelTransaction, EmergencyTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
     txins::DepositTxIn,
     txouts::DepositTxOut,
@@ -27,6 +27,7 @@ use revault_tx::{
 use std::{
     collections::HashMap,
     path::PathBuf,
+    process,
     sync::{
         mpsc::{Receiver, TryRecvError},
         Arc, RwLock,
@@ -261,8 +262,8 @@ fn presigned_transactions(
     (
         UnvaultTransaction,
         CancelTransaction,
-        EmergencyTransaction,
-        UnvaultEmergencyTransaction,
+        Option<EmergencyTransaction>,
+        Option<UnvaultEmergencyTransaction>,
     ),
     BitcoindError,
 > {
@@ -276,25 +277,38 @@ fn presigned_transactions(
     let deposit_descriptor = revaultd.deposit_descriptor.derive(derivation_index);
     let unvault_descriptor = revaultd.unvault_descriptor.derive(derivation_index);
     let cpfp_descriptor = revaultd.cpfp_descriptor.derive(derivation_index);
-    let emer_address = revaultd.emergency_address.clone(); // FIXME: should be valid for manager
 
-    // Reconstruct the deposit UTXO and derive all pre-signed transactions out of it.
+    // Reconstruct the deposit UTXO and derive all pre-signed transactions out of it
+    // if we are a stakeholder, and only the Unvault and the Cancel if we are a manager.
     let deposit_txin = DepositTxIn::new(
         *outpoint,
         DepositTxOut::new(utxo.txo.value, &deposit_descriptor, revaultd.xpub_ctx()),
     );
-    let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
-        deposit_txin,
-        &deposit_descriptor,
-        &unvault_descriptor,
-        &cpfp_descriptor,
-        emer_address,
-        revaultd.xpub_ctx(),
-        revaultd.lock_time,
-        revaultd.unvault_csv,
-    )?;
-
-    Ok((unvault_tx, cancel_tx, emer_tx, unemer_tx))
+    if revaultd.is_stakeholder() {
+        let emer_address = assume_some!(revaultd.emergency_address.clone(), "We are a stakeholder");
+        let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
+            deposit_txin,
+            &deposit_descriptor,
+            &unvault_descriptor,
+            &cpfp_descriptor,
+            emer_address,
+            revaultd.xpub_ctx(),
+            revaultd.lock_time,
+            revaultd.unvault_csv,
+        )?;
+        Ok((unvault_tx, cancel_tx, Some(emer_tx), Some(unemer_tx)))
+    } else {
+        let (unvault_tx, cancel_tx) = transaction_chain_manager(
+            deposit_txin,
+            &deposit_descriptor,
+            &unvault_descriptor,
+            &cpfp_descriptor,
+            revaultd.xpub_ctx(),
+            revaultd.lock_time,
+            revaultd.unvault_csv,
+        )?;
+        Ok((unvault_tx, cancel_tx, None, None))
+    }
 }
 
 // Fill up the deposit UTXOs cache from db vaults
@@ -403,17 +417,17 @@ fn update_deposits(
             .ok_or_else(|| {
                 BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
             })?;
+        // emer_tx and unemer_tx are None for managers
         let (unvault_tx, cancel_tx, emer_tx, unemer_tx) =
             presigned_transactions(&revaultd.read().unwrap(), &outpoint, &utxo)?;
-        // FIXME: emergencies should be optional (managers)
         db_confirm_deposit(
             &revaultd.read().unwrap().db_file(),
             &outpoint,
             blockheight,
             &unvault_tx,
             &cancel_tx,
-            &emer_tx,
-            &unemer_tx,
+            emer_tx.as_ref(),
+            unemer_tx.as_ref(),
         )?;
         deposits_cache
             .get_mut(&outpoint)

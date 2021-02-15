@@ -88,8 +88,9 @@ pub struct VaultTransactions {
     // None if not spending
     pub spend: Option<TransactionResource<SpendTransaction>>,
     pub cancel: TransactionResource<CancelTransaction>,
-    pub emergency: TransactionResource<EmergencyTransaction>,
-    pub unvault_emergency: TransactionResource<UnvaultEmergencyTransaction>,
+    // None if not stakeholder
+    pub emergency: Option<TransactionResource<EmergencyTransaction>>,
+    pub unvault_emergency: Option<TransactionResource<UnvaultEmergencyTransaction>>,
 }
 
 #[derive(Debug)]

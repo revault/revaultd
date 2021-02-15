@@ -180,15 +180,21 @@ fn fetch_all_signatures(
     while let Some(tx) = txs.pop() {
         match tx.psbt {
             RevaultTx::Unvault(unvault_tx) => {
+                log::debug!("Fetching Unvault signature");
                 get_sigs(revaultd, tx.id, tx.vault_id, unvault_tx)?;
             }
             RevaultTx::Cancel(cancel_tx) => {
+                log::debug!("Fetching Cancel signature");
                 get_sigs(revaultd, tx.id, tx.vault_id, cancel_tx)?;
             }
             RevaultTx::Emergency(emer_tx) => {
+                log::debug!("Fetching Emergency signature");
+                debug_assert!(revaultd.is_stakeholder());
                 get_sigs(revaultd, tx.id, tx.vault_id, emer_tx)?;
             }
             RevaultTx::UnvaultEmergency(unemer_tx) => {
+                log::debug!("Fetching Unvault Emergency signature");
+                debug_assert!(revaultd.is_stakeholder());
                 get_sigs(revaultd, tx.id, tx.vault_id, unemer_tx)?;
             }
         };
@@ -219,7 +225,9 @@ pub fn signature_fetcher_loop(
             }
         }
 
+        // This will ignore emergency transactions if we are manager-only
         let txs = db_transactions_sig_missing(&revaultd.read().unwrap().db_file())?;
+        log::trace!("Fetching transactions for {:#?}", txs);
         fetch_all_signatures(&revaultd.read().unwrap(), txs).unwrap_or_else(|e| {
             log::warn!("Error while fetching signatures: '{}'", e);
         });

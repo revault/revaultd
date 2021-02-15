@@ -1,4 +1,4 @@
-use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError, NoisePubkeyHex};
+use common::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
 
 use std::{
     collections::HashMap,
@@ -247,7 +247,8 @@ pub struct RevaultD {
     pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
     /// The miniscript descriptor of CPFP output scripts (in unvault and spend transaction)
     pub cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
-    pub emergency_address: EmergencyAddress,
+    /// The Emergency address, only available if we are a stakeholder
+    pub emergency_address: Option<EmergencyAddress>,
     /// We don't make an enormous deal of address reuse (we cancel to the same keys),
     /// however we at least try to generate new addresses once they're used.
     // FIXME: think more about desync reconciliation..
@@ -341,7 +342,7 @@ impl RevaultD {
             config.unvault_csv,
         )?;
         let cpfp_descriptor = cpfp_descriptor(managers_pubkeys)?;
-        let emergency_address = EmergencyAddress::from(config.emergency_address)?;
+        let emergency_address = config.stakeholder_config.map(|x| x.emergency_address);
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         data_dir.push(config.bitcoind_config.network.to_string());

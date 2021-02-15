@@ -619,16 +619,14 @@ class Revaultd(TailableProc):
                                        ".cookie")
         with open(self.conf_file, 'w') as f:
             f.write(f"unvault_csv = {csv}\n")
-            # FIXME: eventually use a real one here
-            f.write("emergency_address = "
-                    "\"bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq\"\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
+            # FIXME: make log level customizable
             f.write(f"log_level = 'trace'\n")
 
             f.write(f"coordinator_host = \"127.0.0.1:{coordinator_port}\"\n")
             f.write(f"coordinator_noise_key = \"{coordinator_noise_key}\"\n")
-            f.write(f"coordinator_poll_seconds = 1\n")
+            f.write(f"coordinator_poll_seconds = 2\n")
 
             f.write("stakeholders_xpubs = [")
             for stk in stks:
@@ -659,6 +657,9 @@ class Revaultd(TailableProc):
                     f.write(f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
                             f"\"{wt['noise_key']}\" }}, ")
                 f.write("]\n")
+                # FIXME: eventually use a real one here
+                f.write("emergency_address = "
+                        "\"bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq\"\n")
 
             if man_config is not None:
                 f.write("[manager_config]\n")
@@ -721,6 +722,7 @@ class Coordinatord(TailableProc):
     def __init__(self, datadir, noise_priv, managers_keys, stakeholders_keys,
                  watchtowers_keys, listen_port, postgres_user, postgres_pass,
                  postgres_host="localhost"):
+        # FIXME: reduce DEBUG log load and make it verbose
         TailableProc.__init__(self, datadir, verbose=False)
         bin = os.path.join(os.path.dirname(__file__), "servers",
                            "coordinatord", "target/debug/revault_coordinatord")

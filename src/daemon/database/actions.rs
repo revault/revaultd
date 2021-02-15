@@ -292,14 +292,15 @@ macro_rules! db_store_unsigned_transactions {
 
 /// Mark an unconfirmed deposit as being in 'Funded' state (confirmed), as well as storing the
 /// unsigned "presigned-transactions".
+/// The `emer_tx` and `unemer_tx` may only be passed for stakeholders.
 pub fn db_confirm_deposit(
     db_path: &PathBuf,
     outpoint: &OutPoint,
     blockheight: u32,
     unvault_tx: &UnvaultTransaction,
     cancel_tx: &CancelTransaction,
-    emer_tx: &EmergencyTransaction,
-    unemer_tx: &UnvaultEmergencyTransaction,
+    emer_tx: Option<&EmergencyTransaction>,
+    unemer_tx: Option<&UnvaultEmergencyTransaction>,
 ) -> Result<(), DatabaseError> {
     let vault_id = db_vault_by_deposit(db_path, outpoint)?
         .ok_or_else(|| {
@@ -318,11 +319,19 @@ pub fn db_confirm_deposit(
             )
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
 
-        db_store_unsigned_transactions!(
-            db_tx,
-            vault_id,
-            [unvault_tx, cancel_tx, emer_tx, unemer_tx]
-        );
+        match (emer_tx, unemer_tx) {
+            (Some(emer_tx), Some(unemer_tx)) => {
+                db_store_unsigned_transactions!(
+                    db_tx,
+                    vault_id,
+                    [unvault_tx, cancel_tx, emer_tx, unemer_tx]
+                );
+            }
+            (None, None) => {
+                db_store_unsigned_transactions!(db_tx, vault_id, [unvault_tx, cancel_tx]);
+            }
+            _ => unreachable!(),
+        }
 
         Ok(())
     })
@@ -642,8 +651,8 @@ mod test {
             blockheight,
             &unvault_tx,
             &cancel_tx,
-            &emer_tx,
-            &unemer_tx,
+            Some(&emer_tx),
+            Some(&unemer_tx),
         )
         .unwrap();
 

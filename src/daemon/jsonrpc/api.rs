@@ -414,10 +414,19 @@ impl RpcApi for RpcImpl {
                 txs_map.insert("spend".to_string(), tx_entry(spend));
             }
             txs_map.insert("cancel".to_string(), tx_entry(vault.cancel));
-            txs_map.insert("emergency".to_string(), tx_entry(vault.emergency));
+            txs_map.insert(
+                "emergency".to_string(),
+                vault
+                    .emergency
+                    .map(|x| tx_entry(x))
+                    .unwrap_or(serde_json::Value::Null),
+            );
             txs_map.insert(
                 "unvault_emergency".to_string(),
-                tx_entry(vault.unvault_emergency),
+                vault
+                    .unvault_emergency
+                    .map(|x| tx_entry(x))
+                    .unwrap_or(serde_json::Value::Null),
             );
 
             txs_array.push(txs_map);

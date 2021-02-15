@@ -1,7 +1,10 @@
 use std::{net::SocketAddr, path::PathBuf, vec::Vec};
 
 use revault_net::noise::PublicKey as NoisePubKey;
-use revault_tx::bitcoin::{hashes::hex::FromHex, util::bip32, Address, Network, PublicKey};
+use revault_tx::{
+    bitcoin::{hashes::hex::FromHex, util::bip32, Network, PublicKey},
+    scripts::EmergencyAddress,
+};
 
 use serde::{de, Deserialize};
 
@@ -74,6 +77,7 @@ pub struct WatchtowerConfig {
 pub struct StakeholderConfig {
     pub xpub: bip32::ExtendedPubKey,
     pub watchtowers: Vec<WatchtowerConfig>,
+    pub emergency_address: EmergencyAddress,
 }
 
 // Same fields as the WatchtowerConfig struct for now, but leave them separate.
@@ -108,8 +112,6 @@ pub struct Config {
     pub managers_xpubs: Vec<bip32::ExtendedPubKey>,
     /// The unvault output scripts relative timelock
     pub unvault_csv: u32,
-    /// The emergency address
-    pub emergency_address: Address,
     /// The host of the sync server (may be an IP or a hidden service)
     pub coordinator_host: String,
     /// The Noise static public key of the sync server
@@ -214,6 +216,15 @@ impl Config {
                     stk_config.xpub
                 )));
             }
+
+            let emer_addr_net = stk_config.emergency_address.address().network;
+            let bitcoind_net = config.bitcoind_config.network;
+            if emer_addr_net != bitcoind_net {
+                return Err(ConfigError(format!(
+                    r#"Our "emergency_address" is for '{}' but bitcoind is on '{}'"#,
+                    emer_addr_net, bitcoind_net
+                )));
+            }
         }
 
         if let Some(ref man_config) = config.manager_config {
@@ -223,15 +234,6 @@ impl Config {
                     man_config.xpub
                 )));
             }
-        }
-
-        let emer_addr_net = config.emergency_address.network;
-        let bitcoind_net = config.bitcoind_config.network;
-        if emer_addr_net != bitcoind_net {
-            return Err(ConfigError(format!(
-                r#"Our "emergency_address" is for '{}' but bitcoind is on '{}'"#,
-                emer_addr_net, bitcoind_net
-            )));
         }
 
         Ok(config)
@@ -271,7 +273,6 @@ mod tests {
                     "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
             ]
             unvault_csv = 42
-            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
 
             [bitcoind_config]
             network = "bitcoin"
@@ -282,6 +283,7 @@ mod tests {
             [stakeholder_config]
             xpub = "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay"
             watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
+            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
         "#;
         toml::from_str::<Config>(toml_str).expect("Deserializing stakeholder toml_str");
 
@@ -311,7 +313,6 @@ mod tests {
                     "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
             ]
             unvault_csv = 42
-            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
 
             [bitcoind_config]
             network = "bitcoin"
@@ -351,7 +352,6 @@ mod tests {
                     "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
             ]
             unvault_csv = 42
-            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
 
             [bitcoind_config]
             network = "bitcoin"
@@ -366,6 +366,7 @@ mod tests {
             [stakeholder_config]
             xpub = "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay"
             watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
+            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
         "#;
         toml::from_str::<Config>(toml_str).expect("Deserializing stakeholder-manager toml_str");
 

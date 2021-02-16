@@ -99,6 +99,15 @@ pub trait RpcApi {
         emergency_unvault_tx: String,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
+    /// Get the fresh Unvault transactions for a vault identified by its deposit
+    /// outpoint.
+    #[rpc(meta, name = "getunvaulttx")]
+    fn getunvaulttx(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
     /// Retrieve the onchain transactions of a vault with the given deposit outpoint
     #[rpc(meta, name = "listtransactions")]
     fn listtransactions(
@@ -433,5 +442,30 @@ impl RpcApi for RpcImpl {
         }
 
         Ok(json!({ "transactions": txs_array }))
+    }
+
+    fn getunvaulttx(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        stakeholder_only!(meta);
+
+        let outpoint = parse_outpoint!(outpoint)?;
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::GetUnvaultTx(outpoint, response_tx)),
+            "Sending 'getunvaulttx' to main thread"
+        );
+        let unvault_tx = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'getunvaulttx' from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({
+            "unvault_tx": unvault_tx.as_psbt_string(),
+        }))
     }
 }

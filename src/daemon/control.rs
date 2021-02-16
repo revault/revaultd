@@ -726,6 +726,49 @@ pub fn handle_rpc_messages(
                 // Ok, RPC server, tell them that everything is fine.
                 response_tx.send(None)?;
             }
+            RpcMessageIn::GetUnvaultTx(outpoint, response_tx) => {
+                log::trace!("Got 'getunvaulttx' request from RPC thread");
+                let revaultd = revaultd.read().unwrap();
+                let xpub_ctx = revaultd.xpub_ctx();
+                let db_file = &revaultd.db_file();
+
+                // We allow the call for Funded 'only' as unvaulttx would later fail if it's
+                // not 'secured'.
+                let vault = match db_vault_by_deposit(db_file, &outpoint)? {
+                    None => {
+                        response_tx.send(Err(RpcControlError::UnknownOutpoint(outpoint)))?;
+                        continue;
+                    }
+                    Some(vault) => match vault.status {
+                        VaultStatus::Unconfirmed => {
+                            response_tx.send(Err(RpcControlError::InvalidStatus((
+                                vault.status,
+                                VaultStatus::Funded,
+                            ))))?;
+                            continue;
+                        }
+                        _ => vault,
+                    },
+                };
+
+                // Derive the descriptors needed to create the UnvaultTransaction
+                let deposit_descriptor = revaultd.deposit_descriptor.derive(vault.derivation_index);
+                let deposit_txin = DepositTxIn::new(
+                    outpoint,
+                    DepositTxOut::new(vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
+                );
+                let unvault_descriptor = revaultd.unvault_descriptor.derive(vault.derivation_index);
+                let cpfp_descriptor = revaultd.cpfp_descriptor.derive(vault.derivation_index);
+
+                let unvault_tx = UnvaultTransaction::new(
+                    deposit_txin,
+                    &unvault_descriptor,
+                    &cpfp_descriptor,
+                    xpub_ctx,
+                    0,
+                )?;
+                response_tx.send(Ok(unvault_tx))?;
+            }
             RpcMessageIn::ListTransactions(outpoints, response_tx) => {
                 log::trace!("Got 'listtransactions' request from RPC thread");
                 response_tx.send(txlist_from_outpoints(

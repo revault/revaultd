@@ -154,9 +154,34 @@ def test_getrevocationtxs(revault_network, bitcoind):
     bitcoind.generate_block(6, txid)
     wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
     txs = stks[0].rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+    assert len(txs.keys()) == 3
     for n in stks[1:]:
         wait_for(lambda: n.rpc.listvaults()["vaults"][0]["status"] == "funded")
         assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+
+
+def test_getunvaulttx(revault_network):
+    revault_network.deploy(3, 1)
+    mans = revault_network.man_wallets
+    stks = revault_network.stk_wallets
+
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+         mans[0].rpc.getunvaulttx("whatever_doesnt_matter")
+
+    # We can't query for an unknow vault
+    invalid_outpoint = f"{'0'*64}:1"
+    with pytest.raises(RpcError, match="No vault at"):
+         stks[0].rpc.getunvaulttx(invalid_outpoint)
+
+    vault = revault_network.fund(18)
+    outpoint = f"{vault['txid']}:{vault['vout']}"
+    stks[0].wait_for_deposit(outpoint)
+    tx = stks[0].rpc.getunvaulttx(outpoint)
+    for stk in stks[1:]:
+        stk.wait_for_deposit(outpoint)
+        assert (tx["unvault_tx"] ==
+                stk.rpc.getunvaulttx(outpoint)["unvault_tx"])
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

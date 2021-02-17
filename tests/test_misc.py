@@ -248,7 +248,8 @@ def psbt_add_invalid_sig(psbt_str):
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
-def test_revocationtxs_sanity_checks(revault_network):
+def test_revocationtxs(revault_network):
+    """Sanity checks for the revocationtxs command"""
     revault_network.deploy(6, 2)
     mans = revault_network.man_wallets
     stks = revault_network.stk_wallets
@@ -337,8 +338,103 @@ def test_revocationtxs_sanity_checks(revault_network):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, mal_unemer)
 
 
+def test_unvaulttx(revault_network):
+    """Sanity checks for the unvaulttx command"""
+    revault_network.deploy(3, 1)
+    mans = revault_network.man_wallets
+    stks = revault_network.stk_wallets
+
+    def sign_revocation_txs(stks, deposit):
+        """
+        Get all stakeholders to sign revocation transactions (speedrun mode)
+        """
+        stks[0].wait_for_deposit(deposit)
+        psbts = stks[0].rpc.getrevocationtxs(deposit)
+        cancel_psbt = psbts["cancel_tx"]
+        emer_psbt = psbts["emergency_tx"]
+        unemer_psbt = psbts["emergency_unvault_tx"]
+        for stk in stks:
+            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(cancel_psbt,
+                                                                child_index)
+            emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt,
+                                                              child_index)
+            unemer_psbt = stk.stk_keychain.sign_revocation_psbt(unemer_psbt,
+                                                                child_index)
+        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+        assert stks[0].rpc.listvaults([], [deposit])["vaults"][0]["status"] == "secured"
+
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+         mans[0].rpc.unvaulttx("whatever_doesnt_matter", "psbt_here")
+
+    vault = revault_network.fund(10)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    child_index = vault["derivation_index"]
+    stks[0].wait_for_deposit(deposit)
+    unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
+
+    # We can't send it for an unknown vault
+    invalid_outpoint = f"{'00'*32}:1"
+    with pytest.raises(RpcError, match="No vault at"):
+        stks[0].rpc.unvaulttx(invalid_outpoint, unvault_psbt)
+
+    # We can't give it a random PSBT, it will fail at parsing time
+    mal_psbt = psbt_add_input(unvault_psbt)
+    with pytest.raises(RpcError, match="Invalid Revault transaction"):
+        stks[0].rpc.unvaulttx(deposit, mal_psbt)
+
+    # We can't send it until all the revocation txs sigs have been stored
+    assert stks[0].rpc.listvaults([], [deposit])["vaults"][0]["status"] == "funded"
+    with pytest.raises(RpcError, match="Invalid vault status"):
+        stks[0].rpc.unvaulttx(deposit, unvault_psbt)
+
+    sign_revocation_txs(stks, deposit)
+
+    # We must provide a signature for ourselves
+    with pytest.raises(RpcError, match="No signature for ourselves"):
+        stks[0].rpc.unvaulttx(deposit, unvault_psbt)
+    unvault_psbt = stks[0].stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
+
+    # We refuse any random invalid signature
+    mal_unvault = psbt_add_invalid_sig(unvault_psbt)
+    unvault_psbt = stks[0].stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
+    with pytest.raises(RpcError, match="Invalid signature"):
+        stks[0].rpc.unvaulttx(deposit, mal_unvault)
+
+    # Get all stakeholders to share their sig, this makes the vault active
+    for stk in stks:
+        wait_for(lambda: stk.rpc.listvaults([], [deposit])
+                 ["vaults"][0]["status"] == "secured")
+        unvault_psbt = stk.rpc.getunvaulttx(deposit)["unvault_tx"]
+        unvault_psbt = stk.stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
+        stk.rpc.unvaulttx(deposit, unvault_psbt)
+    for stk in stks:
+        wait_for(lambda: stk.rpc.listvaults([], [deposit])
+                 ["vaults"][0]["status"] == "active")
+
+    # We can't do it again
+    with pytest.raises(RpcError, match="Invalid vault status"):
+        stks[0].rpc.unvaulttx(deposit, unvault_psbt)
+
+    # We can share all the signatures at once
+    vault = revault_network.fund(20)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    child_index = vault["derivation_index"]
+    stks[0].wait_for_deposit(deposit)
+    sign_revocation_txs(stks, deposit)
+    unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
+    for stk in stks:
+        wait_for(lambda: stk.rpc.listvaults([], [deposit])
+                 ["vaults"][0]["status"] == "secured")
+        unvault_psbt = stk.stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
+    stks[0].rpc.unvaulttx(deposit, unvault_psbt)
+    for stk in stks:
+        wait_for(lambda: stk.rpc.listvaults([], [deposit])
+                 ["vaults"][0]["status"] == "active")
+
+
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
-def test_sig_sharing(revault_network):
+def test_revocation_sig_sharing(revault_network):
     revault_network.deploy(5, 3)
     stks = revault_network.stk_wallets
     mans = revault_network.man_wallets

@@ -9,6 +9,7 @@ use revault_tx::{
     bitcoin::OutPoint,
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
 };
 
@@ -106,6 +107,16 @@ pub trait RpcApi {
         &self,
         meta: Self::Metadata,
         outpoint: String,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    /// Give the signed cancel, emergency, and unvault_emergency transactions (as
+    /// base64-encoded PSBTs) for a vault identified by its deposit outpoint.
+    #[rpc(meta, name = "unvaulttx")]
+    fn unvaulttx(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+        unvault_tx: String,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Retrieve the onchain transactions of a vault with the given deposit outpoint
@@ -467,5 +478,30 @@ impl RpcApi for RpcImpl {
         Ok(json!({
             "unvault_tx": unvault_tx.as_psbt_string(),
         }))
+    }
+
+    fn unvaulttx(
+        &self,
+        meta: Self::Metadata,
+        outpoint: String,
+        unvault_tx: String,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        stakeholder_only!(meta);
+
+        let outpoint = parse_outpoint!(outpoint)?;
+        let unvault_tx = UnvaultTransaction::from_psbt_str(&unvault_tx).map_err(|e| {
+            JsonRpcError::invalid_params(format!("Invalid Unvault transaction: '{}'", e))
+        })?;
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::UnvaultTx((outpoint, unvault_tx), response_tx)),
+            "Sending 'unvaulttx' to main thread"
+        );
+        assume_ok!(response_rx.recv(), "Receiving 'unvaulttx' from main thread")
+            .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({}))
     }
 }

@@ -346,6 +346,27 @@ impl TryFrom<&Row<'_>> for DbTransaction {
     }
 }
 
+/// Get the Unvault transaction for this vault
+pub fn db_unvault_transaction(
+    db_path: &PathBuf,
+    vault_id: u32,
+) -> Result<(u32, UnvaultTransaction), DatabaseError> {
+    let mut rows: Vec<DbTransaction> = db_query(
+        db_path,
+        "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
+        params![vault_id, TransactionType::Unvault as u32],
+        |row| row.try_into(),
+    )?;
+    let db_tx = rows
+        .pop()
+        .ok_or_else(|| DatabaseError(format!("No unvault tx in db for vault id '{}'", vault_id)))?;
+
+    Ok((
+        db_tx.id,
+        assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"),
+    ))
+}
+
 /// Get the Cancel transaction corresponding to this vault
 pub fn db_cancel_transaction(
     db_path: &PathBuf,

@@ -47,6 +47,10 @@ pub enum RpcMessageIn {
         OutPoint,
         SyncSender<Result<UnvaultTransaction, RpcControlError>>,
     ),
+    UnvaultTx(
+        (OutPoint, UnvaultTransaction),
+        SyncSender<Result<(), RpcControlError>>,
+    ),
     ListTransactions(
         Option<Vec<OutPoint>>,
         SyncSender<
@@ -115,6 +119,8 @@ pub enum RpcControlError {
     UnknownOutpoint(OutPoint),
     // .0 is current status, .1 is required status
     InvalidStatus((VaultStatus, VaultStatus)),
+    InvalidPsbt(String),
+    Communication(String),
 }
 
 impl std::fmt::Display for RpcControlError {
@@ -126,6 +132,8 @@ impl std::fmt::Display for RpcControlError {
                 "Invalid vault status: '{}'. Need '{}'",
                 current, required
             ),
+            Self::InvalidPsbt(reason) => write!(f, "Invalid PSBT: '{}'", reason),
+            Self::Communication(reason) => write!(f, "Communication error: '{}'", reason),
         }
     }
 }

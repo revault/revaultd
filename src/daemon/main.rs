@@ -93,7 +93,7 @@ fn daemon_main(mut revaultd: RevaultD) {
     let bit_revaultd = revaultd.clone();
     let bitcoind_thread = thread::spawn(move || {
         assume_ok!(
-            bitcoind_main_loop(bitcoind_rx, bit_revaultd, &bitcoind),
+            bitcoind_main_loop(bitcoind_rx, bit_revaultd, Arc::new(RwLock::new(bitcoind))),
             "Error in bitcoind main loop"
         );
     });

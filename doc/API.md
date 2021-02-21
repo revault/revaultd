@@ -12,6 +12,7 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`getunvaulttx`](#getunvaulttx)                             | Retrieve the Revault unvault transaction to sign     |
 | [`getspendtx`](#getspendtx)                                 | Retrieve the Revault spend transaction to sign       |
 | [`listpresignedtransactions`](#listpresignedtransactions)   | List presigned transactions of a confirmed vault     |
+| [`listonchaintransactions`](#listonchaintransactions)       | List broadcast transactions of a vault               |
 | [`listvaults`](#listvaults)                                 | Display a paginated list of vaults                   |
 | [`revocationtxs`](#revocationtxs)                           | Give back the revocation transactions signed         |
 | [`unvaulttx`](#unvaulttx)                                   | Give back the unvault transaction signed             |
@@ -130,6 +131,44 @@ vault's state).
 | `cancel`            | string                                                         | The cancel transaction as a base64-encoded PSBT                          |
 | `emergency`         | string or `null`                                               | The Emergency transaction, or `null` if we are not a stakeholder         |
 | `unvault_emergency` | string or `null`                                               | The Unvault Emergency transaction, or `null` if we are not a stakeholder |
+
+
+### `listonchaintransactions`
+
+List the transactions related to a list of vaults that were broadcast on the Bitcoin
+network (hence they may be unconfirmed). Will error if any of the vaults is unknown.
+
+| Parameter   | Type         | Description                                                                                     |
+| ----------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
+
+
+### Response
+
+| Field                         | Type                                                 | Description                       |
+| ----------------------------- | ---------------------------------------------------- | --------------------------------- |
+| `onchain_transactions`        | array of [onchain txs](#onchain-txs)                 | Each vault's onchain transactions |
+
+
+#### Onchain txs
+
+| Field               | Type                                                           | Description                                                              |
+| ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `outpoint`          | string                                                         | The vault deposit transaction outpoint.                                  |
+| `deposit`           | [wallet tx](#wallet-tx)                                        | The deposit transaction, always there since vault exists                 |
+| `unvault`           | [wallet tx](#wallet-tx) or `null`                              | The Unvault transaction                                                  |
+| `cancel`            | [wallet tx](#wallet-tx) or `null`                              | The Cancel transaction                                                   |
+| `emergency`         | [wallet tx](#wallet-tx) or `null`                              | The Emergency transaction                                                |
+| `unvault_emergency` | [wallet tx](#wallet-tx) or `null`                              | The Unvault Emergency transaction                                        |
+| `spend`             | [wallet tx](#wallet-tx) or `null`                              | The Spend transaction                                                    |
+
+#### Wallet tx
+
+| Field         | Type             | Description                                                                   |
+| ------------- | ---------------- | ----------------------------------------------------------------------------  |
+| `blockheight` | int or `null`    | Height of the block containing the transaction, `null` if unconfirmed         |
+| `hex`         | string           | Hexadecimal of the network-serialized transaction                             |
+| `received_at` | int              | Transaction reception date as the number of seconds since UNIX epoch          |
 
 
 ### `getrevocationtxs`

@@ -54,6 +54,10 @@ pub enum RpcMessageIn {
         Option<Vec<OutPoint>>,
         SyncSender<Result<Vec<VaultPresignedTransactions>, RpcControlError>>,
     ),
+    ListOnchainTransactions(
+        Option<Vec<OutPoint>>,
+        SyncSender<Result<Vec<VaultOnchainTransactions>, RpcControlError>>,
+    ),
 }
 
 /// Outgoing to the bitcoind poller thread
@@ -70,6 +74,7 @@ pub enum SigFetcherMessageOut {
     Shutdown,
 }
 
+#[derive(Debug)]
 pub struct WalletTransaction {
     pub hex: String,
     // None if unconfirmed
@@ -85,6 +90,18 @@ pub struct VaultPresignedTransactions {
     // None if not stakeholder
     pub emergency: Option<EmergencyTransaction>,
     pub unvault_emergency: Option<UnvaultEmergencyTransaction>,
+}
+
+#[derive(Debug)]
+pub struct VaultOnchainTransactions {
+    pub outpoint: OutPoint,
+    pub deposit: WalletTransaction,
+    pub unvault: Option<WalletTransaction>,
+    pub cancel: Option<WalletTransaction>,
+    // Always None if not stakeholder
+    pub emergency: Option<WalletTransaction>,
+    pub unvault_emergency: Option<WalletTransaction>,
+    pub spend: Option<WalletTransaction>,
 }
 
 #[derive(Debug)]

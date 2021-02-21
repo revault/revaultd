@@ -119,9 +119,17 @@ pub trait RpcApi {
         unvault_tx: String,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
-    /// Retrieve the presigned transactions of a vault with the given deposit outpoint
+    /// Retrieve the presigned transactions of a list of vaults
     #[rpc(meta, name = "listpresignedtransactions")]
     fn listpresignedtransactions(
+        &self,
+        meta: Self::Metadata,
+        outpoints: Option<Vec<String>>,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    /// Retrieve the onchain transactions of a list of vaults
+    #[rpc(meta, name = "listonchaintransactions")]
+    fn listonchaintransactions(
         &self,
         meta: Self::Metadata,
         outpoints: Option<Vec<String>>,
@@ -399,6 +407,53 @@ impl RpcApi for RpcImpl {
             .collect();
 
         Ok(json!({ "presigned_transactions": vaults }))
+    }
+
+    fn listonchaintransactions(
+        &self,
+        meta: Self::Metadata,
+        outpoints: Option<Vec<String>>,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let outpoints = parse_outpoints!(outpoints);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::ListOnchainTransactions(
+                outpoints,
+                response_tx
+            )),
+            "Sending 'listonchaintransactions' to main thread"
+        );
+        let vaults = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'listonchaintransactions' from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        fn wallet_tx_to_json(tx: WalletTransaction) -> serde_json::Value {
+            json!({
+                "blockheight": tx.blockheight.map(serde_json::Number::from),
+                "received_at": serde_json::Number::from(tx.received_time),
+                "hex": serde_json::Value::String(tx.hex),
+            })
+        }
+        let vaults: Vec<serde_json::Value> = vaults
+            .into_iter()
+            .map(|v| {
+                json!({
+                    "deposit": wallet_tx_to_json(v.deposit),
+                    "unvault": v.unvault.map(wallet_tx_to_json),
+                    "cancel": v.cancel.map(wallet_tx_to_json),
+                    "emergency": v.emergency.map(wallet_tx_to_json),
+                    "unvault_emergency": v.unvault_emergency.map(wallet_tx_to_json),
+                    "spend": v.spend.map(wallet_tx_to_json),
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "onchain_transactions": vaults,
+        }))
     }
 
     fn getunvaulttx(

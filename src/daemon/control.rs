@@ -213,6 +213,87 @@ fn presigned_txs_list_from_outpoints(
     Ok(Ok(tx_list))
 }
 
+// List all the onchain transactions from these vaults.
+fn onchain_txs_list_from_outpoints(
+    revaultd: &RevaultD,
+    bitcoind_tx: &Sender<BitcoindMessageOut>,
+    outpoints: Option<Vec<OutPoint>>,
+) -> Result<Result<Vec<VaultOnchainTransactions>, RpcControlError>, ControlError> {
+    let db_path = &revaultd.db_file();
+
+    // If they didn't provide us with a list of outpoints, catch'em all!
+    let db_vaults = if let Some(outpoints) = outpoints {
+        // FIXME: we can probably make this more efficient with some SQL magic
+        let mut vaults = Vec::with_capacity(outpoints.len());
+        for outpoint in outpoints.iter() {
+            if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
+                // Note that we accept any status
+                vaults.push(vault);
+            } else {
+                return Ok(Err(RpcControlError::UnknownOutpoint(*outpoint)));
+            }
+        }
+        vaults
+    } else {
+        db_vaults(db_path)?
+    };
+
+    let mut tx_list = Vec::with_capacity(db_vaults.len());
+    for db_vault in db_vaults {
+        let outpoint = db_vault.deposit_outpoint;
+
+        // If the vault exist, there must always be a deposit transaction available.
+        let deposit = assume_some!(
+            bitcoind_wallet_tx(bitcoind_tx, db_vault.deposit_outpoint.txid)?,
+            "Vault exists but not deposit tx?"
+        );
+
+        // For the other transactions, it depends on the status of the vault. For the sake of
+        // simplicity bitcoind will tell us (but we could have some optimisation eventually here,
+        // eg returning None early on Funded vaults).
+        let (unvault, cancel, emergency, unvault_emergency, spend) = match db_vault.status {
+            // We allow the unconfirmed status, for which we don't have any presigned tx in db!
+            VaultStatus::Unconfirmed => (None, None, None, None, None),
+            _ => {
+                let (_, unvault) = db_unvault_transaction(db_path, db_vault.id)?;
+                let unvault =
+                    bitcoind_wallet_tx(bitcoind_tx, unvault.into_psbt().extract_tx().txid())?;
+                let (_, cancel) = db_cancel_transaction(db_path, db_vault.id)?;
+                let cancel =
+                    bitcoind_wallet_tx(bitcoind_tx, cancel.into_psbt().extract_tx().txid())?;
+
+                // Emergencies are only for stakeholders!
+                let mut emergency = None;
+                let mut unvault_emergency = None;
+                if revaultd.is_stakeholder() {
+                    let emer = db_emer_transaction(db_path, db_vault.id)?.1;
+                    emergency =
+                        bitcoind_wallet_tx(bitcoind_tx, emer.into_psbt().extract_tx().txid())?;
+
+                    let unemer = db_unvault_emer_transaction(db_path, db_vault.id)?.1;
+                    unvault_emergency =
+                        bitcoind_wallet_tx(bitcoind_tx, unemer.into_psbt().extract_tx().txid())?;
+                }
+                let spend = None; // TODO!
+
+                (unvault, cancel, emergency, unvault_emergency, spend)
+            }
+        };
+
+        tx_list.push(VaultOnchainTransactions {
+            outpoint,
+            deposit,
+            unvault,
+            cancel,
+            emergency,
+            unvault_emergency,
+            spend,
+        });
+    }
+
+    Ok(Ok(tx_list))
+}
+
 /// An error thrown when the verification of a signature fails
 #[derive(Debug)]
 enum SigError {
@@ -790,6 +871,14 @@ pub fn handle_rpc_messages(
                 log::trace!("Got 'listpresignedtransactions' request from RPC thread");
                 response_tx.send(presigned_txs_list_from_outpoints(
                     &revaultd.read().unwrap(),
+                    outpoints,
+                )?)?;
+            }
+            RpcMessageIn::ListOnchainTransactions(outpoints, response_tx) => {
+                log::trace!("Got 'listonchaintransactions' request from RPC thread");
+                response_tx.send(onchain_txs_list_from_outpoints(
+                    &revaultd.read().unwrap(),
+                    &bitcoind_tx,
                     outpoints,
                 )?)?;
             }

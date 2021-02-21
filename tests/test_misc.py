@@ -220,6 +220,31 @@ def test_listpresignedtransactions(revault_network):
             assert res["unvault_emergency"] == stk_res["unvault_emergency"]
 
 
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_listonchaintransactions(revault_network):
+    """Just a small sanity check of the API"""
+    revault_network.deploy(2, 1)
+    vaultA = revault_network.fund(0.2222221)
+    vaultB = revault_network.fund(122.88881)
+    depositA = f"{vaultA['txid']}:{vaultA['vout']}"
+    depositB = f"{vaultB['txid']}:{vaultB['vout']}"
+    stks = revault_network.stk_wallets
+    mans = revault_network.man_wallets
+
+    # Sanity check the API
+    for w in stks + mans:
+        w.wait_for_deposits([depositA, depositB])
+        res = w.rpc.listonchaintransactions([depositA, depositB])["onchain_transactions"][0]
+        # Deposit is always there
+        assert res["deposit"]["blockheight"] is not None
+        assert res["deposit"]["received_at"] is not None
+        assert res["deposit"]["hex"] is not None
+        assert res["unvault"] is None
+        assert res["cancel"] is None
+        assert res["emergency"] is None
+        assert res["unvault_emergency"] is None
+
+
 def psbt_add_input(psbt_str):
     psbt = serializations.PSBT()
     psbt.deserialize(psbt_str)

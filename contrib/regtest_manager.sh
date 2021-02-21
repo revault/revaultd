@@ -142,6 +142,29 @@ stop_regtest () {
 	done
 }
 
+# Start a single revault wallet daemon
+start_revaultd () {
+    # FIXME: write the config to the PREFIX_DIR ourselves..
+    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="contrib/config_regtest.toml";fi
+    cargo run --bin revaultd -- --conf "$REVAULTD_CONFIG_PATH";
+    alias re="cargo run --bin revault-cli -- --conf $REVAULTD_CONFIG_PATH";
+}
+
+# Fund a new vault, optionally takes an amount
+fund_vault () {
+    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="contrib/config_regtest.toml";fi
+    amount=10;
+    if [ "$#" == "1" ];then
+        amount=$1;
+    fi
+
+    addr=$(cargo run --bin revault-cli -- --conf "$REVAULTD_CONFIG_PATH" getdepositaddress|jq -r .result.address);
+    bc_dir="$PREFIX_DIR/bcdir1";
+    miner="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=test";
+    $miner sendtoaddress $addr $amount;
+    $miner generatetoaddress 6 $($bcli getnewaddress 2> /dev/null) &> /dev/null;
+}
+
 # Deletes the root parent of all datadirs
 delete_regtest () {
 	PREFIX_DIR="$PWD/regtest"

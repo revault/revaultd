@@ -1,0 +1,47 @@
+daemon = true
+log_level = "trace"
+data_dir = "/home/darosior/projects/revault/d/regtest/revault"
+
+coordinator_host = "127.0.0.1:8383"
+coordinator_noise_key = "f35b02f12ff3d64f3c7982b88ffb66fec37bce5796374a7be9e8e2dd9abbb558"
+
+stakeholders_xpubs = [
+	# xprv9yFvjFWhx6hEJ3srPPCMAhQyrUhwJ9joByaQcJJAC37HsavncgLzq5ppWeb6QmkYEaYDkiJf424zHzmcjXx3Fn6DZqKx9EKpiv94suYjZ6e
+	"xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp",
+	# xprvA2FDaCn51aLpnGmNPEzVE8kschAqgG3vhrZtmfx8XAh5EAJ1n8tpMe6foYEhAMfyrb7o4efG1w9rYSX6AS3fuRGK3QzkPn3YueunqN1iSJb
+	"xpub6FEZyiJxqwu7zkqqVGXVbGhcAj1L5imn55VVa4Mk5WE46xdAKgD4uSR9ems9EehAApZPVXFrxcLQ7zPqYywu1z4Cjhesyp7HeRSgSdUq1BB",
+	# xprv9yFvjFWhx6hEMcPi2JASzKSVS1mszhDKWBE4TxfQxDUkJrTFM7h1gQnBTXEqEUP2fB98hwU6fYoA6UUmkP2PAeHMUEe94uHr9SD5T72LdYe
+	"xpub6CFH8m3bnUFXa6UB8KhTMTPDz3cNQ9wAsQ9fGM52WZ1jBenPtf1GED6fJoDmpEYQQkk3VUHFN5ZRDLV7SRgX4M8KMTpRTH9zGRzg5udqwwo",
+	# xprvA1UEBJLZFm1oZUKLubtgeqhYBKjKPQqWaw5qMkg7GyyEjc9PQs5HiBVR3CpEAAawkF9jhd9LyV6arxBCYat8DAF5ChDDDKYB4GCVwUGz87C
+	"xpub6ETaaosT68a6mxPp1dRh1yeGjMZonsZMxA1SA95iqKWDcQUXxQPYFyottUR58E8qjjnAwPcEtYS9iejkERbnGuNqfF2wgToLcxzf97FHevs"
+]
+cosigners_keys = [
+	"02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
+	"03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
+	"026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
+	"030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3",
+]
+managers_xpubs = [
+	# xprv9yFvjFWhx6hEhx2fRYSC31pU3nH3Mrok4sBwUt4pV3RJZYN1oex2imuuxUt3eyhbZ2mKdBAWQaVyhg3WXuzrnRhRZbicr2X5hmNuhTxHGEn
+	"xpub6CFH8m3bnUFXvS78XZyCQ9mCbp7XmKXbS67YHGUS3NxHSLhAMCGHGaEPojcoYt5PYnocyuScAM5xuDzf4BqFQt3fhmKEaRgmVzDcAR46Byh",
+	# xprvA1DDS2qX9vCdRxSJmFA6AJPQPKS32S5hiUpzi9Xot9hzN4z1g6ip5oKJWXUeQDn2W48vaSWYVLaypC1JztUcrx23kucEtFzyU8t5Ay7NrDD
+	"xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"
+]
+unvault_csv = 18
+
+[bitcoind_config]
+network = "regtest"
+cookie_path = "/home/darosior/projects/revault/d/regtest/bcdir1/regtest/.cookie"
+addr = "127.0.0.1:9001"
+
+# We are one of the below stakeholders
+[stakeholder_config]
+# xprv9yFvjFWhx6hEJ3srPPCMAhQyrUhwJ9joByaQcJJAC37HsavncgLzq5ppWeb6QmkYEaYDkiJf424zHzmcjXx3Fn6DZqKx9EKpiv94suYjZ6e
+xpub = "xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp"
+watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
+emergency_address = "bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq"
+
+#[manager_config]
+# xprvA1DDS2qX9vCdRxSJmFA6AJPQPKS32S5hiUpzi9Xot9hzN4z1g6ip5oKJWXUeQDn2W48vaSWYVLaypC1JztUcrx23kucEtFzyU8t5Ay7NrDD
+#xpub = "xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"
+#cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]

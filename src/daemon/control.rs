@@ -7,15 +7,13 @@
 //! command sent to the RPC server. This control handling is what happens here.
 
 use crate::{
-    assert_tx_type,
     bitcoind::BitcoindError,
     database::{
         actions::db_update_presigned_tx,
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_presigned_transactions_filtered, db_tip,
-            db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
+            db_cancel_transaction, db_emer_transaction, db_tip, db_unvault_emer_transaction,
+            db_unvault_transaction, db_vault_by_deposit, db_vaults,
         },
-        schema::RevaultTx,
         DatabaseError,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
@@ -158,178 +156,61 @@ fn listvaults_from_db(
     })
 }
 
-// List all the transactions of all the vaults which deposit outpoints we are passed. If we don't
-// have the fully signed transaction in db, we create an unsigned one.
-fn txlist_from_outpoints(
+// List all the presigned transactions from these confirmed vaults.
+fn presigned_txs_list_from_outpoints(
     revaultd: &RevaultD,
-    bitcoind_tx: &Sender<BitcoindMessageOut>,
     outpoints: Option<Vec<OutPoint>>,
-) -> Result<Vec<VaultTransactions>, ControlError> {
-    let xpub_ctx = revaultd.xpub_ctx();
-    let db_file = &revaultd.db_file();
+) -> Result<Result<Vec<VaultPresignedTransactions>, RpcControlError>, ControlError> {
+    let db_path = &revaultd.db_file();
 
     // If they didn't provide us with a list of outpoints, catch'em all!
     let db_vaults = if let Some(outpoints) = outpoints {
         // FIXME: we can probably make this more efficient with some SQL magic
         let mut vaults = Vec::with_capacity(outpoints.len());
         for outpoint in outpoints.iter() {
-            if let Some(vault) = db_vault_by_deposit(db_file, &outpoint)? {
-                vaults.push(vault);
+            if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
+                // If it's unconfirmed, the presigned transactions are not in db!
+                match vault.status {
+                    VaultStatus::Unconfirmed => {
+                        return Ok(Err(RpcControlError::InvalidStatus((
+                            vault.status,
+                            VaultStatus::Funded,
+                        ))))
+                    }
+                    _ => vaults.push(vault),
+                }
+            } else {
+                return Ok(Err(RpcControlError::UnknownOutpoint(*outpoint)));
             }
-            // FIXME: Invalid outpoints are siltently ignored..
         }
         vaults
     } else {
-        db_vaults(db_file)?
+        db_vaults(db_path)?
     };
 
     let mut tx_list = Vec::with_capacity(db_vaults.len());
     for db_vault in db_vaults {
         let outpoint = db_vault.deposit_outpoint;
-        let deriv_index = db_vault.derivation_index;
-        let mut txs = db_presigned_transactions_filtered(db_file, db_vault.id, &[])?.into_iter();
 
-        let deposit = assume_some!(
-            bitcoind_wallet_tx(&bitcoind_tx, outpoint.txid)?,
-            "Vault without deposit tx in db for {}",
-            &outpoint,
-        );
+        let (_, unvault) = db_unvault_transaction(db_path, db_vault.id)?;
+        let (_, cancel) = db_cancel_transaction(db_path, db_vault.id)?;
+        let mut emergency = None;
+        let mut unvault_emergency = None;
+        if revaultd.is_stakeholder() {
+            emergency = Some(db_emer_transaction(db_path, db_vault.id)?.1);
+            unvault_emergency = Some(db_unvault_emer_transaction(db_path, db_vault.id)?.1);
+        }
 
-        // Get the descriptors in case we need to derive the transactions (not signed
-        // yet, ie not in DB).
-        // One day, we could try to be smarter wrt free derivation but it's not
-        // a priority atm.
-        let deposit_descriptor = revaultd.deposit_descriptor.derive(deriv_index);
-        let vault_txin = DepositTxIn::new(
-            db_vault.deposit_outpoint,
-            DepositTxOut::new(db_vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
-        );
-        let unvault_descriptor = revaultd.unvault_descriptor.derive(deriv_index);
-        let cpfp_descriptor = revaultd.cpfp_descriptor.derive(deriv_index);
-
-        // We can always re-generate the Unvault out of the descriptor if it's
-        // not in DB..
-        let mut unvault_tx = txs
-            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Unvault(_)))
-            .map(|tx| assert_tx_type!(tx.psbt, Unvault, "We just found it"))
-            .unwrap_or(UnvaultTransaction::new(
-                vault_txin.clone(),
-                &unvault_descriptor,
-                &cpfp_descriptor,
-                xpub_ctx,
-                revaultd.lock_time,
-            )?);
-        let unvault_txin =
-            unvault_tx.unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv);
-        let wallet_tx = bitcoind_wallet_tx(
-            &bitcoind_tx,
-            unvault_tx.inner_tx().global.unsigned_tx.txid(),
-        )?;
-        // The transaction is signed if we did sign it, or if others did (eg
-        // non-stakeholder managers) and we noticed it from broadcast.
-        // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-        let is_signed = unvault_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-        let unvault = TransactionResource {
-            wallet_tx,
-            tx: unvault_tx,
-            is_signed,
-        };
-
-        // TODO: unimplemented!
-        let spend = None;
-
-        // The cancel transaction is deterministic, so we can always return it.
-        let mut cancel_tx = txs
-            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Cancel(_)))
-            .map(|tx| assert_tx_type!(tx.psbt, Cancel, "We just found it"))
-            .unwrap_or_else(|| {
-                CancelTransaction::new(
-                    unvault_txin.clone(),
-                    None,
-                    &deposit_descriptor,
-                    xpub_ctx,
-                    revaultd.lock_time,
-                )
-            });
-        let wallet_tx =
-            bitcoind_wallet_tx(&bitcoind_tx, cancel_tx.inner_tx().global.unsigned_tx.txid())?;
-        // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-        let is_signed = cancel_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-        let cancel = TransactionResource {
-            wallet_tx,
-            tx: cancel_tx,
-            is_signed,
-        };
-
-        // The emergency transaction is deterministic, so we can always return it if we are
-        // a stakeholder.
-        let emergency = if revaultd.is_stakeholder() {
-            let emer_address =
-                assume_some!(revaultd.emergency_address.clone(), "We are a stakeholder");
-            let mut emergency_tx = txs
-                .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Emergency(_)))
-                .map(|tx| assert_tx_type!(tx.psbt, Emergency, "We just found it"))
-                .unwrap_or_else(|| {
-                    EmergencyTransaction::new(vault_txin, None, emer_address, revaultd.lock_time)
-                        .unwrap() // FIXME
-                });
-            let wallet_tx = bitcoind_wallet_tx(
-                &bitcoind_tx,
-                emergency_tx.inner_tx().global.unsigned_tx.txid(),
-            )?;
-            // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-            let is_signed =
-                emergency_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-            Some(TransactionResource {
-                wallet_tx,
-                tx: emergency_tx,
-                is_signed,
-            })
-        } else {
-            None
-        };
-
-        // Same for the second emergency.
-        let unvault_emergency = if revaultd.is_stakeholder() {
-            let mut unvault_emergency_tx = txs
-                .find(|db_tx| matches!(db_tx.psbt, RevaultTx::UnvaultEmergency(_)))
-                .map(|tx| assert_tx_type!(tx.psbt, UnvaultEmergency, "We just found it"))
-                .unwrap_or_else(|| {
-                    UnvaultEmergencyTransaction::new(
-                        unvault_txin,
-                        None,
-                        assume_some!(revaultd.emergency_address.clone(), "We are a stakeholder"),
-                        revaultd.lock_time,
-                    )
-                });
-            let wallet_tx = bitcoind_wallet_tx(
-                &bitcoind_tx,
-                unvault_emergency_tx.inner_tx().global.unsigned_tx.txid(),
-            )?;
-            // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-            let is_signed =
-                unvault_emergency_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-            Some(TransactionResource {
-                wallet_tx,
-                tx: unvault_emergency_tx,
-                is_signed,
-            })
-        } else {
-            None
-        };
-
-        tx_list.push(VaultTransactions {
+        tx_list.push(VaultPresignedTransactions {
             outpoint,
-            deposit,
             unvault,
-            spend,
             cancel,
             emergency,
             unvault_emergency,
         });
     }
 
-    Ok(tx_list)
+    Ok(Ok(tx_list))
 }
 
 /// An error thrown when the verification of a signature fails
@@ -905,11 +786,10 @@ pub fn handle_rpc_messages(
 
                 response_tx.send(Ok(()))?;
             }
-            RpcMessageIn::ListTransactions(outpoints, response_tx) => {
-                log::trace!("Got 'listtransactions' request from RPC thread");
-                response_tx.send(txlist_from_outpoints(
+            RpcMessageIn::ListPresignedTransactions(outpoints, response_tx) => {
+                log::trace!("Got 'listpresignedtransactions' request from RPC thread");
+                response_tx.send(presigned_txs_list_from_outpoints(
                     &revaultd.read().unwrap(),
-                    &bitcoind_tx,
                     outpoints,
                 )?)?;
             }

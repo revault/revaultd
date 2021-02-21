@@ -5,17 +5,17 @@ interface over a Unix Domain socket.
 
 Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubKey`s.
 
-| Command                                   | Description                                          |
-| ----------------------------------------- | ---------------------------------------------------- |
-| [`getinfo`](#getinfo)                     | Display general information                          |
-| [`getrevocationtxs`](#getrevocationtxs)   | Retrieve the Revault revocation transactions to sign |
-| [`getunvaulttx`](#getunvaulttx)           | Retrieve the Revault unvault transaction to sign     |
-| [`getspendtx`](#getspendtx)               | Retrieve the Revault spend transaction to sign       |
-| [`listtransactions`](#listtransactions)   | List all transactions of a specified vault           |
-| [`listvaults`](#listvaults)               | Display a paginated list of vaults                   |
-| [`revocationtxs`](#revocationtxs)         | Give back the revocation transactions signed         |
-| [`unvaulttx`](#unvaulttx)                 | Give back the unvault transaction signed             |
-| [`spendtx`](#spendtx)                     | Give back the spend transaction signed               |
+| Command                                                     | Description                                          |
+| ----------------------------------------------------------- | ---------------------------------------------------- |
+| [`getinfo`](#getinfo)                                       | Display general information                          |
+| [`getrevocationtxs`](#getrevocationtxs)                     | Retrieve the Revault revocation transactions to sign |
+| [`getunvaulttx`](#getunvaulttx)                             | Retrieve the Revault unvault transaction to sign     |
+| [`getspendtx`](#getspendtx)                                 | Retrieve the Revault spend transaction to sign       |
+| [`listpresignedtransactions`](#listpresignedtransactions)   | List presigned transactions of a confirmed vault     |
+| [`listvaults`](#listvaults)                                 | Display a paginated list of vaults                   |
+| [`revocationtxs`](#revocationtxs)                           | Give back the revocation transactions signed         |
+| [`unvaulttx`](#unvaulttx)                                   | Give back the unvault transaction signed             |
+| [`spendtx`](#spendtx)                                       | Give back the spend transaction signed               |
 
 # Reference
 
@@ -101,42 +101,35 @@ either `status` or deposit `outpoints`.
 | `vaults`      | array of [vault resource](#vault-resource) | Vaults filtered by status |
 
 
-### `listtransactions`
+### `listpresignedtransactions`
+
+List the presigned transactions for a list of given confirmed vaults. Will error if any
+of the vaults is unknown or not at least `funded`.
+
+The output PSBTs may be unsigned, partially signed, or finalized (depending on each
+vault's state).
 
 | Parameter   | Type         | Description                                                                                     |
 | ----------- | ------------ | ----------------------------------------------------------------------------------------------- |
 | `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
 
-// FIXME: we could eventually also take an optional array of transaction types here.
 
 ### Response
 
-| Field               | Type                                                     | Description                                                                             |
-| ------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------  |
-| `transactions`      | array of [transactions resource](#transactions-resource) | The set of vaults' transactions corresponding to the query (empty on unknown outpoints) |
+| Field                         | Type                                                     | Description                                  |
+| ----------------------------- | -------------------------------------------------------- | -------------------------------------------- |
+| `presigned_transactions`      | array of [presigned txs](#presigned-txs)                 | Each vault's presigned transactions as PSBTs |
 
 
-#### Transactions resource
+#### Presigned txs
 
 | Field               | Type                                                           | Description                                                              |
 | ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | `outpoint`          | string                                                         | The vault deposit transaction outpoint.                                  |
-| `deposit`           | [transaction resource](#transaction-resource) object           | The vault deposit transaction                                            |
-| `unvault`           | [transaction resource](#transaction-resource) object           | The unvaulting transaction                                               |
-| `spend`             | [transaction resource](#transaction-resource) object           | The transaction spending the `unvault`ing one, only present if onchain   |
-| `cancel`            | [transaction resource](#transaction-resource) object           | The "revaulting" transaction                                             |
-| `emergency`         | [transaction resource](#transaction-resource) object or `null` | The Emergency transaction, or `null` if we are not a stakeholder         |
-| `unvault_emergency` | [transaction resource](#transaction-resource) object or `null` | The Unvault Emergency transaction, or `null` if we are not a stakeholder |
-
-
-#### Transaction resource
-
-| Field         | Type   | Description                                                                |
-| ------------- | ------ | -------------------------------------------------------------------------  |
-| `blockheight` | int    | Height of the block containing the transaction, `0` if unconfirmed         |
-| `psbt`        | string | base64-serialized BIP174 format of the transaction, if not fully-signed    |
-| `hex`         | string | Hexadecimal of the network-serialized transaction, if fully-signed         |
-| `received_at` | int    | Transaction reception time as UNIX epoch timestamp                         |
+| `unvault`           | string                                                         | The unvaulting transaction as a base64-encoded PSBT                      |
+| `cancel`            | string                                                         | The cancel transaction as a base64-encoded PSBT                          |
+| `emergency`         | string or `null`                                               | The Emergency transaction, or `null` if we are not a stakeholder         |
+| `unvault_emergency` | string or `null`                                               | The Unvault Emergency transaction, or `null` if we are not a stakeholder |
 
 
 ### `getrevocationtxs`

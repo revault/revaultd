@@ -695,9 +695,16 @@ class Revaultd(TailableProc):
                             f"\"{wt['noise_key']}\" }}, ")
                 f.write("]\n")
 
-    def wait_for_deposit(self, outpoint):
-        """Polls listvaults until we acknowledge the confirmed vault at {outpoint}"""
-        wait_for(lambda: len(self.rpc.listvaults(["funded"], [outpoint])["vaults"]) > 0)
+    def wait_for_deposits(self, outpoints):
+        """
+        Polls listvaults until we acknowledge the confirmed vaults at {outpoints}
+        """
+        assert isinstance(outpoints, list)
+        wait_for(
+            lambda:
+                 len(self.rpc.listvaults(["funded"], outpoints)["vaults"])
+                 == len(outpoints)
+        )
 
     def start(self):
         TailableProc.start(self)

@@ -194,7 +194,7 @@ fn main() {
     });
     log::info!(
         "Using Noise static public key: '{}'",
-        revaultd.noise_secret.pubkey().0.to_hex()
+        revaultd.noise_pubkey().0.to_hex()
     );
     log::debug!(
         "Coordinator static public key: '{}'",

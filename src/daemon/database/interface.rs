@@ -412,7 +412,9 @@ pub fn db_unvault_emer_transaction(
     ))
 }
 
-/// Get all the presigned transactions for which we don't have all the sigs yet
+/// Get all the presigned transactions for which we don't have all the sigs yet.
+/// Note that it will return the emergency transactions (if unsigned) only if we
+/// are a stakeholder.
 pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransaction>, DatabaseError> {
     db_query(
         db_path,

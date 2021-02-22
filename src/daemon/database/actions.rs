@@ -281,7 +281,7 @@ macro_rules! db_store_unsigned_transactions {
                 $db_tx
                     .execute(
                         "INSERT INTO presigned_transactions (vault_id, type, psbt, fullysigned) VALUES (?1, ?2, ?3 , ?4)",
-                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized()?, false as u32],
+                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized(), false as u32],
                     )
                     .map_err(|e| {
                         DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
@@ -292,14 +292,15 @@ macro_rules! db_store_unsigned_transactions {
 
 /// Mark an unconfirmed deposit as being in 'Funded' state (confirmed), as well as storing the
 /// unsigned "presigned-transactions".
+/// The `emer_tx` and `unemer_tx` may only be passed for stakeholders.
 pub fn db_confirm_deposit(
     db_path: &PathBuf,
     outpoint: &OutPoint,
     blockheight: u32,
     unvault_tx: &UnvaultTransaction,
     cancel_tx: &CancelTransaction,
-    emer_tx: &EmergencyTransaction,
-    unemer_tx: &UnvaultEmergencyTransaction,
+    emer_tx: Option<&EmergencyTransaction>,
+    unemer_tx: Option<&UnvaultEmergencyTransaction>,
 ) -> Result<(), DatabaseError> {
     let vault_id = db_vault_by_deposit(db_path, outpoint)?
         .ok_or_else(|| {
@@ -318,11 +319,19 @@ pub fn db_confirm_deposit(
             )
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
 
-        db_store_unsigned_transactions!(
-            db_tx,
-            vault_id,
-            [unvault_tx, cancel_tx, emer_tx, unemer_tx]
-        );
+        match (emer_tx, unemer_tx) {
+            (Some(emer_tx), Some(unemer_tx)) => {
+                db_store_unsigned_transactions!(
+                    db_tx,
+                    vault_id,
+                    [unvault_tx, cancel_tx, emer_tx, unemer_tx]
+                );
+            }
+            (None, None) => {
+                db_store_unsigned_transactions!(db_tx, vault_id, [unvault_tx, cancel_tx]);
+            }
+            _ => unreachable!(),
+        }
 
         Ok(())
     })
@@ -352,7 +361,7 @@ fn revault_tx_merge_sigs(
 ) -> Result<(bool, Vec<u8>), DatabaseError> {
     tx.inner_tx_mut().inputs[0].partial_sigs.extend(sigs);
     let fully_signed = tx.finalize(secp_ctx).is_ok();
-    let raw_psbt = tx.as_psbt_serialized()?;
+    let raw_psbt = tx.as_psbt_serialized();
     Ok((fully_signed, raw_psbt))
 }
 
@@ -642,8 +651,8 @@ mod test {
             blockheight,
             &unvault_tx,
             &cancel_tx,
-            &emer_tx,
-            &unemer_tx,
+            Some(&emer_tx),
+            Some(&unemer_tx),
         )
         .unwrap();
 

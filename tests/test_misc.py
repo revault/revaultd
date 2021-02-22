@@ -238,8 +238,6 @@ def test_revocationtxs_sanity_checks(revault_network):
     stks[0].wait_for_deposit(deposit)
     psbts = stks[0].rpc.getrevocationtxs(deposit)
 
-    # TODO (upstream): mixing up psbts should fail at parsing time
-
     # We must provide all revocation txs at once
     with pytest.raises(RpcError, match="Invalid params.*"):
          stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
@@ -252,24 +250,36 @@ def test_revocationtxs_sanity_checks(revault_network):
                                    psbts["emergency_tx"],
                                    psbts["emergency_unvault_tx"])
 
-    # We can't give it random PSBTs (revocation txs at pre-signing stage always
-    # have a single input)
+    # We can't give it random PSBTs, it will fail at parsing time
     mal_cancel = psbt_add_input(psbts["cancel_tx"])
-    print(mal_cancel)
-    with pytest.raises(RpcError, match="Cancel tx: db wtxid is"):
+    with pytest.raises(RpcError, match="Invalid Revault transaction"):
         stks[0].rpc.revocationtxs(deposit, mal_cancel,
                                   psbts["emergency_tx"],
                                   psbts["emergency_unvault_tx"])
     mal_emer = psbt_add_input(psbts["emergency_tx"])
-    with pytest.raises(RpcError, match="Emergency tx: db wtxid is"):
+    with pytest.raises(RpcError, match="Invalid Revault transaction"):
         stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
                                   mal_emer,
                                   psbts["emergency_unvault_tx"])
     mal_unemer = psbt_add_input(psbts["emergency_unvault_tx"])
-    with pytest.raises(RpcError, match="Unvault Emergency tx: db wtxid is"):
+    with pytest.raises(RpcError, match="Invalid Revault transaction"):
         stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
                                   psbts["emergency_tx"], mal_unemer)
-    # TODO: add more checks once upstream checks PSBTS at parsing time!!
+
+    # We can't mix up PSBTS (the Cancel can even be detected at parsing time)
+    with pytest.raises(RpcError, match="Invalid Revault transaction"):
+        stks[0].rpc.revocationtxs(deposit, psbts["emergency_tx"], # here
+                                  psbts["emergency_tx"],
+                                  psbts["emergency_unvault_tx"])
+    with pytest.raises(RpcError, match="Invalid Emergency tx: db wtxid"):
+        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
+                                  psbts["cancel_tx"], # here
+                                  psbts["emergency_unvault_tx"])
+    with pytest.raises(RpcError, match="Invalid Unvault Emergency tx: db wtxid"):
+        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
+                                  psbts["emergency_tx"],
+                                  psbts["emergency_tx"]) # here
+
 
     # We must provide a signature for ourselves
     with pytest.raises(RpcError, match="No signature for ourselves.*Cancel"):

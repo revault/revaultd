@@ -24,10 +24,7 @@ use crate::{
 };
 use common::{assume_ok, assume_some};
 
-use revault_net::{
-    message::server::{RevaultSignature, Sig},
-    transport::KKTransport,
-};
+use revault_net::{message::server::Sig, transport::KKTransport};
 use revault_tx::{
     bitcoin::{
         secp256k1::{self, Signature},
@@ -103,6 +100,12 @@ impl From<BitcoindError> for ControlError {
 impl From<revault_tx::Error> for ControlError {
     fn from(e: revault_tx::Error) -> Self {
         Self::TransactionManagement(format!("Revault transaction error: {}", e))
+    }
+}
+
+impl From<revault_tx::error::TransactionCreationError> for ControlError {
+    fn from(e: revault_tx::error::TransactionCreationError) -> Self {
+        Self::TransactionManagement(format!("Revault transaction creation error: {}", e))
     }
 }
 
@@ -203,7 +206,6 @@ fn txlist_from_outpoints(
         );
         let unvault_descriptor = revaultd.unvault_descriptor.derive(deriv_index);
         let cpfp_descriptor = revaultd.cpfp_descriptor.derive(deriv_index);
-        let emer_address = revaultd.emergency_address.clone();
 
         // We can always re-generate the Unvault out of the descriptor if it's
         // not in DB..
@@ -217,9 +219,8 @@ fn txlist_from_outpoints(
                 xpub_ctx,
                 revaultd.lock_time,
             )?);
-        let unvault_txin = unvault_tx
-            .unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv)
-            .expect("Just created it");
+        let unvault_txin =
+            unvault_tx.unvault_txin(&unvault_descriptor, xpub_ctx, revaultd.unvault_csv);
         let wallet_tx = bitcoind_wallet_tx(
             &bitcoind_tx,
             unvault_tx.inner_tx().global.unsigned_tx.txid(),
@@ -260,49 +261,61 @@ fn txlist_from_outpoints(
             is_signed,
         };
 
-        // The emergency transaction is deterministic, so we can always return it.
-        let mut emergency_tx = txs
-            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Emergency(_)))
-            .map(|tx| assert_tx_type!(tx.psbt, Emergency, "We just found it"))
-            .unwrap_or_else(|| {
-                EmergencyTransaction::new(vault_txin, None, emer_address, revaultd.lock_time)
-                    .unwrap() // FIXME
-            });
-        let wallet_tx = bitcoind_wallet_tx(
-            &bitcoind_tx,
-            emergency_tx.inner_tx().global.unsigned_tx.txid(),
-        )?;
-        // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-        let is_signed = emergency_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-        let emergency = TransactionResource {
-            wallet_tx,
-            tx: emergency_tx,
-            is_signed,
+        // The emergency transaction is deterministic, so we can always return it if we are
+        // a stakeholder.
+        let emergency = if revaultd.is_stakeholder() {
+            let emer_address =
+                assume_some!(revaultd.emergency_address.clone(), "We are a stakeholder");
+            let mut emergency_tx = txs
+                .find(|db_tx| matches!(db_tx.psbt, RevaultTx::Emergency(_)))
+                .map(|tx| assert_tx_type!(tx.psbt, Emergency, "We just found it"))
+                .unwrap_or_else(|| {
+                    EmergencyTransaction::new(vault_txin, None, emer_address, revaultd.lock_time)
+                        .unwrap() // FIXME
+                });
+            let wallet_tx = bitcoind_wallet_tx(
+                &bitcoind_tx,
+                emergency_tx.inner_tx().global.unsigned_tx.txid(),
+            )?;
+            // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
+            let is_signed =
+                emergency_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
+            Some(TransactionResource {
+                wallet_tx,
+                tx: emergency_tx,
+                is_signed,
+            })
+        } else {
+            None
         };
 
         // Same for the second emergency.
-        let mut unvault_emergency_tx = txs
-            .find(|db_tx| matches!(db_tx.psbt, RevaultTx::UnvaultEmergency(_)))
-            .map(|tx| assert_tx_type!(tx.psbt, UnvaultEmergency, "We just found it"))
-            .unwrap_or_else(|| {
-                UnvaultEmergencyTransaction::new(
-                    unvault_txin,
-                    None,
-                    revaultd.emergency_address.clone(),
-                    revaultd.lock_time,
-                )
-            });
-        let wallet_tx = bitcoind_wallet_tx(
-            &bitcoind_tx,
-            unvault_emergency_tx.inner_tx().global.unsigned_tx.txid(),
-        )?;
-        // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
-        let is_signed =
-            unvault_emergency_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
-        let unvault_emergency = TransactionResource {
-            wallet_tx,
-            tx: unvault_emergency_tx,
-            is_signed,
+        let unvault_emergency = if revaultd.is_stakeholder() {
+            let mut unvault_emergency_tx = txs
+                .find(|db_tx| matches!(db_tx.psbt, RevaultTx::UnvaultEmergency(_)))
+                .map(|tx| assert_tx_type!(tx.psbt, UnvaultEmergency, "We just found it"))
+                .unwrap_or_else(|| {
+                    UnvaultEmergencyTransaction::new(
+                        unvault_txin,
+                        None,
+                        assume_some!(revaultd.emergency_address.clone(), "We are a stakeholder"),
+                        revaultd.lock_time,
+                    )
+                });
+            let wallet_tx = bitcoind_wallet_tx(
+                &bitcoind_tx,
+                unvault_emergency_tx.inner_tx().global.unsigned_tx.txid(),
+            )?;
+            // TODO: maybe a is_finalizable upstream ? finalize() is pretty costy
+            let is_signed =
+                unvault_emergency_tx.finalize(&revaultd.secp_ctx).is_ok() || wallet_tx.is_some();
+            Some(TransactionResource {
+                wallet_tx,
+                tx: unvault_emergency_tx,
+                is_signed,
+            })
+        } else {
+            None
         };
 
         tx_list.push(VaultTransactions {
@@ -377,17 +390,14 @@ fn send_sig_msg(
     id: Txid,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // FIXME: use pop_last() once it's stable
-    for (pubkey, sig) in sigs.into_iter() {
+    for (pubkey, sig) in sigs {
         let pubkey = pubkey.key;
         let (sigtype, sig) = sig
             .split_last()
             .expect("They must provide valid signatures");
         assert_eq!(*sigtype, SigHashType::AllPlusAnyoneCanPay as u8);
 
-        let signature = RevaultSignature::PlaintextSig(
-            Signature::from_der(&sig).expect("They must provide valid signatures"),
-        );
+        let signature = Signature::from_der(&sig).expect("They must provide valid signatures");
         let sig_msg = Sig {
             pubkey,
             signature,
@@ -415,6 +425,8 @@ fn share_signatures(
         BTreeMap<BitcoinPubKey, Vec<u8>>,
     ),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // We would not spam the coordinator, would we?
+    assert!(cancel.1.len() > 0 && emer.1.len() > 0 && unvault_emer.1.len() > 0);
     let mut transport = KKTransport::connect(
         revaultd.coordinator_host,
         &revaultd.noise_secret,
@@ -510,7 +522,10 @@ pub fn handle_rpc_messages(
                     let unvault_descriptor =
                         revaultd.unvault_descriptor.derive(vault.derivation_index);
                     let cpfp_descriptor = revaultd.cpfp_descriptor.derive(vault.derivation_index);
-                    let emer_address = revaultd.emergency_address.clone();
+                    let emer_address = assume_some!(
+                        revaultd.emergency_address.clone(),
+                        "The JSONRPC API checked we were a stakeholder"
+                    );
 
                     let (_, cancel, emergency, unvault_emer) = transaction_chain(
                         deposit_txin,

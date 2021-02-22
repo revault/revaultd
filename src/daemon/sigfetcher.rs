@@ -10,7 +10,7 @@ use crate::{
     threadmessages::SigFetcherMessageOut,
 };
 use revault_net::{
-    message::server::{GetSigs, RevaultSignature, Sigs},
+    message::server::{GetSigs, Sigs},
     transport::KKTransport,
 };
 use revault_tx::{
@@ -147,33 +147,24 @@ fn get_sigs(
             pubkey,
             id
         );
-        match sig {
-            RevaultSignature::PlaintextSig(sig) => {
-                if check_revocation_signature(secp_ctx, &tx, pubkey, &sig).is_err() {
-                    // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
-                    // signatures something shady's happening.
-                    log::warn!("Invalid signature sent by coordinator: '{:?}'", sig);
-                    continue;
-                }
-                tx.add_signature(0, pubkey, (sig, SigHashType::AllPlusAnyoneCanPay))
-                    .expect("Can not fail, as we are never passed a Spend transaction.");
-                // Note: this will atomically set the vault as 'Secured' if all revocations transactions
-                // were signed
-                // TODO: mark it as 'Active' if Unvault
-                db_update_presigned_tx(
-                    db_path,
-                    vault_id,
-                    tx_db_id,
-                    tx.inner_tx().inputs[0].partial_sigs.clone(),
-                    secp_ctx,
-                )?;
-            }
-            // We never share encrypted signatures. Of course it's broken as we don't
-            // trust the server.
-            // FIXME: either implement encrypted signatures or remove it from the types
-            // upstream. See https://github.com/re-vault/practical-revault/issues/72
-            RevaultSignature::EncryptedSig { .. } => unreachable!(),
+        if check_revocation_signature(secp_ctx, &tx, pubkey, &sig).is_err() {
+            // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
+            // signatures something shady's happening.
+            log::warn!("Invalid signature sent by coordinator: '{:?}'", sig);
+            continue;
         }
+        tx.add_signature(0, pubkey, (sig, SigHashType::AllPlusAnyoneCanPay))
+            .expect("Can not fail, as we are never passed a Spend transaction.");
+        // Note: this will atomically set the vault as 'Secured' if all revocations transactions
+        // were signed
+        // TODO: mark it as 'Active' if Unvault
+        db_update_presigned_tx(
+            db_path,
+            vault_id,
+            tx_db_id,
+            tx.inner_tx().inputs[0].partial_sigs.clone(),
+            secp_ctx,
+        )?;
     }
 
     Ok(())
@@ -189,15 +180,21 @@ fn fetch_all_signatures(
     while let Some(tx) = txs.pop() {
         match tx.psbt {
             RevaultTx::Unvault(unvault_tx) => {
+                log::debug!("Fetching Unvault signature");
                 get_sigs(revaultd, tx.id, tx.vault_id, unvault_tx)?;
             }
             RevaultTx::Cancel(cancel_tx) => {
+                log::debug!("Fetching Cancel signature");
                 get_sigs(revaultd, tx.id, tx.vault_id, cancel_tx)?;
             }
             RevaultTx::Emergency(emer_tx) => {
+                log::debug!("Fetching Emergency signature");
+                debug_assert!(revaultd.is_stakeholder());
                 get_sigs(revaultd, tx.id, tx.vault_id, emer_tx)?;
             }
             RevaultTx::UnvaultEmergency(unemer_tx) => {
+                log::debug!("Fetching Unvault Emergency signature");
+                debug_assert!(revaultd.is_stakeholder());
                 get_sigs(revaultd, tx.id, tx.vault_id, unemer_tx)?;
             }
         };
@@ -228,7 +225,9 @@ pub fn signature_fetcher_loop(
             }
         }
 
+        // This will ignore emergency transactions if we are manager-only
         let txs = db_transactions_sig_missing(&revaultd.read().unwrap().db_file())?;
+        log::trace!("Fetching transactions for {:#?}", txs);
         fetch_all_signatures(&revaultd.read().unwrap(), txs).unwrap_or_else(|e| {
             log::warn!("Error while fetching signatures: '{}'", e);
         });

@@ -4,6 +4,7 @@ Credits to Rusty Russell and Christian Decker from Blockstream who wrote most
 of the file i originally copied! (MIT licensed)
 """
 from concurrent import futures
+from ephemeral_port_reserve import reserve
 from utils import (
     BitcoinD, ManagerRevaultd, StakeholderRevaultd, get_participants,
     RevaultNetwork, POSTGRES_USER, POSTGRES_PASS, POSTGRES_HOST,
@@ -139,7 +140,7 @@ def revaultd_stakeholder(bitcoind, directory):
                             "a2799f1df04622ca1307381402"
     revaultd = StakeholderRevaultd(
         datadir, stks, cosigs, mans, csv, os.urandom(32),
-        coordinator_noise_key, bitcoind, stk_config=stk_config
+        coordinator_noise_key, reserve(), bitcoind, stk_config=stk_config
     )
     revaultd.start()
 
@@ -169,7 +170,7 @@ def revaultd_manager(bitcoind, directory):
                             "a2799f1df04622ca1307381402"
     revaultd = ManagerRevaultd(
         datadir, stks, cosigs, mans, csv, os.urandom(32),
-        coordinator_noise_key, bitcoind, man_config=man_config
+        coordinator_noise_key, reserve(), bitcoind, man_config=man_config
     )
     revaultd.start()
 

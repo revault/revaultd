@@ -35,6 +35,16 @@ fn timestamp_to_u32(n: u64) -> u32 {
         .expect("Is this the year 2106 yet? Misconfigured system clock.")
 }
 
+// For some reasons rust-bitcoin store amounts as u64 instead of i64 (as does bitcoind), but SQLite
+// does only support integers up to i64.
+fn amount_to_i64(amount: &Amount) -> i64 {
+    if amount.as_sat() > i64::MAX as u64 {
+        log::error!("Invalid amount, larger than i64::MAX : {:?}", amount);
+        std::process::exit(1);
+    }
+    amount.as_sat() as i64
+}
+
 // Create the db file with RW permissions only for the user
 fn create_db_file(db_path: &PathBuf) -> Result<(), std::io::Error> {
     let mut options = fs::OpenOptions::new();
@@ -59,8 +69,6 @@ fn create_db_file(db_path: &PathBuf) -> Result<(), std::io::Error> {
 // No database yet ? In a single tx, create a new one from the schema and populate with current
 // information
 fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
-    // FIXME: migrate to next rusqlite for u64!! https://github.com/rusqlite/rusqlite/pull/826
-
     let db_path = revaultd.db_file();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -258,7 +266,7 @@ pub fn db_insert_new_unconfirmed_vault(
                 0, // FIXME: it should probably be NULL instead, but no big deal
                 deposit_outpoint.txid.to_vec(),
                 deposit_outpoint.vout,
-                amount.as_sat() as u32, // FIXME: update to next rusqlite!!
+                amount_to_i64(amount),
                 derivation_index,
             ],
         )

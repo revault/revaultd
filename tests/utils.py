@@ -539,6 +539,14 @@ class BitcoinD(TailableProc):
         addr = self.rpc.getnewaddress()
         return self.rpc.generatetoaddress(numblocks, addr)
 
+    def get_coins(self, amount_btc):
+        # subsidy halving is every 150 blocks on regtest, it's a rough estimate
+        # to avoid looping in most cases
+        numblocks = amount_btc // 25 + 1
+        while self.rpc.getbalance() < amount_btc:
+            logging.debug(self.rpc.getbalance())
+            self.generate_block(numblocks)
+
     def simple_reorg(self, height, shift=0):
         """
         Reorganize chain by creating a fork at height=[height] and re-mine all

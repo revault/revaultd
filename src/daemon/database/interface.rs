@@ -179,7 +179,7 @@ impl TryFrom<&Row<'_>> for DbVault {
             txid,
             vout: row.get(5)?,
         };
-        let amount = Amount::from_sat(row.get::<_, u32>(6)?.into());
+        let amount = Amount::from_sat(row.get::<_, i64>(6)? as u64);
         let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
         let updated_at = row.get(8)?;
 

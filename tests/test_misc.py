@@ -3,6 +3,7 @@ import logging
 import pytest
 import serializations
 
+from bitcoin.core import COIN
 from fixtures import *
 from utils import TIMEOUT, wait_for, RpcError, POSTGRES_IS_SETUP
 
@@ -128,6 +129,18 @@ def test_getdepositaddress(revault_network, bitcoind):
         n.wait_for_logs(["Got a new unconfirmed deposit",
                          "Incremented deposit derivation index"])
         assert addr2 == n.rpc.call("getdepositaddress")["address"]
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_huge_deposit(revault_network, bitcoind):
+    revault_network.deploy(2, 1)
+    stk = revault_network.stk_wallets[0]
+    amount = 13_000
+    bitcoind.get_coins(amount)
+    vault = revault_network.fund(amount)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    stk.wait_for_deposits([deposit])
+    assert stk.rpc.listvaults([], [deposit])["vaults"][0]["amount"] == amount * COIN
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

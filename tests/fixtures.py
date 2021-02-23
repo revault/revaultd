@@ -6,9 +6,16 @@ of the file i originally copied! (MIT licensed)
 from concurrent import futures
 from ephemeral_port_reserve import reserve
 from utils import (
-    BitcoinD, ManagerRevaultd, StakeholderRevaultd, get_participants,
-    RevaultNetwork, POSTGRES_USER, POSTGRES_PASS, POSTGRES_HOST,
-    POSTGRES_IS_SETUP, EXECUTOR_WORKERS
+    BitcoinD,
+    ManagerRevaultd,
+    StakeholderRevaultd,
+    get_participants,
+    RevaultNetwork,
+    POSTGRES_USER,
+    POSTGRES_PASS,
+    POSTGRES_HOST,
+    POSTGRES_IS_SETUP,
+    EXECUTOR_WORKERS,
 )
 
 import os
@@ -24,7 +31,7 @@ __attempts = {}
 def test_base_dir():
     d = os.getenv("TEST_DIR", "/tmp")
 
-    directory = tempfile.mkdtemp(prefix='revaultd-tests-', dir=d)
+    directory = tempfile.mkdtemp(prefix="revaultd-tests-", dir=d)
     print("Running tests in {}".format(directory))
 
     yield directory
@@ -59,8 +66,9 @@ def directory(request, test_base_dir, test_name):
     global __attempts
     # Auto set value if it isn't in the dict yet
     __attempts[test_name] = __attempts.get(test_name, 0) + 1
-    directory = os.path.join(test_base_dir,
-                             "{}_{}".format(test_name, __attempts[test_name]))
+    directory = os.path.join(
+        test_base_dir, "{}_{}".format(test_name, __attempts[test_name])
+    )
 
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -73,15 +81,17 @@ def directory(request, test_base_dir, test_name):
     failed = False
     # FIXME: somehow the doc example is invalid.
     # if request.node.rep_setup.failed:
-        # failed = True
+    # failed = True
     # elif request.node.rep_call.failed:
-        # failed = True
+    # failed = True
 
     if not failed:
         try:
             shutil.rmtree(directory)
         except Exception:
-            files = [os.path.join(dp, f) for dp, _, fn in os.walk(directory) for f in fn]
+            files = [
+                os.path.join(dp, f) for dp, _, fn in os.walk(directory) for f in fn
+            ]
             print("Directory still contains files:", files)
             raise
     else:
@@ -95,8 +105,9 @@ def test_name(request):
 
 @pytest.fixture
 def executor(test_name):
-    ex = futures.ThreadPoolExecutor(max_workers=EXECUTOR_WORKERS,
-                                    thread_name_prefix=test_name)
+    ex = futures.ThreadPoolExecutor(
+        max_workers=EXECUTOR_WORKERS, thread_name_prefix=test_name
+    )
     yield ex
     ex.shutdown(wait=False)
 
@@ -131,16 +142,25 @@ def revaultd_stakeholder(bitcoind, directory):
             {
                 "host": "127.0.0.1:1",
                 "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                             "5cc6f49a9bddaacf93cd77def697"
+                "5cc6f49a9bddaacf93cd77def697",
             }
-        ]
+        ],
     }
     csv = 35
-    coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4e" \
-                            "a2799f1df04622ca1307381402"
+    coordinator_noise_key = (
+        "d91563973102454a7830137e92d0548bc83b4e" "a2799f1df04622ca1307381402"
+    )
     revaultd = StakeholderRevaultd(
-        datadir, stks, cosigs, mans, csv, os.urandom(32),
-        coordinator_noise_key, reserve(), bitcoind, stk_config=stk_config
+        datadir,
+        stks,
+        cosigs,
+        mans,
+        csv,
+        os.urandom(32),
+        coordinator_noise_key,
+        reserve(),
+        bitcoind,
+        stk_config=stk_config,
     )
     revaultd.start()
 
@@ -161,16 +181,25 @@ def revaultd_manager(bitcoind, directory):
             {
                 "host": "127.0.0.1:1",
                 "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                             "5cc6f49a9bddaacf93cd77def697"
+                "5cc6f49a9bddaacf93cd77def697",
             }
-        ]
+        ],
     }
     csv = 35
-    coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4e" \
-                            "a2799f1df04622ca1307381402"
+    coordinator_noise_key = (
+        "d91563973102454a7830137e92d0548bc83b4e" "a2799f1df04622ca1307381402"
+    )
     revaultd = ManagerRevaultd(
-        datadir, stks, cosigs, mans, csv, os.urandom(32),
-        coordinator_noise_key, reserve(), bitcoind, man_config=man_config
+        datadir,
+        stks,
+        cosigs,
+        mans,
+        csv,
+        os.urandom(32),
+        coordinator_noise_key,
+        reserve(),
+        bitcoind,
+        man_config=man_config,
     )
     revaultd.start()
 
@@ -182,11 +211,14 @@ def revaultd_manager(bitcoind, directory):
 @pytest.fixture
 def revault_network(directory, bitcoind):
     if not POSTGRES_IS_SETUP:
-        raise ValueError("Please set the POSTGRES_USER, POSTGRES_PASS and "
-                         "POSTGRES_HOST environment variables.")
+        raise ValueError(
+            "Please set the POSTGRES_USER, POSTGRES_PASS and "
+            "POSTGRES_HOST environment variables."
+        )
 
-    factory = RevaultNetwork(directory, bitcoind, POSTGRES_USER, POSTGRES_PASS,
-                             POSTGRES_HOST)
+    factory = RevaultNetwork(
+        directory, bitcoind, POSTGRES_USER, POSTGRES_PASS, POSTGRES_HOST
+    )
 
     yield factory
 

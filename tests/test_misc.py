@@ -5,25 +5,30 @@ import serializations
 
 from bitcoin.core import COIN
 from fixtures import *
-from utils import TIMEOUT, wait_for, RpcError, POSTGRES_IS_SETUP
+from utils import POSTGRES_IS_SETUP, TIMEOUT, RpcError, wait_for
+
 
 def test_revaultd_stakeholder_starts(revaultd_stakeholder):
     revaultd_stakeholder.rpc.call("stop")
-    revaultd_stakeholder.wait_for_logs([
-        "Stopping revaultd.",
-        "Bitcoind received shutdown.",
-        "Signature fetcher thread received shutdown.",
-    ])
+    revaultd_stakeholder.wait_for_logs(
+        [
+            "Stopping revaultd.",
+            "Bitcoind received shutdown.",
+            "Signature fetcher thread received shutdown.",
+        ]
+    )
     revaultd_stakeholder.proc.wait(TIMEOUT)
 
 
 def test_revaultd_manager_starts(revaultd_manager):
     revaultd_manager.rpc.call("stop")
-    revaultd_manager.wait_for_logs([
-        "Stopping revaultd.",
-        "Bitcoind received shutdown.",
-        "Signature fetcher thread received shutdown.",
-    ])
+    revaultd_manager.wait_for_logs(
+        [
+            "Stopping revaultd.",
+            "Bitcoind received shutdown.",
+            "Signature fetcher thread received shutdown.",
+        ]
+    )
     revaultd_manager.proc.wait(TIMEOUT)
 
 
@@ -36,8 +41,7 @@ def test_getinfo(revaultd_manager, bitcoind):
     wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] > 0)
     height = revaultd_manager.rpc.call("getinfo")["blockheight"]
     bitcoind.generate_block(1)
-    wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"]
-                      == height + 1)
+    wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] == height + 1)
 
 
 def test_listvaults(revaultd_manager, bitcoind):
@@ -53,20 +57,20 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "unconfirmed"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10**8
+    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
 
     # Generate 5 blocks, it is still unconfirmed
     bitcoind.generate_block(5)
-    assert revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
-        "unconfirmed"
+    assert (
+        revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == "unconfirmed"
+    )
 
     # 1 more block will get it confirmed
     bitcoind.generate_block(1)
     revaultd_manager.wait_for_log(f"Vault at .*{txid}.* is now confirmed")
-    assert revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == \
-        "funded"
+    assert revaultd_manager.rpc.call("listvaults")["vaults"][0]["status"] == "funded"
 
     # Of course, it persists across restarts.
     revaultd_manager.rpc.call("stop")
@@ -76,37 +80,33 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10**8
+    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
 
     # And we can filter the result by status
-    vault_list = revaultd_manager.rpc.call("listvaults",
-                                           [["unconfirmed"]])["vaults"]
+    vault_list = revaultd_manager.rpc.call("listvaults", [["unconfirmed"]])["vaults"]
     assert len(vault_list) == 0
-    vault_list = revaultd_manager.rpc.call("listvaults",
-                                           [["funded"]])["vaults"]
+    vault_list = revaultd_manager.rpc.call("listvaults", [["funded"]])["vaults"]
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10**8
+    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
 
     # And we can filter the result by outpoints
     outpoint = f"{txid}:{vault_list[0]['vout']}"
-    vault_list = revaultd_manager.rpc.call("listvaults",
-                                           [[], [outpoint]])["vaults"]
+    vault_list = revaultd_manager.rpc.call("listvaults", [[], [outpoint]])["vaults"]
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10**8
+    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
 
     outpoint = f"{txid}:{100}"
-    vault_list = revaultd_manager.rpc.call("listvaults",
-                                           [[], [outpoint]])["vaults"]
+    vault_list = revaultd_manager.rpc.call("listvaults", [[], [outpoint]])["vaults"]
     assert len(vault_list) == 0
 
 
@@ -121,13 +121,15 @@ def test_getdepositaddress(revault_network, bitcoind):
 
     # But if we do, we'll get the next one (but the same from everyone)!
     bitcoind.rpc.sendtoaddress(addr, 0.22222)
-    stks[0].wait_for_logs(["Got a new unconfirmed deposit",
-                           "Incremented deposit derivation index"])
+    stks[0].wait_for_logs(
+        ["Got a new unconfirmed deposit", "Incremented deposit derivation index"]
+    )
     addr2 = stks[0].rpc.call("getdepositaddress")["address"]
     assert addr2 != addr
     for n in stks[1:] + mans:
-        n.wait_for_logs(["Got a new unconfirmed deposit",
-                         "Incremented deposit derivation index"])
+        n.wait_for_logs(
+            ["Got a new unconfirmed deposit", "Incremented deposit derivation index"]
+        )
         assert addr2 == n.rpc.call("getdepositaddress")["address"]
 
 
@@ -150,17 +152,19 @@ def test_getrevocationtxs(revault_network, bitcoind):
 
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-         mans[0].rpc.getrevocationtxs("whatever_doesnt_matter")
+        mans[0].rpc.getrevocationtxs("whatever_doesnt_matter")
 
     # If the vault isn't known, it'll fail (note: it's racy for others but
     # behaviour is the same is the vault isn't known)
     txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)
-    stks[0].wait_for_logs(["Got a new unconfirmed deposit",
-                           "Incremented deposit derivation index"])
+    stks[0].wait_for_logs(
+        ["Got a new unconfirmed deposit", "Incremented deposit derivation index"]
+    )
     vault = stks[0].rpc.listvaults()["vaults"][0]
     for n in stks:
-        with pytest.raises(RpcError, match=".* does not refer to a known and "
-                                           "confirmed vault"):
+        with pytest.raises(
+            RpcError, match=".* does not refer to a known and " "confirmed vault"
+        ):
             n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
 
     # Now, get it confirmed. They all derived the same transactions
@@ -180,12 +184,12 @@ def test_getunvaulttx(revault_network):
 
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-         mans[0].rpc.getunvaulttx("whatever_doesnt_matter")
+        mans[0].rpc.getunvaulttx("whatever_doesnt_matter")
 
     # We can't query for an unknow vault
     invalid_outpoint = f"{'0'*64}:1"
     with pytest.raises(RpcError, match="No vault at"):
-         stks[0].rpc.getunvaulttx(invalid_outpoint)
+        stks[0].rpc.getunvaulttx(invalid_outpoint)
 
     vault = revault_network.fund(18)
     outpoint = f"{vault['txid']}:{vault['vout']}"
@@ -193,8 +197,7 @@ def test_getunvaulttx(revault_network):
     tx = stks[0].rpc.getunvaulttx(outpoint)
     for stk in stks[1:]:
         stk.wait_for_deposits([outpoint])
-        assert (tx["unvault_tx"] ==
-                stk.rpc.getunvaulttx(outpoint)["unvault_tx"])
+        assert tx["unvault_tx"] == stk.rpc.getunvaulttx(outpoint)["unvault_tx"]
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -209,13 +212,17 @@ def test_listpresignedtransactions(revault_network):
 
     # Sanity check the API
     stks[0].wait_for_deposits([depositA, depositB])
-    stk_res = stks[0].rpc.listpresignedtransactions([depositA])["presigned_transactions"][0]
+    stk_res = stks[0].rpc.listpresignedtransactions([depositA])[
+        "presigned_transactions"
+    ][0]
     assert stk_res["unvault"] is not None
     assert stk_res["cancel"] is not None
     assert stk_res["emergency"] is not None
     assert stk_res["unvault_emergency"] is not None
     mans[0].wait_for_deposits([depositA, depositB])
-    man_res = mans[0].rpc.listpresignedtransactions([depositB])["presigned_transactions"][0]
+    man_res = mans[0].rpc.listpresignedtransactions([depositB])[
+        "presigned_transactions"
+    ][0]
     assert man_res["unvault"] is not None
     assert man_res["cancel"] is not None
     assert man_res["emergency"] is None
@@ -247,7 +254,9 @@ def test_listonchaintransactions(revault_network):
     # Sanity check the API
     for w in stks + mans:
         w.wait_for_deposits([depositA, depositB])
-        res = w.rpc.listonchaintransactions([depositA, depositB])["onchain_transactions"][0]
+        res = w.rpc.listonchaintransactions([depositA, depositB])[
+            "onchain_transactions"
+        ][0]
         # Deposit is always there
         assert res["deposit"]["blockheight"] is not None
         assert res["deposit"]["received_at"] is not None
@@ -274,11 +283,14 @@ def psbt_add_invalid_sig(psbt_str):
     psbt = serializations.PSBT()
     psbt.deserialize(psbt_str)
     assert len(psbt.inputs) == 1
-    pk = bytes.fromhex("02c83dc7fb3ed0a5dd33cf35d891ba4fcbde"
-                       "90ede809a0b247a46f4d989dd14411")
-    sig = bytes.fromhex("3045022100894f5c61d1c297227a9a094ea471fd9d84b"
-                        "61d4fc78eb71376621758df8c4946022073f5c11e62add56c4c9"
-                        "10bc90d0eadb154919e0c6c67b909897bda13cae3620d")
+    pk = bytes.fromhex(
+        "02c83dc7fb3ed0a5dd33cf35d891ba4fcbde" "90ede809a0b247a46f4d989dd14411"
+    )
+    sig = bytes.fromhex(
+        "3045022100894f5c61d1c297227a9a094ea471fd9d84b"
+        "61d4fc78eb71376621758df8c4946022073f5c11e62add56c4c9"
+        "10bc90d0eadb154919e0c6c67b909897bda13cae3620d"
+    )
     psbt.inputs[0].partial_sigs[pk] = sig
     return psbt.serialize()
 
@@ -292,7 +304,7 @@ def test_revocationtxs(revault_network):
 
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-         mans[0].rpc.revocationtxs("whatever_doesnt_matter", "a", "n", "dd")
+        mans[0].rpc.revocationtxs("whatever_doesnt_matter", "a", "n", "dd")
 
     vault = revault_network.fund(10)
     deposit = f"{vault['txid']}:{vault['vout']}"
@@ -302,62 +314,78 @@ def test_revocationtxs(revault_network):
 
     # We must provide all revocation txs at once
     with pytest.raises(RpcError, match="Invalid params.*"):
-         stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
-                                   psbts["emergency_tx"])
+        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"], psbts["emergency_tx"])
 
     # We can't send it for an unknown vault
-    with pytest.raises(RpcError, match="Outpoint does not correspond to an "
-                                       "existing vault"):
-        stks[0].rpc.revocationtxs(deposit[:-1] + "18", psbts["cancel_tx"],
-                                   psbts["emergency_tx"],
-                                   psbts["emergency_unvault_tx"])
+    with pytest.raises(
+        RpcError, match="Outpoint does not correspond to an " "existing vault"
+    ):
+        stks[0].rpc.revocationtxs(
+            deposit[:-1] + "18",
+            psbts["cancel_tx"],
+            psbts["emergency_tx"],
+            psbts["emergency_unvault_tx"],
+        )
 
     # We can't give it random PSBTs, it will fail at parsing time
     mal_cancel = psbt_add_input(psbts["cancel_tx"])
     with pytest.raises(RpcError, match="Invalid Revault transaction"):
-        stks[0].rpc.revocationtxs(deposit, mal_cancel,
-                                  psbts["emergency_tx"],
-                                  psbts["emergency_unvault_tx"])
+        stks[0].rpc.revocationtxs(
+            deposit, mal_cancel, psbts["emergency_tx"], psbts["emergency_unvault_tx"]
+        )
     mal_emer = psbt_add_input(psbts["emergency_tx"])
     with pytest.raises(RpcError, match="Invalid Revault transaction"):
-        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
-                                  mal_emer,
-                                  psbts["emergency_unvault_tx"])
+        stks[0].rpc.revocationtxs(
+            deposit, psbts["cancel_tx"], mal_emer, psbts["emergency_unvault_tx"]
+        )
     mal_unemer = psbt_add_input(psbts["emergency_unvault_tx"])
     with pytest.raises(RpcError, match="Invalid Revault transaction"):
-        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
-                                  psbts["emergency_tx"], mal_unemer)
+        stks[0].rpc.revocationtxs(
+            deposit, psbts["cancel_tx"], psbts["emergency_tx"], mal_unemer
+        )
 
     # We can't mix up PSBTS (the Cancel can even be detected at parsing time)
     with pytest.raises(RpcError, match="Invalid Revault transaction"):
-        stks[0].rpc.revocationtxs(deposit, psbts["emergency_tx"], # here
-                                  psbts["emergency_tx"],
-                                  psbts["emergency_unvault_tx"])
+        stks[0].rpc.revocationtxs(
+            deposit,
+            psbts["emergency_tx"],  # here
+            psbts["emergency_tx"],
+            psbts["emergency_unvault_tx"],
+        )
     with pytest.raises(RpcError, match="Invalid Emergency tx: db wtxid"):
-        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
-                                  psbts["cancel_tx"], # here
-                                  psbts["emergency_unvault_tx"])
+        stks[0].rpc.revocationtxs(
+            deposit,
+            psbts["cancel_tx"],
+            psbts["cancel_tx"],  # here
+            psbts["emergency_unvault_tx"],
+        )
     with pytest.raises(RpcError, match="Invalid Unvault Emergency tx: db wtxid"):
-        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
-                                  psbts["emergency_tx"],
-                                  psbts["emergency_tx"]) # here
-
+        stks[0].rpc.revocationtxs(
+            deposit, psbts["cancel_tx"], psbts["emergency_tx"], psbts["emergency_tx"]
+        )  # here
 
     # We must provide a signature for ourselves
     with pytest.raises(RpcError, match="No signature for ourselves.*Cancel"):
-        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"],
-                                  psbts["emergency_tx"],
-                                  psbts["emergency_unvault_tx"])
-    cancel_psbt = stks[0].stk_keychain.sign_revocation_psbt(psbts["cancel_tx"],
-                                                            child_index)
+        stks[0].rpc.revocationtxs(
+            deposit,
+            psbts["cancel_tx"],
+            psbts["emergency_tx"],
+            psbts["emergency_unvault_tx"],
+        )
+    cancel_psbt = stks[0].stk_keychain.sign_revocation_psbt(
+        psbts["cancel_tx"], child_index
+    )
     with pytest.raises(RpcError, match="No signature for ourselves.*Emergency"):
-        stks[0].rpc.revocationtxs(deposit, cancel_psbt, psbts["emergency_tx"],
-                                  psbts["emergency_unvault_tx"])
-    emer_psbt = stks[0].stk_keychain.sign_revocation_psbt(psbts["emergency_tx"],
-                                                          child_index)
+        stks[0].rpc.revocationtxs(
+            deposit, cancel_psbt, psbts["emergency_tx"], psbts["emergency_unvault_tx"]
+        )
+    emer_psbt = stks[0].stk_keychain.sign_revocation_psbt(
+        psbts["emergency_tx"], child_index
+    )
     with pytest.raises(RpcError, match="No signature for ourselves.*UnvaultEmergency"):
-        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt,
-                                  psbts["emergency_unvault_tx"])
+        stks[0].rpc.revocationtxs(
+            deposit, cancel_psbt, emer_psbt, psbts["emergency_unvault_tx"]
+        )
     unemer_psbt = stks[0].stk_keychain.sign_revocation_psbt(
         psbts["emergency_unvault_tx"], child_index
     )
@@ -390,18 +418,19 @@ def test_unvaulttx(revault_network):
         emer_psbt = psbts["emergency_tx"]
         unemer_psbt = psbts["emergency_unvault_tx"]
         for stk in stks:
-            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(cancel_psbt,
-                                                                child_index)
-            emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt,
-                                                              child_index)
-            unemer_psbt = stk.stk_keychain.sign_revocation_psbt(unemer_psbt,
-                                                                child_index)
+            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
+                cancel_psbt, child_index
+            )
+            emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt, child_index)
+            unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
+                unemer_psbt, child_index
+            )
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
         assert stks[0].rpc.listvaults([], [deposit])["vaults"][0]["status"] == "secured"
 
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-         mans[0].rpc.unvaulttx("whatever_doesnt_matter", "psbt_here")
+        mans[0].rpc.unvaulttx("whatever_doesnt_matter", "psbt_here")
 
     vault = revault_network.fund(10)
     deposit = f"{vault['txid']}:{vault['vout']}"
@@ -439,14 +468,17 @@ def test_unvaulttx(revault_network):
 
     # Get all stakeholders to share their sig, this makes the vault active
     for stk in stks:
-        wait_for(lambda: stk.rpc.listvaults([], [deposit])
-                 ["vaults"][0]["status"] == "secured")
+        wait_for(
+            lambda: stk.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == "secured"
+        )
         unvault_psbt = stk.rpc.getunvaulttx(deposit)["unvault_tx"]
         unvault_psbt = stk.stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
         stk.rpc.unvaulttx(deposit, unvault_psbt)
     for stk in stks:
-        wait_for(lambda: stk.rpc.listvaults([], [deposit])
-                 ["vaults"][0]["status"] == "active")
+        wait_for(
+            lambda: stk.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "active"
+        )
 
     # We can't do it again
     with pytest.raises(RpcError, match="Invalid vault status"):
@@ -460,13 +492,16 @@ def test_unvaulttx(revault_network):
     sign_revocation_txs(stks, deposit)
     unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
     for stk in stks:
-        wait_for(lambda: stk.rpc.listvaults([], [deposit])
-                 ["vaults"][0]["status"] == "secured")
+        wait_for(
+            lambda: stk.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == "secured"
+        )
         unvault_psbt = stk.stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
     stks[0].rpc.unvaulttx(deposit, unvault_psbt)
     for stk in stks:
-        wait_for(lambda: stk.rpc.listvaults([], [deposit])
-                 ["vaults"][0]["status"] == "active")
+        wait_for(
+            lambda: stk.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "active"
+        )
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -487,12 +522,9 @@ def test_revocation_sig_sharing(revault_network):
     emer_psbt = psbts["emergency_tx"]
     unemer_psbt = psbts["emergency_unvault_tx"]
     for stk in stks:
-        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(cancel_psbt,
-                                                            child_index)
-        emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt,
-                                                          child_index)
-        unemer_psbt = stk.stk_keychain.sign_revocation_psbt(unemer_psbt,
-                                                            child_index)
+        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(cancel_psbt, child_index)
+        emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt, child_index)
+        unemer_psbt = stk.stk_keychain.sign_revocation_psbt(unemer_psbt, child_index)
     stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
     assert stks[0].rpc.listvaults()["vaults"][0]["status"] == "secured"
     # Note that we can't pass it twice
@@ -502,7 +534,6 @@ def test_revocation_sig_sharing(revault_network):
     for stk in stks + mans:
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
 
-
     vault = revault_network.fund(20)
     deposit = f"{vault['txid']}:{vault['vout']}"
     child_index = vault["derivation_index"]
@@ -511,10 +542,12 @@ def test_revocation_sig_sharing(revault_network):
     for stk in stks:
         stk.wait_for_deposits([deposit])
         psbts = stk.rpc.getrevocationtxs(deposit)
-        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(psbts["cancel_tx"],
-                                                            child_index)
-        emer_psbt = stk.stk_keychain.sign_revocation_psbt(psbts["emergency_tx"],
-                                                          child_index)
+        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
+            psbts["cancel_tx"], child_index
+        )
+        emer_psbt = stk.stk_keychain.sign_revocation_psbt(
+            psbts["emergency_tx"], child_index
+        )
         unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
             psbts["emergency_unvault_tx"], child_index
         )

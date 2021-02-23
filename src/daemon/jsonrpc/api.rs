@@ -119,9 +119,17 @@ pub trait RpcApi {
         unvault_tx: String,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
-    /// Retrieve the onchain transactions of a vault with the given deposit outpoint
-    #[rpc(meta, name = "listtransactions")]
-    fn listtransactions(
+    /// Retrieve the presigned transactions of a list of vaults
+    #[rpc(meta, name = "listpresignedtransactions")]
+    fn listpresignedtransactions(
+        &self,
+        meta: Self::Metadata,
+        outpoints: Option<Vec<String>>,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    /// Retrieve the onchain transactions of a list of vaults
+    #[rpc(meta, name = "listonchaintransactions")]
+    fn listonchaintransactions(
         &self,
         meta: Self::Metadata,
         outpoints: Option<Vec<String>>,
@@ -365,7 +373,7 @@ impl RpcApi for RpcImpl {
         Ok(json!({}))
     }
 
-    fn listtransactions(
+    fn listpresignedtransactions(
         &self,
         meta: Self::Metadata,
         outpoints: Option<Vec<String>>,
@@ -374,85 +382,78 @@ impl RpcApi for RpcImpl {
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
-            meta.tx
-                .send(RpcMessageIn::ListTransactions(outpoints, response_tx)),
-            "Sending 'listtransactions' to main thread"
+            meta.tx.send(RpcMessageIn::ListPresignedTransactions(
+                outpoints,
+                response_tx
+            )),
+            "Sending 'listpresignedtransactions' to main thread"
         );
         let vaults = assume_ok!(
             response_rx.recv(),
-            "Receiving 'listtransactions' from main thread"
+            "Receiving 'listpresignedtransactions' from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        let vaults: Vec<serde_json::Value> = vaults
+            .into_iter()
+            .map(|v| {
+                json!({
+                    "unvault": v.unvault,
+                    "cancel": v.cancel,
+                    "emergency": v.emergency,
+                    "unvault_emergency": v.unvault_emergency,
+                })
+            })
+            .collect();
+
+        Ok(json!({ "presigned_transactions": vaults }))
+    }
+
+    fn listonchaintransactions(
+        &self,
+        meta: Self::Metadata,
+        outpoints: Option<Vec<String>>,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let outpoints = parse_outpoints!(outpoints);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::ListOnchainTransactions(
+                outpoints,
+                response_tx
+            )),
+            "Sending 'listonchaintransactions' to main thread"
         );
+        let vaults = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'listonchaintransactions' from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
 
-        // Boilerplate to construct a JSON entry out of a RevaultTransaction
-        fn tx_entry<T: RevaultTransaction>(tx_res: TransactionResource<T>) -> serde_json::Value {
-            let mut entry = serde_json::Map::with_capacity(3);
-
-            if tx_res.is_signed {
-                // It was broadcast
-                if let Some(wallet_tx) = tx_res.wallet_tx {
-                    entry.insert("hex".to_string(), wallet_tx.hex.into());
-                    // But may not be confirmed yet!
-                    if let Some(height) = wallet_tx.blockheight {
-                        entry.insert("blockheight".to_string(), height.into());
-                    }
-                    entry.insert("received_at".to_string(), wallet_tx.received_time.into());
-                } else {
-                    // It's fully signed but not broadcast yet
-                    entry.insert("hex".to_string(), tx_res.tx.hex().into());
-                }
-            } else {
-                // It's not even fully signed yet, chances are we just derived it
-                entry.insert("psbt".to_string(), tx_res.tx.as_psbt_string().into());
-            }
-
-            entry.into()
+        fn wallet_tx_to_json(tx: WalletTransaction) -> serde_json::Value {
+            json!({
+                "blockheight": tx.blockheight.map(serde_json::Number::from),
+                "received_at": serde_json::Number::from(tx.received_time),
+                "hex": serde_json::Value::String(tx.hex),
+            })
         }
+        let vaults: Vec<serde_json::Value> = vaults
+            .into_iter()
+            .map(|v| {
+                json!({
+                    "deposit": wallet_tx_to_json(v.deposit),
+                    "unvault": v.unvault.map(wallet_tx_to_json),
+                    "cancel": v.cancel.map(wallet_tx_to_json),
+                    "emergency": v.emergency.map(wallet_tx_to_json),
+                    "unvault_emergency": v.unvault_emergency.map(wallet_tx_to_json),
+                    "spend": v.spend.map(wallet_tx_to_json),
+                })
+            })
+            .collect();
 
-        let mut txs_array = Vec::with_capacity(vaults.len());
-        for vault in vaults {
-            let mut txs_map = serde_json::Map::with_capacity(6);
-            let outpoint = &vault.outpoint;
-
-            txs_map.insert("outpoint".to_string(), outpoint.to_string().into());
-
-            // The deposit transaction is special cased, since it does not implement
-            // RevaultTransaction. Also, it's always signed and therefore always output
-            // as 'hex'.
-            let mut deposit_entry = serde_json::Map::with_capacity(3);
-            deposit_entry.insert("hex".to_owned(), vault.deposit.hex.into());
-            if let Some(height) = vault.deposit.blockheight {
-                deposit_entry.insert("blockheight".to_string(), height.into());
-            }
-            deposit_entry.insert(
-                "received_at".to_string(),
-                vault.deposit.received_time.into(),
-            );
-            txs_map.insert("deposit".to_string(), deposit_entry.into());
-
-            txs_map.insert("unvault".to_string(), tx_entry(vault.unvault));
-            if let Some(spend) = vault.spend {
-                txs_map.insert("spend".to_string(), tx_entry(spend));
-            }
-            txs_map.insert("cancel".to_string(), tx_entry(vault.cancel));
-            txs_map.insert(
-                "emergency".to_string(),
-                vault
-                    .emergency
-                    .map(|x| tx_entry(x))
-                    .unwrap_or(serde_json::Value::Null),
-            );
-            txs_map.insert(
-                "unvault_emergency".to_string(),
-                vault
-                    .unvault_emergency
-                    .map(|x| tx_entry(x))
-                    .unwrap_or(serde_json::Value::Null),
-            );
-
-            txs_array.push(txs_map);
-        }
-
-        Ok(json!({ "transactions": txs_array }))
+        Ok(json!({
+            "onchain_transactions": vaults,
+        }))
     }
 
     fn getunvaulttx(

@@ -230,74 +230,6 @@ pub fn db_vault_by_deposit(
     .map(|mut vault_list| vault_list.pop())
 }
 
-// FIXME: we have to get rid of this call as well as cleaning up the `listtransactions` RPC command
-/// Get an optionally-filtered list of presigned transactions stored for this vault.
-pub fn db_presigned_transactions_filtered(
-    db_path: &PathBuf,
-    vault_id: u32,
-    types_filter: &[TransactionType],
-) -> Result<Vec<DbTransaction>, DatabaseError> {
-    Ok(db_query(
-        db_path,
-        "SELECT * FROM presigned_transactions WHERE vault_id = (?1)",
-        &[vault_id],
-        |row| {
-            let id: u32 = row.get(0)?;
-            debug_assert!(vault_id == row.get::<_, u32>(1)?);
-
-            let db_tx_type: u32 = row.get(2)?;
-            let tx_type: TransactionType = db_tx_type.try_into().map_err(|_| {
-                FromSqlError::Other(Box::new(DatabaseError(format!(
-                    "Unsane db: got an invalid tx type: '{}'",
-                    db_tx_type
-                ))))
-            })?;
-            if !types_filter.is_empty() && !types_filter.contains(&tx_type) {
-                // Not an error, we just don't want it
-                return Ok(None);
-            }
-
-            let db_psbt: Vec<u8> = row.get(3)?;
-            let psbt = match tx_type {
-                // For the remaining transactions (which we do create), we store a PSBT.
-                TransactionType::Unvault => RevaultTx::Unvault(
-                    UnvaultTransaction::from_psbt_serialized(&db_psbt)
-                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                ),
-                TransactionType::Cancel => RevaultTx::Cancel(
-                    CancelTransaction::from_psbt_serialized(&db_psbt)
-                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                ),
-                TransactionType::Emergency => RevaultTx::Emergency(
-                    EmergencyTransaction::from_psbt_serialized(&db_psbt)
-                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                ),
-                TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
-                    UnvaultEmergencyTransaction::from_psbt_serialized(&db_psbt)
-                        .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-                ),
-            };
-
-            let is_fully_signed: bool = row.get(4)?;
-
-            Ok(Some(DbTransaction {
-                id,
-                vault_id,
-                tx_type,
-                psbt,
-                is_fully_signed,
-            }))
-        },
-    )?
-    .into_iter()
-    // Filter out the unwanted ones
-    .filter_map(|maybe_tx| match maybe_tx {
-        Some(tx) => Some(tx),
-        None => None,
-    })
-    .collect())
-}
-
 impl TryFrom<&Row<'_>> for DbTransaction {
     type Error = rusqlite::Error;
 
@@ -388,7 +320,8 @@ pub fn db_cancel_transaction(
     ))
 }
 
-/// Get the Emergency transaction corresponding to this vault
+/// Get the Emergency transaction corresponding to this vault.
+/// Will error if there are none, ie if called by a non-stakeholder!
 pub fn db_emer_transaction(
     db_path: &PathBuf,
     vault_id: u32,
@@ -410,6 +343,7 @@ pub fn db_emer_transaction(
 }
 
 /// Get the Unvault Emergency transaction corresponding to this vault
+/// Will error if there are none, ie if called by a non-stakeholder!
 pub fn db_unvault_emer_transaction(
     db_path: &PathBuf,
     vault_id: u32,

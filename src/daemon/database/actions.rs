@@ -449,7 +449,7 @@ pub fn db_update_presigned_tx(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{database::schema::RevaultTx, revaultd::RevaultD};
+    use crate::revaultd::RevaultD;
     use common::config::Config;
     use revault_tx::{
         bitcoin::{Network, OutPoint, PublicKey},
@@ -718,41 +718,10 @@ mod test {
         let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
-        // They can also be queried by listtransactions
-        let db_txs: Vec<RevaultTx> = db_presigned_transactions_filtered(&db_path, db_vault.id, &[])
-            .unwrap()
-            .into_iter()
-            .map(|x| x.psbt)
-            .collect();
-        assert!(db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
-        assert!(db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
-        assert!(db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
-
-        let db_txs: Vec<RevaultTx> = db_presigned_transactions_filtered(
-            &db_path,
-            db_vault.id,
-            &[TransactionType::Emergency],
-        )
-        .unwrap()
-        .into_iter()
-        .map(|x| x.psbt)
-        .collect();
-        assert!(db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
-        assert!(!db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
-        assert!(!db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
-
-        let db_txs: Vec<RevaultTx> = db_presigned_transactions_filtered(
-            &db_path,
-            db_vault.id,
-            &[TransactionType::UnvaultEmergency, TransactionType::Cancel],
-        )
-        .unwrap()
-        .into_iter()
-        .map(|x| x.psbt)
-        .collect();
-        assert!(!db_txs.contains(&RevaultTx::Emergency(emer_tx.clone())));
-        assert!(db_txs.contains(&RevaultTx::Cancel(cancel_tx.clone())));
-        assert!(db_txs.contains(&RevaultTx::UnvaultEmergency(unemer_tx.clone())));
+        // They can also be queried
+        db_emer_transaction(&db_path, db_vault.id).unwrap();
+        db_cancel_transaction(&db_path, db_vault.id).unwrap();
+        db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
 
         clear_datadir(&revaultd.data_dir);
     }

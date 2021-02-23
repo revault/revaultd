@@ -2,8 +2,7 @@ use crate::revaultd::VaultStatus;
 use revault_tx::{
     bitcoin::{util::bip32::ChildNumber, Address, Amount, OutPoint, Txid},
     transactions::{
-        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -51,12 +50,13 @@ pub enum RpcMessageIn {
         (OutPoint, UnvaultTransaction),
         SyncSender<Result<(), RpcControlError>>,
     ),
-    ListTransactions(
+    ListPresignedTransactions(
         Option<Vec<OutPoint>>,
-        SyncSender<
-            // None if the deposit does not exist
-            Vec<VaultTransactions>,
-        >,
+        SyncSender<Result<Vec<VaultPresignedTransactions>, RpcControlError>>,
+    ),
+    ListOnchainTransactions(
+        Option<Vec<OutPoint>>,
+        SyncSender<Result<Vec<VaultOnchainTransactions>, RpcControlError>>,
     ),
 }
 
@@ -83,24 +83,25 @@ pub struct WalletTransaction {
 }
 
 #[derive(Debug)]
-pub struct TransactionResource<T> {
-    // None if not broadcast
-    pub wallet_tx: Option<WalletTransaction>,
-    pub tx: T,
-    pub is_signed: bool,
+pub struct VaultPresignedTransactions {
+    pub outpoint: OutPoint,
+    pub unvault: UnvaultTransaction,
+    pub cancel: CancelTransaction,
+    // None if not stakeholder
+    pub emergency: Option<EmergencyTransaction>,
+    pub unvault_emergency: Option<UnvaultEmergencyTransaction>,
 }
 
 #[derive(Debug)]
-pub struct VaultTransactions {
+pub struct VaultOnchainTransactions {
     pub outpoint: OutPoint,
     pub deposit: WalletTransaction,
-    pub unvault: TransactionResource<UnvaultTransaction>,
-    // None if not spending
-    pub spend: Option<TransactionResource<SpendTransaction>>,
-    pub cancel: TransactionResource<CancelTransaction>,
-    // None if not stakeholder
-    pub emergency: Option<TransactionResource<EmergencyTransaction>>,
-    pub unvault_emergency: Option<TransactionResource<UnvaultEmergencyTransaction>>,
+    pub unvault: Option<WalletTransaction>,
+    pub cancel: Option<WalletTransaction>,
+    // Always None if not stakeholder
+    pub emergency: Option<WalletTransaction>,
+    pub unvault_emergency: Option<WalletTransaction>,
+    pub spend: Option<WalletTransaction>,
 }
 
 #[derive(Debug)]

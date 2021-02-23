@@ -176,50 +176,73 @@ def test_getunvaulttx(revault_network):
 
     vault = revault_network.fund(18)
     outpoint = f"{vault['txid']}:{vault['vout']}"
-    stks[0].wait_for_deposit(outpoint)
+    stks[0].wait_for_deposits([outpoint])
     tx = stks[0].rpc.getunvaulttx(outpoint)
     for stk in stks[1:]:
-        stk.wait_for_deposit(outpoint)
+        stk.wait_for_deposits([outpoint])
         assert (tx["unvault_tx"] ==
                 stk.rpc.getunvaulttx(outpoint)["unvault_tx"])
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
-def test_listtransactions(revault_network, bitcoind):
-    (stks, mans) = revault_network.deploy(4, 2)
+def test_listpresignedtransactions(revault_network):
+    revault_network.deploy(2, 1)
+    vaultA = revault_network.fund(0.2222221)
+    vaultB = revault_network.fund(122.88881)
+    depositA = f"{vaultA['txid']}:{vaultA['vout']}"
+    depositB = f"{vaultB['txid']}:{vaultB['vout']}"
+    stks = revault_network.stk_wallets
+    mans = revault_network.man_wallets
 
-    addr = stks[0].rpc.call("getdepositaddress")["address"]
-    txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)
-    wait_for(lambda: len(stks[0].rpc.call("listvaults")["vaults"]) > 0)
-    vault = stks[0].rpc.call("listvaults")["vaults"][0]
-    deposit = f"{vault['txid']}:{vault['vout']}"
-
-    res = stks[0].rpc.listtransactions([deposit])["transactions"][0]
     # Sanity check the API
-    assert ("deposit" in res and "unvault" in res and "cancel" in res
-            and "emergency" in res and "unvault_emergency" in res)
-    assert (stks[0].rpc.listtransactions([deposit]) ==
-            stks[0].rpc.listtransactions())
-    # The deposit is always fully signed..
-    assert "hex" in res["deposit"]
-    # .. And broadcast
-    assert "received_at" in res["deposit"]
-    # .. But right now it's not confirmed
-    assert "blockheight" not in res["deposit"]
+    stks[0].wait_for_deposits([depositA, depositB])
+    stk_res = stks[0].rpc.listpresignedtransactions([depositA])["presigned_transactions"][0]
+    assert stk_res["unvault"] is not None
+    assert stk_res["cancel"] is not None
+    assert stk_res["emergency"] is not None
+    assert stk_res["unvault_emergency"] is not None
+    mans[0].wait_for_deposits([depositA, depositB])
+    man_res = mans[0].rpc.listpresignedtransactions([depositB])["presigned_transactions"][0]
+    assert man_res["unvault"] is not None
+    assert man_res["cancel"] is not None
+    assert man_res["emergency"] is None
+    assert man_res["unvault_emergency"] is None
 
-    # Get it confirmed
-    bitcoind.generate_block(6, txid)
-    wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
-    res = stks[0].rpc.listtransactions([deposit])["transactions"][0]
-    assert "blockheight" in res["deposit"]
+    # Sanity check they all generated the same unsigned PSBTs
+    for w in stks[1:] + mans:
+        w.wait_for_deposits([depositA])
+        res = w.rpc.listpresignedtransactions([depositA])["presigned_transactions"][0]
+        assert res["unvault"] == stk_res["unvault"]
+        assert res["cancel"] == stk_res["cancel"]
+        if res["emergency"] is not None:
+            assert res["emergency"] == stk_res["emergency"]
+        if res["unvault_emergency"] is not None:
+            assert res["unvault_emergency"] == stk_res["unvault_emergency"]
 
-    # Sanity check they all output the same transactions..
-    # FIXME: this is flaky on the received_at value. Check out how it's set in
-    # bitcoind that somehow it's different between the calls..
-    # sorted_res = sorted(res.items())
-    # for n in stks[1:] + mans:
-        # res = n.rpc.listtransactions([deposit])["transactions"][0]
-        # assert sorted(res.items()) == sorted_res
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_listonchaintransactions(revault_network):
+    """Just a small sanity check of the API"""
+    revault_network.deploy(2, 1)
+    vaultA = revault_network.fund(0.2222221)
+    vaultB = revault_network.fund(122.88881)
+    depositA = f"{vaultA['txid']}:{vaultA['vout']}"
+    depositB = f"{vaultB['txid']}:{vaultB['vout']}"
+    stks = revault_network.stk_wallets
+    mans = revault_network.man_wallets
+
+    # Sanity check the API
+    for w in stks + mans:
+        w.wait_for_deposits([depositA, depositB])
+        res = w.rpc.listonchaintransactions([depositA, depositB])["onchain_transactions"][0]
+        # Deposit is always there
+        assert res["deposit"]["blockheight"] is not None
+        assert res["deposit"]["received_at"] is not None
+        assert res["deposit"]["hex"] is not None
+        assert res["unvault"] is None
+        assert res["cancel"] is None
+        assert res["emergency"] is None
+        assert res["unvault_emergency"] is None
 
 
 def psbt_add_input(psbt_str):
@@ -261,7 +284,7 @@ def test_revocationtxs(revault_network):
     vault = revault_network.fund(10)
     deposit = f"{vault['txid']}:{vault['vout']}"
     child_index = vault["derivation_index"]
-    stks[0].wait_for_deposit(deposit)
+    stks[0].wait_for_deposits([deposit])
     psbts = stks[0].rpc.getrevocationtxs(deposit)
 
     # We must provide all revocation txs at once
@@ -348,7 +371,7 @@ def test_unvaulttx(revault_network):
         """
         Get all stakeholders to sign revocation transactions (speedrun mode)
         """
-        stks[0].wait_for_deposit(deposit)
+        stks[0].wait_for_deposits([deposit])
         psbts = stks[0].rpc.getrevocationtxs(deposit)
         cancel_psbt = psbts["cancel_tx"]
         emer_psbt = psbts["emergency_tx"]
@@ -370,7 +393,7 @@ def test_unvaulttx(revault_network):
     vault = revault_network.fund(10)
     deposit = f"{vault['txid']}:{vault['vout']}"
     child_index = vault["derivation_index"]
-    stks[0].wait_for_deposit(deposit)
+    stks[0].wait_for_deposits([deposit])
     unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
 
     # We can't send it for an unknown vault
@@ -420,7 +443,7 @@ def test_unvaulttx(revault_network):
     vault = revault_network.fund(20)
     deposit = f"{vault['txid']}:{vault['vout']}"
     child_index = vault["derivation_index"]
-    stks[0].wait_for_deposit(deposit)
+    stks[0].wait_for_deposits([deposit])
     sign_revocation_txs(stks, deposit)
     unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
     for stk in stks:
@@ -445,7 +468,7 @@ def test_revocation_sig_sharing(revault_network):
 
     # We can just get everyone to sign it out of band and a single one handing
     # it to the sync server.
-    stks[0].wait_for_deposit(deposit)
+    stks[0].wait_for_deposits([deposit])
     psbts = stks[0].rpc.getrevocationtxs(deposit)
     cancel_psbt = psbts["cancel_tx"]
     emer_psbt = psbts["emergency_tx"]
@@ -473,7 +496,7 @@ def test_revocation_sig_sharing(revault_network):
 
     # Or everyone can sign on their end and push to the sync server
     for stk in stks:
-        stk.wait_for_deposit(deposit)
+        stk.wait_for_deposits([deposit])
         psbts = stk.rpc.getrevocationtxs(deposit)
         cancel_psbt = stk.stk_keychain.sign_revocation_psbt(psbts["cancel_tx"],
                                                             child_index)

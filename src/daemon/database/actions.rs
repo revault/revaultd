@@ -376,10 +376,11 @@ pub fn db_update_presigned_tx(
     secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
 ) -> Result<(), DatabaseError> {
     db_exec(db_path, move |db_tx| {
+        let mut is_unvault = false;
+
         // Fetch the PSBT in the transaction, to avoid someone else to modify it under our feet..
         let presigned_tx: DbTransaction = db_tx
             .prepare("SELECT * FROM presigned_transactions WHERE id = (?1)")?
-            // All presigned transactions but the Unvault are revocation txs
             .query(params![tx_db_id])?
             .next()?
             .ok_or_else(|| {
@@ -395,7 +396,10 @@ pub fn db_update_presigned_tx(
             RevaultTx::Emergency(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
 
             RevaultTx::UnvaultEmergency(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
-            RevaultTx::Unvault(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
+            RevaultTx::Unvault(mut tx) => {
+                is_unvault = true;
+                revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?
+            }
         };
 
         db_tx.execute(
@@ -403,9 +407,9 @@ pub fn db_update_presigned_tx(
             params![raw_psbt, fully_signed, tx_db_id],
         )?;
 
-        // If this one was entirely signed, are there some remaining unsigned ones ?
-        if fully_signed
-            && db_tx
+        if fully_signed {
+            // Are there some remaining unsigned revocation txs?
+            if db_tx
                 .prepare(
                     "SELECT * FROM presigned_transactions WHERE fullysigned = 0 AND type != (?1)",
                 )?
@@ -413,15 +417,29 @@ pub fn db_update_presigned_tx(
                 .query(params![TransactionType::Unvault as u32])?
                 .next()?
                 .is_none()
-        {
-            db_tx
-                .execute(
-                    "UPDATE vaults SET status = (?1) WHERE id = (?2) ",
-                    params![VaultStatus::Secured as u32, vault_id],
-                )
-                .map_err(|e| {
-                    DatabaseError(format!("Updating vault to 'secured': {}", e.to_string()))
-                })?;
+            {
+                // Nope. Mark the vault as 'secured'
+                db_tx
+                    .execute(
+                        "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE id = (?2) ",
+                        params![VaultStatus::Secured as u32, vault_id],
+                    )
+                    .map_err(|e| {
+                        DatabaseError(format!("Updating vault to 'secured': {}", e.to_string()))
+                    })?;
+            }
+
+            // Was it the unvault that was fully signed ? If so, mark the vault as active.
+            if is_unvault {
+                db_tx
+                    .execute(
+                        "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE id = (?2) ",
+                        params![VaultStatus::Active as u32, vault_id],
+                    )
+                    .map_err(|e| {
+                        DatabaseError(format!("Updating vault to 'active': {}", e.to_string()))
+                    })?;
+            }
         }
 
         Ok(())

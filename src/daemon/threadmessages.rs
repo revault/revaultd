@@ -23,6 +23,7 @@ pub enum RpcMessageIn {
     GetRevocationTxs(
         OutPoint,
         // None if the deposit does not exist
+        // FIXME: use a Result with RpcControlError!
         SyncSender<
             Option<(
                 CancelTransaction,
@@ -32,6 +33,7 @@ pub enum RpcMessageIn {
         >,
     ),
     // Returns None if the transactions could all be stored succesfully
+    // FIXME: use a Result with RpcControlError!
     RevocationTxs(
         (
             OutPoint,
@@ -40,6 +42,14 @@ pub enum RpcMessageIn {
             UnvaultEmergencyTransaction,
         ),
         SyncSender<Option<String>>,
+    ),
+    GetUnvaultTx(
+        OutPoint,
+        SyncSender<Result<UnvaultTransaction, RpcControlError>>,
+    ),
+    UnvaultTx(
+        (OutPoint, UnvaultTransaction),
+        SyncSender<Result<(), RpcControlError>>,
     ),
     ListTransactions(
         Option<Vec<OutPoint>>,
@@ -102,3 +112,30 @@ pub struct ListVaultsEntry {
     pub address: Address,
     pub updated_at: u32,
 }
+
+/// An error that occured during RPC message handling
+#[derive(Debug)]
+pub enum RpcControlError {
+    UnknownOutpoint(OutPoint),
+    // .0 is current status, .1 is required status
+    InvalidStatus((VaultStatus, VaultStatus)),
+    InvalidPsbt(String),
+    Communication(String),
+}
+
+impl std::fmt::Display for RpcControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownOutpoint(ref o) => write!(f, "No vault at '{}'", o),
+            Self::InvalidStatus((current, required)) => write!(
+                f,
+                "Invalid vault status: '{}'. Need '{}'",
+                current, required
+            ),
+            Self::InvalidPsbt(reason) => write!(f, "Invalid PSBT: '{}'", reason),
+            Self::Communication(reason) => write!(f, "Communication error: '{}'", reason),
+        }
+    }
+}
+
+impl std::error::Error for RpcControlError {}

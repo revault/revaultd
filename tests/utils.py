@@ -33,6 +33,9 @@ POSTGRES_USER = os.getenv("POSTGRES_USER", "")
 POSTGRES_PASS = os.getenv("POSTGRES_PASS", "")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_IS_SETUP = (POSTGRES_USER and POSTGRES_PASS and POSTGRES_HOST)
+VERBOSE = os.getenv("VERBOSE", "0") == "1"
+LOG_LEVEL = os.getenv("LOG_LEVEL", "trace")
+assert LOG_LEVEL in ["trace", "debug", "info", "warn", "error"]
 
 
 def wait_for(success, timeout=TIMEOUT):
@@ -73,7 +76,7 @@ class User(Participant):
         return self.hd.get_master_xpub()
 
     def sign_revocation_psbt(self, psbt_str, deriv_index):
-        """Attach a signature to the PSBT with the key at {deriv_index}"""
+        """Attach an ACP signature to the PSBT with the key at {deriv_index}"""
         assert isinstance(psbt_str, str)
 
         psbt = serializations.PSBT()
@@ -88,6 +91,28 @@ class User(Participant):
             self.hd.get_privkey_from_path([deriv_index])
         )
         sig = privkey.sign(sighash, hasher=None) + b'\x81'  # ALL | ACP
+
+        pubkey = self.hd.get_pubkey_from_path([deriv_index])
+        psbt.inputs[0].partial_sigs[pubkey] = sig
+
+        return psbt.serialize()
+
+    def sign_unvault_psbt(self, psbt_str, deriv_index):
+        """Attach an ALL signature to the PSBT with the key at {deriv_index}"""
+        assert isinstance(psbt_str, str)
+
+        psbt = serializations.PSBT()
+        psbt.deserialize(psbt_str)
+        assert len(psbt.inputs) == 1, "Invalid Unvault PSBT"
+        assert (serializations.make_p2wsh(psbt.inputs[0].witness_script)
+                == psbt.inputs[0].witness_utxo.scriptPubKey)
+
+        script_code = psbt.inputs[0].witness_script
+        sighash = serializations.sighash_all_witness(script_code, psbt, 0)
+        privkey = coincurve.PrivateKey(
+            self.hd.get_privkey_from_path([deriv_index])
+        )
+        sig = privkey.sign(sighash, hasher=None) + b'\x01'  # ALL
 
         pubkey = self.hd.get_pubkey_from_path([deriv_index])
         psbt.inputs[0].partial_sigs[pubkey] = sig
@@ -598,7 +623,7 @@ class Revaultd(TailableProc):
         datadir_with_network = os.path.join(datadir, "regtest")
         os.makedirs(datadir_with_network, exist_ok=True)
 
-        TailableProc.__init__(self, datadir, verbose=False)
+        TailableProc.__init__(self, datadir, verbose=VERBOSE)
         bin = os.path.join(os.path.dirname(__file__), "..",
                            "target/debug/revaultd")
         self.conf_file = os.path.join(datadir, "config.toml")
@@ -621,8 +646,7 @@ class Revaultd(TailableProc):
             f.write(f"unvault_csv = {csv}\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
-            # FIXME: make log level customizable
-            f.write(f"log_level = 'trace'\n")
+            f.write(f"log_level = '{LOG_LEVEL}'\n")
 
             f.write(f"coordinator_host = \"127.0.0.1:{coordinator_port}\"\n")
             f.write(f"coordinator_noise_key = \"{coordinator_noise_key}\"\n")
@@ -722,8 +746,8 @@ class Coordinatord(TailableProc):
     def __init__(self, datadir, noise_priv, managers_keys, stakeholders_keys,
                  watchtowers_keys, listen_port, postgres_user, postgres_pass,
                  postgres_host="localhost"):
-        # FIXME: reduce DEBUG log load and make it verbose
-        TailableProc.__init__(self, datadir, verbose=False)
+        # FIXME: reduce DEBUG log load
+        TailableProc.__init__(self, datadir, verbose=VERBOSE)
         bin = os.path.join(os.path.dirname(__file__), "servers",
                            "coordinatord", "target/debug/revault_coordinatord")
         self.conf_file = os.path.join(datadir, "config.toml")
@@ -749,7 +773,7 @@ class Coordinatord(TailableProc):
         with open(self.conf_file, 'w') as f:
             f.write("daemon = false\n")
             f.write(f"data_dir = \"{datadir}\"\n")
-            f.write(f"log_level = \"trace\"\n")
+            f.write(f"log_level = \"{LOG_LEVEL}\"\n")
 
             uri = f"postgresql://{postgres_user}:{postgres_pass}" \
                   f"@{postgres_host}/{self.db_name}"

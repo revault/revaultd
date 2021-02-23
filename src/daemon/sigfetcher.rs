@@ -3,7 +3,7 @@ use crate::{
     database::{
         actions::db_update_presigned_tx,
         interface::db_transactions_sig_missing,
-        schema::{DbTransaction, RevaultTx},
+        schema::{DbTransaction, RevaultTx, TransactionType},
         DatabaseError,
     },
     revaultd::RevaultD,
@@ -70,29 +70,35 @@ impl From<serde_json::Error> for SignatureFetcherError {
     }
 }
 
-/// The signature hash of a revocation transaction (ie Cancel, Emergency, or UnvaultEmergency)
-pub fn revocation_tx_sighash(tx: &impl RevaultTransaction) -> secp256k1::Message {
-    // Revocation transactions only have one input when handled by revaultd.
+/// The signature hash of a presigned transaction (ie Unvault, Cancel, Emergency, or
+/// UnvaultEmergency)
+pub fn presigned_tx_sighash(
+    tx: &impl RevaultTransaction,
+    hashtype: SigHashType,
+) -> secp256k1::Message {
+    // Presigned transactions only have one input when handled by revaultd.
     // If we were passed a >1 input transaction, something went really bad and it's better to
     // crash.
     assert!(tx.inner_tx().global.unsigned_tx.input.len() == 1);
+    assert!(hashtype == SigHashType::All || hashtype == SigHashType::AllPlusAnyoneCanPay);
 
-    tx.signature_hash_internal_input(0, SigHashType::AllPlusAnyoneCanPay)
+    tx.signature_hash_internal_input(0, hashtype)
         .map(|sighash| {
             secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash")
         })
         .expect("Asserted above, input exists")
 }
 
-// Check a raw (without SIGHASH type) revocation tx (ie Cancel, Emergency, or
+// Check a raw (without SIGHASH type) presigned tx (ie Unvault, Cancel, Emergency, or
 // UnvaultEmergency) signature
-pub fn check_revocation_signature(
+pub fn check_signature(
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     tx: &impl RevaultTransaction,
     pubkey: BitcoinPubKey,
     sig: &secp256k1::Signature,
+    hashtype: SigHashType,
 ) -> Result<(), secp256k1::Error> {
-    let sighash = revocation_tx_sighash(tx);
+    let sighash = presigned_tx_sighash(tx, hashtype);
 
     secp.verify(&sighash, sig, &pubkey.key)?;
 
@@ -101,14 +107,20 @@ pub fn check_revocation_signature(
 
 // Send a `get_sigs` message to the Coordinator to fetch other stakeholders' signatures for this
 // transaction (https://github.com/re-vault/practical-revault/blob/master/messages.md#get_sigs).
-// If the Coordinator hands us some new signatures, update the presigned transaction in DB.
-// If this made the transaction valid, check if there are remaining unsigned presigned transactions
-// for this vault and if not update the vault status.
+// If the Coordinator hands us some new signatures, update the transaction in DB.
+// If this made the transaction valid, maybe update the vault state.
+// NOTE: the vault state update assumes that we will never have all unvault signatures before
+// having all revocation transaction signatures (in which case the vault would get back from
+// 'active' to 'secured'). This assumptions holds as we are never accepting the user to provide
+// their own signature until we gathered all revocation signatures (therefore even if all our peers
+// are sending their unvault transaction to the coordinator and we fetch them, we would never have
+// a fully-valid Unvault transaction until all other signatures have been stored in db).
 fn get_sigs(
     revaultd: &RevaultD,
     tx_db_id: u32,
     vault_id: u32,
     mut tx: impl RevaultTransaction,
+    tx_type: TransactionType,
 ) -> Result<(), SignatureFetcherError> {
     let db_path = &revaultd.db_file();
     let secp_ctx = &revaultd.secp_ctx;
@@ -142,22 +154,32 @@ fn get_sigs(
         }
 
         log::debug!(
-            "Adding signature '{:?}' for pubkey '{}' for tx '{}'",
+            "Adding revocation signature '{:?}' for pubkey '{}' for tx '{}' ({:?})",
             sig,
             pubkey,
-            id
+            id,
+            tx_type
         );
-        if check_revocation_signature(secp_ctx, &tx, pubkey, &sig).is_err() {
+        let hashtype = match tx_type {
+            TransactionType::Unvault => SigHashType::All,
+            TransactionType::Cancel
+            | TransactionType::Emergency
+            | TransactionType::UnvaultEmergency => SigHashType::AllPlusAnyoneCanPay,
+        };
+        if let Err(e) = check_signature(secp_ctx, &tx, pubkey, &sig, hashtype) {
             // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
             // signatures something shady's happening.
-            log::warn!("Invalid signature sent by coordinator: '{:?}'", sig);
+            log::warn!(
+                "Invalid revocation signature '{:?}' sent by coordinator: '{}'",
+                sig,
+                e
+            );
             continue;
         }
-        tx.add_signature(0, pubkey, (sig, SigHashType::AllPlusAnyoneCanPay))
+        tx.add_signature(0, pubkey, (sig, hashtype))
             .expect("Can not fail, as we are never passed a Spend transaction.");
         // Note: this will atomically set the vault as 'Secured' if all revocations transactions
-        // were signed
-        // TODO: mark it as 'Active' if Unvault
+        // were signed, and as 'Active' if the Unvault transaction was.
         db_update_presigned_tx(
             db_path,
             vault_id,
@@ -172,7 +194,7 @@ fn get_sigs(
 
 // Sequentially poll the coordinator for all the `txs` signatures.
 // TODO: poll in parallel, it's worthwile as we are going to proxy the communications
-// through tor.
+// through Tor.
 fn fetch_all_signatures(
     revaultd: &RevaultD,
     mut txs: Vec<DbTransaction>,
@@ -180,22 +202,22 @@ fn fetch_all_signatures(
     while let Some(tx) = txs.pop() {
         match tx.psbt {
             RevaultTx::Unvault(unvault_tx) => {
-                log::debug!("Fetching Unvault signature");
-                get_sigs(revaultd, tx.id, tx.vault_id, unvault_tx)?;
+                log::info!("Fetching Unvault signature");
+                get_sigs(revaultd, tx.id, tx.vault_id, unvault_tx, tx.tx_type)?;
             }
             RevaultTx::Cancel(cancel_tx) => {
                 log::debug!("Fetching Cancel signature");
-                get_sigs(revaultd, tx.id, tx.vault_id, cancel_tx)?;
+                get_sigs(revaultd, tx.id, tx.vault_id, cancel_tx, tx.tx_type)?;
             }
             RevaultTx::Emergency(emer_tx) => {
                 log::debug!("Fetching Emergency signature");
                 debug_assert!(revaultd.is_stakeholder());
-                get_sigs(revaultd, tx.id, tx.vault_id, emer_tx)?;
+                get_sigs(revaultd, tx.id, tx.vault_id, emer_tx, tx.tx_type)?;
             }
             RevaultTx::UnvaultEmergency(unemer_tx) => {
                 log::debug!("Fetching Unvault Emergency signature");
                 debug_assert!(revaultd.is_stakeholder());
-                get_sigs(revaultd, tx.id, tx.vault_id, unemer_tx)?;
+                get_sigs(revaultd, tx.id, tx.vault_id, unemer_tx, tx.tx_type)?;
             }
         };
     }

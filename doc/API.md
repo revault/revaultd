@@ -141,7 +141,7 @@ either `status` or deposit `outpoints`.
 
 ### `getrevocationtxs`
 
-The `getrevocationtxs` RPC Command builds and returns the revocation transactions
+The `getrevocationtxs` RPC Command builds and returns the (unsigned) revocation transactions
 corresponding to a given vault. The call will fail if the `outpoint` does not refer to a
 known and confirmed ([`funded`](#vault-statuses)) vault.
 
@@ -155,9 +155,9 @@ known and confirmed ([`funded`](#vault-statuses)) vault.
 
 | Field                  | Type   | Description                                                 |
 | ---------------------- | ------ | ----------------------------------------------------------- |
-| `emergency_tx`         | string | Emergency transaction to sign using the PSBT format         |
-| `cancel_tx`            | string | Cancel transaction to sign using the PSBT format            |
-| `emergency_unvault_tx` | string | Emergency unvault transaction to sign using the PSBT format |
+| `cancel_tx`            | string | Base64-encoded Cancel transaction PSBT                      |
+| `emergency_tx`         | string | Base64-encoded Emergency transaction PSBT                   |
+| `emergency_unvault_tx` | string | Base64-encoded Unvault Emergency transaction PSBT           |
 
 
 ### `revocationtxs`
@@ -170,9 +170,9 @@ See the [flows](#stakeholder-flows) for more information.
 
 | Field                  | Type   | Description                                                 |
 | ---------------------- | ------ | ----------------------------------------------------------- |
-| `cancel_tx`            | string | Cancel transaction signed using the PSBT format.            |
-| `emergency_tx`         | string | Emergency transaction signed using the PSBT format.         |
-| `unvault_emergency_tx` | string | Emergency unvault transaction signed using the PSBT format. |
+| `cancel_tx`            | string | Base64-encoded Cancel transaction PSBT                      |
+| `emergency_tx`         | string | Base64-encoded Emergency transaction PSBT                   |
+| `emergency_unvault_tx` | string | Base64-encoded Unvault Emergency transaction PSBT           |
 
 
 #### Response
@@ -196,15 +196,27 @@ vault.
 
 | Field        | Type   | Description                                                 |
 | ------------ | ------ | ----------------------------------------------------------- |
-| `unvault_tx` | string | Unvault transaction to sign using the PSBT format           |
+| `unvault_tx` | string | Base64-encoded Unvault transaction PSBT                     |
 
-### `unvaultx`
+
+### `unvaulttx`
+
+Hand signed Unvault PSBT to the daemon. The PSBT may comport multiple signatures, but the call
+will error if the signature for "our" key is not part of this set.  
+Will error if the vault is not `secured`, or already `active`.  
+See the [flows](#stakeholder-flows) for more information.  
 
 #### Request
 
 | Field        | Type   | Description                                                 |
 | ------------ | ------ | ----------------------------------------------------------- |
-| `unvault_tx` | string | Unvault transaction signed using the PSBT format            |
+| `unvault_tx` | string | Base64-encoded Unvault transaction PSBT                     |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
 
 ### `getspendtx`
 
@@ -225,7 +237,7 @@ amount of the output.
 
 | Field      | Type   | Description                                     |
 | ---------- | ------ | ----------------------------------------------- |
-| `spend_tx` | string | Spend transaction to sign using the PSBT format |
+| `spend_tx` | string | Base64-encoded Spend transaction PSBT           |
 
 ### `spendtx`
 
@@ -233,7 +245,7 @@ amount of the output.
 
 | Field        | Type   | Description                                    |
 | ------------ | ------ | ---------------------------------------------- |
-| `spend_tx`   | string | Spend transaction signed using the PSBT format |
+| `spend_tx`   | string | Base64-encoded Spend transaction PSBT          |
 
 ## User flows
 

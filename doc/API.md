@@ -126,7 +126,7 @@ vault's state).
 
 | Field               | Type                                                           | Description                                                              |
 | ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `outpoint`          | string                                                         | The vault deposit transaction outpoint.                                  |
+| `vault_outpoint`    | string                                                         | The vault deposit transaction outpoint.                                  |
 | `unvault`           | string                                                         | The unvaulting transaction as a base64-encoded PSBT                      |
 | `cancel`            | string                                                         | The cancel transaction as a base64-encoded PSBT                          |
 | `emergency`         | string or `null`                                               | The Emergency transaction, or `null` if we are not a stakeholder         |
@@ -154,7 +154,7 @@ network (hence they may be unconfirmed). Will error if any of the vaults is unkn
 
 | Field               | Type                                                           | Description                                                              |
 | ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `outpoint`          | string                                                         | The vault deposit transaction outpoint.                                  |
+| `vault_outpoint`    | string                                                         | The vault deposit transaction outpoint.                                  |
 | `deposit`           | [wallet tx](#wallet-tx)                                        | The deposit transaction, always there since vault exists                 |
 | `unvault`           | [wallet tx](#wallet-tx) or `null`                              | The Unvault transaction                                                  |
 | `cancel`            | [wallet tx](#wallet-tx) or `null`                              | The Cancel transaction                                                   |

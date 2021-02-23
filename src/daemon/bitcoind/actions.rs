@@ -13,7 +13,7 @@ use crate::{
     revaultd::{RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
-use common::{assume_some, config::BitcoindConfig};
+use common::{assume_ok, assume_some, config::BitcoindConfig};
 use revault_tx::{
     bitcoin::{Amount, Network, OutPoint, TxOut, Txid},
     transactions::{
@@ -29,7 +29,8 @@ use std::{
     path::PathBuf,
     process,
     sync::{
-        mpsc::{Receiver, TryRecvError},
+        atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
         Arc, RwLock,
     },
     thread,
@@ -489,6 +490,81 @@ fn update_deposits(
     Ok(())
 }
 
+fn poller_main(
+    mut revaultd: Arc<RwLock<RevaultD>>,
+    bitcoind: Arc<RwLock<BitcoinD>>,
+    sync_progress: Arc<RwLock<f64>>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<(), BitcoindError> {
+    let mut last_poll = None;
+    let mut sync_waittime = None;
+    // We use a cache for maintaining our deposits' state up-to-date by polling `listunspent`
+    let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())?;
+    // When bitcoind is synced, we poll each 30s. On regtest we speed it up for testing.
+    let poll_interval = match revaultd.read().unwrap().bitcoind_config.network {
+        Network::Regtest => Duration::from_secs(3),
+        _ => Duration::from_secs(30),
+    };
+
+    while !shutdown.load(Ordering::Relaxed) {
+        let now = Instant::now();
+
+        if (*sync_progress.read().unwrap() as u32) < 1 {
+            // While waiting for bitcoind to be synced, guesstimate how much time of block
+            // connection we have left to not harass it with `getblockchaininfo`.
+            if let Some(last) = last_poll {
+                if let Some(waittime) = sync_waittime {
+                    if now.duration_since(last) < waittime {
+                        continue;
+                    }
+                }
+            }
+
+            bitcoind_sync_status(
+                &bitcoind.read().unwrap(),
+                &revaultd.read().unwrap().bitcoind_config,
+                &mut sync_waittime,
+                &mut sync_progress.write().unwrap(),
+            )?;
+
+            // Ok. Sync, done. Now just be sure the watchonly wallet is properly loaded, and
+            // to create it if it's first run.
+            if *sync_progress.read().unwrap() as u32 >= 1 {
+                let mut revaultd = revaultd.write().unwrap();
+                let bitcoind = bitcoind.read().unwrap();
+                maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
+                    BitcoindError::Custom(format!("Error while creating wallet: {}", e.to_string()))
+                })?;
+                maybe_load_wallet(&revaultd, &bitcoind).map_err(|e| {
+                    BitcoindError::Custom(format!("Error while loading wallet: {}", e.to_string()))
+                })?;
+
+                log::info!("bitcoind now synced.");
+            }
+
+            last_poll = Some(now);
+            continue;
+        }
+
+        if let Some(last_poll) = last_poll {
+            if now.duration_since(last_poll) < poll_interval {
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+        }
+
+        last_poll = Some(now);
+        update_deposits(
+            &mut revaultd,
+            &bitcoind.read().unwrap(),
+            &mut deposits_cache,
+        )?;
+        update_tip(&mut revaultd, &bitcoind.read().unwrap())?;
+    }
+
+    Ok(())
+}
+
 fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {
     let res = bitcoind.get_wallet_transaction(txid);
     if let Ok((hex, blockheight, received_time)) = res {
@@ -508,109 +584,61 @@ fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransacti
 }
 
 /// The bitcoind event loop.
-/// Poll bitcoind every 30 seconds, and update our state accordingly.
+/// Listens for bitcoind requests (wallet / chain) and poll bitcoind every 30 seconds,
+/// updating our state accordingly.
 pub fn bitcoind_main_loop(
     rx: Receiver<BitcoindMessageOut>,
-    mut revaultd: Arc<RwLock<RevaultD>>,
-    bitcoind: &BitcoinD,
+    revaultd: Arc<RwLock<RevaultD>>,
+    bitcoind: Arc<RwLock<BitcoinD>>,
 ) -> Result<(), BitcoindError> {
-    let mut last_poll = None;
-    let mut sync_waittime = None;
     // The verification progress announced by bitcoind *at startup* thus won't be updated
     // after startup check. Should be *exactly* 1.0 when synced, but hey, floats so we are
     // careful.
-    let mut sync_progress = 0.0f64;
-    // When bitcoind is synced, we poll each 30s. On regtest we speed it up for testing.
-    let poll_interval = match revaultd.read().unwrap().bitcoind_config.network {
-        Network::Regtest => Duration::from_secs(3),
-        _ => Duration::from_secs(30),
-    };
-    // We use a cache for maintaining our deposits' state up-to-date by polling `listunspent`
-    let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())?;
+    let sync_progress = Arc::new(RwLock::new(0.0f64));
+    // Used to shutdown the poller thread
+    let shutdown = Arc::new(AtomicBool::new(false));
 
-    loop {
-        let now = Instant::now();
+    // We use a thread to 1) wait for bitcoind to be synced 2) poll listunspent
+    let poller_thread = std::thread::spawn({
+        let _revaultd = revaultd.clone();
+        let _bitcoind = bitcoind.clone();
+        let _sync_progress = sync_progress.clone();
+        let _shutdown = shutdown.clone();
+        move || poller_main(_revaultd, _bitcoind, _sync_progress, _shutdown)
+    });
 
-        // If master told us something to do, do it now.
-        match rx.try_recv() {
-            Ok(msg) => match msg {
-                BitcoindMessageOut::Shutdown => {
-                    log::info!("Bitcoind received shutdown from main. Exiting.");
-                    return Ok(());
-                }
-                BitcoindMessageOut::SyncProgress(resp_tx) => {
-                    resp_tx.send(sync_progress).map_err(|e| {
+    for msg in rx {
+        match msg {
+            BitcoindMessageOut::Shutdown => {
+                log::info!("Bitcoind received shutdown from main. Exiting.");
+                shutdown.store(true, Ordering::Relaxed);
+                assume_ok!(
+                    assume_ok!(poller_thread.join(), "Joining bitcoind poller thread"),
+                    "Error in bitcoind poller thread"
+                );
+                return Ok(());
+            }
+            BitcoindMessageOut::SyncProgress(resp_tx) => {
+                resp_tx.send(*sync_progress.read().unwrap()).map_err(|e| {
+                    BitcoindError::Custom(format!(
+                        "Sending synchronization progress to main thread: {}",
+                        e
+                    ))
+                })?;
+            }
+            BitcoindMessageOut::WalletTransaction(txid, resp_tx) => {
+                log::trace!("Received 'wallettransaction' from main thread");
+                resp_tx
+                    .send(wallet_transaction(&bitcoind.read().unwrap(), txid))
+                    .map_err(|e| {
                         BitcoindError::Custom(format!(
-                            "Sending synchronization progress to main thread: {}",
+                            "Sending wallet transaction to main thread: {}",
                             e
                         ))
                     })?;
-                }
-                BitcoindMessageOut::WalletTransaction(txid, resp_tx) => {
-                    log::trace!("Received 'wallettransaction' from main thread");
-                    resp_tx
-                        .send(wallet_transaction(&bitcoind, txid))
-                        .map_err(|e| {
-                            BitcoindError::Custom(format!(
-                                "Sending wallet transaction to main thread: {}",
-                                e
-                            ))
-                        })?;
-                }
-            },
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                log::error!("Channel with main thread disconnected. Exiting.");
-                return Err(BitcoindError::Custom("Channel disconnected".to_string()));
-            }
-        };
-
-        if (sync_progress as u32) < 1 {
-            // While waiting for bitcoind to be synced, guesstimate how much time of block
-            // connection we have left to not harass it with `getblockchaininfo`.
-            if let Some(last) = last_poll {
-                if let Some(waittime) = sync_waittime {
-                    if now.duration_since(last) < waittime {
-                        continue;
-                    }
-                }
-            }
-
-            bitcoind_sync_status(
-                &bitcoind,
-                &revaultd.read().unwrap().bitcoind_config,
-                &mut sync_waittime,
-                &mut sync_progress,
-            )?;
-
-            // Ok. Sync, done. Now just be sure the watchonly wallet is properly loaded, and
-            // to create it if it's first run.
-            if sync_progress as u32 >= 1 {
-                let mut revaultd = revaultd.write().unwrap();
-                maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError::Custom(format!("Error while creating wallet: {}", e.to_string()))
-                })?;
-                maybe_load_wallet(&revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError::Custom(format!("Error while loading wallet: {}", e.to_string()))
-                })?;
-
-                log::info!("bitcoind now synced.");
-            }
-
-            last_poll = Some(now);
-            continue;
-        }
-
-        // When bitcoind isn't synced, poll each 30s
-        if let Some(last_poll) = last_poll {
-            if now.duration_since(last_poll) < poll_interval {
-                thread::sleep(poll_interval - now.duration_since(last_poll));
-                continue;
             }
         }
-
-        last_poll = Some(now);
-        update_deposits(&mut revaultd, &bitcoind, &mut deposits_cache)?;
-        update_tip(&mut revaultd, &bitcoind)?;
     }
+
+    Ok(())
 }

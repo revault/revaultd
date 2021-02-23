@@ -398,6 +398,7 @@ impl RpcApi for RpcImpl {
             .into_iter()
             .map(|v| {
                 json!({
+                    "vault_outpoint": v.outpoint,
                     "unvault": v.unvault,
                     "cancel": v.cancel,
                     "emergency": v.emergency,
@@ -441,6 +442,7 @@ impl RpcApi for RpcImpl {
             .into_iter()
             .map(|v| {
                 json!({
+                    "vault_outpoint": v.outpoint,
                     "deposit": wallet_tx_to_json(v.deposit),
                     "unvault": v.unvault.map(wallet_tx_to_json),
                     "cancel": v.cancel.map(wallet_tx_to_json),

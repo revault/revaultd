@@ -162,6 +162,7 @@ fund_vault () {
     bc_dir="$PREFIX_DIR/bcdir1";
     miner="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=test";
     $miner sendtoaddress $addr $amount;
+    sleep 0.5;
     $miner generatetoaddress 6 $($bcli getnewaddress 2> /dev/null) &> /dev/null;
 }
 

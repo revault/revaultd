@@ -6,13 +6,19 @@ high level of rigor, so it could take some time (and backs and forths) to polish
 contribution before it's ready for merge.
 
 
-# Communication
+## Communication
 
-Most of the communication is done on GitHub (we'll setup more channels as the project
-grows).
+Most of the communication is done on GitHub or on the `#revault` IRC channel on freenode.
 
 Don't hesitate to open issues to ask questions or conceptually discuss a change
 before going forward with the implementation if it is non-trivial.
+
+
+## Looking for contributions
+
+If you are looking for first time contributions, you can `git grep` for `FIXME`s and `TODO`s
+as well as checking out the [good first issues](https://github.com/revault/revaultd/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+on the issue tracker.
 
 
 # Workflow

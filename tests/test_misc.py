@@ -554,3 +554,205 @@ def test_revocation_sig_sharing(revault_network):
         stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
     for stk in stks + mans:
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
+
+
+@pytest.mark.xfail(strict=True)
+def test_reorged_deposit(revaultd_stakeholder, bitcoind):
+    # TODO: start / stop, partial reorgs
+    stk = revaultd_stakeholder
+
+    # Create a new deposit
+    amount_sent = 42
+    addr = stk.rpc.getdepositaddress()["address"]
+    bitcoind.rpc.sendtoaddress(addr, amount_sent)
+    wait_for(lambda: len(stk.rpc.listvaults()["vaults"]) > 0)
+
+    # Get it confirmed
+    vault = stk.rpc.listvaults()["vaults"][0]
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    bitcoind.generate_block(6)
+
+    stk.wait_for_deposits([deposit])
+    # FIXME: remove this ugly workaround once the blockheight is in `listvaults`
+    blockheight = stk.rpc.listonchaintransactions([deposit])["onchain_transactions"][0][
+        "deposit"
+    ]["blockheight"]
+
+    # Now reorg the last block. This should not affect us, but we should detect
+    # it.
+    bitcoind.simple_reorg(bitcoind.rpc.getblockcount() - 1)
+    stk.wait_for_logs(
+        [
+            "Detected reorg",
+            # 7 because simple_reorg() adds a block
+            f"Vault deposit '{deposit}' still has '7' confirmations",
+        ]
+    )
+    stk.wait_for_deposits([deposit])
+
+    # Now actually reorg the deposit. This should not affect us
+    bitcoind.simple_reorg(blockheight)
+    stk.wait_for_logs(
+        [
+            "Detected reorg",
+            # 8 because simple_reorg() adds a block
+            f"Vault deposit '{deposit}' still has '8' confirmations",
+        ]
+    )
+    stk.wait_for_deposits([deposit])
+
+    # Now reorg the deposit and shift the transaction up 3 blocks, since we are
+    # adding an extra one during the reorg we should still have 6 confs and be
+    # fine
+    bitcoind.simple_reorg(blockheight, shift=3)
+    stk.wait_for_logs(
+        [
+            "Detected reorg",
+            f"Vault deposit '{deposit}' still has '6' confirmations",
+        ]
+    )
+    stk.wait_for_deposits([deposit])
+
+    # Now reorg the deposit and shift the transaction up 2 blocks, since we are
+    # adding an extra one during the reorg we should end up with 5 confs, and
+    # mark the vault as unconfirmed
+    bitcoind.simple_reorg(blockheight + 3, shift=2)
+    stk.wait_for_logs(
+        [
+            "Detected reorg",
+            f"Vault deposit '{deposit}' ended up with '5' confirmations",
+            "Rescan of all vaults in db done.",
+        ]
+    )
+    assert stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed"
+
+    # Reorg it again, it's already unconfirmed so nothing to do, but since we
+    # mined a new block it's now confirmed!
+    bitcoind.simple_reorg(blockheight + 3 + 2)
+    stk.wait_for_logs(
+        [
+            "Detected reorg",
+            f"Vault deposit '{deposit}' is already unconfirmed",
+            "Rescan of all vaults in db done.",
+            f"Vault at {deposit} is now confirmed",
+        ]
+    )
+    assert stk.rpc.listvaults()["vaults"][0]["status"] == "funded"
+
+    # Now try to completely evict it from the chain with a 6-blocks reorg. We
+    # should mark it as unconfirmed (but it's not the same codepath).
+    bitcoind.simple_reorg(blockheight + 3 + 2, shift=-1)
+    stk.wait_for_logs(
+        [
+            "Detected reorg",
+            f"Vault deposit '{deposit}' ended up without confirmation",
+            "Rescan of all vaults in db done.",
+        ]
+    )
+    assert stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed"
+
+
+@pytest.mark.xfail(strict=True)
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_reorged_deposit_status(revault_network, bitcoind):
+    revault_network.deploy(4, 2)
+    vault = revault_network.fund(0.14)
+    revault_network.secure_vault(vault)
+
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    # FIXME: remove this ugly workaround once the blockheight is in `listvaults`
+    blockheight = revault_network.stk_wallets[0].rpc.listonchaintransactions([deposit])[
+        "onchain_transactions"
+    ][0]["deposit"]["blockheight"]
+
+    # Reorg the deposit. This should not affect us as the transaction did not
+    # shift
+    bitcoind.simple_reorg(blockheight)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                # 7 because simple_reorg() adds a block
+                f"Vault deposit '{deposit}' still has '7' confirmations",
+            ]
+        )
+
+    # Now actually shift it (7 + 1 - 3 == 5)
+    bitcoind.simple_reorg(blockheight, shift=3)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault deposit '{deposit}' ended up with '5' confirmations",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
+
+    # All presigned transactions must have been removed from the db,
+    # if we get it confirmed again, it will re-create the pre-signed
+    # transactions. But they are the very same than previously to the
+    # signatures on the coordinator are still valid therefore the signature
+    # fetcher thread will add them all and the vault will be back to 'secured'
+    # again
+    bitcoind.generate_block(1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_secured_vaults([deposit])
+
+    # TODO: eventually try with tx malleation
+
+    # Now do the same dance with the 'active' status
+    revault_network.activate_vault(vault)
+    bitcoind.simple_reorg(blockheight + 3)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                # 7 because simple_reorg() adds a block
+                f"Vault deposit '{deposit}' still has '7' confirmations",
+            ]
+        )
+    bitcoind.simple_reorg(blockheight + 3, shift=3)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault deposit '{deposit}' ended up with '5' confirmations",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
+    bitcoind.generate_block(1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_active_vaults([deposit])
+
+    # If we are stopped during the reorg, we recover in the same way at startup
+    revault_network.stop_wallets()
+    bitcoind.simple_reorg(blockheight + 3 + 3)
+    revault_network.start_wallets()
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                # 7 because simple_reorg() adds a block
+                f"Vault deposit '{deposit}' still has '7' confirmations",
+            ]
+        )
+
+    revault_network.stop_wallets()
+    bitcoind.simple_reorg(blockheight + 3 + 3, shift=3)
+    revault_network.start_wallets()
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault deposit '{deposit}' ended up with '5' confirmations",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
+    revault_network.stop_wallets()
+    bitcoind.generate_block(1)
+    revault_network.start_wallets()
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_active_vaults([deposit])

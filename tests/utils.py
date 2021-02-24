@@ -381,7 +381,7 @@ class TailableProc(object):
                 logging.debug("Found '%s' in logs", regex)
                 return l
 
-        logging.debug("Did not find '%s' in logs", regex)
+        logging.debug(f"{self.prefix} : Did not find {regex} in logs")
         return None
 
     def wait_for_logs(self, regexs, timeout=TIMEOUT):
@@ -559,7 +559,6 @@ class BitcoinD(TailableProc):
         # to avoid looping in most cases
         numblocks = amount_btc // 25 + 1
         while self.rpc.getbalance() < amount_btc:
-            logging.debug(self.rpc.getbalance())
             self.generate_block(numblocks)
 
     def generate_blocks_censor(self, n, txids):
@@ -655,17 +654,18 @@ class Revaultd(TailableProc):
     ):
         assert stk_config is not None or man_config is not None
         assert len(stks) == len(cosigs)
+        TailableProc.__init__(self, datadir, verbose=VERBOSE)
+
+        self.prefix = os.path.split(datadir)[-1]
 
         # The data is stored in a per-network directory. We need to create it
         # in order to write the Noise private key
         datadir_with_network = os.path.join(datadir, "regtest")
         os.makedirs(datadir_with_network, exist_ok=True)
 
-        TailableProc.__init__(self, datadir, verbose=VERBOSE)
         bin = os.path.join(os.path.dirname(__file__), "..", "target/debug/revaultd")
         self.conf_file = os.path.join(datadir, "config.toml")
         self.cmd_line = [bin, f"--conf", f"{self.conf_file}"]
-        self.prefix = "revaultd"
         socket_path = os.path.join(datadir_with_network, "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
 
@@ -743,6 +743,26 @@ class Revaultd(TailableProc):
             == len(outpoints)
         )
 
+    def wait_for_secured_vaults(self, outpoints):
+        """
+        Polls listvaults until we acknowledge the 'secured' :tm: vaults at {outpoints}
+        """
+        assert isinstance(outpoints, list)
+        wait_for(
+            lambda: len(self.rpc.listvaults(["secured"], outpoints)["vaults"])
+            == len(outpoints)
+        )
+
+    def wait_for_active_vaults(self, outpoints):
+        """
+        Polls listvaults until we acknowledge the active vaults at {outpoints}
+        """
+        assert isinstance(outpoints, list)
+        wait_for(
+            lambda: len(self.rpc.listvaults(["active"], outpoints)["vaults"])
+            == len(outpoints)
+        )
+
     def start(self):
         TailableProc.start(self)
         self.wait_for_logs(
@@ -753,6 +773,21 @@ class Revaultd(TailableProc):
                 "Signature fetcher thread started",
             ]
         )
+
+    def stop(self):
+        try:
+            self.rpc.stop()
+            self.wait_for_logs(
+                [
+                    "Stopping revaultd.",
+                    "Bitcoind received shutdown.",
+                    "Signature fetcher thread received shutdown.",
+                ]
+            )
+            return 0
+        except Exception as e:
+            logging.error(f"{self.prefix} : error when calling stop: '{e}'")
+            return TailableProc.stop(self)
 
     def cleanup(self):
         try:
@@ -944,7 +979,7 @@ class RevaultNetwork:
         """
         (stks, cosigs, mans) = get_participants(n_stakeholders, n_managers)
         if csv is None:
-            # More than 6 months
+            # Not more than 6 months
             csv = random.randint(1, 26784)
 
         # The Noise keys are interdependant, so generate everything in advance
@@ -962,7 +997,7 @@ class RevaultNetwork:
             wt_noiseprivs.append(os.urandom(32))
             wt_noisepubs.append(bytes(Curve25519Private(wt_noiseprivs[i]).public_key))
         (man_noiseprivs, man_noisepubs) = ([], [])
-        for i in range(len(stks)):
+        for i in range(len(mans)):
             man_noiseprivs.append(os.urandom(32))
             man_noisepubs.append(bytes(Curve25519Private(man_noiseprivs[i]).public_key))
         logging.debug(
@@ -1074,6 +1109,46 @@ class RevaultNetwork:
         wait_for(lambda: self.get_vault(addr) is not None)
 
         return self.get_vault(addr)
+
+    def secure_vault(self, vault):
+        """Make all stakeholders share signatures for all revocation txs"""
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        for stk in self.stk_wallets:
+            stk.wait_for_deposits([deposit])
+            psbts = stk.rpc.getrevocationtxs(deposit)
+            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
+                psbts["cancel_tx"], vault["derivation_index"]
+            )
+            emer_psbt = stk.stk_keychain.sign_revocation_psbt(
+                psbts["emergency_tx"], vault["derivation_index"]
+            )
+            unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
+                psbts["emergency_unvault_tx"], vault["derivation_index"]
+            )
+            stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+        for w in self.stk_wallets + self.man_wallets:
+            w.wait_for_secured_vaults([deposit])
+
+    def activate_vault(self, vault):
+        """Make all stakeholders share signatures for the unvault tx"""
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        for stk in self.stk_wallets:
+            stk.wait_for_secured_vaults([deposit])
+            unvault_psbt = stk.rpc.getunvaulttx(deposit)["unvault_tx"]
+            unvault_psbt = stk.stk_keychain.sign_unvault_psbt(
+                unvault_psbt, vault["derivation_index"]
+            )
+            stk.rpc.unvaulttx(deposit, unvault_psbt)
+        for w in self.stk_wallets + self.man_wallets:
+            w.wait_for_active_vaults([deposit])
+
+    def stop_wallets(self):
+        for w in self.stk_wallets + self.man_wallets:
+            assert w.stop() == 0
+
+    def start_wallets(self):
+        for w in self.stk_wallets + self.man_wallets:
+            w.start()
 
     def cleanup(self):
         for n in self.daemons:

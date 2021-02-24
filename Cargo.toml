@@ -32,13 +32,13 @@ revault_net = { git = "https://github.com/re-vault/revault_net" }
 dirs = "3.0.1"
 
 # It's concise, does the Right Thing, and even supports Windows !
-daemonize-simple = "0.1.4"
+daemonize-simple = "0.1"
 
 # To talk to bitcoind
-jsonrpc = "0.12.0"
+jsonrpc = "0.12"
 
 # We use it for the cookie file
-base64 = "0.13.0"
+base64 = "0.13"
 
 # We us TOML for the config and JSON for connections
 serde = { version = "1.0", features = ["derive"] }
@@ -51,14 +51,14 @@ fern = "0.5"
 chrono = "0.4"
 
 # DB stuff
-rusqlite = { version = "0.24.1", features = ["bundled"] }
+rusqlite = { version = "0.24", features = ["bundled"] }
 
 # For umask..
 libc = "0.2.80"
 
 # For the JSONRPC server
-jsonrpc-core = "15.1.0"
-jsonrpc-derive = "15.1.0"
+jsonrpc-core = "15.1"
+jsonrpc-derive = "15.1"
 [target.'cfg(not(windows))'.dependencies]
 mio = { version = "0.7.5", features = ["default", "os-poll", "os-util", "uds"] }
 [target.'cfg(windows)'.dependencies]

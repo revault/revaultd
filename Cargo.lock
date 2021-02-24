@@ -201,9 +201,9 @@ checksum = "a06f77d526c1a601b7c4cdd98f54b5eaabffc14d5f2f0296febdc7f357c6d3ba"
 
 [[package]]
 name = "futures"
-version = "0.1.30"
+version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c7e4c2612746b0df8fed4ce0c69156021b704c9aefa360311c04e6e9e002eed"
+checksum = "3a471a38ef8ed83cd6e40aa59c1ffe17db6855c18e3604d9c4ed8c08ebc28678"
 
 [[package]]
 name = "generator"
@@ -362,9 +362,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "0.7.8"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc250d6848c90d719ea2ce34546fb5df7af1d3fd189d10bf7bad80bfcebecd95"
+checksum = "a5dede4e2065b3842b8b0af444119f3aa331cc7cc2dd20388bfb0f5d5a38823a"
 dependencies = [
  "libc",
  "log",
@@ -516,9 +516,9 @@ dependencies = [
 [[package]]
 name = "revault_net"
 version = "0.0.1"
-source = "git+https://github.com/re-vault/revault_net#12048584d06de45c04c5710000ac999a0349aa8d"
+source = "git+https://github.com/re-vault/revault_net#a1b33066c7521f3bebc32d11745e7406b22df938"
 dependencies = [
- "revault_tx 0.1.0 (git+https://github.com/re-vault/revault_tx)",
+ "revault_tx",
  "serde",
  "snow",
  "sodiumoxide",
@@ -529,17 +529,6 @@ name = "revault_tx"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59c4d0bad2a5322a5e816a248b8c668304f28a2962a4218e4c73d6ff5fc115a6"
-dependencies = [
- "base64",
- "bitcoinconsensus",
- "miniscript",
- "serde",
-]
-
-[[package]]
-name = "revault_tx"
-version = "0.1.0"
-source = "git+https://github.com/re-vault/revault_tx#e188bcbb1438f39dabd0ea0791b942260d735c1a"
 dependencies = [
  "base64",
  "bitcoinconsensus",
@@ -563,7 +552,7 @@ dependencies = [
  "log",
  "mio",
  "revault_net",
- "revault_tx 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "revault_tx",
  "rusqlite",
  "serde",
  "serde_json",

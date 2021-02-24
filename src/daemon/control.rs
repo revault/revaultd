@@ -365,7 +365,7 @@ fn check_unvault_signatures(
     Ok(())
 }
 
-// Send a `sig` (https://github.com/re-vault/practical-revault/blob/master/messages.md#sig-1)
+// Send a `sig` (https://github.com/revault/practical-revault/blob/master/messages.md#sig-1)
 // message to the server for all the sigs of this mapping.
 // Note that we are looping, but most (if not all) will only have a single signature
 // attached. We are called by the `revocationtxs` RPC, sent after a `getrevocationtxs`

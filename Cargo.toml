@@ -3,7 +3,7 @@ name = "revaultd"
 version = "0.0.2"
 authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
-repository = "https://github.com/re-vault/revaultd"
+repository = "https://github.com/revault/revaultd"
 license-file = "LICENCE"
 keywords = ["revault", "bitcoin", "vault"]
 description = "Revault wallet daemon"
@@ -26,7 +26,7 @@ path = "src/cli/main.rs"
 [dependencies]
 revault_tx = { version = "0.1", features = ["use-serde"] }
 
-revault_net = { git = "https://github.com/re-vault/revault_net" }
+revault_net = { git = "https://github.com/revault/revault_net" }
 
 # Don't reinvent the wheel
 dirs = "3.0.1"

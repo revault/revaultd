@@ -2,12 +2,12 @@
 
 ## About Revault
 
-[Revault](https://github.com/re-vault/practical-revault/blob/master/revault.pdf) is a
+[Revault](https://github.com/revault/practical-revault/blob/master/revault.pdf) is a
 Bitcoin vault architecture for multi-party situations.
 
 ## About revaultd
 
-`revaultd` is the core implementation of the `wallet` part from the [Revault protocol](https://github.com/re-vault/practical-revault).
+`revaultd` is the core implementation of the `wallet` part from the [Revault protocol](https://github.com/revault/practical-revault).
 Exposing an RPC interface, it aims to be actually used by participants with a GUI wrapper while
 letting the possibility to access to the functionalities programmatically.
 

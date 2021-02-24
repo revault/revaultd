@@ -753,6 +753,21 @@ mod test {
         let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
+        let (tx_db_id, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_unvault_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        let mut unvault_tx = fresh_unvault_tx.clone();
+        revault_tx_add_dummy_sig(&mut unvault_tx, 0);
+        db_update_presigned_tx(
+            &db_path,
+            db_vault.id,
+            tx_db_id,
+            unvault_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            &revaultd.secp_ctx,
+        )
+        .unwrap();
+        let (_, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(stored_unvault_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+
         // They can also be queried
         assert_eq!(
             emer_tx,
@@ -768,6 +783,10 @@ mod test {
                 .unwrap()
                 .1
         );
+        assert_eq!(
+            unvault_tx,
+            db_unvault_transaction(&db_path, db_vault.id).unwrap().1
+        );
 
         // And removed, if there is eg a reorg.
         db_exec(&db_path, |db_tx| {
@@ -778,6 +797,7 @@ mod test {
         db_emer_transaction(&db_path, db_vault.id).unwrap_err();
         db_cancel_transaction(&db_path, db_vault.id).unwrap_err();
         db_unvault_emer_transaction(&db_path, db_vault.id).unwrap_err();
+        db_unvault_transaction(&db_path, db_vault.id).unwrap_err();
 
         // And re-added of course
         db_confirm_deposit(

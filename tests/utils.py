@@ -562,26 +562,36 @@ class BitcoinD(TailableProc):
             logging.debug(self.rpc.getbalance())
             self.generate_block(numblocks)
 
+    def generate_blocks_censor(self, n, txids):
+        """Generate {n} blocks ignoring {txids}"""
+        fee_delta = 1000000
+        for txid in txids:
+            self.rpc.prioritisetransaction(txid, None, -fee_delta)
+        self.generate_block(n)
+        for txid in txids:
+            self.rpc.prioritisetransaction(txid, None, fee_delta)
+
     def simple_reorg(self, height, shift=0):
         """
-        Reorganize chain by creating a fork at height=[height] and re-mine all
-        mempool transactions into [height + shift], where shift >= 0. Returns
-        hashes of generated blocks.
+        Reorganize chain by creating a fork at height={height} and:
+            - If shift >=0:
+                - re-mine all mempool transactions into {height} + shift
+                  (with shift floored at 1)
+            - Else:
+                - don't re-mine the mempool transactions
 
-        Note that tx's that become invalid at [height] (because coin maturity,
+        Note that tx's that become invalid at {height} (because coin maturity,
         locktime etc.) are removed from mempool. The length of the new chain
-        will be original + 1 OR original + [shift], whichever is larger.
+        will be original + 1 OR original + {shift}, whichever is larger.
 
         For example: to push tx's backward from height h1 to h2 < h1,
-        use [height]=h2.
+        use {height}=h2.
 
         Or to change the txindex of tx's at height h1:
         1. A block at height h2 < h1 should contain a non-coinbase tx that can
             be pulled forward to h1.
-        2. Set [height]=h2 and [shift]= h1-h2
+        2. Set {height}=h2 and {shift}= h1-h2
         """
-        hashes = []
-        fee_delta = 1000000
         orig_len = self.rpc.getblockcount()
         old_hash = self.rpc.getblockhash(height)
         if height + shift > orig_len:
@@ -595,20 +605,14 @@ class BitcoinD(TailableProc):
         )
         memp = self.rpc.getrawmempool()
 
-        if shift == 0:
-            hashes += self.generate_block(1 + final_len - height)
+        if shift < 0:
+            self.generate_blocks_censor(1 + final_len - height, memp)
+        elif shift == 0:
+            self.generate_block(1 + final_len - height, memp)
         else:
-            for txid in memp:
-                # lower priority (to effective feerate=0) so they are not mined
-                self.rpc.prioritisetransaction(txid, None, -fee_delta)
-            hashes += self.generate_block(shift)
-
-            for txid in memp:
-                # restore priority so they are mined
-                self.rpc.prioritisetransaction(txid, None, fee_delta)
-            hashes += self.generate_block(1 + final_len - (height + shift))
+            self.generate_blocks_censor(shift, memp)
+            self.generate_block(1 + final_len - (height + shift), memp)
         self.wait_for_log(r"UpdateTip: new best=.* height={}".format(final_len))
-        return hashes
 
     def startup(self):
         try:

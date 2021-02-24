@@ -215,17 +215,22 @@ pub fn setup_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     Ok(())
 }
 
-/// Called by the bitcoind thread as we poll `getblockcount`
-pub fn db_update_tip(db_path: &PathBuf, tip: BlockchainTip) -> Result<(), DatabaseError> {
-    db_exec(db_path, |tx| {
-        tx.execute(
+pub fn db_update_tip_dbtx(
+    db_tx: &rusqlite::Transaction,
+    tip: &BlockchainTip,
+) -> Result<(), DatabaseError> {
+    db_tx
+        .execute(
             "UPDATE tip SET blockheight = (?1), blockhash = (?2)",
             params![tip.height, tip.hash.to_vec()],
         )
-        .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))?;
+        .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))
+        .map(|_| ())
+}
 
-        Ok(())
-    })
+/// Set the current best block hash and height
+pub fn db_update_tip(db_path: &PathBuf, tip: &BlockchainTip) -> Result<(), DatabaseError> {
+    db_exec(db_path, |db_tx| db_update_tip_dbtx(db_tx, tip))
 }
 
 pub fn db_update_deposit_index(
@@ -343,6 +348,25 @@ pub fn db_confirm_deposit(
 
         Ok(())
     })
+}
+
+/// Drop all presigned transactions for a vault, and mark it as unconfirmed. The opposite of
+/// [db_confirm_deposit].
+pub fn db_unconfirm_deposit_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    db_tx.execute(
+        "DELETE FROM presigned_transactions WHERE vault_id = (?1)",
+        params![vault_id],
+    )?;
+    db_tx.execute(
+        "UPDATE vaults SET status = (?1), blockheight = (?2), updated_at = strftime('%s','now') \
+         WHERE id = (?3)",
+        params![VaultStatus::Unconfirmed as u32, 0, vault_id],
+    )?;
+
+    Ok(())
 }
 
 /// Mark an active vault as being in 'unvaulting' state
@@ -665,26 +689,27 @@ mod test {
         let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
 
         // We can store unsigned transactions
-        let mut emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAVqQwvZ+XLjEW+P90WnqdbVWkC1riPNhF8j9Ca4dM0RiAAAAAAD9////AfhgAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK4iUAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQBAwSBAAAAAQVHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4AAA==").unwrap();
-        let mut cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAEBR1IhA9+bpoeRoYk6Fehku5U6JFn6v0b8vq0SPVzELn/n6DqBIQPRrV6R4VL8XI/QyVm2kb8+fQjbDMB9jRL5kWvIHNlkZFKuAA==").unwrap();
-        let mut unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAA=").unwrap();
-        let  unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAcRWqIPG85zGye1nuRlbwWKkko4g91Vd/508Ff6vKklpAAAAAAD9////AkANAwAAAAAAIgAgsT7u0Lo8o2WEfxS1nXWtQzsdJTMJnnOC5fwg0nYPvpowdQAAAAAAACIAIAx0DegrXfBr4D0XdetrGgAT2Q3AZANYm0rJL8L/Epp/AAAAAAABASuIlAMAAAAAACIAIGaHQ5brMNbT+WCtfE/WPW8gkmMir5NXAKRsQZAs9cT2AQMEAQAAAAEFR1IhAwYSJ4FeXdf/XPw6lFHpeMFeGvh88f+rWN2VtnaW75TNIQOn5Sg6nytLwT5FT9z5KmV/LMN1pZRsqbworUMwRdRN0lKuAAEBqiEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYdkdqkUNlKGE2FxZM1sR08UC7GJfzRqXlSIrGt2qRQoTG+3hS6ElXzBw+21PRDtEJ9sKoisbJNSh2dSIQNiqGzCWTbNvmnTm7l6YNTctgzoP5xaOW6hiXSWVkoClCEC/w0jRRlaB3Oa5c0OPrRAxbxE1kdfzV24OWsaSCGLgIVSrwLWNLJoAAEBJSEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYcA").unwrap();
+        let fresh_emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAVqQwvZ+XLjEW+P90WnqdbVWkC1riPNhF8j9Ca4dM0RiAAAAAAD9////AfhgAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK4iUAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQBAwSBAAAAAQVHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4AAA==").unwrap();
+        let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAEBR1IhA9+bpoeRoYk6Fehku5U6JFn6v0b8vq0SPVzELn/n6DqBIQPRrV6R4VL8XI/QyVm2kb8+fQjbDMB9jRL5kWvIHNlkZFKuAA==").unwrap();
+        let fresh_unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAA=").unwrap();
+        let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAcRWqIPG85zGye1nuRlbwWKkko4g91Vd/508Ff6vKklpAAAAAAD9////AkANAwAAAAAAIgAgsT7u0Lo8o2WEfxS1nXWtQzsdJTMJnnOC5fwg0nYPvpowdQAAAAAAACIAIAx0DegrXfBr4D0XdetrGgAT2Q3AZANYm0rJL8L/Epp/AAAAAAABASuIlAMAAAAAACIAIGaHQ5brMNbT+WCtfE/WPW8gkmMir5NXAKRsQZAs9cT2AQMEAQAAAAEFR1IhAwYSJ4FeXdf/XPw6lFHpeMFeGvh88f+rWN2VtnaW75TNIQOn5Sg6nytLwT5FT9z5KmV/LMN1pZRsqbworUMwRdRN0lKuAAEBqiEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYdkdqkUNlKGE2FxZM1sR08UC7GJfzRqXlSIrGt2qRQoTG+3hS6ElXzBw+21PRDtEJ9sKoisbJNSh2dSIQNiqGzCWTbNvmnTm7l6YNTctgzoP5xaOW6hiXSWVkoClCEC/w0jRRlaB3Oa5c0OPrRAxbxE1kdfzV24OWsaSCGLgIVSrwLWNLJoAAEBJSEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYcA").unwrap();
 
         let blockheight = 700000;
         db_confirm_deposit(
             &db_path,
             &outpoint,
             blockheight,
-            &unvault_tx,
-            &cancel_tx,
-            Some(&emer_tx),
-            Some(&unemer_tx),
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            Some(&fresh_emer_tx),
+            Some(&fresh_unemer_tx),
         )
         .unwrap();
 
         // Sanity check we can add sigs to them now
         let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id).unwrap();
         assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        let mut cancel_tx = fresh_cancel_tx.clone();
         revault_tx_add_dummy_sig(&mut cancel_tx, 0);
         db_update_presigned_tx(
             &db_path,
@@ -699,6 +724,7 @@ mod test {
 
         let (tx_db_id, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
         assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        let mut emer_tx = fresh_emer_tx.clone();
         revault_tx_add_dummy_sig(&mut emer_tx, 0);
         db_update_presigned_tx(
             &db_path,
@@ -714,6 +740,7 @@ mod test {
         let (tx_db_id, stored_unemer_tx) =
             db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        let mut unemer_tx = fresh_unemer_tx.clone();
         revault_tx_add_dummy_sig(&mut unemer_tx, 0);
         db_update_presigned_tx(
             &db_path,
@@ -727,9 +754,53 @@ mod test {
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
         // They can also be queried
-        db_emer_transaction(&db_path, db_vault.id).unwrap();
-        db_cancel_transaction(&db_path, db_vault.id).unwrap();
-        db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
+        assert_eq!(
+            emer_tx,
+            db_emer_transaction(&db_path, db_vault.id).unwrap().1
+        );
+        assert_eq!(
+            cancel_tx,
+            db_cancel_transaction(&db_path, db_vault.id).unwrap().1
+        );
+        assert_eq!(
+            unemer_tx,
+            db_unvault_emer_transaction(&db_path, db_vault.id)
+                .unwrap()
+                .1
+        );
+
+        // And removed, if there is eg a reorg.
+        db_exec(&db_path, |db_tx| {
+            db_unconfirm_deposit_dbtx(&db_tx, db_vault.id).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        db_emer_transaction(&db_path, db_vault.id).unwrap_err();
+        db_cancel_transaction(&db_path, db_vault.id).unwrap_err();
+        db_unvault_emer_transaction(&db_path, db_vault.id).unwrap_err();
+
+        // And re-added of course
+        db_confirm_deposit(
+            &db_path,
+            &outpoint,
+            blockheight,
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            Some(&fresh_emer_tx),
+            Some(&fresh_unemer_tx),
+        )
+        .unwrap();
+        // But not twice! (UNIQUE on the psbt field)
+        db_confirm_deposit(
+            &db_path,
+            &outpoint,
+            blockheight,
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            Some(&fresh_emer_tx),
+            Some(&fresh_unemer_tx),
+        )
+        .unwrap_err();
 
         clear_datadir(&revaultd.data_dir);
     }

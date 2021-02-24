@@ -102,13 +102,9 @@ impl BitcoinD {
         self.make_node_request("getblockchaininfo", &[])
     }
 
-    pub fn get_tip(&self) -> Result<BlockchainTip, BitcoindError> {
-        let json_height = self.make_node_request("getblockcount", &[])?;
-        let height = json_height.as_u64().ok_or_else(|| {
-            BitcoindError::Custom("API break, 'getblockcount' didn't return an u64.".to_string())
-        })? as u32;
-        let hash = BlockHash::from_str(
-            self.make_node_request("getblockhash", &params!(json_height))?
+    pub fn getblockhash(&self, height: u32) -> Result<BlockHash, BitcoindError> {
+        BlockHash::from_str(
+            self.make_node_request("getblockhash", &params!(height))?
                 .as_str()
                 .ok_or_else(|| {
                     BitcoindError::Custom(
@@ -118,7 +114,15 @@ impl BitcoinD {
         )
         .map_err(|e| {
             BitcoindError::Custom(format!("Invalid blockhash given by 'getblockhash': {}", e))
-        })?;
+        })
+    }
+
+    pub fn get_tip(&self) -> Result<BlockchainTip, BitcoindError> {
+        let json_height = self.make_node_request("getblockcount", &[])?;
+        let height = json_height.as_u64().ok_or_else(|| {
+            BitcoindError::Custom("API break, 'getblockcount' didn't return an u64.".to_string())
+        })? as u32;
+        let hash = self.getblockhash(height)?;
 
         Ok(BlockchainTip { height, hash })
     }
@@ -515,7 +519,7 @@ impl BitcoinD {
     /// it's confirmed, as well as the reception time.
     pub fn get_wallet_transaction(
         &self,
-        txid: Txid,
+        txid: &Txid,
     ) -> Result<(String, Option<u32>, u32), BitcoindError> {
         let res = self
             .make_watchonly_request("gettransaction", &params!(Json::String(txid.to_string())))?;

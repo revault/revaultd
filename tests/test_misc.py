@@ -556,7 +556,6 @@ def test_revocation_sig_sharing(revault_network):
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
 
 
-@pytest.mark.xfail(strict=True)
 def test_reorged_deposit(revaultd_stakeholder, bitcoind):
     # TODO: start / stop, partial reorgs
     stk = revaultd_stakeholder
@@ -652,7 +651,6 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
     assert stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed"
 
 
-@pytest.mark.xfail(strict=True)
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_deposit_status(revault_network, bitcoind):
     revault_network.deploy(4, 2)

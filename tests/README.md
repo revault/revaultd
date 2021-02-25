@@ -89,3 +89,8 @@ POSTGRES_USER=test POSTGRES_PASS=test pytest -vvv --log-cli-level=DEBUG -k test_
 ```
 
 Note that we log each daemon log, and we start them with `log_level = "trace"`.
+
+
+### Test lints
+
+Just use [`black`](https://github.com/psf/black).

@@ -178,15 +178,19 @@ fn get_sigs(
         }
         tx.add_signature(0, pubkey, (sig, hashtype))
             .expect("Can not fail, as we are never passed a Spend transaction.");
-        // Note: this will atomically set the vault as 'Secured' if all revocations transactions
+        // This will atomically set the vault as 'Secured' if all revocations transactions
         // were signed, and as 'Active' if the Unvault transaction was.
-        db_update_presigned_tx(
+        // NOTE: In theory, the deposit could have been reorged out and the presigned
+        // transactions wiped from the database. Would be a quite edgy case though.
+        if let Err(e) = db_update_presigned_tx(
             db_path,
             vault_id,
             tx_db_id,
             tx.inner_tx().inputs[0].partial_sigs.clone(),
             secp_ctx,
-        )?;
+        ) {
+            log::error!("Error while updating presigned tx: '{}'", e);
+        }
     }
 
     Ok(())
@@ -202,7 +206,7 @@ fn fetch_all_signatures(
     while let Some(tx) = txs.pop() {
         match tx.psbt {
             RevaultTx::Unvault(unvault_tx) => {
-                log::info!("Fetching Unvault signature");
+                log::debug!("Fetching Unvault signature");
                 get_sigs(revaultd, tx.id, tx.vault_id, unvault_tx, tx.tx_type)?;
             }
             RevaultTx::Cancel(cancel_tx) => {

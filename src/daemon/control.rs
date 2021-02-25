@@ -393,7 +393,7 @@ fn send_sig_msg(
             signature,
             id,
         };
-        log::info!(
+        log::debug!(
             "Sending sig '{:?}' to sync server: '{}'",
             sig_msg,
             serde_json::to_string(&sig_msg)?,
@@ -701,6 +701,8 @@ pub fn handle_rpc_messages(
                 }
 
                 // Ok, signatures look legit. Add them to the PSBTs in database.
+                // FIXME: edgy edge case: don't crash here, rather return an error if
+                // deposit tx was reorged out in between now and the above status check.
                 db_update_presigned_tx(
                     &revaultd.db_file(),
                     db_vault.id,
@@ -850,6 +852,8 @@ pub fn handle_rpc_messages(
                 }
 
                 // Sanity checks passed. Store it then share it.
+                // FIXME: edgy edge case: don't crash here, rather return an error if
+                // deposit tx was reorged out in between now and the above status check.
                 db_update_presigned_tx(
                     &revaultd.db_file(),
                     db_vault.id,

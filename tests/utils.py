@@ -32,7 +32,7 @@ EXECUTOR_WORKERS = os.getenv("EXECUTOR_WORKERS", 10)
 POSTGRES_USER = os.getenv("POSTGRES_USER", "")
 POSTGRES_PASS = os.getenv("POSTGRES_PASS", "")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_IS_SETUP = (POSTGRES_USER and POSTGRES_PASS and POSTGRES_HOST)
+POSTGRES_IS_SETUP = POSTGRES_USER and POSTGRES_PASS and POSTGRES_HOST
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "trace")
 assert LOG_LEVEL in ["trace", "debug", "info", "warn", "error"]
@@ -82,15 +82,15 @@ class User(Participant):
         psbt = serializations.PSBT()
         psbt.deserialize(psbt_str)
         assert len(psbt.inputs) == 1, "Invalid revocation PSBT"
-        assert (serializations.make_p2wsh(psbt.inputs[0].witness_script)
-                == psbt.inputs[0].witness_utxo.scriptPubKey)
+        assert (
+            serializations.make_p2wsh(psbt.inputs[0].witness_script)
+            == psbt.inputs[0].witness_utxo.scriptPubKey
+        )
 
         script_code = psbt.inputs[0].witness_script
         sighash = serializations.sighash_all_witness(script_code, psbt, 0, True)
-        privkey = coincurve.PrivateKey(
-            self.hd.get_privkey_from_path([deriv_index])
-        )
-        sig = privkey.sign(sighash, hasher=None) + b'\x81'  # ALL | ACP
+        privkey = coincurve.PrivateKey(self.hd.get_privkey_from_path([deriv_index]))
+        sig = privkey.sign(sighash, hasher=None) + b"\x81"  # ALL | ACP
 
         pubkey = self.hd.get_pubkey_from_path([deriv_index])
         psbt.inputs[0].partial_sigs[pubkey] = sig
@@ -104,15 +104,15 @@ class User(Participant):
         psbt = serializations.PSBT()
         psbt.deserialize(psbt_str)
         assert len(psbt.inputs) == 1, "Invalid Unvault PSBT"
-        assert (serializations.make_p2wsh(psbt.inputs[0].witness_script)
-                == psbt.inputs[0].witness_utxo.scriptPubKey)
+        assert (
+            serializations.make_p2wsh(psbt.inputs[0].witness_script)
+            == psbt.inputs[0].witness_utxo.scriptPubKey
+        )
 
         script_code = psbt.inputs[0].witness_script
         sighash = serializations.sighash_all_witness(script_code, psbt, 0)
-        privkey = coincurve.PrivateKey(
-            self.hd.get_privkey_from_path([deriv_index])
-        )
-        sig = privkey.sign(sighash, hasher=None) + b'\x01'  # ALL
+        privkey = coincurve.PrivateKey(self.hd.get_privkey_from_path([deriv_index]))
+        sig = privkey.sign(sighash, hasher=None) + b"\x01"  # ALL
 
         pubkey = self.hd.get_pubkey_from_path([deriv_index])
         psbt.inputs[0].partial_sigs[pubkey] = sig
@@ -162,7 +162,7 @@ class UnixSocket(object):
         except OSError as e:
             self.close()
 
-            if (e.args[0] == "AF_UNIX path too long" and os.uname()[0] == "Linux"):
+            if e.args[0] == "AF_UNIX path too long" and os.uname()[0] == "Linux":
                 # If this is a Linux system we may be able to work around this
                 # issue by opening our directory and using `/proc/self/fd/` to
                 # get a short alias for the socket file.
@@ -230,15 +230,18 @@ class UnixDomainSocketRpc(object):
         We might still want to define the actual methods in the subclasses for
         documentation purposes.
         """
-        name = name.replace('_', '-')
+        name = name.replace("_", "-")
 
         def wrapper(*args, **kwargs):
             if len(args) != 0 and len(kwargs) != 0:
-                raise RpcError(name, {}, "Cannot mix positional and non-positional arguments")
+                raise RpcError(
+                    name, {}, "Cannot mix positional and non-positional arguments"
+                )
             elif len(args) != 0:
                 return self.call(name, payload=args)
             else:
                 return self.call(name, payload=list(kwargs.values()))
+
         return wrapper
 
     # FIXME: support named parameters on the Rust server!
@@ -247,27 +250,33 @@ class UnixDomainSocketRpc(object):
 
         # FIXME: we open a new socket for every readobj call...
         sock = UnixSocket(self.socket_path)
-        msg = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": method,
-            "params": payload,
-        })
+        msg = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": method,
+                "params": payload,
+            }
+        )
         sock.sock.send(msg.encode())
         this_id = self.next_id
         resp = self._readobj(sock)
 
         self.logger.debug("Received response for %s call: %r", method, resp)
-        if 'id' in resp and resp['id'] != this_id:
-            raise ValueError("Malformed response, id is not {}: {}.".format(this_id, resp))
+        if "id" in resp and resp["id"] != this_id:
+            raise ValueError(
+                "Malformed response, id is not {}: {}.".format(this_id, resp)
+            )
         sock.close()
 
         if not isinstance(resp, dict):
-            raise ValueError("Malformed response, response is not a dictionary %s." % resp)
+            raise ValueError(
+                "Malformed response, response is not a dictionary %s." % resp
+            )
         elif "error" in resp:
-            raise RpcError(method, payload, resp['error'])
+            raise RpcError(method, payload, resp["error"])
         elif "result" not in resp:
-            raise ValueError("Malformed response, \"result\" missing.")
+            raise ValueError('Malformed response, "result" missing.')
         return resp["result"]
 
 
@@ -299,15 +308,15 @@ class TailableProc(object):
         self.log_filter = lambda _: False
 
     def start(self, stdin=None, stdout=None, stderr=None):
-        """Start the underlying process and start monitoring it.
-        """
+        """Start the underlying process and start monitoring it."""
         logging.debug("Starting '%s'", " ".join(self.cmd_line))
-        self.proc = subprocess.Popen(self.cmd_line,
-                                     stdin=stdin,
-                                     stdout=stdout if stdout
-                                     else subprocess.PIPE,
-                                     stderr=stderr,
-                                     env=self.env)
+        self.proc = subprocess.Popen(
+            self.cmd_line,
+            stdin=stdin,
+            stdout=stdout if stdout else subprocess.PIPE,
+            stderr=stderr,
+            env=self.env,
+        )
         self.thread = threading.Thread(target=self.tail)
         self.thread.daemon = True
         self.thread.start()
@@ -315,10 +324,10 @@ class TailableProc(object):
 
     def save_log(self):
         if self.outputDir:
-            logpath = os.path.join(self.outputDir, 'log')
-            with open(logpath, 'w') as f:
+            logpath = os.path.join(self.outputDir, "log")
+            with open(logpath, "w") as f:
                 for l in self.logs:
-                    f.write(l + '\n')
+                    f.write(l + "\n")
 
     def stop(self, timeout=10):
         self.save_log()
@@ -348,10 +357,10 @@ class TailableProc(object):
         self.logs and signals that a new line was read so that it can
         be picked up by consumers.
         """
-        for line in iter(self.proc.stdout.readline, ''):
+        for line in iter(self.proc.stdout.readline, ""):
             if len(line) == 0:
                 break
-            if self.log_filter(line.decode('ASCII')):
+            if self.log_filter(line.decode("ASCII")):
                 continue
             if self.verbose:
                 logging.debug(f"{self.prefix}: {line.decode().rstrip()}")
@@ -372,7 +381,7 @@ class TailableProc(object):
                 logging.debug("Found '%s' in logs", regex)
                 return l
 
-        logging.debug("Did not find '%s' in logs", regex)
+        logging.debug(f"{self.prefix} : Did not find {regex} in logs")
         return None
 
     def wait_for_logs(self, regexs, timeout=TIMEOUT):
@@ -415,7 +424,7 @@ class TailableProc(object):
                 pos += 1
 
             if not self.running:
-                raise ValueError('Process died while waiting for logs')
+                raise ValueError("Process died while waiting for logs")
 
     def wait_for_log(self, regex, timeout=TIMEOUT):
         """Look for `regex` in the logs.
@@ -433,6 +442,7 @@ class SimpleBitcoinProxy:
     throwaway connections. This is easier than to reach into the RPC
     library to close, reopen and reauth upon failure.
     """
+
     def __init__(self, bitcoind_dir, bitcoind_port, *args, **kwargs):
         self.__btc_conf_file__ = os.path.join(bitcoind_dir, "bitcoin.conf")
         self.__cookie_path = os.path.join(bitcoind_dir, "regtest", ".cookie")
@@ -442,7 +452,7 @@ class SimpleBitcoinProxy:
         self.wallet_name = "revaultd-tests"
 
     def __getattr__(self, name):
-        if name.startswith('__') and name.endswith('__'):
+        if name.startswith("__") and name.endswith("__"):
             # Python internal stuff
             raise AttributeError
 
@@ -450,12 +460,14 @@ class SimpleBitcoinProxy:
         # the cookie if we specify a custom URL..
         with open(self.__cookie_path) as fd:
             authpair = fd.read()
-        service_url = f"http://{authpair}@localhost:{self.__port}/wallet"\
-                      f"/{self.wallet_name}"
+        service_url = (
+            f"http://{authpair}@localhost:{self.__port}/wallet" f"/{self.wallet_name}"
+        )
 
         # Create a callable to do the actual call
-        proxy = BitcoinProxy(btc_conf_file=self.__btc_conf_file__,
-                             service_url=service_url)
+        proxy = BitcoinProxy(
+            btc_conf_file=self.__btc_conf_file__, service_url=service_url
+        )
 
         def f(*args):
             return proxy._call(name, *args)
@@ -476,35 +488,36 @@ class BitcoinD(TailableProc):
         self.bitcoin_dir = bitcoin_dir
         self.rpcport = rpcport
         self.p2pport = reserve()
-        self.prefix = 'bitcoind'
+        self.prefix = "bitcoind"
 
-        regtestdir = os.path.join(bitcoin_dir, 'regtest')
+        regtestdir = os.path.join(bitcoin_dir, "regtest")
         if not os.path.exists(regtestdir):
             os.makedirs(regtestdir)
 
         self.cmd_line = [
-            'bitcoind',
-            '-datadir={}'.format(bitcoin_dir),
-            '-printtoconsole',
-            '-server',
-            '-logtimestamps',
-            '-rpcthreads=4',
+            "bitcoind",
+            "-datadir={}".format(bitcoin_dir),
+            "-printtoconsole",
+            "-server",
+            "-logtimestamps",
+            "-rpcthreads=4",
         ]
         bitcoind_conf = {
-            'port': self.p2pport,
-            'rpcport': rpcport,
-            'debug': 1,
-            'fallbackfee': Decimal(1000) / bitcoin.core.COIN,
+            "port": self.p2pport,
+            "rpcport": rpcport,
+            "debug": 1,
+            "fallbackfee": Decimal(1000) / bitcoin.core.COIN,
         }
-        self.conf_file = os.path.join(bitcoin_dir, 'bitcoin.conf')
-        with open(self.conf_file, 'w') as f:
+        self.conf_file = os.path.join(bitcoin_dir, "bitcoin.conf")
+        with open(self.conf_file, "w") as f:
             f.write(f"chain=regtest\n")
             f.write(f"[regtest]\n")
             for k, v in bitcoind_conf.items():
                 f.write(f"{k}={v}\n")
 
-        self.rpc = SimpleBitcoinProxy(bitcoind_dir=self.bitcoin_dir,
-                                      bitcoind_port=self.rpcport)
+        self.rpc = SimpleBitcoinProxy(
+            bitcoind_dir=self.bitcoin_dir, bitcoind_port=self.rpcport
+        )
         self.proxies = []
 
     def start(self):
@@ -530,11 +543,13 @@ class BitcoinD(TailableProc):
             if isinstance(wait_for_mempool, str):
                 wait_for_mempool = [wait_for_mempool]
             if isinstance(wait_for_mempool, list):
-                wait_for(lambda: all(txid in self.rpc.getrawmempool()
-                                     for txid in wait_for_mempool))
+                wait_for(
+                    lambda: all(
+                        txid in self.rpc.getrawmempool() for txid in wait_for_mempool
+                    )
+                )
             else:
-                wait_for(lambda: len(self.rpc.getrawmempool())
-                         >= wait_for_mempool)
+                wait_for(lambda: len(self.rpc.getrawmempool()) >= wait_for_mempool)
 
         addr = self.rpc.getnewaddress()
         return self.rpc.generatetoaddress(numblocks, addr)
@@ -544,57 +559,59 @@ class BitcoinD(TailableProc):
         # to avoid looping in most cases
         numblocks = amount_btc // 25 + 1
         while self.rpc.getbalance() < amount_btc:
-            logging.debug(self.rpc.getbalance())
             self.generate_block(numblocks)
+
+    def generate_blocks_censor(self, n, txids):
+        """Generate {n} blocks ignoring {txids}"""
+        fee_delta = 1000000
+        for txid in txids:
+            self.rpc.prioritisetransaction(txid, None, -fee_delta)
+        self.generate_block(n)
+        for txid in txids:
+            self.rpc.prioritisetransaction(txid, None, fee_delta)
 
     def simple_reorg(self, height, shift=0):
         """
-        Reorganize chain by creating a fork at height=[height] and re-mine all
-        mempool transactions into [height + shift], where shift >= 0. Returns
-        hashes of generated blocks.
+        Reorganize chain by creating a fork at height={height} and:
+            - If shift >=0:
+                - re-mine all mempool transactions into {height} + shift
+                  (with shift floored at 1)
+            - Else:
+                - don't re-mine the mempool transactions
 
-        Note that tx's that become invalid at [height] (because coin maturity,
+        Note that tx's that become invalid at {height} (because coin maturity,
         locktime etc.) are removed from mempool. The length of the new chain
-        will be original + 1 OR original + [shift], whichever is larger.
+        will be original + 1 OR original + {shift}, whichever is larger.
 
         For example: to push tx's backward from height h1 to h2 < h1,
-        use [height]=h2.
+        use {height}=h2.
 
         Or to change the txindex of tx's at height h1:
         1. A block at height h2 < h1 should contain a non-coinbase tx that can
             be pulled forward to h1.
-        2. Set [height]=h2 and [shift]= h1-h2
+        2. Set {height}=h2 and {shift}= h1-h2
         """
-        hashes = []
-        fee_delta = 1000000
         orig_len = self.rpc.getblockcount()
         old_hash = self.rpc.getblockhash(height)
         if height + shift > orig_len:
             final_len = height + shift
         else:
             final_len = 1 + orig_len
-        # TODO: raise error for insane args?
 
         self.rpc.invalidateblock(old_hash)
-        self.wait_for_log(r'InvalidChainFound: invalid block=.*  height={}'
-                          .format(height))
+        self.wait_for_log(
+            r"InvalidChainFound: invalid block=.*  height={}".format(height)
+        )
         memp = self.rpc.getrawmempool()
 
-        if shift == 0:
-            hashes += self.generate_block(1 + final_len - height)
+        if shift < 0:
+            self.generate_blocks_censor(1 + final_len - height, memp)
+        elif shift == 0:
+            self.generate_block(1 + final_len - height, memp)
         else:
-            for txid in memp:
-                # lower priority (to effective feerate=0) so they are not mined
-                self.rpc.prioritisetransaction(txid, None, -fee_delta)
-            hashes += self.generate_block(shift)
-
-            for txid in memp:
-                # restore priority so they are mined
-                self.rpc.prioritisetransaction(txid, None, fee_delta)
-            hashes += self.generate_block(1 + final_len - (height + shift))
-        self.wait_for_log(r'UpdateTip: new best=.* height={}'
-                          .format(final_len))
-        return hashes
+            self.generate_blocks_censor(shift, memp)
+            self.generate_block(1 + final_len - (height + shift), memp)
+        self.wait_for_log(r"UpdateTip: new best=.* height={}".format(final_len))
 
     def startup(self):
         try:
@@ -605,11 +622,12 @@ class BitcoinD(TailableProc):
 
         info = self.rpc.getnetworkinfo()
 
-        if info['version'] < 210000:
+        if info["version"] < 210000:
             self.rpc.stop()
-            raise ValueError("bitcoind is too old. At least version 21000"
-                             " (v0.21.0) is needed, current version is {}"
-                             .format(info['version']))
+            raise ValueError(
+                "bitcoind is too old. At least version 21000"
+                " (v0.21.0) is needed, current version is {}".format(info["version"])
+            )
 
     def cleanup(self):
         try:
@@ -620,87 +638,99 @@ class BitcoinD(TailableProc):
 
 
 class Revaultd(TailableProc):
-    def __init__(self, datadir, stks, cosigs, mans, csv, noise_priv,
-                 coordinator_noise_key, coordinator_port, bitcoind,
-                 stk_config=None, man_config=None):
+    def __init__(
+        self,
+        datadir,
+        stks,
+        cosigs,
+        mans,
+        csv,
+        noise_priv,
+        coordinator_noise_key,
+        coordinator_port,
+        bitcoind,
+        stk_config=None,
+        man_config=None,
+    ):
         assert stk_config is not None or man_config is not None
         assert len(stks) == len(cosigs)
+        TailableProc.__init__(self, datadir, verbose=VERBOSE)
+
+        self.prefix = os.path.split(datadir)[-1]
 
         # The data is stored in a per-network directory. We need to create it
         # in order to write the Noise private key
         datadir_with_network = os.path.join(datadir, "regtest")
         os.makedirs(datadir_with_network, exist_ok=True)
 
-        TailableProc.__init__(self, datadir, verbose=VERBOSE)
-        bin = os.path.join(os.path.dirname(__file__), "..",
-                           "target/debug/revaultd")
+        bin = os.path.join(os.path.dirname(__file__), "..", "target/debug/revaultd")
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [
-            bin,
-            f"--conf",
-            f"{self.conf_file}"
-        ]
-        self.prefix = "revaultd"
+        self.cmd_line = [bin, f"--conf", f"{self.conf_file}"]
         socket_path = os.path.join(datadir_with_network, "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
 
         noise_secret_file = os.path.join(datadir_with_network, "noise_secret")
-        with open(noise_secret_file, 'wb') as f:
+        with open(noise_secret_file, "wb") as f:
             f.write(noise_priv)
 
-        bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest",
-                                       ".cookie")
-        with open(self.conf_file, 'w') as f:
+        bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest", ".cookie")
+        with open(self.conf_file, "w") as f:
             f.write(f"unvault_csv = {csv}\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write(f"daemon = false\n")
             f.write(f"log_level = '{LOG_LEVEL}'\n")
 
-            f.write(f"coordinator_host = \"127.0.0.1:{coordinator_port}\"\n")
-            f.write(f"coordinator_noise_key = \"{coordinator_noise_key}\"\n")
+            f.write(f'coordinator_host = "127.0.0.1:{coordinator_port}"\n')
+            f.write(f'coordinator_noise_key = "{coordinator_noise_key}"\n')
             f.write(f"coordinator_poll_seconds = 2\n")
 
             f.write("stakeholders_xpubs = [")
             for stk in stks:
-                f.write(f"\"{stk.get_xpub()}\", ")
+                f.write(f'"{stk.get_xpub()}", ')
             f.write("]\n")
 
             f.write("managers_xpubs = [")
             for man in mans:
-                f.write(f"\"{man.get_xpub()}\", ")
+                f.write(f'"{man.get_xpub()}", ')
             f.write("]\n")
 
             f.write("cosigners_keys = [")
             for cosig in cosigs:
-                f.write(f"\"{cosig.get_static_key().hex()}\", ")
+                f.write(f'"{cosig.get_static_key().hex()}", ')
             f.write("]\n")
 
             f.write(f"[bitcoind_config]\n")
-            f.write(f"network = \"regtest\"\n")
+            f.write(f'network = "regtest"\n')
             f.write(f"cookie_path = '{bitcoind_cookie}'\n")
             f.write(f"addr = '127.0.0.1:{bitcoind.rpcport}'\n")
 
             if stk_config is not None:
                 f.write("[stakeholder_config]\n")
-                self.stk_keychain = stk_config['keychain']
-                f.write(f"xpub = \"{self.stk_keychain.get_xpub()}\"\n")
+                self.stk_keychain = stk_config["keychain"]
+                f.write(f'xpub = "{self.stk_keychain.get_xpub()}"\n')
                 f.write("watchtowers = [")
                 for wt in stk_config["watchtowers"]:
-                    f.write(f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
-                            f"\"{wt['noise_key']}\" }}, ")
+                    f.write(
+                        f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
+                        f"\"{wt['noise_key']}\" }}, "
+                    )
                 f.write("]\n")
                 # FIXME: eventually use a real one here
-                f.write("emergency_address = "
-                        "\"bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq\"\n")
+                f.write(
+                    "emergency_address = "
+                    '"bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq"\n'
+                )
 
             if man_config is not None:
                 f.write("[manager_config]\n")
-                self.man_keychain = man_config['keychain']
-                f.write(f"xpub = \"{self.man_keychain.get_xpub()}\"\n")
+                self.man_keychain = man_config["keychain"]
+                f.write(f'xpub = "{self.man_keychain.get_xpub()}"\n')
                 f.write("cosigners = [")
                 for wt in man_config["cosigners"]:
-                    f.write(f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
-                            f"\"{wt['noise_key']}\" }}, ")
+                    f.write(
+                        f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
+                        f"\"{wt['noise_key']}\" }}, "
+                    )
                 f.write("]\n")
 
     def wait_for_deposits(self, outpoints):
@@ -709,17 +739,55 @@ class Revaultd(TailableProc):
         """
         assert isinstance(outpoints, list)
         wait_for(
-            lambda:
-                 len(self.rpc.listvaults(["funded"], outpoints)["vaults"])
-                 == len(outpoints)
+            lambda: len(self.rpc.listvaults(["funded"], outpoints)["vaults"])
+            == len(outpoints)
+        )
+
+    def wait_for_secured_vaults(self, outpoints):
+        """
+        Polls listvaults until we acknowledge the 'secured' :tm: vaults at {outpoints}
+        """
+        assert isinstance(outpoints, list)
+        wait_for(
+            lambda: len(self.rpc.listvaults(["secured"], outpoints)["vaults"])
+            == len(outpoints)
+        )
+
+    def wait_for_active_vaults(self, outpoints):
+        """
+        Polls listvaults until we acknowledge the active vaults at {outpoints}
+        """
+        assert isinstance(outpoints, list)
+        wait_for(
+            lambda: len(self.rpc.listvaults(["active"], outpoints)["vaults"])
+            == len(outpoints)
         )
 
     def start(self):
         TailableProc.start(self)
-        self.wait_for_logs(["revaultd started on network regtest",
-                            "bitcoind now synced",
-                            "JSONRPC server started",
-                            "Signature fetcher thread started"])
+        self.wait_for_logs(
+            [
+                "revaultd started on network regtest",
+                "bitcoind now synced",
+                "JSONRPC server started",
+                "Signature fetcher thread started",
+            ]
+        )
+
+    def stop(self):
+        try:
+            self.rpc.stop()
+            self.wait_for_logs(
+                [
+                    "Stopping revaultd.",
+                    "Bitcoind received shutdown.",
+                    "Signature fetcher thread received shutdown.",
+                ]
+            )
+            return 0
+        except Exception as e:
+            logging.error(f"{self.prefix} : error when calling stop: '{e}'")
+            return TailableProc.stop(self)
 
     def cleanup(self):
         try:
@@ -729,48 +797,94 @@ class Revaultd(TailableProc):
 
 
 class ManagerRevaultd(Revaultd):
-    def __init__(self, datadir, stks, cosigs, mans, csv, noise_priv,
-                 coordinator_noise_key, coordinator_port, bitcoind, man_config):
+    def __init__(
+        self,
+        datadir,
+        stks,
+        cosigs,
+        mans,
+        csv,
+        noise_priv,
+        coordinator_noise_key,
+        coordinator_port,
+        bitcoind,
+        man_config,
+    ):
         """The wallet daemon for a manager.
         Needs to know all xpubs, and needs to be able to connect to the
         coordinator and the cosigners.
         """
-        super(ManagerRevaultd, self).__init__(datadir, stks, cosigs, mans, csv,
-                                              noise_priv, coordinator_noise_key,
-                                              coordinator_port, bitcoind,
-                                              man_config=man_config)
+        super(ManagerRevaultd, self).__init__(
+            datadir,
+            stks,
+            cosigs,
+            mans,
+            csv,
+            noise_priv,
+            coordinator_noise_key,
+            coordinator_port,
+            bitcoind,
+            man_config=man_config,
+        )
         assert self.man_keychain is not None
 
 
 class StakeholderRevaultd(Revaultd):
-    def __init__(self, datadir, stks, cosigs, mans, csv, noise_priv,
-                 coordinator_noise_key, coordinator_port, bitcoind, stk_config):
+    def __init__(
+        self,
+        datadir,
+        stks,
+        cosigs,
+        mans,
+        csv,
+        noise_priv,
+        coordinator_noise_key,
+        coordinator_port,
+        bitcoind,
+        stk_config,
+    ):
         """The wallet daemon for a stakeholder.
         Needs to know all xpubs, and needs to be able to connect to the
         coordinator and its watchtower(s).
         """
-        super(StakeholderRevaultd, self).__init__(datadir, stks, cosigs, mans,
-                                                  csv, noise_priv,
-                                                  coordinator_noise_key,
-                                                  coordinator_port, bitcoind,
-                                                  stk_config=stk_config)
+        super(StakeholderRevaultd, self).__init__(
+            datadir,
+            stks,
+            cosigs,
+            mans,
+            csv,
+            noise_priv,
+            coordinator_noise_key,
+            coordinator_port,
+            bitcoind,
+            stk_config=stk_config,
+        )
         assert self.stk_keychain is not None
 
 
 class Coordinatord(TailableProc):
-    def __init__(self, datadir, noise_priv, managers_keys, stakeholders_keys,
-                 watchtowers_keys, listen_port, postgres_user, postgres_pass,
-                 postgres_host="localhost"):
+    def __init__(
+        self,
+        datadir,
+        noise_priv,
+        managers_keys,
+        stakeholders_keys,
+        watchtowers_keys,
+        listen_port,
+        postgres_user,
+        postgres_pass,
+        postgres_host="localhost",
+    ):
         # FIXME: reduce DEBUG log load
         TailableProc.__init__(self, datadir, verbose=VERBOSE)
-        bin = os.path.join(os.path.dirname(__file__), "servers",
-                           "coordinatord", "target/debug/revault_coordinatord")
+        bin = os.path.join(
+            os.path.dirname(__file__),
+            "servers",
+            "coordinatord",
+            "target/debug/revault_coordinatord",
+        )
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [
-            bin,
-            f"--conf",
-            f"{self.conf_file}"
-        ]
+        self.cmd_line = [bin, f"--conf", f"{self.conf_file}"]
         self.prefix = "coordinatord"
 
         self.postgres_user = postgres_user
@@ -782,39 +896,43 @@ class Coordinatord(TailableProc):
         self.postgres_exec(f"CREATE DATABASE {self.db_name} OWNER {postgres_user}")
 
         noise_secret_file = os.path.join(datadir, "noise_secret")
-        with open(noise_secret_file, 'wb') as f:
+        with open(noise_secret_file, "wb") as f:
             f.write(noise_priv)
 
-        with open(self.conf_file, 'w') as f:
+        with open(self.conf_file, "w") as f:
             f.write("daemon = false\n")
-            f.write(f"data_dir = \"{datadir}\"\n")
-            f.write(f"log_level = \"{LOG_LEVEL}\"\n")
+            f.write(f'data_dir = "{datadir}"\n')
+            f.write(f'log_level = "{LOG_LEVEL}"\n')
 
-            uri = f"postgresql://{postgres_user}:{postgres_pass}" \
-                  f"@{postgres_host}/{self.db_name}"
-            f.write(f"postgres_uri = \"{uri}\"\n")
+            uri = (
+                f"postgresql://{postgres_user}:{postgres_pass}"
+                f"@{postgres_host}/{self.db_name}"
+            )
+            f.write(f'postgres_uri = "{uri}"\n')
 
             f.write("managers = [")
             for k in managers_keys:
-                f.write(f"\"{k.hex()}\", ")
+                f.write(f'"{k.hex()}", ')
             f.write("]\n")
 
             f.write("stakeholders = [")
             for k in stakeholders_keys:
-                f.write(f"\"{k.hex()}\", ")
+                f.write(f'"{k.hex()}", ')
             f.write("]\n")
 
             f.write("watchtowers = [")
             for k in watchtowers_keys:
-                f.write(f"\"{k.hex()}\", ")
+                f.write(f'"{k.hex()}", ')
             f.write("]\n")
 
-            f.write(f"listen = \"127.0.0.1:{listen_port}\"")
+            f.write(f'listen = "127.0.0.1:{listen_port}"')
 
     def postgres_exec(self, sql):
-        conn = psycopg2.connect(f"dbname=postgres host={self.postgres_host} "
-                                f"user={self.postgres_user} "
-                                f"password={self.postgres_pass}")
+        conn = psycopg2.connect(
+            f"dbname=postgres host={self.postgres_host} "
+            f"user={self.postgres_user} "
+            f"password={self.postgres_pass}"
+        )
         conn.autocommit = True
         conn.cursor().execute(sql)
         conn.close()
@@ -834,8 +952,14 @@ class Coordinatord(TailableProc):
 class RevaultNetwork:
     # FIXME: we use a single bitcoind for all the wallets because it's much
     # more efficient. Eventually, we may have to test with separate ones.
-    def __init__(self, root_dir, bitcoind, postgres_user, postgres_pass,
-                 postgres_host="localhost"):
+    def __init__(
+        self,
+        root_dir,
+        bitcoind,
+        postgres_user,
+        postgres_pass,
+        postgres_host="localhost",
+    ):
         self.root_dir = root_dir
         self.bitcoind = bitcoind
         self.daemons = []
@@ -855,7 +979,7 @@ class RevaultNetwork:
         """
         (stks, cosigs, mans) = get_participants(n_stakeholders, n_managers)
         if csv is None:
-            # More than 6 months
+            # Not more than 6 months
             csv = random.randint(1, 26784)
 
         # The Noise keys are interdependant, so generate everything in advance
@@ -868,32 +992,34 @@ class RevaultNetwork:
         (wt_noiseprivs, wt_noisepubs) = ([], [])
         for i in range(len(stks)):
             stk_noiseprivs.append(os.urandom(32))
-            stk_noisepubs.append(bytes(
-                Curve25519Private(stk_noiseprivs[i]).public_key
-            ))
+            stk_noisepubs.append(bytes(Curve25519Private(stk_noiseprivs[i]).public_key))
             # Unused yet
             wt_noiseprivs.append(os.urandom(32))
-            wt_noisepubs.append(bytes(
-                Curve25519Private(wt_noiseprivs[i]).public_key
-            ))
+            wt_noisepubs.append(bytes(Curve25519Private(wt_noiseprivs[i]).public_key))
         (man_noiseprivs, man_noisepubs) = ([], [])
-        for i in range(len(stks)):
+        for i in range(len(mans)):
             man_noiseprivs.append(os.urandom(32))
-            man_noisepubs.append(bytes(
-                Curve25519Private(man_noiseprivs[i]).public_key
-            ))
-        logging.debug(f"Using Noise pubkeys:\n- Stakeholders: {stk_noisepubs}"
-                      f"\n- Managers: {man_noisepubs}\n- Watchtowers:"
-                      f"{wt_noisepubs}\n")
+            man_noisepubs.append(bytes(Curve25519Private(man_noiseprivs[i]).public_key))
+        logging.debug(
+            f"Using Noise pubkeys:\n- Stakeholders: {stk_noisepubs}"
+            f"\n- Managers: {man_noisepubs}\n- Watchtowers:"
+            f"{wt_noisepubs}\n"
+        )
 
         # Spin up the "Sync Server"
         coord_datadir = os.path.join(self.root_dir, "coordinatord")
         os.makedirs(coord_datadir, exist_ok=True)
-        coordinatord = Coordinatord(coord_datadir, coordinator_noisepriv,
-                                    man_noisepubs, stk_noisepubs,
-                                    wt_noisepubs, self.coordinator_port,
-                                    self.postgres_user, self.postgres_pass,
-                                    self.postgres_host)
+        coordinatord = Coordinatord(
+            coord_datadir,
+            coordinator_noisepriv,
+            man_noisepubs,
+            stk_noisepubs,
+            wt_noisepubs,
+            self.coordinator_port,
+            self.postgres_user,
+            self.postgres_pass,
+            self.postgres_host,
+        )
         coordinatord.start()
         self.daemons.append(coordinatord)
 
@@ -909,14 +1035,21 @@ class RevaultNetwork:
                     {
                         "host": "127.0.0.1:1",
                         "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                                     "5cc6f49a9bddaacf93cd77def697"
+                        "5cc6f49a9bddaacf93cd77def697",
                     }
-                ]
+                ],
             }
             daemon = StakeholderRevaultd(
-                datadir, stks, cosigs, mans, csv, stk_noiseprivs[i],
-                coordinator_noisepub.hex(), self.coordinator_port, self.bitcoind,
-                stk_config
+                datadir,
+                stks,
+                cosigs,
+                mans,
+                csv,
+                stk_noiseprivs[i],
+                coordinator_noisepub.hex(),
+                self.coordinator_port,
+                self.bitcoind,
+                stk_config,
             )
             daemon.start()
             self.stk_wallets.append(daemon)
@@ -933,14 +1066,21 @@ class RevaultNetwork:
                     {
                         "host": "127.0.0.1:1",
                         "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                                     "5cc6f49a9bddaacf93cd77def697"
+                        "5cc6f49a9bddaacf93cd77def697",
                     }
-                ]
+                ],
             }
             daemon = ManagerRevaultd(
-                datadir, stks, cosigs, mans, csv, man_noiseprivs[i],
-                coordinator_noisepub.hex(), self.coordinator_port, self.bitcoind,
-                man_config
+                datadir,
+                stks,
+                cosigs,
+                mans,
+                csv,
+                man_noiseprivs[i],
+                coordinator_noisepub.hex(),
+                self.coordinator_port,
+                self.bitcoind,
+                man_config,
             )
             daemon.start()
             self.man_wallets.append(daemon)
@@ -969,6 +1109,46 @@ class RevaultNetwork:
         wait_for(lambda: self.get_vault(addr) is not None)
 
         return self.get_vault(addr)
+
+    def secure_vault(self, vault):
+        """Make all stakeholders share signatures for all revocation txs"""
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        for stk in self.stk_wallets:
+            stk.wait_for_deposits([deposit])
+            psbts = stk.rpc.getrevocationtxs(deposit)
+            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
+                psbts["cancel_tx"], vault["derivation_index"]
+            )
+            emer_psbt = stk.stk_keychain.sign_revocation_psbt(
+                psbts["emergency_tx"], vault["derivation_index"]
+            )
+            unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
+                psbts["emergency_unvault_tx"], vault["derivation_index"]
+            )
+            stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+        for w in self.stk_wallets + self.man_wallets:
+            w.wait_for_secured_vaults([deposit])
+
+    def activate_vault(self, vault):
+        """Make all stakeholders share signatures for the unvault tx"""
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        for stk in self.stk_wallets:
+            stk.wait_for_secured_vaults([deposit])
+            unvault_psbt = stk.rpc.getunvaulttx(deposit)["unvault_tx"]
+            unvault_psbt = stk.stk_keychain.sign_unvault_psbt(
+                unvault_psbt, vault["derivation_index"]
+            )
+            stk.rpc.unvaulttx(deposit, unvault_psbt)
+        for w in self.stk_wallets + self.man_wallets:
+            w.wait_for_active_vaults([deposit])
+
+    def stop_wallets(self):
+        for w in self.stk_wallets + self.man_wallets:
+            assert w.stop() == 0
+
+    def start_wallets(self):
+        for w in self.stk_wallets + self.man_wallets:
+            w.start()
 
     def cleanup(self):
         for n in self.daemons:

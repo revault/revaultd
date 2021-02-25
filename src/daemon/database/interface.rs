@@ -196,7 +196,7 @@ impl TryFrom<&Row<'_>> for DbVault {
     }
 }
 
-/// Get all the vaults we know about from the db
+/// Get all the vaults we know about from the db, sorted by last update
 pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(
         db_path,
@@ -204,6 +204,15 @@ pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
         NO_PARAMS,
         |row| row.try_into(),
     )
+}
+
+/// Get all the vaults we know about from an already-created transaction
+pub fn db_vaults_dbtx(db_tx: &Transaction) -> Result<Vec<DbVault>, DatabaseError> {
+    db_tx
+        .prepare("SELECT * FROM vaults")?
+        .query_map(params![], |row| row.try_into())?
+        .collect::<rusqlite::Result<Vec<DbVault>>>()
+        .map_err(|e| e.into())
 }
 
 /// Get the vaults that didn't move onchain yet from the DB.

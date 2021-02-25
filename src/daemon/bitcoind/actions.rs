@@ -1,14 +1,14 @@
 use crate::{
     bitcoind::{
         interface::{BitcoinD, DepositInfo, SyncInfo},
-        BitcoindError,
+        BitcoindError, MIN_CONF,
     },
     database::{
         actions::{
-            db_confirm_deposit, db_insert_new_unconfirmed_vault, db_unvault_deposit,
-            db_update_deposit_index, db_update_tip,
+            db_confirm_deposit, db_insert_new_unconfirmed_vault, db_unconfirm_deposit_dbtx,
+            db_unvault_deposit, db_update_deposit_index, db_update_tip, db_update_tip_dbtx,
         },
-        interface::{db_deposits, db_wallet},
+        interface::{db_deposits, db_exec, db_tip, db_vaults_dbtx, db_wallet},
     },
     revaultd::{RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, WalletTransaction},
@@ -237,19 +237,141 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
     Ok(bitcoind)
 }
 
+// Get our state up to date with bitcoind.
+// - Drop vaults which deposit is not confirmed anymore
+// - Drop presigned transactions if the vault is downgraded to 'unconfirmed'
+// - (TODO) Downgrade our state if necessary (if another transaction was reorg'ed out)
+//
+// Note that we want this operation to be atomic: we don't want to be midly updating to the new
+// tip. Either we are updated to the new tip or we roll back to the previous one in case of error.
+fn comprehensive_rescan(
+    db_tx: &rusqlite::Transaction,
+    bitcoind: &BitcoinD,
+    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
+) -> Result<(), BitcoindError> {
+    log::info!("Starting rescan of all vaults in db..");
+    let mut vaults = db_vaults_dbtx(&db_tx)?;
+    let mut tip = bitcoind.get_tip()?;
+
+    // Try to get the last tip
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        let maybe_new_tip = bitcoind.get_tip()?;
+        if tip == maybe_new_tip {
+            break;
+        }
+        tip = maybe_new_tip;
+        continue;
+    }
+
+    while let Some(vault) = vaults.pop() {
+        if matches!(vault.status, VaultStatus::Unconfirmed) {
+            log::debug!(
+                "Vault deposit '{}' is already unconfirmed",
+                vault.deposit_outpoint
+            );
+            continue;
+        }
+
+        // bitcoind's wallet will always keep track of our transaction, even in case of reorg.
+        let (_, blockheight, _) = bitcoind.get_wallet_transaction(&vault.deposit_outpoint.txid)?;
+        if let Some(height) = blockheight {
+            // Edge case: what if our tip is actually not up to date anymore
+            if height > tip.height {
+                return comprehensive_rescan(db_tx, bitcoind, deposits_cache);
+            }
+
+            let deposit_conf = tip.height.checked_sub(height).expect("Checked above") + 1;
+            if deposit_conf < MIN_CONF as u32 {
+                log::warn!(
+                    "Vault deposit '{}' ended up with '{}' confirmations (<{}), \
+                     marking as unconfirmed",
+                    vault.deposit_outpoint,
+                    deposit_conf,
+                    MIN_CONF,
+                );
+                db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
+                assume_some!(
+                    deposits_cache.get_mut(&vault.deposit_outpoint),
+                    "Db vault not in cache?"
+                )
+                .status = VaultStatus::Unconfirmed;
+                continue;
+            }
+
+            // TODO: if secured, active, unvaulted, spent, emergencied check each transaction.
+
+            log::debug!(
+                "Vault deposit '{}' still has '{}' confirmations (>={}), not doing anything",
+                vault.deposit_outpoint,
+                deposit_conf,
+                MIN_CONF
+            );
+        } else {
+            log::warn!(
+                "Vault deposit '{}' ended up without confirmation, marking as \
+                 unconfirmed",
+                vault.deposit_outpoint
+            );
+            db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
+            assume_some!(
+                deposits_cache.get_mut(&vault.deposit_outpoint),
+                "Db vault not in cache?"
+            )
+            .status = VaultStatus::Unconfirmed;
+        }
+    }
+
+    db_update_tip_dbtx(db_tx, &tip)?;
+    log::info!(
+        "\n\nCurrent vaults: {:?}\n Current cache: {:?}\n\n",
+        db_vaults_dbtx(db_tx),
+        &deposits_cache
+    );
+
+    Ok(())
+}
+
+// Check the latest tip, if it does not change or moves forward just do nothing or
+// update in in the database. However if it goes backward or the tip block hash changes
+// resynchronize ourself with the Bitcoin network.
+// Returns the new deposit cache up-to-date with the database
 fn update_tip(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
+    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
 ) -> Result<(), BitcoindError> {
+    let current_tip = db_tip(&revaultd.read().unwrap().db_file())?;
     let tip = bitcoind.get_tip()?;
-    let current_tip = revaultd.read().unwrap().tip.expect("Set at startup..");
 
-    if tip != current_tip {
-        db_update_tip(&revaultd.read().unwrap().db_file(), tip)?;
-        revaultd.write().unwrap().tip = Some(tip);
-
-        log::debug!("New tip: {:#?}", &tip);
+    // Nothing changed, shortcut.
+    if tip == current_tip {
+        return Ok(());
     }
+
+    if tip.height > current_tip.height {
+        // May just be a new (set of) block(s), make sure we are on the same chain
+        let bit_curr_hash = bitcoind.getblockhash(current_tip.height)?;
+        if bit_curr_hash == current_tip.hash || current_tip.height == 0 {
+            // We moved forward, everything is fine.
+            db_update_tip(&revaultd.read().unwrap().db_file(), &tip)?;
+            return Ok(());
+        }
+    }
+
+    log::warn!(
+        "Detected reorg: our current stored tip is '{:?}' but bitcoind's is '{:?}'",
+        &current_tip,
+        &tip
+    );
+    db_exec(&revaultd.read().unwrap().db_file(), |db_tx| {
+        comprehensive_rescan(db_tx, bitcoind, deposits_cache).unwrap_or_else(|e| {
+            log::error!("Error while rescaning vaults: '{}'", e);
+            std::process::exit(1);
+        });
+        Ok(())
+    })?;
+    log::info!("Rescan of all vaults in db done.");
 
     Ok(())
 }
@@ -334,7 +456,7 @@ fn populate_deposit_cache(
                 status: db_vault.status,
             },
         );
-        log::trace!("Loaded deposit '{}' from db", db_vault.deposit_outpoint);
+        log::debug!("Loaded deposit '{}' from db", db_vault.deposit_outpoint);
     }
 
     Ok(cache)
@@ -413,7 +535,7 @@ fn update_deposits(
 
     for (outpoint, utxo) in conf_deposits.into_iter() {
         let blockheight = bitcoind
-            .get_wallet_transaction(outpoint.txid)?
+            .get_wallet_transaction(&outpoint.txid)?
             .1
             .ok_or_else(|| {
                 BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
@@ -554,19 +676,23 @@ fn poller_main(
         }
 
         last_poll = Some(now);
+        update_tip(
+            &mut revaultd,
+            &bitcoind.read().unwrap(),
+            &mut deposits_cache,
+        )?;
         update_deposits(
             &mut revaultd,
             &bitcoind.read().unwrap(),
             &mut deposits_cache,
         )?;
-        update_tip(&mut revaultd, &bitcoind.read().unwrap())?;
     }
 
     Ok(())
 }
 
 fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {
-    let res = bitcoind.get_wallet_transaction(txid);
+    let res = bitcoind.get_wallet_transaction(&txid);
     if let Ok((hex, blockheight, received_time)) = res {
         Some(WalletTransaction {
             hex,

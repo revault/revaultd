@@ -1,5 +1,5 @@
 daemon = true
-log_level = "trace"
+log_level = "debug"
 data_dir = "/home/darosior/projects/revault/d/regtest/revault"
 
 coordinator_host = "127.0.0.1:8383"

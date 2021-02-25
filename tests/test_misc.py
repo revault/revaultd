@@ -110,6 +110,22 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 0
 
 
+def test_largewallets(revaultd_stakeholder, bitcoind):
+    """Test a wallet with 1000 deposits"""
+    amount = 0.01
+    bitcoind.generate_block(10)
+
+    for i in range(10):
+        txids = []
+        for i in range(100):
+            addr = revaultd_stakeholder.rpc.call("getdepositaddress")["address"]
+            txids.append(bitcoind.rpc.sendtoaddress(addr, amount))
+        bitcoind.generate_block(6, txids)
+
+    revaultd_stakeholder.rpc.getinfo()
+    revaultd_stakeholder.rpc.listvaults()
+
+
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_getdepositaddress(revault_network, bitcoind):
     (stks, mans) = revault_network.deploy(4, 2)

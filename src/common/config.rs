@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, vec::Vec};
+use std::{net::SocketAddr, path::PathBuf, time::Duration, vec::Vec};
 
 use revault_net::noise::PublicKey as NoisePubKey;
 use revault_tx::{
@@ -64,6 +64,26 @@ pub struct BitcoindConfig {
     pub cookie_path: PathBuf,
     /// The IP:port bitcoind's RPC is listening on
     pub addr: SocketAddr,
+    /// The poll interval for bitcoind
+    #[serde(with = "deser_duration", default = "default_poll_interval")]
+    pub poll_interval_secs: Duration,
+}
+
+mod deser_duration {
+    use serde::{self, Deserialize, Deserializer};
+    use std::time::Duration;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secs = u64::deserialize(deserializer)?;
+        Ok(Duration::from_secs(secs))
+    }
+}
+
+fn default_poll_interval() -> Duration {
+    Duration::from_secs(30)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -278,6 +298,7 @@ mod tests {
             network = "bitcoin"
             cookie_path = "/home/user/.bitcoin/.cookie"
             addr = "127.0.0.1:8332"
+            poll_interval_secs = 18
 
             # We are one of the above stakeholders
             [stakeholder_config]
@@ -318,6 +339,7 @@ mod tests {
             network = "bitcoin"
             cookie_path = "/home/user/.bitcoin/.cookie"
             addr = "127.0.0.1:8332"
+            poll_interval_secs = 4
 
             # We are one of the above managers
             [manager_config]
@@ -357,6 +379,7 @@ mod tests {
             network = "bitcoin"
             cookie_path = "/home/user/.bitcoin/.cookie"
             addr = "127.0.0.1:8332"
+            poll_interval_secs = 12
 
             # We are one of the above managers
             [manager_config]

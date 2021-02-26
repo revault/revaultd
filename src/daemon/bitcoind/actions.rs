@@ -623,10 +623,7 @@ fn poller_main(
     // We use a cache for maintaining our deposits' state up-to-date by polling `listunspent`
     let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())?;
     // When bitcoind is synced, we poll each 30s. On regtest we speed it up for testing.
-    let poll_interval = match revaultd.read().unwrap().bitcoind_config.network {
-        Network::Regtest => Duration::from_secs(3),
-        _ => Duration::from_secs(30),
-    };
+    let poll_interval = revaultd.read().unwrap().bitcoind_config.poll_interval_secs;
 
     while !shutdown.load(Ordering::Relaxed) {
         let now = Instant::now();

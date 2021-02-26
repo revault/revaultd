@@ -141,51 +141,52 @@ def test_huge_deposit(revault_network, bitcoind):
 def test_getrevocationtxs(revault_network, bitcoind):
     (stks, mans) = revault_network.deploy(4, 2)
     addr = stks[0].rpc.call("getdepositaddress")["address"]
-
-    # If we are not a stakeholder, it'll fail
-    with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.getrevocationtxs("whatever_doesnt_matter")
-
-    # If the vault isn't known, it'll fail (note: it's racy for others but
-    # behaviour is the same is the vault isn't known)
     txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)
     stks[0].wait_for_logs(
         ["Got a new unconfirmed deposit", "Incremented deposit derivation index"]
     )
     vault = stks[0].rpc.listvaults()["vaults"][0]
+    deposit = f"{vault['txid']}:{vault['vout']}"
+
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+        mans[0].rpc.getrevocationtxs(deposit)
+
+    # If the vault isn't confirmed, it'll fail (note: it's racy for others but
+    # behaviour is the same is the vault isn't known)
     for n in stks:
         with pytest.raises(
-            RpcError, match=".* does not refer to a known and " "confirmed vault"
+            RpcError, match=".* does not refer to a known and confirmed vault"
         ):
-            n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+            n.rpc.getrevocationtxs(deposit)
 
     # Now, get it confirmed. They all derived the same transactions
     bitcoind.generate_block(6, txid)
     wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
-    txs = stks[0].rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+    txs = stks[0].rpc.getrevocationtxs(deposit)
     assert len(txs.keys()) == 3
     for n in stks[1:]:
         wait_for(lambda: n.rpc.listvaults()["vaults"][0]["status"] == "funded")
-        assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+        assert txs == n.rpc.getrevocationtxs(deposit)
 
 
 def test_getunvaulttx(revault_network):
     revault_network.deploy(3, 1)
     mans = revault_network.man_wallets
     stks = revault_network.stk_wallets
+    vault = revault_network.fund(18)
+    outpoint = f"{vault['txid']}:{vault['vout']}"
+    stks[0].wait_for_deposits([outpoint])
 
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.getunvaulttx("whatever_doesnt_matter")
+        mans[0].rpc.getunvaulttx(outpoint)
 
     # We can't query for an unknow vault
     invalid_outpoint = f"{'0'*64}:1"
     with pytest.raises(RpcError, match="No vault at"):
         stks[0].rpc.getunvaulttx(invalid_outpoint)
 
-    vault = revault_network.fund(18)
-    outpoint = f"{vault['txid']}:{vault['vout']}"
-    stks[0].wait_for_deposits([outpoint])
     tx = stks[0].rpc.getunvaulttx(outpoint)
     for stk in stks[1:]:
         stk.wait_for_deposits([outpoint])
@@ -294,15 +295,20 @@ def test_revocationtxs(revault_network):
     mans = revault_network.man_wallets
     stks = revault_network.stk_wallets
 
-    # If we are not a stakeholder, it'll fail
-    with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.revocationtxs("whatever_doesnt_matter", "a", "n", "dd")
-
     vault = revault_network.fund(10)
     deposit = f"{vault['txid']}:{vault['vout']}"
     child_index = vault["derivation_index"]
     stks[0].wait_for_deposits([deposit])
     psbts = stks[0].rpc.getrevocationtxs(deposit)
+
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+        mans[0].rpc.revocationtxs(
+            deposit,
+            psbts["cancel_tx"],
+            psbts["emergency_tx"],
+            psbts["emergency_unvault_tx"],
+        )
 
     # We must provide all revocation txs at once
     with pytest.raises(RpcError, match="Invalid params.*"):
@@ -399,6 +405,10 @@ def test_unvaulttx(revault_network):
     revault_network.deploy(3, 1)
     mans = revault_network.man_wallets
     stks = revault_network.stk_wallets
+    vault = revault_network.fund(10)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    child_index = vault["derivation_index"]
+    stks[0].wait_for_deposits([deposit])
 
     def sign_revocation_txs(stks, deposit):
         """
@@ -420,15 +430,11 @@ def test_unvaulttx(revault_network):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
         assert stks[0].rpc.listvaults([], [deposit])["vaults"][0]["status"] == "secured"
 
+    unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
+
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.unvaulttx("whatever_doesnt_matter", "psbt_here")
-
-    vault = revault_network.fund(10)
-    deposit = f"{vault['txid']}:{vault['vout']}"
-    child_index = vault["derivation_index"]
-    stks[0].wait_for_deposits([deposit])
-    unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
+        mans[0].rpc.unvaulttx(deposit, unvault_psbt)
 
     # We can't send it for an unknown vault
     invalid_outpoint = f"{'00'*32}:1"

@@ -72,7 +72,7 @@ pub trait RpcApi {
         &self,
         meta: Self::Metadata,
         statuses: Option<Vec<String>>,
-        outpoints: Option<Vec<String>>,
+        outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Get an address to receive funds to the stakeholders' descriptor
@@ -85,7 +85,7 @@ pub trait RpcApi {
     fn getrevocationtxs(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
+        outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Give the signed cancel, emergency, and unvault_emergency transactions (as
@@ -94,10 +94,10 @@ pub trait RpcApi {
     fn revocationtxs(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
-        cancel_tx: String,
-        emergency_tx: String,
-        emergency_unvault_tx: String,
+        outpoint: OutPoint,
+        cancel_tx: CancelTransaction,
+        emergency_tx: EmergencyTransaction,
+        emergency_unvault_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Get the fresh Unvault transactions for a vault identified by its deposit
@@ -106,7 +106,7 @@ pub trait RpcApi {
     fn getunvaulttx(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
+        outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Give the signed cancel, emergency, and unvault_emergency transactions (as
@@ -115,8 +115,8 @@ pub trait RpcApi {
     fn unvaulttx(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
-        unvault_tx: String,
+        outpoint: OutPoint,
+        unvault_tx: UnvaultTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Retrieve the presigned transactions of a list of vaults
@@ -124,7 +124,7 @@ pub trait RpcApi {
     fn listpresignedtransactions(
         &self,
         meta: Self::Metadata,
-        outpoints: Option<Vec<String>>,
+        outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Retrieve the onchain transactions of a list of vaults
@@ -132,7 +132,7 @@ pub trait RpcApi {
     fn listonchaintransactions(
         &self,
         meta: Self::Metadata,
-        outpoints: Option<Vec<String>>,
+        outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
@@ -148,41 +148,6 @@ macro_rules! stakeholder_only {
                 ));
             }
             _ => {}
-        }
-    };
-}
-
-// Some parsing boilerplate
-
-macro_rules! parse_outpoint {
-    ($outpoint:expr) => {
-        OutPoint::from_str(&$outpoint).map_err(|e| {
-            JsonRpcError::invalid_params(format!(
-                "'{}' is not a valid outpoint ({})",
-                &$outpoint,
-                e.to_string()
-            ))
-        })
-    };
-}
-
-macro_rules! parse_outpoints {
-    ($outpoints:ident) => {
-        if let Some(outpoints) = $outpoints {
-            // If they give an empty array, it's not that they don't want any result, but rather
-            // that they don't want this filter to be taken into account!
-            if outpoints.len() > 0 {
-                Some(
-                    outpoints
-                        .into_iter()
-                        .map(|op_str| parse_outpoint!(op_str))
-                        .collect::<jsonrpc_core::Result<Vec<OutPoint>>>()?,
-                )
-            } else {
-                None
-            }
-        } else {
-            None
         }
     };
 }
@@ -228,7 +193,7 @@ impl RpcApi for RpcImpl {
         &self,
         meta: Self::Metadata,
         statuses: Option<Vec<String>>,
-        outpoints: Option<Vec<String>>,
+        outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let statuses = if let Some(statuses) = statuses {
             // If they give an empty array, it's not that they don't want any result, but rather
@@ -246,7 +211,6 @@ impl RpcApi for RpcImpl {
         } else {
             None
         };
-        let outpoints = parse_outpoints!(outpoints);
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
@@ -294,11 +258,10 @@ impl RpcApi for RpcImpl {
     fn getrevocationtxs(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
+        outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         stakeholder_only!(meta);
 
-        let outpoint = parse_outpoint!(outpoint)?;
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
             meta.tx
@@ -326,33 +289,12 @@ impl RpcApi for RpcImpl {
     fn revocationtxs(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
-        cancel_tx: String,
-        emergency_tx: String,
-        unvault_emergency_tx: String,
+        outpoint: OutPoint,
+        cancel_tx: CancelTransaction,
+        emergency_tx: EmergencyTransaction,
+        unvault_emergency_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         stakeholder_only!(meta);
-
-        let outpoint = parse_outpoint!(outpoint)?;
-        let cancel_tx = CancelTransaction::from_psbt_str(&cancel_tx).map_err(|e| {
-            JsonRpcError::invalid_params(format!(
-                "'{}' is not a valid cancel transaction: '{}'",
-                cancel_tx, e,
-            ))
-        })?;
-        let emergency_tx = EmergencyTransaction::from_psbt_str(&emergency_tx).map_err(|e| {
-            JsonRpcError::invalid_params(format!(
-                "'{}' is not a valid emergency transaction: '{}'",
-                emergency_tx, e,
-            ))
-        })?;
-        let unvault_emergency_tx =
-            UnvaultEmergencyTransaction::from_psbt_str(&unvault_emergency_tx).map_err(|e| {
-                JsonRpcError::invalid_params(format!(
-                    "'{}' is not a valid unvault emergency transaction: '{}'",
-                    unvault_emergency_tx, e,
-                ))
-            })?;
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
@@ -376,10 +318,8 @@ impl RpcApi for RpcImpl {
     fn listpresignedtransactions(
         &self,
         meta: Self::Metadata,
-        outpoints: Option<Vec<String>>,
+        outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let outpoints = parse_outpoints!(outpoints);
-
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
             meta.tx.send(RpcMessageIn::ListPresignedTransactions(
@@ -413,10 +353,8 @@ impl RpcApi for RpcImpl {
     fn listonchaintransactions(
         &self,
         meta: Self::Metadata,
-        outpoints: Option<Vec<String>>,
+        outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let outpoints = parse_outpoints!(outpoints);
-
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
             meta.tx.send(RpcMessageIn::ListOnchainTransactions(
@@ -461,11 +399,10 @@ impl RpcApi for RpcImpl {
     fn getunvaulttx(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
+        outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         stakeholder_only!(meta);
 
-        let outpoint = parse_outpoint!(outpoint)?;
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
             meta.tx
@@ -486,15 +423,10 @@ impl RpcApi for RpcImpl {
     fn unvaulttx(
         &self,
         meta: Self::Metadata,
-        outpoint: String,
-        unvault_tx: String,
+        outpoint: OutPoint,
+        unvault_tx: UnvaultTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         stakeholder_only!(meta);
-
-        let outpoint = parse_outpoint!(outpoint)?;
-        let unvault_tx = UnvaultTransaction::from_psbt_str(&unvault_tx).map_err(|e| {
-            JsonRpcError::invalid_params(format!("Invalid Unvault transaction: '{}'", e))
-        })?;
 
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(

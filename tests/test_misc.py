@@ -8,30 +8,6 @@ from fixtures import *
 from utils import POSTGRES_IS_SETUP, TIMEOUT, RpcError, wait_for
 
 
-def test_revaultd_stakeholder_starts(revaultd_stakeholder):
-    revaultd_stakeholder.rpc.call("stop")
-    revaultd_stakeholder.wait_for_logs(
-        [
-            "Stopping revaultd.",
-            "Bitcoind received shutdown.",
-            "Signature fetcher thread received shutdown.",
-        ]
-    )
-    revaultd_stakeholder.proc.wait(TIMEOUT)
-
-
-def test_revaultd_manager_starts(revaultd_manager):
-    revaultd_manager.rpc.call("stop")
-    revaultd_manager.wait_for_logs(
-        [
-            "Stopping revaultd.",
-            "Bitcoind received shutdown.",
-            "Signature fetcher thread received shutdown.",
-        ]
-    )
-    revaultd_manager.proc.wait(TIMEOUT)
-
-
 def test_getinfo(revaultd_manager, bitcoind):
     res = revaultd_manager.rpc.call("getinfo")
     assert res["network"] == "regtest"

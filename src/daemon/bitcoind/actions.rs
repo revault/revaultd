@@ -417,7 +417,6 @@ fn presigned_transactions(
             emer_address,
             revaultd.xpub_ctx(),
             revaultd.lock_time,
-            revaultd.unvault_csv,
         )?;
         Ok((unvault_tx, cancel_tx, Some(emer_tx), Some(unemer_tx)))
     } else {
@@ -428,7 +427,6 @@ fn presigned_transactions(
             &cpfp_descriptor,
             revaultd.xpub_ctx(),
             revaultd.lock_time,
-            revaultd.unvault_csv,
         )?;
         Ok((unvault_tx, cancel_tx, None, None))
     }

@@ -6,7 +6,7 @@ use crate::{jsonrpc::UserRole, revaultd::VaultStatus, threadmessages::*};
 use common::{assume_ok, VERSION};
 
 use revault_tx::{
-    bitcoin::OutPoint,
+    bitcoin::{Address, OutPoint},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
@@ -14,6 +14,7 @@ use revault_tx::{
 };
 
 use std::{
+    collections::BTreeMap,
     process,
     str::FromStr,
     sync::{
@@ -134,9 +135,19 @@ pub trait RpcApi {
         meta: Self::Metadata,
         outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "getspendtx")]
+    fn getspendtx(
+        &self,
+        meta: Self::Metadata,
+        outpoint: Vec<OutPoint>,
+        outputs: BTreeMap<Address, u64>,
+        feerate: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
-// TODO: we should probably make this a proc macro and apply it above?
+// TODO: we should probably make these proc macros and apply them above?
+
 macro_rules! stakeholder_only {
     ($meta:ident) => {
         match $meta.role {
@@ -145,6 +156,21 @@ macro_rules! stakeholder_only {
                 // abusing -32602
                 return Err(JsonRpcError::invalid_params(
                     "This is a stakeholder command".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    };
+}
+
+macro_rules! manager_only {
+    ($meta:ident) => {
+        match $meta.role {
+            UserRole::Stakeholder => {
+                // TODO: we should declare some custom error codes instead of
+                // abusing -32602
+                return Err(JsonRpcError::invalid_params(
+                    "This is a manager command".to_string(),
                 ));
             }
             _ => {}
@@ -438,5 +464,42 @@ impl RpcApi for RpcImpl {
             .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
 
         Ok(json!({}))
+    }
+
+    fn getspendtx(
+        &self,
+        meta: Self::Metadata,
+        outpoints: Vec<OutPoint>,
+        destinations: BTreeMap<Address, u64>,
+        feerate: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        if feerate < 1 {
+            return Err(JsonRpcError::invalid_params(
+                "Feerate can't be <1".to_string(),
+            ));
+        }
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::GetSpendTx(
+                outpoints,
+                destinations,
+                feerate,
+                response_tx
+            )),
+            "Sending 'getspendtx' to main thread"
+        );
+
+        let spend_tx = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'getspendtx' from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({
+            "spend_tx": spend_tx.as_psbt_string(),
+        }))
     }
 }

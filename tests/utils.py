@@ -703,6 +703,7 @@ class Revaultd(TailableProc):
             f.write(f'network = "regtest"\n')
             f.write(f"cookie_path = '{bitcoind_cookie}'\n")
             f.write(f"addr = '127.0.0.1:{bitcoind.rpcport}'\n")
+            f.write(f"poll_interval_secs = 3\n")
 
             if stk_config is not None:
                 f.write("[stakeholder_config]\n")

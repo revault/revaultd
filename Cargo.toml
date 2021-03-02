@@ -3,7 +3,7 @@ name = "revaultd"
 version = "0.0.2"
 authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
-repository = "https://github.com/re-vault/revaultd"
+repository = "https://github.com/revault/revaultd"
 license-file = "LICENCE"
 keywords = ["revault", "bitcoin", "vault"]
 description = "Revault wallet daemon"
@@ -26,19 +26,19 @@ path = "src/cli/main.rs"
 [dependencies]
 revault_tx = { version = "0.1", features = ["use-serde"] }
 
-revault_net = { git = "https://github.com/re-vault/revault_net" }
+revault_net = { git = "https://github.com/revault/revault_net" }
 
 # Don't reinvent the wheel
 dirs = "3.0.1"
 
 # It's concise, does the Right Thing, and even supports Windows !
-daemonize-simple = "0.1.4"
+daemonize-simple = "0.1"
 
 # To talk to bitcoind
-jsonrpc = "0.12.0"
+jsonrpc = "0.12"
 
 # We use it for the cookie file
-base64 = "0.13.0"
+base64 = "0.13"
 
 # We us TOML for the config and JSON for connections
 serde = { version = "1.0", features = ["derive"] }
@@ -51,14 +51,14 @@ fern = "0.5"
 chrono = "0.4"
 
 # DB stuff
-rusqlite = { version = "0.24.1", features = ["bundled"] }
+rusqlite = { version = "0.24", features = ["bundled"] }
 
 # For umask..
 libc = "0.2.80"
 
 # For the JSONRPC server
-jsonrpc-core = "15.1.0"
-jsonrpc-derive = "15.1.0"
+jsonrpc-core = "15.1"
+jsonrpc-derive = "15.1"
 [target.'cfg(not(windows))'.dependencies]
 mio = { version = "0.7.5", features = ["default", "os-poll", "os-util", "uds"] }
 [target.'cfg(windows)'.dependencies]

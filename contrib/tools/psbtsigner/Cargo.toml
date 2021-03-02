@@ -5,5 +5,5 @@ authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 
 [dependencies]
-revault_tx = { git = "https://github.com/re-vault/revault_tx", features = ["use-serde"] }
+revault_tx = { git = "https://github.com/revault/revault_tx", features = ["use-serde"] }
 base64 = "0.13.0"

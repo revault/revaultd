@@ -106,7 +106,7 @@ pub fn check_signature(
 }
 
 // Send a `get_sigs` message to the Coordinator to fetch other stakeholders' signatures for this
-// transaction (https://github.com/re-vault/practical-revault/blob/master/messages.md#get_sigs).
+// transaction (https://github.com/revault/practical-revault/blob/master/messages.md#get_sigs).
 // If the Coordinator hands us some new signatures, update the transaction in DB.
 // If this made the transaction valid, maybe update the vault state.
 // NOTE: the vault state update assumes that we will never have all unvault signatures before

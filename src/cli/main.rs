@@ -109,7 +109,6 @@ fn main() {
     let request = rpc_request(method, params);
     let socket_file = socket_file(conf_file);
     let mut raw_response = vec![0; 256];
-    let mut response: Json;
 
     let mut socket = UnixStream::connect(&socket_file).unwrap_or_else(|e| {
         eprintln!("Could not connect to {:?}: '{}'", socket_file, e);
@@ -122,30 +121,30 @@ fn main() {
             process::exit(1);
         });
 
+    let mut total_read = 0;
     loop {
-        let mut total_read = 0;
-        loop {
-            total_read += socket
-                .read(&mut raw_response[total_read..])
-                .unwrap_or_else(|e| {
-                    eprintln!("Reading from {:?}: '{}'", &socket_file, e);
-                    process::exit(1);
-                });
-            if total_read == raw_response.len() {
-                raw_response.resize(2 * total_read, 0);
-            } else {
-                raw_response = trimmed(raw_response, total_read);
-                break;
-            }
+        let n = socket
+            .read(&mut raw_response[total_read..])
+            .unwrap_or_else(|e| {
+                eprintln!("Reading from {:?}: '{}'", &socket_file, e);
+                process::exit(1);
+            });
+        total_read += n;
+        if total_read == raw_response.len() {
+            raw_response.resize(2 * total_read, 0);
+            continue;
         }
-        response = serde_json::from_slice(&raw_response).unwrap_or_else(|e| {
-            eprintln!("Parsing response '{:x?}': '{}'", raw_response, e);
-            process::exit(1);
-        });
-        if response.get("id") == request.get("id") {
-            break;
+
+        // FIXME: do actual incremental parsing instead of this hack!!
+        raw_response = trimmed(raw_response, total_read);
+        match serde_json::from_slice::<Json>(&raw_response) {
+            Ok(response) => {
+                if response.get("id") == request.get("id") {
+                    print!("{}", response);
+                    return;
+                }
+            }
+            Err(_) => continue,
         }
     }
-
-    print!("{}", response);
 }

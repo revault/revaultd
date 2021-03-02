@@ -222,7 +222,14 @@ class UnixDomainSocketRpc(object):
             chunk = sock.recv(n_to_read)
             buff += chunk
             if len(chunk) != n_to_read:
-                return json.loads(buff)
+                try:
+                    return json.loads(buff)
+                except json.JSONDecodeError:
+                    # There is more to read, continue
+                    # FIXME: this is a workaround for large reads, but we could
+                    # eventually introduce an "end" marker in revaultd's responses,
+                    # such as '\n'.
+                    continue
 
     def __getattr__(self, name):
         """Intercept any call that is not explicitly defined and call @call.

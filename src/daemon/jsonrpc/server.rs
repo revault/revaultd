@@ -103,38 +103,47 @@ fn read_bytes_from_stream(stream: &mut dyn io::Read) -> Result<Option<Vec<u8>>, 
     }
 }
 
-// Returns Ok(true) on written data and Ok(false) on non-fatal error but non-written data
-fn write_byte_stream(stream: &mut UnixStream, resp: &str) -> Result<bool, io::Error> {
-    match stream.write(resp.as_bytes()) {
-        Ok(n) => {
-            if n < resp.len() {
-                // We didn't write everything!
-                Err(io::ErrorKind::WriteZero.into())
-            } else {
-                Ok(true)
+// Returns Ok(None) on entirely written data and Ok(Some(remaining_data)) on partially-written
+// data.
+fn write_byte_stream(stream: &mut UnixStream, resp: Vec<u8>) -> Result<Option<Vec<u8>>, io::Error> {
+    let mut written = 0;
+    loop {
+        match stream.write(&resp[written..]) {
+            Ok(n) => {
+                written += n;
+                log::trace!("Wrote '{}', total '{}'", n, written);
+
+                if written == resp.len() {
+                    return Ok(None);
+                }
             }
+            Err(e) => match e.kind() {
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => {
+                    log::debug!(
+                        "Got error '{}' when writing. Wrote '{}' bytes, defering \
+                                the rest of the buffer to next write.",
+                        e,
+                        written
+                    );
+                    return Ok(Some(resp[written..].to_vec()));
+                }
+                _ => return Err(e),
+            },
         }
-        Err(e) => match e.kind() {
-            io::ErrorKind::WouldBlock | io::ErrorKind::BrokenPipe => Ok(false),
-            io::ErrorKind::Interrupted => write_byte_stream(stream, resp),
-            _ => Err(e),
-        },
     }
 }
 
 // Used to check if, when receiving an event for a token, we have an ongoing connection and stream
 // for it.
 #[cfg(not(windows))]
-type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<String>>>)>;
+type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<Vec<u8>>>>)>;
 
 fn handle_single_request(
     jsonrpc_io: Arc<RwLock<jsonrpc_core::MetaIoHandler<JsonRpcMetaData>>>,
     metadata: JsonRpcMetaData,
-    resp_queue: Arc<RwLock<VecDeque<String>>>,
+    resp_queue: Arc<RwLock<VecDeque<Vec<u8>>>>,
     message: MethodCall,
 ) {
-    let message_id = message.id.clone();
-
     let res = assume_some!(
         jsonrpc_io
             .read()
@@ -145,11 +154,9 @@ fn handle_single_request(
         "This is a method call, there is always a response."
     );
     let resp = Response::Single(res);
-    let resp_str =
-        serde_json::to_string(&resp).expect("jsonrpc_core says: This should never fail.");
+    let resp_bytes = serde_json::to_vec(&resp).expect("jsonrpc_core says: This should never fail.");
 
-    log::trace!("Responding to method {:?} with '{}'", message_id, resp_str);
-    resp_queue.write().unwrap().push_back(resp_str);
+    resp_queue.write().unwrap().push_back(resp_bytes);
 }
 
 // Read request from the stream, parse it as JSON and handle the JSONRPC command.
@@ -161,7 +168,7 @@ fn handle_single_request(
 fn read_handle_request(
     cache: &mut Vec<u8>,
     stream: &mut UnixStream,
-    resp_queue: &mut Arc<RwLock<VecDeque<String>>>,
+    resp_queue: &mut Arc<RwLock<VecDeque<Vec<u8>>>>,
     jsonrpc_io: &Arc<RwLock<jsonrpc_core::MetaIoHandler<JsonRpcMetaData>>>,
     metadata: &JsonRpcMetaData,
     handler_threads: &mut VecDeque<thread::JoinHandle<()>>,
@@ -206,7 +213,10 @@ fn read_handle_request(
                 if e.is_eof() {
                     leftover = Some(de.byte_offset());
                 }
-                log::debug!("Error reading JSON: '{}'", e);
+                log::trace!(
+                    "Non fatal error reading JSON: '{}'. Probably partial read.",
+                    e
+                );
                 break;
             }
         }
@@ -271,7 +281,7 @@ fn mio_loop(
                                 curr_token,
                                 (
                                     stream,
-                                    Arc::new(RwLock::new(VecDeque::<String>::with_capacity(32))),
+                                    Arc::new(RwLock::new(VecDeque::<Vec<u8>>::with_capacity(32))),
                                 ),
                             );
 
@@ -347,10 +357,19 @@ fn mio_loop(
                             None => break,
                         };
 
-                        log::trace!("Writing response '{:?}' for {:?}", &resp, event.token());
-                        if !write_byte_stream(stream, &resp)? {
-                            // If we could not write the data, don't lose track of it!
-                            resp_queue.write().unwrap().push_front(resp);
+                        log::trace!(
+                            "Writing response for {:?} ({} bytes)",
+                            event.token(),
+                            resp.len()
+                        );
+                        // If we could not write the data, don't lose track of it! This would only
+                        // reasonably happen on `WouldBlock`.
+                        match write_byte_stream(stream, resp) {
+                            Ok(Some(resp)) => resp_queue.write().unwrap().push_front(resp),
+                            Ok(None) => {}
+                            Err(e) => {
+                                log::error!("Error writing resp for {:?}: '{}'", event.token(), e)
+                            }
                         }
                     }
                 }
@@ -376,7 +395,13 @@ fn windows_loop(
                 Ok(string) => {
                     // If it is and wants a response, write it directly
                     if let Some(resp) = jsonrpc_io.handle_request_sync(&string, metadata.clone()) {
-                        while !write_byte_stream(&mut stream, &resp)? {}
+                        let mut resp = Some(resp.into_bytes());
+                        loop {
+                            resp = write_byte_stream(&mut stream, resp.unwrap())?;
+                            if resp.is_none() {
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(e) => {

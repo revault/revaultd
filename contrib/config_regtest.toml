@@ -33,6 +33,7 @@ unvault_csv = 18
 network = "regtest"
 cookie_path = "/home/darosior/projects/revault/d/regtest/bcdir1/regtest/.cookie"
 addr = "127.0.0.1:9001"
+poll_interval_secs = 3
 
 # We are one of the below stakeholders
 [stakeholder_config]

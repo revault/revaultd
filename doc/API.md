@@ -260,10 +260,17 @@ set of vaults to spend.
 | Parameter   | Type                 | Description                                                           |
 | ----------- | -------------------- | --------------------------------------------------------------------- |
 | `outpoints` | string array         | Vault deposit outpoints -- vaults must be [`active`](#vault-statuses) |
-| `output`    | map of string to int | Map of Bitcoin addresses to amount                                    |
+| `outputs`   | map of string to int | Map of Bitcoin addresses to amount                                    |
+| `feerate`   | int                  | Target feerate for the transaction                                    |
 
 Fee is deducted from the total amount of the vaults spent minus the total
 amount of the output.
+
+`feerate` is tolerated to end up 10% below the target, or above if we can't create a
+change output.
+
+Mind the addition of the CPFP output we do, which must be taken into account by the
+feerate.
 
 #### Response
 
@@ -316,7 +323,7 @@ amount of the output.
 HSM                  client                      revaultd
  +                      +                          +
  |                      |                          |
- |                      | +---listvaults secure--> |
+ |                      | +---listvaults active--> |
  |                      | <--------vaults--------+ |
  |                      |                          |
  |                      | +--getunvaulttx--------> |

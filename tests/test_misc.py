@@ -1,6 +1,7 @@
 import copy
 import logging
 import pytest
+import random
 import serializations
 
 from bitcoin.core import COIN
@@ -141,51 +142,52 @@ def test_huge_deposit(revault_network, bitcoind):
 def test_getrevocationtxs(revault_network, bitcoind):
     (stks, mans) = revault_network.deploy(4, 2)
     addr = stks[0].rpc.call("getdepositaddress")["address"]
-
-    # If we are not a stakeholder, it'll fail
-    with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.getrevocationtxs("whatever_doesnt_matter")
-
-    # If the vault isn't known, it'll fail (note: it's racy for others but
-    # behaviour is the same is the vault isn't known)
     txid = bitcoind.rpc.sendtoaddress(addr, 0.22222)
     stks[0].wait_for_logs(
         ["Got a new unconfirmed deposit", "Incremented deposit derivation index"]
     )
     vault = stks[0].rpc.listvaults()["vaults"][0]
+    deposit = f"{vault['txid']}:{vault['vout']}"
+
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+        mans[0].rpc.getrevocationtxs(deposit)
+
+    # If the vault isn't confirmed, it'll fail (note: it's racy for others but
+    # behaviour is the same is the vault isn't known)
     for n in stks:
         with pytest.raises(
-            RpcError, match=".* does not refer to a known and " "confirmed vault"
+            RpcError, match=".* does not refer to a known and confirmed vault"
         ):
-            n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+            n.rpc.getrevocationtxs(deposit)
 
     # Now, get it confirmed. They all derived the same transactions
     bitcoind.generate_block(6, txid)
     wait_for(lambda: stks[0].rpc.listvaults()["vaults"][0]["status"] == "funded")
-    txs = stks[0].rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+    txs = stks[0].rpc.getrevocationtxs(deposit)
     assert len(txs.keys()) == 3
     for n in stks[1:]:
         wait_for(lambda: n.rpc.listvaults()["vaults"][0]["status"] == "funded")
-        assert txs == n.rpc.getrevocationtxs(f"{vault['txid']}:{vault['vout']}")
+        assert txs == n.rpc.getrevocationtxs(deposit)
 
 
 def test_getunvaulttx(revault_network):
     revault_network.deploy(3, 1)
     mans = revault_network.man_wallets
     stks = revault_network.stk_wallets
+    vault = revault_network.fund(18)
+    outpoint = f"{vault['txid']}:{vault['vout']}"
+    stks[0].wait_for_deposits([outpoint])
 
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.getunvaulttx("whatever_doesnt_matter")
+        mans[0].rpc.getunvaulttx(outpoint)
 
     # We can't query for an unknow vault
     invalid_outpoint = f"{'0'*64}:1"
     with pytest.raises(RpcError, match="No vault at"):
         stks[0].rpc.getunvaulttx(invalid_outpoint)
 
-    vault = revault_network.fund(18)
-    outpoint = f"{vault['txid']}:{vault['vout']}"
-    stks[0].wait_for_deposits([outpoint])
     tx = stks[0].rpc.getunvaulttx(outpoint)
     for stk in stks[1:]:
         stk.wait_for_deposits([outpoint])
@@ -294,15 +296,20 @@ def test_revocationtxs(revault_network):
     mans = revault_network.man_wallets
     stks = revault_network.stk_wallets
 
-    # If we are not a stakeholder, it'll fail
-    with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.revocationtxs("whatever_doesnt_matter", "a", "n", "dd")
-
     vault = revault_network.fund(10)
     deposit = f"{vault['txid']}:{vault['vout']}"
     child_index = vault["derivation_index"]
     stks[0].wait_for_deposits([deposit])
     psbts = stks[0].rpc.getrevocationtxs(deposit)
+
+    # If we are not a stakeholder, it'll fail
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+        mans[0].rpc.revocationtxs(
+            deposit,
+            psbts["cancel_tx"],
+            psbts["emergency_tx"],
+            psbts["emergency_unvault_tx"],
+        )
 
     # We must provide all revocation txs at once
     with pytest.raises(RpcError, match="Invalid params.*"):
@@ -399,6 +406,10 @@ def test_unvaulttx(revault_network):
     revault_network.deploy(3, 1)
     mans = revault_network.man_wallets
     stks = revault_network.stk_wallets
+    vault = revault_network.fund(10)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    child_index = vault["derivation_index"]
+    stks[0].wait_for_deposits([deposit])
 
     def sign_revocation_txs(stks, deposit):
         """
@@ -420,15 +431,11 @@ def test_unvaulttx(revault_network):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
         assert stks[0].rpc.listvaults([], [deposit])["vaults"][0]["status"] == "secured"
 
+    unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
+
     # If we are not a stakeholder, it'll fail
     with pytest.raises(RpcError, match="This is a stakeholder command"):
-        mans[0].rpc.unvaulttx("whatever_doesnt_matter", "psbt_here")
-
-    vault = revault_network.fund(10)
-    deposit = f"{vault['txid']}:{vault['vout']}"
-    child_index = vault["derivation_index"]
-    stks[0].wait_for_deposits([deposit])
-    unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
+        mans[0].rpc.unvaulttx(deposit, unvault_psbt)
 
     # We can't send it for an unknown vault
     invalid_outpoint = f"{'00'*32}:1"
@@ -746,3 +753,127 @@ def test_reorged_deposit_status(revault_network, bitcoind):
     revault_network.start_wallets()
     for w in revault_network.stk_wallets + revault_network.man_wallets:
         w.wait_for_active_vaults([deposit])
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_getspendtx(revault_network, bitcoind):
+    revault_network.deploy(2, 1)
+    man = revault_network.man_wallets[0]
+    amount = 32.67890
+    vault = revault_network.fund(amount)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+
+    addr = bitcoind.rpc.getnewaddress()
+    spent_vaults = [deposit]
+    # 10k fees, 50k CPFP, 50k unvault CPFP + fees
+    destination = {addr: vault["amount"] - 10_000 - 50_000 - 50_000}
+    feerate = 2
+
+    revault_network.secure_vault(vault)
+
+    # If the vault isn't active, it'll fail
+    with pytest.raises(RpcError, match="Invalid vault status"):
+        man.rpc.getspendtx(spent_vaults, destination, feerate)
+
+    revault_network.activate_vault(vault)
+
+    # If we are not a manager, it'll fail
+    with pytest.raises(RpcError, match="This is a manager command"):
+        revault_network.stk_wallets[0].rpc.getspendtx(
+            spent_vaults, destination, feerate
+        )
+
+    # The amount was not enough to afford a change output, everything went to
+    # fees.
+    psbt = serializations.PSBT()
+    psbt.deserialize(man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"])
+    assert len(psbt.inputs) == 1 and len(psbt.outputs) == 2
+
+    # But if we decrease it enough, it'll create a change output
+    destinations = {addr: vault["amount"] - 10_000 - 50_000 - 50_000 - 1_000_000}
+    psbt = serializations.PSBT()
+    psbt.deserialize(
+        man.rpc.getspendtx(spent_vaults, destinations, feerate)["spend_tx"]
+    )
+    assert len(psbt.inputs) == 1 and len(psbt.outputs) == 3
+
+    # Asking for an impossible feerate will error
+    with pytest.raises(
+        RpcError,
+        match="Required feerate .* is significantly higher than actual feerate",
+    ):
+        man.rpc.getspendtx(spent_vaults, destinations, 100_000)
+
+    # We'll stubbornly refuse they shoot themselves in the foot
+    with pytest.raises(
+        RpcError,
+        match="Fees larger than 20000000 sats",
+    ):
+        destinations = {addr: vault["amount"] // 10}
+        man.rpc.getspendtx(spent_vaults, destinations, 100_000)
+
+    # We can spend many vaults
+    deposits = [deposit]
+    amounts = [vault["amount"]]
+    for _ in range(10):
+        amount = round(random.random() * 10 ** 8 % 50, 7)
+        vault = revault_network.fund(amount)
+        revault_network.secure_vault(vault)
+        revault_network.activate_vault(vault)
+
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        amount_sat = vault["amount"]
+        deposits.append(deposit)
+        amounts.append(amount_sat)
+
+        # Note that it passes even with 100k/vb if you disable insane fees
+        # sanity checks :)
+        feerate = random.randint(1, 10_000)
+        # Overhead, P2WPKH, P2WSH, inputs, witnesses
+        tx_vbytes = 11 + 31 + 43 + (32 + 4 + 4 + 1) * len(deposits) + 99 * len(deposits)
+        sent_amount = (
+            sum(amounts)
+            - tx_vbytes * feerate  # fees
+            - 2 * 32 * tx_vbytes  # CPFP
+            - 30_000 * len(deposits)  # Unvault CPFP
+            # Overhead, P2WSH * 2, inputs + witnesses
+            - (11 + 43 * 2 + 91) * len(deposits) * 24  # Unvault fees (6sat/WU feerate)
+        )
+        destinations = {addr: sent_amount}
+        psbt = serializations.PSBT()
+        psbt.deserialize(
+            man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+        )
+        assert (
+            len(psbt.inputs) == len(deposits) and len(psbt.outputs) == 2
+        ), "unexpected change output"
+
+    # And we can spend to many destinations
+    deposits = [deposit]
+    destinations = {}
+    for _ in range(10):
+        feerate = random.randint(1, 1_000)
+        destinations[bitcoind.rpc.getnewaddress()] = vault["amount"] // 20
+        psbt = serializations.PSBT()
+        psbt.deserialize(
+            man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+        )
+        assert (
+            len(psbt.inputs) == len(deposits)
+            # destinations + CPFP + change
+            and len(psbt.outputs) == len(destinations.keys()) + 1 + 1
+        ), "expected a change output"
+
+    # And we can do both
+    deposits = []
+    destinations = {}
+    for vault in man.rpc.listvaults(["active"])["vaults"]:
+        deposits.append(f"{vault['txid']}:{vault['vout']}")
+        destinations[bitcoind.rpc.getnewaddress()] = vault["amount"] // 2
+    psbt = serializations.PSBT()
+    psbt.deserialize(man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"])
+    assert (
+        len(psbt.inputs) == len(deposits)
+        # destinations + CPFP + change
+        and len(psbt.outputs) == len(destinations.keys()) + 1 + 1
+    ), "expected a change output"

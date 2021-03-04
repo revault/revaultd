@@ -2,11 +2,12 @@ use crate::revaultd::VaultStatus;
 use revault_tx::{
     bitcoin::{util::bip32::ChildNumber, Address, Amount, OutPoint, Txid},
     transactions::{
-        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
 };
 
-use std::sync::mpsc::SyncSender;
+use std::{collections::BTreeMap, sync::mpsc::SyncSender};
 
 /// Incoming from RPC server thread
 #[derive(Debug)]
@@ -57,6 +58,12 @@ pub enum RpcMessageIn {
     ListOnchainTransactions(
         Option<Vec<OutPoint>>,
         SyncSender<Result<Vec<VaultOnchainTransactions>, RpcControlError>>,
+    ),
+    GetSpendTx(
+        Vec<OutPoint>,
+        BTreeMap<Address, u64>,
+        u64,
+        SyncSender<Result<SpendTransaction, RpcControlError>>,
     ),
 }
 
@@ -122,6 +129,8 @@ pub enum RpcControlError {
     InvalidStatus((VaultStatus, VaultStatus)),
     InvalidPsbt(String),
     Communication(String),
+    Transaction(revault_tx::Error),
+    SpendLowFeerate(u64, u64),
 }
 
 impl std::fmt::Display for RpcControlError {
@@ -135,8 +144,20 @@ impl std::fmt::Display for RpcControlError {
             ),
             Self::InvalidPsbt(reason) => write!(f, "Invalid PSBT: '{}'", reason),
             Self::Communication(reason) => write!(f, "Communication error: '{}'", reason),
+            Self::Transaction(e) => write!(f, "Transaction management error: '{}'", e),
+            Self::SpendLowFeerate(required, actual) => write!(
+                f,
+                "Required feerate ('{}') is significantly higher than actual feerate ('{}')",
+                required, actual
+            ),
         }
     }
 }
 
 impl std::error::Error for RpcControlError {}
+
+impl From<revault_tx::Error> for RpcControlError {
+    fn from(e: revault_tx::Error) -> Self {
+        Self::Transaction(e)
+    }
+}

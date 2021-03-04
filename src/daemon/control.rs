@@ -26,14 +26,15 @@ use revault_net::{message::server::Sig, transport::KKTransport};
 use revault_tx::{
     bitcoin::{
         secp256k1::{self, Signature},
-        Network, OutPoint, PublicKey as BitcoinPubKey, SigHashType, Txid,
+        util::bip32::ChildNumber,
+        Network, OutPoint, PublicKey as BitcoinPubKey, SigHashType, TxOut, Txid,
     },
     transactions::{
-        transaction_chain, CancelTransaction, EmergencyTransaction, RevaultTransaction,
-        UnvaultEmergencyTransaction, UnvaultTransaction,
+        spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
+        RevaultTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
     txins::DepositTxIn,
-    txouts::DepositTxOut,
+    txouts::{DepositTxOut, ExternalTxOut, SpendTxOut},
 };
 
 use std::{
@@ -546,7 +547,6 @@ pub fn handle_rpc_messages(
                         emer_address,
                         xpub_ctx,
                         revaultd.lock_time,
-                        revaultd.unvault_csv,
                     )?;
 
                     response_tx.send(Some((cancel, emergency, unvault_emer)))?;
@@ -885,6 +885,159 @@ pub fn handle_rpc_messages(
                     &bitcoind_tx,
                     outpoints,
                 )?)?;
+            }
+            RpcMessageIn::GetSpendTx(outpoints, destinations, feerate_vb, response_tx) => {
+                log::trace!("Got 'getspendtx' request from RPC thread");
+                let revaultd = revaultd.read().unwrap();
+                let xpub_ctx = revaultd.xpub_ctx();
+                let db_file = &revaultd.db_file();
+
+                // Reconstruct the DepositTxin s from the outpoints and the vaults informations
+                let mut txins = Vec::with_capacity(outpoints.len());
+                // If we need a change output, use the highest derivation index of the vaults
+                // spent. This avoids leaking a new address needlessly while not introducing
+                // disrepancy between our indexes.
+                let mut change_index = ChildNumber::from(0);
+                for outpoint in outpoints.iter() {
+                    match db_vault_by_deposit(db_file, &outpoint)? {
+                        Some(vault) => match vault.status {
+                            VaultStatus::Active => {
+                                let deposit_descriptor =
+                                    revaultd.deposit_descriptor.derive(vault.derivation_index);
+                                if vault.derivation_index > change_index {
+                                    change_index = vault.derivation_index;
+                                }
+                                txins.push((
+                                    DepositTxIn::new(
+                                        *outpoint,
+                                        DepositTxOut::new(
+                                            vault.amount.as_sat(),
+                                            &deposit_descriptor,
+                                            xpub_ctx,
+                                        ),
+                                    ),
+                                    vault.derivation_index,
+                                ));
+                            }
+                            status => {
+                                response_tx.send(Err(RpcControlError::InvalidStatus((
+                                    status,
+                                    VaultStatus::Active,
+                                ))))?;
+                                break;
+                            }
+                        },
+                        None => {
+                            response_tx.send(Err(RpcControlError::UnknownOutpoint(*outpoint)))?;
+                            break;
+                        }
+                    }
+                }
+                if txins.len() != outpoints.len() {
+                    // There was an error with one of the vaults, error is already sent.
+                    continue;
+                }
+
+                // Mutable as we *may* add a change output
+                let mut txos: Vec<SpendTxOut> = destinations
+                    .into_iter()
+                    .map(|(addr, value)| {
+                        let script_pubkey = addr.script_pubkey();
+                        SpendTxOut::Destination(ExternalTxOut::new(TxOut {
+                            value,
+                            script_pubkey,
+                        }))
+                    })
+                    .collect();
+
+                log::debug!(
+                    "Creating a Spend transaction with txins: '{:?}' and txos: '{:?}'",
+                    &txins,
+                    &txos
+                );
+
+                // This adds the CPFP output so create a dummy one to accurately compute the
+                // feerate.
+                let nochange_tx = match spend_tx_from_deposits(
+                    txins.clone(),
+                    txos.clone(),
+                    &revaultd.unvault_descriptor,
+                    &revaultd.cpfp_descriptor,
+                    xpub_ctx,
+                    revaultd.unvault_csv,
+                    revaultd.lock_time,
+                    /* Deactivate insane feerate check */
+                    false,
+                ) {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        // Why doesn't the compiler recursively handle into()s ?
+                        response_tx.send(Err(RpcControlError::Transaction(e.into())))?;
+                        continue;
+                    }
+                };
+
+                // If the feerate of the transaction would be much lower (< 90/100) than what they
+                // requested for, tell them.
+                let nochange_feerate_vb = assume_some!(
+                    nochange_tx.max_feerate().checked_mul(4),
+                    "bug in feerate computation"
+                );
+                if nochange_feerate_vb * 10 < feerate_vb * 9 {
+                    response_tx.send(Err(RpcControlError::SpendLowFeerate(
+                        feerate_vb,
+                        nochange_feerate_vb,
+                    )))?;
+                    continue;
+                }
+
+                // Add a change output if it would not be dust according to our standard (200k sats
+                // atm, see DUST_LIMIT).
+                // 8 (amount) + 1 (len) + 1 (v0) + 1 (push) + 32 (witscript hash)
+                const P2WSH_TXO_WEIGHT: u64 = 43 * 4;
+                let with_change_weight = assume_some!(
+                    nochange_tx.max_weight().checked_add(P2WSH_TXO_WEIGHT),
+                    "weight computation bug"
+                );
+                let cur_fees = nochange_tx.fees();
+                let want_fees = with_change_weight
+                    // Mental gymnastic: sat/vbyte to sat/wu rounded up
+                    .checked_mul(feerate_vb + 3)
+                    .map(|vbyte| vbyte.checked_div(4).unwrap());
+                let change_value = want_fees.map(|f| cur_fees.checked_sub(f));
+
+                if let Some(Some(change_value)) = change_value {
+                    // The overhead incurred to the value of the CPFP output by the change output
+                    // See https://github.com/revault/practical-revault/blob/master/transactions.md#spend_tx
+                    let cpfp_overhead = 16 * P2WSH_TXO_WEIGHT;
+                    if change_value > revault_tx::transactions::DUST_LIMIT + cpfp_overhead {
+                        let change_txo = DepositTxOut::new(
+                            // arithmetic checked above
+                            change_value - cpfp_overhead,
+                            &revaultd.deposit_descriptor.derive(change_index),
+                            xpub_ctx,
+                        );
+                        log::debug!("Adding a change txo: '{:?}'", change_txo);
+                        txos.push(SpendTxOut::Change(change_txo));
+                    }
+                }
+
+                // Now we can hand them the resulting transaction (sanity checked for insane fees).
+                let tx_res = spend_tx_from_deposits(
+                    txins,
+                    txos,
+                    &revaultd.unvault_descriptor,
+                    &revaultd.cpfp_descriptor,
+                    xpub_ctx,
+                    revaultd.unvault_csv,
+                    revaultd.lock_time,
+                    true,
+                );
+                log::debug!(
+                    "Final Spend transaction: '{:?}'",
+                    tx_res.as_ref().map(|tx| tx.as_psbt_string())
+                );
+                response_tx.send(tx_res.map_err(|e| RpcControlError::Transaction(e.into())))?;
             }
         }
     }

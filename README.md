@@ -40,7 +40,7 @@ the coordinator).
 
 # Contributing
 
-Contributions are very welcome. For general guidelines, see [CONTRIBUTING.md](doc/CONTRIBUTING.md).
+Contributions are very welcome. For general guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 
 # Licence

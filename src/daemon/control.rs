@@ -146,6 +146,7 @@ fn listvaults_from_db(
                 let address = revaultd.vault_address(db_vault.derivation_index);
                 Some(ListVaultsEntry {
                     amount: db_vault.amount,
+                    blockheight: db_vault.blockheight,
                     status: db_vault.status,
                     deposit_outpoint: db_vault.deposit_outpoint,
                     derivation_index: db_vault.derivation_index,

@@ -181,7 +181,8 @@ impl TryFrom<&Row<'_>> for DbVault {
         };
         let amount = Amount::from_sat(row.get::<_, i64>(6)? as u64);
         let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
-        let updated_at = row.get(8)?;
+        let received_at = row.get(8)?;
+        let updated_at = row.get(9)?;
 
         Ok(DbVault {
             id,
@@ -191,6 +192,7 @@ impl TryFrom<&Row<'_>> for DbVault {
             deposit_outpoint,
             amount,
             derivation_index,
+            received_at,
             updated_at,
         })
     }

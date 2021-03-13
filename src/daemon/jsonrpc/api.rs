@@ -260,6 +260,7 @@ impl RpcApi for RpcImpl {
                     "vout": entry.deposit_outpoint.vout,
                     "derivation_index": derivation_index,
                     "address": entry.address.to_string(),
+                    "received_at": entry.received_at,
                     "updated_at": entry.updated_at,
                 })
             })

@@ -258,13 +258,14 @@ pub fn db_insert_new_unconfirmed_vault(
     deposit_outpoint: &OutPoint,
     amount: &Amount,
     derivation_index: ChildNumber,
+    received_at: u32,
 ) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         let derivation_index: u32 = derivation_index.into();
         tx.execute(
             "INSERT INTO vaults (wallet_id, status, blockheight, deposit_txid, \
-             deposit_vout, amount, derivation_index, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))",
+             deposit_vout, amount, derivation_index, received_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 wallet_id,
                 *status as u32,
@@ -273,6 +274,8 @@ pub fn db_insert_new_unconfirmed_vault(
                 deposit_outpoint.vout,
                 amount_to_i64(amount),
                 derivation_index,
+                received_at,
+                received_at,
             ],
         )
         .map_err(|e| DatabaseError(format!("Inserting vault: {}", e.to_string())))?;
@@ -576,6 +579,7 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(123456);
+        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(3);
         db_insert_new_unconfirmed_vault(
             &db_path,
@@ -584,6 +588,7 @@ mod test {
             &first_deposit_outpoint,
             &amount,
             derivation_index,
+            received_at,
         )
         .unwrap();
 
@@ -594,6 +599,7 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(456789);
+        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(12);
         db_insert_new_unconfirmed_vault(
             &db_path,
@@ -602,6 +608,7 @@ mod test {
             &second_deposit_outpoint,
             &amount,
             derivation_index,
+            received_at,
         )
         .unwrap();
 
@@ -612,6 +619,7 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(428000);
+        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(15);
         db_insert_new_unconfirmed_vault(
             &db_path,
@@ -620,6 +628,7 @@ mod test {
             &third_deposit_outpoint,
             &amount,
             derivation_index,
+            received_at,
         )
         .unwrap();
 
@@ -632,6 +641,7 @@ mod test {
             &third_deposit_outpoint,
             &amount,
             derivation_index,
+            received_at,
         )
         .unwrap_err();
 
@@ -676,6 +686,7 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(123456);
+        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(33334);
         db_insert_new_unconfirmed_vault(
             &db_path,
@@ -684,6 +695,7 @@ mod test {
             &outpoint,
             &amount,
             derivation_index,
+            received_at,
         )
         .unwrap();
         let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();

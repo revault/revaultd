@@ -1,58 +1,79 @@
-use std::{net::SocketAddr, path::PathBuf, time::Duration, vec::Vec};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration, vec::Vec};
 
-use revault_net::noise::PublicKey as NoisePubKey;
+use revault_net::noise::PublicKey as NoisePubkey;
 use revault_tx::{
-    bitcoin::{hashes::hex::FromHex, util::bip32, Network, PublicKey},
+    bitcoin::{hashes::hex::FromHex, util::bip32, Network, PublicKey as BitcoinPubkey},
+    miniscript::descriptor::{DescriptorPublicKey, DescriptorSinglePub, DescriptorXKey},
     scripts::EmergencyAddress,
 };
 
-use serde::{de, Deserialize};
+use serde::{de, Deserialize, Deserializer};
 
-#[derive(Debug, Clone)]
-pub struct NoisePubkeyHex {
-    pub key: NoisePubKey,
+fn xpub_to_desc_xpub(xkey: bip32::ExtendedPubKey) -> DescriptorPublicKey {
+    DescriptorPublicKey::XPub(DescriptorXKey {
+        origin: None,
+        xkey,
+        derivation_path: bip32::DerivationPath::from(vec![]),
+        is_wildcard: true,
+    })
 }
 
-impl<'de> de::Visitor<'de> for NoisePubkeyHex {
-    type Value = NoisePubkeyHex;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "a hex encoded string")
-    }
-
-    fn visit_str<E>(self, data: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        FromHex::from_hex(data)
-            .map_err(|e| de::Error::custom(e))
-            .map(|hex| NoisePubkeyHex {
-                key: NoisePubKey(hex),
-            })
-    }
-
-    fn visit_borrowed_str<E>(self, data: &'de str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        FromHex::from_hex(data)
-            .map_err(|e| de::Error::custom(e))
-            .map(|hex| NoisePubkeyHex {
-                key: NoisePubKey(hex),
-            })
-    }
+fn deserialize_xpubs<'de, D>(deserializer: D) -> Result<Vec<DescriptorPublicKey>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let xpubs = Vec::<bip32::ExtendedPubKey>::deserialize(deserializer)?;
+    Ok(xpubs.into_iter().map(xpub_to_desc_xpub).collect())
 }
 
-impl<'de> Deserialize<'de> for NoisePubkeyHex {
-    fn deserialize<D>(deserializer: D) -> Result<NoisePubkeyHex, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let pk = NoisePubkeyHex {
-            key: NoisePubKey([0u8; 32]),
-        };
-        deserializer.deserialize_str(pk)
-    }
+fn key_to_desc_key(key: BitcoinPubkey) -> DescriptorPublicKey {
+    DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key })
+}
+
+fn deserialize_single_keys<'de, D>(deserializer: D) -> Result<Vec<DescriptorPublicKey>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let xpubs = Vec::<BitcoinPubkey>::deserialize(deserializer)?;
+    Ok(xpubs.into_iter().map(key_to_desc_key).collect())
+}
+
+fn deserialize_noisepubkey<'de, D>(deserializer: D) -> Result<NoisePubkey, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let data = String::deserialize(deserializer)?;
+    FromHex::from_hex(&data)
+        .map_err(|e| de::Error::custom(e))
+        .map(NoisePubkey)
+}
+
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let secs = u64::deserialize(deserializer)?;
+    Ok(Duration::from_secs(secs))
+}
+
+fn deserialize_loglevel<'de, D>(deserializer: D) -> Result<log::LevelFilter, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let level_str = String::deserialize(deserializer)?;
+    log::LevelFilter::from_str(&level_str).map_err(de::Error::custom)
+}
+
+fn default_loglevel() -> log::LevelFilter {
+    log::LevelFilter::Info
+}
+
+fn default_poll_interval() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_sig_poll_interval() -> Duration {
+    Duration::from_secs(60)
 }
 
 /// Everything we need to know for talking to bitcoind serenely
@@ -65,25 +86,11 @@ pub struct BitcoindConfig {
     /// The IP:port bitcoind's RPC is listening on
     pub addr: SocketAddr,
     /// The poll interval for bitcoind
-    #[serde(with = "deser_duration", default = "default_poll_interval")]
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        default = "default_poll_interval"
+    )]
     pub poll_interval_secs: Duration,
-}
-
-mod deser_duration {
-    use serde::{self, Deserialize, Deserializer};
-    use std::time::Duration;
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secs = u64::deserialize(deserializer)?;
-        Ok(Duration::from_secs(secs))
-    }
-}
-
-fn default_poll_interval() -> Duration {
-    Duration::from_secs(30)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,26 +131,38 @@ pub struct Config {
     /// Some() if we are a manager
     pub manager_config: Option<ManagerConfig>,
     /// The stakeholders' xpubs
-    pub stakeholders_xpubs: Vec<bip32::ExtendedPubKey>,
+    #[serde(deserialize_with = "deserialize_xpubs")]
+    pub stakeholders_xpubs: Vec<DescriptorPublicKey>,
     /// The cosigners' static public keys (must be as many as stakeholders'
     /// xpubs)
-    pub cosigners_keys: Vec<PublicKey>,
+    #[serde(deserialize_with = "deserialize_single_keys")]
+    pub cosigners_keys: Vec<DescriptorPublicKey>,
     /// The managers' xpubs
-    pub managers_xpubs: Vec<bip32::ExtendedPubKey>,
+    #[serde(deserialize_with = "deserialize_xpubs")]
+    pub managers_xpubs: Vec<DescriptorPublicKey>,
     /// The unvault output scripts relative timelock
     pub unvault_csv: u32,
     /// The host of the sync server (may be an IP or a hidden service)
     pub coordinator_host: String,
     /// The Noise static public key of the sync server
-    pub coordinator_noise_key: NoisePubkeyHex,
+    #[serde(deserialize_with = "deserialize_noisepubkey")]
+    pub coordinator_noise_key: NoisePubkey,
     /// The poll intervals for signature fetching (default: 1min)
-    pub coordinator_poll_seconds: Option<u64>,
+    #[serde(
+        deserialize_with = "deserialize_duration",
+        default = "default_sig_poll_interval"
+    )]
+    pub coordinator_poll_seconds: Duration,
     /// An optional custom data directory
     pub data_dir: Option<PathBuf>,
     /// Whether to daemonize the process
     pub daemon: Option<bool>,
     /// What messages to log
-    pub log_level: Option<String>,
+    #[serde(
+        deserialize_with = "deserialize_loglevel",
+        default = "default_loglevel"
+    )]
+    pub log_level: log::LevelFilter,
     // TODO: sync server address
 }
 
@@ -226,10 +245,17 @@ impl Config {
         }
 
         if let Some(ref stk_config) = config.stakeholder_config {
+            let our_desc_xpub = DescriptorPublicKey::XPub(DescriptorXKey {
+                origin: None,
+                xkey: stk_config.xpub.clone(),
+                derivation_path: bip32::DerivationPath::from(vec![]),
+                is_wildcard: true,
+            });
+
             if !config
                 .stakeholders_xpubs
                 .iter()
-                .any(|x| x == &stk_config.xpub)
+                .any(|x| x == &our_desc_xpub)
             {
                 return Err(ConfigError(format!(
                     r#"Our "stakeholder_config" xpub is not part of the given stakeholders' xpubs: {}"#,
@@ -248,7 +274,14 @@ impl Config {
         }
 
         if let Some(ref man_config) = config.manager_config {
-            if !config.managers_xpubs.iter().any(|x| x == &man_config.xpub) {
+            let our_desc_xpub = DescriptorPublicKey::XPub(DescriptorXKey {
+                origin: None,
+                xkey: man_config.xpub.clone(),
+                derivation_path: bip32::DerivationPath::from(vec![]),
+                is_wildcard: true,
+            });
+
+            if !config.managers_xpubs.iter().any(|x| x == &our_desc_xpub) {
                 return Err(ConfigError(format!(
                     r#"Our "manager_config" xpub is not part of the given managers' xpubs: {}"#,
                     man_config.xpub

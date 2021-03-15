@@ -25,7 +25,6 @@ use std::{
     env,
     path::PathBuf,
     process,
-    str::FromStr,
     sync::{mpsc, Arc, RwLock},
     thread,
 };
@@ -168,14 +167,7 @@ fn main() {
         eprintln!("Error parsing config: {}", e);
         process::exit(1);
     });
-    let log_level = if let Some(ref level) = &config.log_level {
-        log::LevelFilter::from_str(level.as_str()).unwrap_or_else(|e| {
-            eprintln!("Invalid log level: {}", e);
-            process::exit(1);
-        })
-    } else {
-        log::LevelFilter::Info
-    };
+    let log_level = config.log_level;
     // FIXME: should probably be from_db(), would allow us to not use Option members
     let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
         eprintln!("Error creating global state: {}", e);

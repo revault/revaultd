@@ -19,12 +19,10 @@ use revault_net::{
 use revault_tx::{
     bitcoin::{
         secp256k1,
-        util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey},
+        util::bip32::{ChildNumber, ExtendedPubKey},
         Address, BlockHash, Script, TxOut,
     },
-    miniscript::descriptor::{
-        DescriptorPublicKey, DescriptorPublicKeyCtx, DescriptorSinglePub, DescriptorXKey,
-    },
+    miniscript::descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
     scripts::{
         cpfp_descriptor, deposit_descriptor, unvault_descriptor, CpfpDescriptor, DepositDescriptor,
         EmergencyAddress, UnvaultDescriptor,
@@ -303,20 +301,6 @@ fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
     };
 }
 
-fn descriptorxpub_from_xpub(xpubs: Vec<ExtendedPubKey>) -> Vec<DescriptorPublicKey> {
-    xpubs
-        .into_iter()
-        .map(|xpub| {
-            DescriptorPublicKey::XPub(DescriptorXKey {
-                origin: None,
-                xkey: xpub,
-                derivation_path: DerivationPath::from(vec![]),
-                is_wildcard: true,
-            })
-        })
-        .collect()
-}
-
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
@@ -325,13 +309,9 @@ impl RevaultD {
         // Config should have checked that!
         assert!(our_man_xpub.is_some() || our_stk_xpub.is_some());
 
-        let managers_pubkeys = descriptorxpub_from_xpub(config.managers_xpubs);
-        let stakeholders_pubkeys = descriptorxpub_from_xpub(config.stakeholders_xpubs);
-        let cosigners_pubkeys = config
-            .cosigners_keys
-            .into_iter()
-            .map(|key| DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key }))
-            .collect();
+        let managers_pubkeys = config.managers_xpubs;
+        let stakeholders_pubkeys = config.stakeholders_xpubs;
+        let cosigners_pubkeys = config.cosigners_keys;
 
         let deposit_descriptor = deposit_descriptor(stakeholders_pubkeys.clone())?;
         let unvault_descriptor = unvault_descriptor(
@@ -365,9 +345,8 @@ impl RevaultD {
 
         // TODO: support hidden services
         let coordinator_host = SocketAddr::from_str(&config.coordinator_host)?;
-        let coordinator_noisekey = config.coordinator_noise_key.key;
-        let coordinator_poll_interval =
-            time::Duration::from_secs(config.coordinator_poll_seconds.unwrap_or(60));
+        let coordinator_noisekey = config.coordinator_noise_key;
+        let coordinator_poll_interval = config.coordinator_poll_seconds;
 
         let daemon = !matches!(config.daemon, Some(false));
 

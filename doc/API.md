@@ -80,7 +80,6 @@ Get an address to build a deposit transaction.
 | `vout`        | int    | Index of the deposit output in the deposit transaction.     |
 
 Note that the `scriptPubKey` is implicitly known as we have the vault output Miniscript descriptor.
-**TODO** Maybe we should store and give the xpub derivation index as well ?
 
 
 ### `listvaults`
@@ -278,13 +277,19 @@ feerate.
 | ---------- | ------ | ----------------------------------------------- |
 | `spend_tx` | string | Base64-encoded Spend transaction PSBT           |
 
-### `spendtx`
+### `setspendtx`
 
 #### Request
 
 | Field        | Type   | Description                                    |
 | ------------ | ------ | ---------------------------------------------- |
 | `spend_tx`   | string | Base64-encoded Spend transaction PSBT          |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
 
 ## User flows
 
@@ -317,7 +322,7 @@ feerate.
                          +                          +
 ```
 
-#### Sign the unvault transaction
+#### Sign the Unvault transaction
 
 ```
 HSM                  client                      revaultd
@@ -355,7 +360,7 @@ HSM                client                      revaultd
 client 2                 |                          |
   +                      |                          |
   | <---sign psbt------+ |                          |
-  | +-----psbt---------> |                          | // daemon ask wt opinion
+  | +-----psbt---------> |                          |
   +                      | +---spendtx------------> | // if ack, cosign server sign
                          | <---OK or wt nack------+ | // then daemon broadcasts tx
                          |                          |

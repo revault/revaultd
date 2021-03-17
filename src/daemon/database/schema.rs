@@ -50,6 +50,7 @@ CREATE TABLE vaults (
     deposit_vout INTEGER NOT NULL,
     amount INTEGER NOT NULL,
     derivation_index INTEGER NOT NULL,
+    received_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     FOREIGN KEY (wallet_id) REFERENCES wallets (id)
         ON UPDATE RESTRICT
@@ -99,6 +100,7 @@ pub struct DbVault {
     pub deposit_outpoint: OutPoint,
     pub amount: Amount,
     pub derivation_index: ChildNumber,
+    pub received_at: u32,
     pub updated_at: u32,
 }
 

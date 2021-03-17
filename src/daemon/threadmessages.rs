@@ -114,10 +114,12 @@ pub struct VaultOnchainTransactions {
 #[derive(Debug)]
 pub struct ListVaultsEntry {
     pub amount: Amount,
+    pub blockheight: u32,
     pub status: VaultStatus,
     pub deposit_outpoint: OutPoint,
     pub derivation_index: ChildNumber,
     pub address: Address,
+    pub received_at: u32,
     pub updated_at: u32,
 }
 

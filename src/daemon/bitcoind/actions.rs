@@ -479,6 +479,7 @@ fn update_deposits(
                 BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
             })?;
 
+        let received_at = bitcoind.get_wallet_transaction(&outpoint.txid)?.2;
         // Note that the deposit *might* have already MIN_CONF confirmations, that's fine. We'll
         // confim it during the next poll.
         let amount = Amount::from_sat(utxo.txo.value);
@@ -493,6 +494,7 @@ fn update_deposits(
             &outpoint,
             &amount,
             derivation_index,
+            received_at,
         )?;
         log::debug!(
             "Got a new unconfirmed deposit at {} for {} ({})",

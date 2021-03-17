@@ -254,11 +254,13 @@ impl RpcApi for RpcImpl {
                 let derivation_index: u32 = entry.derivation_index.into();
                 json!({
                     "amount": entry.amount.as_sat(),
+                    "blockheight": entry.blockheight,
                     "status": entry.status.to_string(),
                     "txid": entry.deposit_outpoint.txid.to_string(),
                     "vout": entry.deposit_outpoint.vout,
                     "derivation_index": derivation_index,
                     "address": entry.address.to_string(),
+                    "received_at": entry.received_at,
                     "updated_at": entry.updated_at,
                 })
             })

@@ -69,6 +69,7 @@ CREATE TABLE presigned_transactions (
     vault_id INTEGER NOT NULL,
     type INTEGER NOT NULL,
     psbt BLOB UNIQUE NOT NULL,
+    txid BLOB UNIQUE NOT NULL,
     fullysigned BOOLEAN NOT NULL CHECK (fullysigned IN (0,1)),
     FOREIGN KEY (vault_id) REFERENCES vaults (id)
         ON UPDATE RESTRICT

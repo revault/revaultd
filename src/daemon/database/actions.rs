@@ -296,10 +296,11 @@ macro_rules! db_store_unsigned_transactions {
                 assert!($tx.inner_tx().inputs[0].partial_sigs.is_empty());
 
                 let tx_type = TransactionType::from($tx);
+                let txid = $tx.inner_tx().global.unsigned_tx.txid();
                 $db_tx
                     .execute(
-                        "INSERT INTO presigned_transactions (vault_id, type, psbt, fullysigned) VALUES (?1, ?2, ?3 , ?4)",
-                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized(), false as u32],
+                        "INSERT INTO presigned_transactions (vault_id, type, psbt, txid, fullysigned) VALUES (?1, ?2, ?3 , ?4, ?5)",
+                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized(), txid.to_vec(), false as u32],
                     )
                     .map_err(|e| {
                         DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
@@ -763,7 +764,7 @@ mod test {
         // We can store unsigned transactions
         let fresh_emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAVqQwvZ+XLjEW+P90WnqdbVWkC1riPNhF8j9Ca4dM0RiAAAAAAD9////AfhgAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK4iUAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQBAwSBAAAAAQVHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4AAA==").unwrap();
         let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAEBR1IhA9+bpoeRoYk6Fehku5U6JFn6v0b8vq0SPVzELn/n6DqBIQPRrV6R4VL8XI/QyVm2kb8+fQjbDMB9jRL5kWvIHNlkZFKuAA==").unwrap();
-        let fresh_unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAA=").unwrap();
+        let fresh_unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAZHNg0DZSHTBSpVaGwH2apdYBRu88ZeeB/XmrijJpvH5AAAAAAD9////AdLKAgAAAAAAIgAg8Wcu+wsgQXcO9MAiWSMtqsVSQkptpfTXJ51MFSdhJAoAAAAAAAEBK0ANAwAAAAAAIgAgtSqMFDOQ2FkdNrt/yUTzVjikth3tOm+um6yLFzLTilcBAwSBAAAAAQWrIQJF6Amv78N3ctJ3+oSlIasXN3/N8H/bu2si9Vu3QNBRuKxRh2R2qRS77fZRBsFKSf1uP2HBT3uhL1oRloisa3apFIPfFe62NUR/RApmlyj0VsJJdJ4CiKxsk1KHZ1IhA5scAvk3lvCVQmoWDTHhcd8utuA6Swf2PolVbdB7yVwnIQIXS76HRC/hWucQkpC43HriwIukm1se8QRc9nIlODCN81KvA37BALJoAAA=").unwrap();
         let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAcRWqIPG85zGye1nuRlbwWKkko4g91Vd/508Ff6vKklpAAAAAAD9////AkANAwAAAAAAIgAgsT7u0Lo8o2WEfxS1nXWtQzsdJTMJnnOC5fwg0nYPvpowdQAAAAAAACIAIAx0DegrXfBr4D0XdetrGgAT2Q3AZANYm0rJL8L/Epp/AAAAAAABASuIlAMAAAAAACIAIGaHQ5brMNbT+WCtfE/WPW8gkmMir5NXAKRsQZAs9cT2AQMEAQAAAAEFR1IhAwYSJ4FeXdf/XPw6lFHpeMFeGvh88f+rWN2VtnaW75TNIQOn5Sg6nytLwT5FT9z5KmV/LMN1pZRsqbworUMwRdRN0lKuAAEBqiEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYdkdqkUNlKGE2FxZM1sR08UC7GJfzRqXlSIrGt2qRQoTG+3hS6ElXzBw+21PRDtEJ9sKoisbJNSh2dSIQNiqGzCWTbNvmnTm7l6YNTctgzoP5xaOW6hiXSWVkoClCEC/w0jRRlaB3Oa5c0OPrRAxbxE1kdfzV24OWsaSCGLgIVSrwLWNLJoAAEBJSEDdDY+WLVpanVLROFc6wsvXyFG4FUgYknnTic2GPQNIy6sUYcA").unwrap();
 
         let blockheight = 700000;

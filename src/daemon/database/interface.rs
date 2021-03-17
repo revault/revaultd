@@ -282,7 +282,20 @@ impl TryFrom<&Row<'_>> for DbTransaction {
             ),
         };
 
-        let is_fully_signed: bool = row.get(4)?;
+        debug_assert_eq!(
+            encode::deserialize::<revault_tx::bitcoin::util::psbt::PartiallySignedTransaction>(
+                &db_psbt
+            )
+            .unwrap()
+            .global
+            .unsigned_tx
+            .txid()
+            .to_vec(),
+            row.get::<_, Vec<u8>>(4)?,
+            "Column txid and Psbt txid mismatch"
+        );
+
+        let is_fully_signed: bool = row.get(5)?;
 
         Ok(DbTransaction {
             id,

@@ -1,7 +1,9 @@
 use crate::{
     assert_tx_type,
     database::{
-        schema::{DbTransaction, DbVault, DbWallet, RevaultTx, TransactionType},
+        schema::{
+            DbSpendTransaction, DbTransaction, DbVault, DbWallet, RevaultTx, TransactionType,
+        },
         DatabaseError,
     },
     revaultd::{BlockchainTip, VaultStatus},
@@ -13,8 +15,8 @@ use revault_tx::{
         Amount, BlockHash, Network, OutPoint, Txid,
     },
     transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -391,4 +393,66 @@ pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransactio
         params![],
         |row| row.try_into(),
     )
+}
+
+/// Get a fully signed presigned transaction for the vault at this outpoint.
+pub fn db_presigned_tx(
+    db_path: &PathBuf,
+    deposit: &OutPoint,
+    tx_type: TransactionType,
+) -> Result<Option<DbTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM presigned_transactions WHERE fullysigned = 1 AND type = (?1) \
+         AND vault_id = (\
+            SELECT id FROM vaults WHERE deposit_txid = (?2) AND deposit_vout = (?3)\
+         )",
+        params![tx_type as u32, deposit.txid.to_vec(), deposit.vout],
+        |row| row.try_into(),
+    )
+    .map(|mut rows| rows.pop())
+}
+
+impl TryFrom<&Row<'_>> for DbSpendTransaction {
+    type Error = rusqlite::Error;
+
+    fn try_from(row: &Row) -> Result<Self, Self::Error> {
+        let id: i64 = row.get(0)?;
+        let psbt: Vec<u8> = row.get(1)?;
+
+        let psbt = SpendTransaction::from_psbt_serialized(&psbt)
+            .expect("We set it using as_psbt_serialized()");
+
+        debug_assert_eq!(
+            psbt.inner_tx().global.unsigned_tx.txid().to_vec(),
+            row.get::<_, Vec<u8>>(2)?,
+            "Insane db, txid in column is not the same as psbt's one",
+        );
+
+        Ok(DbSpendTransaction { id, psbt })
+    }
+}
+
+/// List all Spend transactions in DB
+pub fn db_spend_transactions(db_path: &PathBuf) -> Result<Vec<DbSpendTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM spend_transactions",
+        params![],
+        |row| row.try_into(),
+    )
+}
+
+/// Get a single Spend transaction from DB by its txid
+pub fn db_spend_transaction(
+    db_path: &PathBuf,
+    spend_txid: &Txid,
+) -> Result<Option<DbSpendTransaction>, DatabaseError> {
+    Ok(db_query(
+        db_path,
+        "SELECT * FROM spend_transactions WHERE txid = (?1)",
+        params![spend_txid.to_vec()],
+        |row| row.try_into(),
+    )?
+    .pop())
 }

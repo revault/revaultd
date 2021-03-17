@@ -5,7 +5,8 @@ use revault_tx::{
         Amount, OutPoint,
     },
     transactions::{
-        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
 };
 
@@ -74,6 +75,31 @@ CREATE TABLE presigned_transactions (
         ON DELETE RESTRICT
 );
 
+/* A bridge between the Unvault transactions a Spend transaction
+ * may refer and the possible Spend transactions an Unvault one
+ * may be associated with.
+ */
+CREATE TABLE spend_inputs (
+    id INTEGER PRIMARY KEY NOT NULL,
+    unvault_id INTEGER NOT NULL,
+    spend_id INTEGER NOT NULL,
+    FOREIGN KEY (unvault_id) REFERENCES presigned_transactions (id)
+        ON UPDATE RESTRICT
+        ON DELETE RESTRICT,
+    FOREIGN KEY (spend_id) REFERENCES spend_transactions (id)
+        ON UPDATE RESTRICT
+        ON DELETE RESTRICT
+);
+
+/* This stores Spend transactions we created. A txid row is there to
+ * ease research.
+ */
+CREATE TABLE spend_transactions (
+    id INTEGER PRIMARY KEY NOT NULL,
+    psbt BLOB UNIQUE NOT NULL,
+    txid BLOB UNIQUE NOT NULL
+);
+
 CREATE INDEX vault_status ON vaults (status);
 CREATE INDEX vault_transactions ON presigned_transactions (vault_id);
 ";
@@ -81,7 +107,7 @@ CREATE INDEX vault_transactions ON presigned_transactions (vault_id);
 /// A row in the "wallets" table
 #[derive(Clone)]
 pub struct DbWallet {
-    pub id: u32,
+    pub id: u32, // FIXME: should be an i64
     pub timestamp: u32,
     pub deposit_descriptor: String,
     pub unvault_descriptor: String,
@@ -93,7 +119,7 @@ pub struct DbWallet {
 /// A row of the "vaults" table
 #[derive(Debug, Clone, Copy)]
 pub struct DbVault {
-    pub id: u32,
+    pub id: u32, // FIXME: should be an i64
     pub wallet_id: u32,
     pub status: VaultStatus,
     pub blockheight: u32,
@@ -162,12 +188,28 @@ macro_rules! assert_tx_type {
 }
 
 // FIXME: naming it "db transaction" was ambiguous..
-/// A row in the "transactions" table
+/// A row in the "presigned_transactions" table
 #[derive(Debug)]
 pub struct DbTransaction {
-    pub id: u32,
+    pub id: u32, // FIXME: should be an i64
     pub vault_id: u32,
     pub tx_type: TransactionType,
     pub psbt: RevaultTx,
     pub is_fully_signed: bool,
+}
+
+/// A row in the "spend_inputs" table
+#[derive(Debug)]
+pub struct DbSpendInput {
+    pub id: i64,
+    pub unvault_id: u32,
+    pub spend_id: u32,
+}
+
+/// A row in the "spend_transactions" table
+#[derive(Debug)]
+pub struct DbSpendTransaction {
+    pub id: i64,
+    pub psbt: SpendTransaction,
+    // txid is intentionally not there as it's already part of the psbt
 }

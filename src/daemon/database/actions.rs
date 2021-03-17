@@ -7,12 +7,14 @@ use crate::{
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{secp256k1, util::bip32::ChildNumber, Amount, OutPoint, PublicKey as BitcoinPubKey},
+    bitcoin::{
+        secp256k1, util::bip32::ChildNumber, Amount, OutPoint, PublicKey as BitcoinPubKey, Txid,
+    },
     miniscript::Descriptor,
     scripts::{DepositDescriptor, UnvaultDescriptor},
     transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -395,7 +397,7 @@ fn revault_tx_merge_sigs(
     secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
 ) -> Result<(bool, Vec<u8>), DatabaseError> {
     tx.inner_tx_mut().inputs[0].partial_sigs.extend(sigs);
-    let fully_signed = tx.finalize(secp_ctx).is_ok();
+    let fully_signed = tx.is_finalizable(secp_ctx);
     let raw_psbt = tx.as_psbt_serialized();
     Ok((fully_signed, raw_psbt))
 }
@@ -477,6 +479,64 @@ pub fn db_update_presigned_tx(
             }
         }
 
+        Ok(())
+    })
+}
+
+/// Insert a new Spend transaction in the database
+pub fn db_insert_spend(
+    db_path: &PathBuf,
+    unvault_txs: &[&DbTransaction],
+    spend_tx: &SpendTransaction,
+) -> Result<(), DatabaseError> {
+    let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+    let spend_psbt = spend_tx.as_psbt_serialized();
+
+    db_exec(db_path, |db_tx| {
+        db_tx.execute(
+            "INSERT INTO spend_transactions (psbt, txid) VALUES (?1, ?2)",
+            params![spend_psbt, spend_txid.to_vec()],
+        )?;
+        let spend_id = db_tx.last_insert_rowid();
+
+        for unvault_tx in unvault_txs {
+            db_tx.execute(
+                "INSERT INTO spend_inputs (unvault_id, spend_id) VALUES (?1, ?2)",
+                params![unvault_tx.id, spend_id],
+            )?;
+        }
+
+        Ok(())
+    })
+}
+
+pub fn db_update_spend(
+    db_path: &PathBuf,
+    spend_tx: &SpendTransaction,
+) -> Result<(), DatabaseError> {
+    let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+    let spend_psbt = spend_tx.as_psbt_serialized();
+
+    db_exec(db_path, |db_tx| {
+        db_tx.execute(
+            "UPDATE spend_transactions SET psbt = (?1) WHERE txid = (?2)",
+            params![spend_psbt, spend_txid.to_vec()],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn db_delete_spend(db_path: &PathBuf, spend_txid: &Txid) -> Result<(), DatabaseError> {
+    db_exec(db_path, |db_tx| {
+        db_tx.execute(
+            "DELETE FROM spend_inputs WHERE spend_id = (SELECT id FROM \
+                spend_transactions WHERE txid = (?1))",
+            params![spend_txid.to_vec()],
+        )?;
+        db_tx.execute(
+            "DELETE FROM spend_transactions WHERE txid = (?1)",
+            params![spend_txid.to_vec()],
+        )?;
         Ok(())
     })
 }
@@ -916,6 +976,174 @@ mod test {
         handle.join().unwrap();
     }
 
+    fn test_db_spend_storage() {
+        let mut revaultd = dummy_revaultd();
+        let db_path = revaultd.db_file();
+        let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAEBR1IhA9+bpoeRoYk6Fehku5U6JFn6v0b8vq0SPVzELn/n6DqBIQPRrV6R4VL8XI/QyVm2kb8+fQjbDMB9jRL5kWvIHNlkZFKuAA==").unwrap();
+        let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAUSDT2oqdQGG7zrBLphwlRmZDdQq579WyFQascyEsTxvAAAAAAD9////AkANAwAAAAAAIgAg8MPhtc3+VJnJ6OaWMYc+ptcjJPfCV7ddk3WDKDUJzxMwdQAAAAAAACIAIKSBXsawHlGnD7bjeTRKg0RjUn9YBHtCOJcRWwelwwkQAAAAAAABASuIlAMAAAAAACIAIMXXOiNpunncyn1S2nkS82ytVb6Vlkev2eyZrP1UfHg5AQMEAQAAAAEFR1IhA4hY1QUJ8eaMRBKwxS3PPHKE5rb9T4kBMu+A9qYoBKHEIQPDqUA1pPZIhTzbOrFzUwQ2iZBG9Myf/jaXNM2EAN7KPlKuAAEBqiECCCJb7ajSnGfrgiYJivthuk36hoa/2b8EOvpXD3kZjFasUYdkdqkUtJw6hgsD0uyDqCcstKVqwgxcfICIrGt2qRRSmYddIoGvSdw/O8UMT0nSLV9wIYisbJNSh2dSIQOAAQ9HvG5onjJ7+OjP9Yesw0S6QvQIvv8xwgI5JiEKmCEDCAgIhQzQi1myDL3dk2gj2hdut6Gf/EBe7x65BhzQnjRSrwJ4LrJoAAEBJSECCCJb7ajSnGfrgiYJivthuk36hoa/2b8EOvpXD3kZjFasUYcA").unwrap();
+        let fullysigned_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAUSDT2oqdQGG7zrBLphwlRmZDdQq579WyFQascyEsTxvAAAAAAD9////AkANAwAAAAAAIgAg8MPhtc3+VJnJ6OaWMYc+ptcjJPfCV7ddk3WDKDUJzxMwdQAAAAAAACIAIKSBXsawHlGnD7bjeTRKg0RjUn9YBHtCOJcRWwelwwkQAAAAAAABASuIlAMAAAAAACIAIMXXOiNpunncyn1S2nkS82ytVb6Vlkev2eyZrP1UfHg5IgIDw6lANaT2SIU82zqxc1MENomQRvTMn/42lzTNhADeyj5HMEQCIGt6BWJotlXxWb1vFIFAXDMzVN21CkvTvXYoq8IgmansAiBuBkqPDyzU5DNzdYl6dFehL48bwG19SCkMH+PDVTO0YgEiAgOIWNUFCfHmjEQSsMUtzzxyhOa2/U+JATLvgPamKAShxEgwRQIhAJf1pJ2Ty3xbOJuboTrT10P9ipj7NR30r6iRIygtUkZZAiBVIU+6auH558K7qvvFDrgQWDaYIUQxdHdrNPwgR1iYzwEBAwQBAAAAAQVHUiEDiFjVBQnx5oxEErDFLc88coTmtv1PiQEy74D2pigEocQhA8OpQDWk9kiFPNs6sXNTBDaJkEb0zJ/+Npc0zYQA3so+Uq4AAQGqIQIIIlvtqNKcZ+uCJgmK+2G6TfqGhr/ZvwQ6+lcPeRmMVqxRh2R2qRS0nDqGCwPS7IOoJyy0pWrCDFx8gIisa3apFFKZh10iga9J3D87xQxPSdItX3AhiKxsk1KHZ1IhA4ABD0e8bmieMnv46M/1h6zDRLpC9Ai+/zHCAjkmIQqYIQMICAiFDNCLWbIMvd2TaCPaF263oZ/8QF7vHrkGHNCeNFKvAngusmgAAQElIQIIIlvtqNKcZ+uCJgmK+2G6TfqGhr/ZvwQ6+lcPeRmMVqxRhwA=").unwrap();
+
+        setup_db(&mut revaultd).unwrap();
+
+        // Let's insert a deposit
+        let wallet_id = 1;
+        let status = VaultStatus::Funded;
+        let outpoint = OutPoint::from_str(
+            "c9cf38058b720050bcba47490ee27f4a29d57a5aa2ee0f3c97731e140dbeced7:1",
+        )
+        .unwrap();
+        let amount = Amount::from_sat(612345);
+        let derivation_index = ChildNumber::from(349874);
+        let received_at = 17890233;
+        db_insert_new_unconfirmed_vault(
+            &db_path,
+            wallet_id,
+            &status,
+            &outpoint,
+            &amount,
+            derivation_index,
+            received_at,
+        )
+        .unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
+
+        // Have the Unvault tx fully signed
+        db_confirm_deposit(
+            &db_path,
+            &outpoint,
+            9,
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            None,
+            None,
+        )
+        .unwrap();
+        db_update_presigned_tx(
+            &db_path,
+            db_vault.id,
+            db_unvault_transaction(&db_path, db_vault.id).unwrap().0,
+            fullysigned_unvault_tx.inner_tx().inputs[0]
+                .partial_sigs
+                .clone(),
+            &revaultd.secp_ctx,
+        )
+        .unwrap();
+
+        // We can store a Spend tx spending a single unvault and query it
+        let spend_tx = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAARdlVzMHyOWYPhrSslluxVphR04Vu1FkZFwhYQd9Hsa4AAAAAAD03QAAApAyAAAAAAAAIgAge2x1yRpaBoZgJhwSITI/Ycg/0tc80XahfOLJyfCduFSQjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgzqV1Ar8huW7yhi1LtFuEF52PnEMhfiFRF1BvcI4txkABAwQBAAAAAQWrIQLqNHEkDw8EQRAtkj8nIiTREoIH9NnEOj2tqXHB2+ECcqxRh2R2qRSZGi2Oo23qaUaYI8v08iUsSyO/gIisa3apFAfsPi/Q8psFpddOAWOFWZOD3+iBiKxsk1KHZ1IhA8yAK0bRR08+P4A1MgJy0JaBzAc+yZn1bEe8n7w2cvr/IQON6TGY542Mlk5drLlU1b8mgwZyrrviwCZnJ9Cu+Yjw2VKvA/XdALJoAAEBJSEC6jRxJA8PBEEQLZI/JyIk0RKCB/TZxDo9ralxwdvhAnKsUYcAAA==").unwrap();
+        let db_unvault = db_presigned_tx(
+            &db_path,
+            &db_vault.deposit_outpoint,
+            TransactionType::Unvault,
+        )
+        .unwrap()
+        .unwrap();
+        db_insert_spend(&db_path, &[&db_unvault], &spend_tx).unwrap();
+        assert_eq!(db_spend_transactions(&db_path).unwrap()[0].psbt, spend_tx);
+
+        // We can update it, eg with a Spend with more sigs
+        let spend_tx = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAARdlVzMHyOWYPhrSslluxVphR04Vu1FkZFwhYQd9Hsa4AAAAAAD03QAAApAyAAAAAAAAIgAge2x1yRpaBoZgJhwSITI/Ycg/0tc80XahfOLJyfCduFSQjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgzqV1Ar8huW7yhi1LtFuEF52PnEMhfiFRF1BvcI4txkAiAgLqNHEkDw8EQRAtkj8nIiTREoIH9NnEOj2tqXHB2+ECckgwRQIhAIctOS9u8Sasx1p9GIILypf8u3QrQrRhx7bKCk+IHbaYAiAlg2F6xZrktAQgo6fRa5o5xQB0/YKynzWTApXgL5yuKQEiAgON6TGY542Mlk5drLlU1b8mgwZyrrviwCZnJ9Cu+Yjw2UcwRAIgCYXUigFApDLlqDZ8BPVrBWhHaSAEMNSzgCEiydrSD8QCIHs8W6x0zd4l9NExXpC3Fg+/4ZT8IeCUR3FjgkCsddO8ASICA8yAK0bRR08+P4A1MgJy0JaBzAc+yZn1bEe8n7w2cvr/SDBFAiEA8saj4mK42f/Rm4k/Qv+6d26eZYdv4NyJmBLcu8JLUtQCIE6EdQsk4WG0i/UHA9cSuKCucNfLoNg3uM4cb55TNfsjAQEDBAEAAAABBashAuo0cSQPDwRBEC2SPyciJNESggf02cQ6Pa2pccHb4QJyrFGHZHapFJkaLY6jbeppRpgjy/TyJSxLI7+AiKxrdqkUB+w+L9DymwWl104BY4VZk4Pf6IGIrGyTUodnUiEDzIArRtFHTz4/gDUyAnLQloHMBz7JmfVsR7yfvDZy+v8hA43pMZjnjYyWTl2suVTVvyaDBnKuu+LAJmcn0K75iPDZUq8D9d0AsmgAAQElIQLqNHEkDw8EQRAtkj8nIiTREoIH9NnEOj2tqXHB2+ECcqxRhwAA").unwrap();
+        db_update_spend(&db_path, &spend_tx).unwrap();
+        assert_eq!(db_spend_transactions(&db_path).unwrap()[0].psbt, spend_tx);
+
+        // And delete it
+        db_delete_spend(&db_path, &spend_tx.inner_tx().global.unsigned_tx.txid()).unwrap();
+        assert!(db_spend_transactions(&db_path).unwrap().is_empty());
+
+        // And this works with multiple unvaults too
+
+        // Re-insert the previous one so we have many references to the first Unvault
+        db_insert_spend(&db_path, &[&db_unvault], &spend_tx).unwrap();
+
+        // Same as above with a new vault
+        let cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAAc+BIbsSvYK/BWRNOAjazIlLfjlVzCCtXvoyN5/bydgEAAAAAAD9////AdLKAgAAAAAAIgAgFy2HNuxbT516bQQBY3R04IkEja348wJveLmF73Tj/owAAAAAAAEBK0ANAwAAAAAAIgAgZw+cwq8wJzworIDuy6s8cpOo3uF8fYyL5pECqg0UVagBAwSBAAAAAQWrIQLDtCYN0BlQw/h5zAcF0yXft2G7vAjkRsD9B9uoiyr1x6xRh2R2qRTGFACwvLOTrJHUPKb3ifnio7mt0Yisa3apFOZTIiKdGP+9rilwd09H1kOsfB/PiKxsk1KHZ1IhAtGKwcs21FeGy2qY+fzQ9uvI4X5ThtCqkwHsGtKQx0jYIQP93zm1sGAtxTNxsYQTkoXt26FoyKWNh1sx6hmk1yVzYlKvA8aOALJoAAEBR1IhA8HKPHwUwdE4CMkbosklbbI6mPPzzVnOom7LFxQbvCfYIQJ358C4w7CQrcz3UUcpo8eqsRn5JTM0Y0ge5Fz3CApS7lKuAA==").unwrap();
+        let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAT7KJ+fkvbKBDobFTsm31LqtMUfhTiR5tWA5XJA9oYgOAAAAAAD9////AkANAwAAAAAAIgAgbMJH4U4sOCdd1R9PVUuEbmS4bkbnNNlJaqxZBqXHwCcwdQAAAAAAACIAIM8vNQyMFHWpzTmNSefLOTf0spivub9JuegPqYdx0rLvAAAAAAABASuIlAMAAAAAACIAIONmt9fso2OE03OxwV4EkzSucRgHSh3ylMy/KcBayrRaAQMEAQAAAAEFR1IhAum/3N5NY9BZnqXIJxEBNzNEhHwCOY4WQ5xdZZ9XN4+dIQNwiQrXHbeULZ18BN3FOfnYK48NrsVzMDAXVEiu7HfvylKuAAEBqiEDsTozyBugih4LqhjAbDEbxv0SImcwm7uxgzAxpprx+hasUYdkdqkUq3ciI2+fP8tZgD/nHHJDhb3wHtOIrGt2qRQHsYoc0BfpfAKimvmP+V1XXUmr1YisbJNSh2dSIQMDsoKW2AvcnJM8c2BZo1U7OHGc2kUyfe5wh8GxWejwmiECwXo562TGRJPfOC0ooMYiE0XPegUlr7E9sCVTApCykntSrwJQBbJoAAEBJSEDsTozyBugih4LqhjAbDEbxv0SImcwm7uxgzAxpprx+hasUYcA").unwrap();
+        let fullysigned_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAT7KJ+fkvbKBDobFTsm31LqtMUfhTiR5tWA5XJA9oYgOAAAAAAD9////AkANAwAAAAAAIgAgbMJH4U4sOCdd1R9PVUuEbmS4bkbnNNlJaqxZBqXHwCcwdQAAAAAAACIAIM8vNQyMFHWpzTmNSefLOTf0spivub9JuegPqYdx0rLvAAAAAAABASuIlAMAAAAAACIAIONmt9fso2OE03OxwV4EkzSucRgHSh3ylMy/KcBayrRaIgIC6b/c3k1j0FmepcgnEQE3M0SEfAI5jhZDnF1ln1c3j51HMEQCIGFyxYLjg6lWDcVM80INdA3YLakH+VqoMc7qDkV6CimaAiBjp7k2X4q2lBPvf/BxsYV8NQ9LkNdq5r3tr5PxgO0EDAEiAgNwiQrXHbeULZ18BN3FOfnYK48NrsVzMDAXVEiu7HfvykgwRQIhALApfHxDE6dayC8XF1mv4Pn7/SceN5dQYHJ84ff8xnN9AiAA3v0lfO6cRJuatj5U7emyqEcHpPPM0886IMHM6CgchQEBAwQBAAAAAQVHUiEC6b/c3k1j0FmepcgnEQE3M0SEfAI5jhZDnF1ln1c3j50hA3CJCtcdt5QtnXwE3cU5+dgrjw2uxXMwMBdUSK7sd+/KUq4AAQGqIQOxOjPIG6CKHguqGMBsMRvG/RIiZzCbu7GDMDGmmvH6FqxRh2R2qRSrdyIjb58/y1mAP+ccckOFvfAe04isa3apFAexihzQF+l8AqKa+Y/5XVddSavViKxsk1KHZ1IhAwOygpbYC9yckzxzYFmjVTs4cZzaRTJ97nCHwbFZ6PCaIQLBejnrZMZEk984LSigxiITRc96BSWvsT2wJVMCkLKSe1KvAlAFsmgAAQElIQOxOjPIG6CKHguqGMBsMRvG/RIiZzCbu7GDMDGmmvH6FqxRhwA=").unwrap();
+        let wallet_id = 1;
+        let status = VaultStatus::Funded;
+        let outpoint = OutPoint::from_str(
+            "2117d7c3461ca013a099d8e60b0bcc6c33aec95db49f636c479ab85117479a91:0",
+        )
+        .unwrap();
+        let amount = Amount::from_sat(112245);
+        let derivation_index = ChildNumber::from(643874);
+        let received_at = 2615297315;
+        db_insert_new_unconfirmed_vault(
+            &db_path,
+            wallet_id,
+            &status,
+            &outpoint,
+            &amount,
+            derivation_index,
+            received_at,
+        )
+        .unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
+        db_confirm_deposit(
+            &db_path,
+            &outpoint,
+            9,
+            &fresh_unvault_tx,
+            &cancel_tx,
+            None,
+            None,
+        )
+        .unwrap();
+        db_update_presigned_tx(
+            &db_path,
+            db_vault.id,
+            db_unvault_transaction(&db_path, db_vault.id).unwrap().0,
+            fullysigned_unvault_tx.inner_tx().inputs[0]
+                .partial_sigs
+                .clone(),
+            &revaultd.secp_ctx,
+        )
+        .unwrap();
+
+        let spend_tx_b = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAc+BIbsSvYK/BWRNOAjazIlLfjlVzCCtXvoyN5/bydgEAAAAAADFjgAAApAyAAAAAAAAIgAgC/9/hHKfpuelaggCOtb7lf6UkEQp1rp4xRO2jetbSFKQjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgZw+cwq8wJzworIDuy6s8cpOo3uF8fYyL5pECqg0UVagBAwQBAAAAAQWrIQLDtCYN0BlQw/h5zAcF0yXft2G7vAjkRsD9B9uoiyr1x6xRh2R2qRTGFACwvLOTrJHUPKb3ifnio7mt0Yisa3apFOZTIiKdGP+9rilwd09H1kOsfB/PiKxsk1KHZ1IhAtGKwcs21FeGy2qY+fzQ9uvI4X5ThtCqkwHsGtKQx0jYIQP93zm1sGAtxTNxsYQTkoXt26FoyKWNh1sx6hmk1yVzYlKvA8aOALJoAAEBJSECw7QmDdAZUMP4ecwHBdMl37dhu7wI5EbA/QfbqIsq9cesUYcAAA==").unwrap();
+        let db_unvault_b = db_presigned_tx(
+            &db_path,
+            &db_vault.deposit_outpoint,
+            TransactionType::Unvault,
+        )
+        .unwrap()
+        .unwrap();
+        db_insert_spend(&db_path, &[&db_unvault, &db_unvault_b], &spend_tx_b).unwrap();
+        assert_eq!(db_spend_transactions(&db_path).unwrap().len(), 2);
+
+        let spend_tx_b = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAc+BIbsSvYK/BWRNOAjazIlLfjlVzCCtXvoyN5/bydgEAAAAAADFjgAAApAyAAAAAAAAIgAgC/9/hHKfpuelaggCOtb7lf6UkEQp1rp4xRO2jetbSFKQjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgZw+cwq8wJzworIDuy6s8cpOo3uF8fYyL5pECqg0UVagiAgP93zm1sGAtxTNxsYQTkoXt26FoyKWNh1sx6hmk1yVzYkgwRQIhAMnhlNpNO7N7udIN2HnrjqFb6gEtck8rMC5WdEZK1EB7AiATzNpu03p/9t8fnPxziJOp5bfDHzHuIuyLk1Xedw+ztAEiAgLDtCYN0BlQw/h5zAcF0yXft2G7vAjkRsD9B9uoiyr1x0gwRQIhAMGp+GWnV6jWiqaO4gDqPol9TDgUYsPIEj8tFLeenfhHAiAXMm+MvFnkYZ4lcpLNaTbeSGt6t5hsdhZEmcVv1r172AEiAgLRisHLNtRXhstqmPn80PbryOF+U4bQqpMB7BrSkMdI2EcwRAIgPW/0MYMM9hRYNC6CUByPopDYCfkjWbyq6aRYx51NRbQCIDTw+NSPY6JkhetmaBPJEzqtu5UuuOD+/Zj673HW4ThMAQEDBAEAAAABBashAsO0Jg3QGVDD+HnMBwXTJd+3Ybu8CORGwP0H26iLKvXHrFGHZHapFMYUALC8s5OskdQ8pveJ+eKjua3RiKxrdqkU5lMiIp0Y/72uKXB3T0fWQ6x8H8+IrGyTUodnUiEC0YrByzbUV4bLapj5/ND268jhflOG0KqTAewa0pDHSNghA/3fObWwYC3FM3GxhBOShe3boWjIpY2HWzHqGaTXJXNiUq8Dxo4AsmgAAQElIQLDtCYN0BlQw/h5zAcF0yXft2G7vAjkRsD9B9uoiyr1x6xRhwAA").unwrap();
+        db_update_spend(&db_path, &spend_tx_b).unwrap();
+
+        // There are 2 Unvaults referenced by this Spend
+        let db_spend =
+            db_spend_transaction(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid())
+                .unwrap()
+                .unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let unvault_psbts = conn
+            .prepare(
+                "SELECT ptx.psbt FROM presigned_transactions as ptx \
+             INNER JOIN spend_inputs as sin ON ptx.id = sin.unvault_id \
+             INNER JOIN spend_transactions as stx ON stx.id = sin.spend_id \
+             WHERE stx.id = (?1)",
+            )
+            .unwrap()
+            .query_map(rusqlite::params![db_spend.id], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<Vec<u8>>>>()
+            .unwrap();
+        assert_eq!(unvault_psbts.len(), 2);
+        for psbt in unvault_psbts {
+            UnvaultTransaction::from_psbt_serialized(&psbt).unwrap();
+        }
+
+        // And we can delete both..
+        db_delete_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid()).unwrap();
+        db_delete_spend(&db_path, &spend_tx.inner_tx().global.unsigned_tx.txid()).unwrap();
+    }
+
     // We disabled #[test] for the above, as they may erase the db concurrently.
     // Instead, run them sequentially.
     #[test]
@@ -924,5 +1152,6 @@ mod test {
         test_db_fetch_deposits();
         test_db_store_presigned_txs();
         test_db_concurrent_write();
+        test_db_spend_storage();
     }
 }

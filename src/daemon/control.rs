@@ -9,10 +9,11 @@
 use crate::{
     bitcoind::BitcoindError,
     database::{
-        actions::db_update_presigned_tx,
+        actions::{db_insert_spend, db_update_presigned_tx, db_update_spend},
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_tip, db_unvault_emer_transaction,
-            db_unvault_transaction, db_vault_by_deposit, db_vaults,
+            db_cancel_transaction, db_emer_transaction, db_spend_transaction, db_tip,
+            db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
+            db_vault_by_unvault_txid, db_vaults,
         },
         DatabaseError,
     },
@@ -1049,6 +1050,51 @@ pub fn handle_rpc_messages(
                     tx_res.as_ref().map(|tx| tx.as_psbt_string())
                 );
                 response_tx.send(tx_res.map_err(|e| RpcControlError::Transaction(e.into())))?;
+            }
+            RpcMessageIn::UpdateSpendTx(spend_tx, response_tx) => {
+                log::trace!("Got 'updatespendtx' request from RPC thread");
+                let revaultd = revaultd.read().unwrap();
+                let db_path = revaultd.db_file();
+                let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+
+                // Fetch the Unvault it spends from the DB
+                let spend_inputs = &spend_tx.inner_tx().global.unsigned_tx.input;
+                let mut db_unvaults = Vec::with_capacity(spend_inputs.len());
+                for txin in spend_inputs.iter() {
+                    let (db_vault, db_unvault) =
+                        match db_vault_by_unvault_txid(&db_path, &txin.previous_output.txid)? {
+                            Some(res) => res,
+                            None => {
+                                response_tx.send(Err(RpcControlError::SpendUnknownUnvault(
+                                    txin.previous_output.txid,
+                                )))?;
+                                break;
+                            }
+                        };
+
+                    if !matches!(db_vault.status, VaultStatus::Active) {
+                        response_tx.send(Err(RpcControlError::InvalidStatus((
+                            db_vault.status,
+                            VaultStatus::Active,
+                        ))))?;
+                        break;
+                    }
+
+                    db_unvaults.push(db_unvault);
+                }
+                // There was an issue with an outpoint, error is already sent in the loop.
+                if db_unvaults.len() != spend_inputs.len() {
+                    continue;
+                }
+
+                if db_spend_transaction(&db_path, &spend_txid)?.is_some() {
+                    log::debug!("Updating Spend transaction '{}'", spend_txid);
+                    db_update_spend(&db_path, &spend_tx)?;
+                } else {
+                    log::debug!("Storing new Spend transaction '{}'", spend_txid);
+                    db_insert_spend(&db_path, &db_unvaults, &spend_tx)?;
+                }
+                response_tx.send(Ok(()))?;
             }
         }
     }

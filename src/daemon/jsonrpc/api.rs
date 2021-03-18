@@ -8,8 +8,8 @@ use common::{assume_ok, VERSION};
 use revault_tx::{
     bitcoin::{Address, OutPoint},
     transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -143,6 +143,13 @@ pub trait RpcApi {
         outpoint: Vec<OutPoint>,
         outputs: BTreeMap<Address, u64>,
         feerate: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "updatespendtx")]
+    fn updatespendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_tx: SpendTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
@@ -504,5 +511,28 @@ impl RpcApi for RpcImpl {
         Ok(json!({
             "spend_tx": spend_tx.as_psbt_string(),
         }))
+    }
+
+    fn updatespendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_tx: SpendTransaction,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::UpdateSpendTx(spend_tx, response_tx)),
+            "Sending 'updatespendtx' to main thread"
+        );
+
+        assume_ok!(
+            response_rx.recv(),
+            "Receiving 'updatespendtx' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({}))
     }
 }

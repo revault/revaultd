@@ -65,6 +65,7 @@ pub enum RpcMessageIn {
         u64,
         SyncSender<Result<SpendTransaction, RpcControlError>>,
     ),
+    UpdateSpendTx(SpendTransaction, SyncSender<Result<(), RpcControlError>>),
 }
 
 /// Outgoing to the bitcoind poller thread
@@ -133,6 +134,7 @@ pub enum RpcControlError {
     Communication(String),
     Transaction(revault_tx::Error),
     SpendLowFeerate(u64, u64),
+    SpendUnknownUnvault(Txid),
 }
 
 impl std::fmt::Display for RpcControlError {
@@ -152,6 +154,9 @@ impl std::fmt::Display for RpcControlError {
                 "Required feerate ('{}') is significantly higher than actual feerate ('{}')",
                 required, actual
             ),
+            Self::SpendUnknownUnvault(txid) => {
+                write!(f, "Spend transaction refers an unknown Unvault: '{}'", txid)
+            }
         }
     }
 }

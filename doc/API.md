@@ -277,13 +277,31 @@ feerate.
 | ---------- | ------ | ----------------------------------------------- |
 | `spend_tx` | string | Base64-encoded Spend transaction PSBT           |
 
+
+### `updatespendtx`
+
+The `updatespendtx` RPC Command stores or update the stored Spend transaction with the
+given one.
+
+#### Request
+
+| Field       | Type         | Description                                                           |
+| ----------- | ------------ | --------------------------------------------------------------------- |
+| `spend_tx`  | string       | Base64-encoded Spend transaction PSBT                                 |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
+
 ### `setspendtx`
 
 #### Request
 
-| Field        | Type   | Description                                    |
-| ------------ | ------ | ---------------------------------------------- |
-| `spend_tx`   | string | Base64-encoded Spend transaction PSBT          |
+| Field          | Type   | Description                                    |
+| -------------- | ------ | ---------------------------------------------- |
+| `spend_txid`   | string | Txid of the Spend transaction to use           |
 
 #### Response
 

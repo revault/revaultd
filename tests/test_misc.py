@@ -889,3 +889,42 @@ def test_getspendtx(revault_network, bitcoind):
         # destinations + CPFP + change
         and len(psbt.outputs) == len(destinations.keys()) + 1 + 1
     ), "expected a change output"
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_spendtx_management(revault_network, bitcoind):
+    revault_network.deploy(2, 1)
+    man = revault_network.man_wallets[0]
+    amount = 0.24
+    vault = revault_network.fund(amount)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+
+    addr = bitcoind.rpc.getnewaddress()
+    spent_vaults = [deposit]
+    # 10k fees, 50k CPFP, 50k unvault CPFP + fees
+    destination = {addr: vault["amount"] - 10_000 - 50_000 - 50_000}
+    feerate = 2
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+
+    spend_tx = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"]
+
+    # If we are not a manager, it'll fail
+    with pytest.raises(RpcError, match="This is a manager command"):
+        revault_network.stk_wallets[0].rpc.updatespendtx(spend_tx)
+
+    # It will not accept a spend_tx which spends an unknown Unvault
+    psbt = serializations.PSBT()
+    psbt.deserialize(spend_tx)
+    psbt.tx.vin[0].prevout.hash = 0
+    insane_spend_tx = psbt.serialize()
+    with pytest.raises(RpcError, match="Spend transaction refers an unknown Unvault"):
+        man.rpc.updatespendtx(insane_spend_tx)
+
+    # First time, it'll be stored
+    man.rpc.updatespendtx(spend_tx)
+    man.wait_for_log("Storing new Spend transaction")
+    # We can actually update it no matter if it's the same
+    man.rpc.updatespendtx(spend_tx)
+    man.wait_for_log("Updating Spend transaction")

@@ -396,6 +396,40 @@ pub fn db_unvault_emer_transaction(
     ))
 }
 
+/// Get a vault and its Unvault transaction out of an Unvault txid
+pub fn db_vault_by_unvault_txid(
+    db_path: &PathBuf,
+    txid: &Txid,
+) -> Result<Option<(DbVault, DbTransaction)>, DatabaseError> {
+    Ok(db_query(
+        db_path,
+        "SELECT vaults.*, ptx.id, ptx.psbt, ptx.fullysigned FROM presigned_transactions as ptx \
+         INNER JOIN vaults ON vaults.id = ptx.vault_id \
+         WHERE ptx.txid = (?1) and type = (?2)",
+        params![txid.to_vec(), TransactionType::Unvault as u32],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+
+            // FIXME: there is probably a more extensible way to implement the from()s so we don't
+            // have to change all those when adding a column
+            let id: u32 = row.get(10)?;
+            let psbt: Vec<u8> = row.get(11)?;
+            let psbt = UnvaultTransaction::from_psbt_serialized(&psbt).expect("We store it");
+            let is_fully_signed = row.get(12)?;
+            let db_tx = DbTransaction {
+                id,
+                vault_id: db_vault.id,
+                tx_type: TransactionType::Unvault,
+                psbt: RevaultTx::Unvault(psbt),
+                is_fully_signed,
+            };
+
+            Ok((db_vault, db_tx))
+        },
+    )?
+    .pop())
+}
+
 /// Get all the presigned transactions for which we don't have all the sigs yet.
 /// Note that it will return the emergency transactions (if unsigned) only if we
 /// are a stakeholder.
@@ -406,24 +440,6 @@ pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransactio
         params![],
         |row| row.try_into(),
     )
-}
-
-/// Get a fully signed presigned transaction for the vault at this outpoint.
-pub fn db_presigned_tx(
-    db_path: &PathBuf,
-    deposit: &OutPoint,
-    tx_type: TransactionType,
-) -> Result<Option<DbTransaction>, DatabaseError> {
-    db_query(
-        db_path,
-        "SELECT * FROM presigned_transactions WHERE fullysigned = 1 AND type = (?1) \
-         AND vault_id = (\
-            SELECT id FROM vaults WHERE deposit_txid = (?2) AND deposit_vout = (?3)\
-         )",
-        params![tx_type as u32, deposit.txid.to_vec(), deposit.vout],
-        |row| row.try_into(),
-    )
-    .map(|mut rows| rows.pop())
 }
 
 impl TryFrom<&Row<'_>> for DbSpendTransaction {

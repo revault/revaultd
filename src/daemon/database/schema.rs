@@ -169,7 +169,7 @@ tx_type_from_tx!(EmergencyTransaction, Emergency);
 tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
 
 /// A transaction stored in the 'presigned_transactions' table
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RevaultTx {
     Unvault(UnvaultTransaction),
     Cancel(CancelTransaction),
@@ -190,7 +190,7 @@ macro_rules! assert_tx_type {
 
 // FIXME: naming it "db transaction" was ambiguous..
 /// A row in the "presigned_transactions" table
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DbTransaction {
     pub id: u32, // FIXME: should be an i64
     pub vault_id: u32,

@@ -18,9 +18,7 @@ macro_rules! assume_some {
 macro_rules! assume_ok {
     ($expression:expr, $($reason:expr),* $(,)?) => {
         $expression.unwrap_or_else(|e| {
-            log::error!($($reason, )*);
-            // FIXME: a workaround for keeping it single line ?
-            log::error!("'{:?}'", e);
+            log::error!("{}: '{:?}'", format!($($reason, )*), e);
             process::exit(1);
         })
     };

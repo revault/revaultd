@@ -186,6 +186,7 @@ fn main() {
             pid_file: Some(revaultd.pid_file()),
             stdout_file: Some(log_file.clone()),
             stderr_file: Some(log_file),
+            chdir: Some(revaultd.data_dir.clone()),
             ..Daemonize::default()
         };
         daemon.doit().unwrap_or_else(|e| {

@@ -321,7 +321,7 @@ class TailableProc(object):
             self.cmd_line,
             stdin=stdin,
             stdout=stdout if stdout else subprocess.PIPE,
-            stderr=stderr,
+            stderr=stderr if stderr else subprocess.PIPE,
             env=self.env,
         )
         self.thread = threading.Thread(target=self.tail)
@@ -364,7 +364,11 @@ class TailableProc(object):
         self.logs and signals that a new line was read so that it can
         be picked up by consumers.
         """
-        for line in iter(self.proc.stdout.readline, ""):
+        import itertools
+
+        out = self.proc.stdout.readline
+        err = self.proc.stderr.readline
+        for line in itertools.chain(iter(out, ""), iter(err, "")):
             if len(line) == 0:
                 break
             if self.log_filter(line.decode("ASCII")):
@@ -376,8 +380,7 @@ class TailableProc(object):
                 self.logs_cond.notifyAll()
         self.running = False
         self.proc.stdout.close()
-        if self.proc.stderr:
-            self.proc.stderr.close()
+        self.proc.stderr.close()
 
     def is_in_log(self, regex, start=0):
         """Look for `regex` in the logs."""

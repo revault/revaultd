@@ -6,7 +6,7 @@ use crate::{jsonrpc::UserRole, revaultd::VaultStatus, threadmessages::*};
 use common::{assume_ok, VERSION};
 
 use revault_tx::{
-    bitcoin::{Address, OutPoint},
+    bitcoin::{Address, OutPoint, Txid},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -150,6 +150,13 @@ pub trait RpcApi {
         &self,
         meta: Self::Metadata,
         spend_tx: SpendTransaction,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "delspendtx")]
+    fn delspendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_txid: Txid,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
@@ -530,6 +537,29 @@ impl RpcApi for RpcImpl {
         assume_ok!(
             response_rx.recv(),
             "Receiving 'updatespendtx' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({}))
+    }
+
+    fn delspendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_txid: Txid,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::DelSpendTx(spend_txid, response_tx)),
+            "Sending 'delspendtx' to main thread"
+        );
+
+        assume_ok!(
+            response_rx.recv(),
+            "Receiving 'delspendtx' result from main thread"
         )
         .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
 

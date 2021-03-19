@@ -928,3 +928,12 @@ def test_spendtx_management(revault_network, bitcoind):
     # We can actually update it no matter if it's the same
     man.rpc.updatespendtx(spend_tx)
     man.wait_for_log("Updating Spend transaction")
+
+    # If we delete it..
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    man.rpc.delspendtx(spend_psbt.tx.hash)
+    # When we update it it'll be treated as a new transaction
+    man.rpc.updatespendtx(spend_tx)
+    man.wait_for_log("Storing new Spend transaction")

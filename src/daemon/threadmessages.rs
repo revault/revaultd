@@ -66,6 +66,7 @@ pub enum RpcMessageIn {
         SyncSender<Result<SpendTransaction, RpcControlError>>,
     ),
     UpdateSpendTx(SpendTransaction, SyncSender<Result<(), RpcControlError>>),
+    DelSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
 }
 
 /// Outgoing to the bitcoind poller thread

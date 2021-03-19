@@ -9,7 +9,7 @@
 use crate::{
     bitcoind::BitcoindError,
     database::{
-        actions::{db_insert_spend, db_update_presigned_tx, db_update_spend},
+        actions::{db_delete_spend, db_insert_spend, db_update_presigned_tx, db_update_spend},
         interface::{
             db_cancel_transaction, db_emer_transaction, db_spend_transaction, db_tip,
             db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
@@ -1094,6 +1094,13 @@ pub fn handle_rpc_messages(
                     log::debug!("Storing new Spend transaction '{}'", spend_txid);
                     db_insert_spend(&db_path, &db_unvaults, &spend_tx)?;
                 }
+                response_tx.send(Ok(()))?;
+            }
+            RpcMessageIn::DelSpendTx(spend_txid, response_tx) => {
+                let db_path = revaultd.read().unwrap().db_file();
+
+                db_delete_spend(&db_path, &spend_txid)?;
+
                 response_tx.send(Ok(()))?;
             }
         }

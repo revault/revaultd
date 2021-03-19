@@ -16,7 +16,11 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`listvaults`](#listvaults)                                 | Display a paginated list of vaults                   |
 | [`revocationtxs`](#revocationtxs)                           | Give back the revocation transactions signed         |
 | [`unvaulttx`](#unvaulttx)                                   | Give back the unvault transaction signed             |
-| [`spendtx`](#spendtx)                                       | Give back the spend transaction signed               |
+| [`updatespendtx`](#updatespendtx)                            | Store or update the stored Spend transaction         |
+| [`delspendtx`](#delspendtx)                                 | Delete a stored Spend transaction                    |
+| [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
+
+
 
 # Reference
 
@@ -288,6 +292,20 @@ given one.
 | Field       | Type         | Description                                                           |
 | ----------- | ------------ | --------------------------------------------------------------------- |
 | `spend_tx`  | string       | Base64-encoded Spend transaction PSBT                                 |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
+
+### `delspendtx`
+
+#### Request
+
+| Field          | Type   | Description                                         |
+| -------------- | ------ | --------------------------------------------------- |
+| `spend_txid`   | string | Hex encoded txid of the Spend transaction to delete |
 
 #### Response
 

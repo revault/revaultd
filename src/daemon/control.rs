@@ -11,7 +11,7 @@ use crate::{
     database::{
         actions::{db_delete_spend, db_insert_spend, db_update_presigned_tx, db_update_spend},
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_spend_transaction, db_tip,
+            db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction, db_tip,
             db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
             db_vault_by_unvault_txid, db_vaults,
         },
@@ -963,7 +963,7 @@ pub fn handle_rpc_messages(
                     .collect();
 
                 log::debug!(
-                    "Creating a Spend transaction with txins: '{:?}' and txos: '{:?}'",
+                    "Creating a Spend transaction with deposit txins: '{:?}' and txos: '{:?}'",
                     &txins,
                     &txos
                 );
@@ -1102,6 +1102,20 @@ pub fn handle_rpc_messages(
                 db_delete_spend(&db_path, &spend_txid)?;
 
                 response_tx.send(Ok(()))?;
+            }
+            RpcMessageIn::ListSpendTxs(response_tx) => {
+                let db_path = revaultd.read().unwrap().db_file();
+
+                let spend_tx_map = db_list_spends(&db_path)?;
+                let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
+                for (_, (psbt, deposit_outpoints)) in spend_tx_map {
+                    listspend_entries.push(ListSpendEntry {
+                        psbt,
+                        deposit_outpoints,
+                    });
+                }
+
+                response_tx.send(Ok(listspend_entries))?;
             }
         }
     }

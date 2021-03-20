@@ -929,11 +929,41 @@ def test_spendtx_management(revault_network, bitcoind):
     man.rpc.updatespendtx(spend_tx)
     man.wait_for_log("Updating Spend transaction")
 
+    assert len(man.rpc.listspendtxs()["spend_txs"]) == 1
+
     # If we delete it..
     spend_psbt = serializations.PSBT()
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
     man.rpc.delspendtx(spend_psbt.tx.hash)
+    assert len(man.rpc.listspendtxs()["spend_txs"]) == 0
     # When we update it it'll be treated as a new transaction
     man.rpc.updatespendtx(spend_tx)
     man.wait_for_log("Storing new Spend transaction")
+    assert len(man.rpc.listspendtxs()["spend_txs"]) == 1
+
+    # Create another Spend transaction spending two vaults
+    vault_b = revault_network.fund(amount)
+    deposit_b = f"{vault_b['txid']}:{vault_b['vout']}"
+    addr_b = bitcoind.rpc.getnewaddress()
+    spent_vaults = [deposit, deposit_b]
+    # 10k fees, 50k CPFP, 50k unvault CPFP + fees
+    destination = {
+        addr: vault_b["amount"] // 2 - 10_000 - 50_000 - 50_000,
+        addr_b: vault_b["amount"] // 2 - 10_000 - 50_000 - 50_000,
+    }
+    feerate = 5
+    revault_network.secure_vault(vault_b)
+    revault_network.activate_vault(vault_b)
+    spend_tx_b = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"]
+    man.rpc.updatespendtx(spend_tx_b)
+    man.wait_for_log("Storing new Spend transaction")
+    assert len(man.rpc.listspendtxs()["spend_txs"]) == 2
+    assert {
+        "deposit_outpoints": [deposit],
+        "psbt": spend_tx,
+    } in man.rpc.listspendtxs()["spend_txs"]
+    assert {
+        "deposit_outpoints": [deposit, deposit_b],
+        "psbt": spend_tx_b,
+    } in man.rpc.listspendtxs()["spend_txs"]

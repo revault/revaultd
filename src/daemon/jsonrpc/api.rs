@@ -158,6 +158,9 @@ pub trait RpcApi {
         meta: Self::Metadata,
         spend_txid: Txid,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "listspendtxs")]
+    fn listspendtxs(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 // TODO: we should probably make these proc macros and apply them above?
@@ -564,5 +567,23 @@ impl RpcApi for RpcImpl {
         .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
 
         Ok(json!({}))
+    }
+
+    fn listspendtxs(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::ListSpendTxs(response_tx)),
+            "Sending 'listspendtxs' to main thread"
+        );
+
+        let spendtx_entries = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'listspendtxs' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({ "spend_txs": spendtx_entries }))
     }
 }

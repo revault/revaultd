@@ -19,6 +19,7 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`updatespendtx`](#updatespendtx)                            | Store or update the stored Spend transaction         |
 | [`delspendtx`](#delspendtx)                                 | Delete a stored Spend transaction                    |
 | [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
+| [`listspendtxs`](#listspendtxs)                             | List all stored Spend transactions                   |
 
 
 
@@ -311,6 +312,27 @@ disregarded for forward compatibility.
 
 None; the `result` field will be set to the empty object `{}`. Any value should be
 disregarded for forward compatibility.
+
+
+### `listspendtxs`
+
+#### Request
+
+| Field          | Type   | Description                                         |
+| -------------- | ------ | --------------------------------------------------- |
+
+#### Response
+
+| Field          | Type   | Description                                                          |
+| -------------- | ------ | -------------------------------------------------------------------- |
+| `spend_txs`    | array  | Array of [Spend transaction resources](#spend_transaction_reources)  |
+
+##### Spend transaction resources
+
+| Field                  | Type          | Description                                                           |
+| ---------------------- | ------------- | --------------------------------------------------------------------- |
+| `deposit_outpoints`    | string array  | Array of the deposit outpoints of the vaults this transaction spends  |
+| `psbt`                 | string        | Base64-encoded Spend transaction PSBT                                 |
 
 
 ### `setspendtx`

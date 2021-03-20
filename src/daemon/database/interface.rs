@@ -22,6 +22,7 @@ use revault_tx::{
 
 use std::{
     boxed::Box,
+    collections::HashMap,
     convert::{TryFrom, TryInto},
     path::PathBuf,
     str::FromStr,
@@ -462,14 +463,43 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
     }
 }
 
-/// List all Spend transactions in DB
-pub fn db_spend_transactions(db_path: &PathBuf) -> Result<Vec<DbSpendTransaction>, DatabaseError> {
+/// List all Spend transactions in DB along with the vault they are spending
+pub fn db_list_spends(
+    db_path: &PathBuf,
+) -> Result<HashMap<Txid, (SpendTransaction, Vec<OutPoint>)>, DatabaseError> {
+    // SpendTransaction can't be Hash for the moment
+    let mut res: HashMap<Txid, (SpendTransaction, Vec<OutPoint>)> = HashMap::with_capacity(128);
+
     db_query(
         db_path,
-        "SELECT * FROM spend_transactions",
+        "SELECT stx.id, stx.psbt, stx.txid, vaults.deposit_txid, vaults.deposit_vout \
+         FROM spend_transactions as stx \
+         INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
+         INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
+         INNER JOIN vaults ON vaults.id = ptx.vault_id",
         params![],
-        |row| row.try_into(),
-    )
+        |row| {
+            let db_spend: DbSpendTransaction = row.try_into()?;
+
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(3)?).expect("We store it");
+            let vout: u32 = row.get(4)?;
+            let deposit_outpoint = OutPoint { txid, vout };
+
+            let spend_tx = db_spend.psbt;
+            let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+
+            if res.contains_key(&spend_txid) {
+                let (_, outpoints) = res.get_mut(&spend_txid).unwrap();
+                outpoints.push(deposit_outpoint);
+            } else {
+                res.insert(spend_txid, (spend_tx, vec![deposit_outpoint]));
+            }
+
+            Ok(())
+        },
+    )?;
+
+    Ok(res)
 }
 
 /// Get a single Spend transaction from DB by its txid

@@ -9,6 +9,8 @@ use revault_tx::{
 
 use std::{collections::BTreeMap, sync::mpsc::SyncSender};
 
+use serde::Serialize;
+
 /// Incoming from RPC server thread
 #[derive(Debug)]
 pub enum RpcMessageIn {
@@ -67,6 +69,7 @@ pub enum RpcMessageIn {
     ),
     UpdateSpendTx(SpendTransaction, SyncSender<Result<(), RpcControlError>>),
     DelSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
+    ListSpendTxs(SyncSender<Result<Vec<ListSpendEntry>, RpcControlError>>),
 }
 
 /// Outgoing to the bitcoind poller thread
@@ -111,6 +114,12 @@ pub struct VaultOnchainTransactions {
     pub emergency: Option<WalletTransaction>,
     pub unvault_emergency: Option<WalletTransaction>,
     pub spend: Option<WalletTransaction>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListSpendEntry {
+    pub deposit_outpoints: Vec<OutPoint>,
+    pub psbt: SpendTransaction,
 }
 
 #[derive(Debug)]

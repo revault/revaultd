@@ -88,7 +88,7 @@ class Revaultd(TailableProc):
                 for wt in stk_config["watchtowers"]:
                     f.write(
                         f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
-                        f"\"{wt['noise_key']}\" }}, "
+                        f"\"{wt['noise_key'].hex()}\" }}, "
                     )
                 f.write("]\n")
                 # FIXME: eventually use a real one here
@@ -101,13 +101,10 @@ class Revaultd(TailableProc):
                 f.write("[manager_config]\n")
                 self.man_keychain = man_config["keychain"]
                 f.write(f'xpub = "{self.man_keychain.get_xpub()}"\n')
-                f.write("cosigners = [")
-                for wt in man_config["cosigners"]:
-                    f.write(
-                        f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
-                        f"\"{wt['noise_key']}\" }}, "
-                    )
-                f.write("]\n")
+                for cosig in man_config["cosigners"]:
+                    f.write("[[manager_config.cosigners]]\n")
+                    f.write(f"host = \"{cosig['host']}\"\n")
+                    f.write(f"noise_key = \"{cosig['noise_key'].hex()}\"\n")
 
     def wait_for_deposits(self, outpoints):
         """

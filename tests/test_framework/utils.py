@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 
+from ephemeral_port_reserve import reserve
 from test_framework import serializations
 from typing import Optional
 
@@ -116,9 +117,13 @@ class User(Participant):
 class Cosig(Participant):
     def __init__(self):
         super(Cosig, self).__init__()
+        self.static_key_path = "m/0"
 
     def get_static_key(self):
-        return self.hd.get_pubkey_from_path("m/0")
+        return self.hd.get_pubkey_from_path(self.static_key_path)
+
+    def get_bitcoin_priv(self):
+        return self.hd.get_privkey_from_path(self.static_key_path)
 
 
 def get_participants(n_stk, n_man):

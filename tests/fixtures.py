@@ -139,17 +139,11 @@ def revaultd_stakeholder(bitcoind, directory):
 
     stk_config = {
         "keychain": stks[0],
-        "watchtowers": [
-            {
-                "host": "127.0.0.1:1",
-                "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                "5cc6f49a9bddaacf93cd77def697",
-            }
-        ],
+        "watchtowers": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32)}],
     }
     csv = 35
     coordinator_noise_key = (
-        "d91563973102454a7830137e92d0548bc83b4e" "a2799f1df04622ca1307381402"
+        "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
     )
     revaultd = StakeholderRevaultd(
         datadir,
@@ -178,17 +172,11 @@ def revaultd_manager(bitcoind, directory):
 
     man_config = {
         "keychain": mans[0],
-        "cosigners": [
-            {
-                "host": "127.0.0.1:1",
-                "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                "5cc6f49a9bddaacf93cd77def697",
-            }
-        ],
+        "cosigners": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32)}],
     }
     csv = 35
     coordinator_noise_key = (
-        "d91563973102454a7830137e92d0548bc83b4e" "a2799f1df04622ca1307381402"
+        "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
     )
     revaultd = ManagerRevaultd(
         datadir,

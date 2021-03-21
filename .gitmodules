@@ -1,3 +1,6 @@
 [submodule "tests/servers/coordinatord"]
 	path = tests/servers/coordinatord
 	url = https://github.com/revault/coordinatord
+[submodule "tests/servers/cosignerd"]
+	path = tests/servers/cosignerd
+	url = https://github.com/revault/cosignerd

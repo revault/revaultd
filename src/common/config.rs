@@ -111,7 +111,8 @@ pub struct StakeholderConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CosignerConfig {
     pub host: String,
-    pub noise_key: String,
+    #[serde(deserialize_with = "deserialize_noisepubkey")]
+    pub noise_key: NoisePubkey,
 }
 
 /// If we are a manager, we need to connect to cosigning servers

@@ -6,14 +6,15 @@ cdecker), so credits to them ! (MIT licensed)
 import bip32
 import bitcoin
 import coincurve
+import itertools
 import json
 import logging
+import pathlib
 import psycopg2
 import os
 import random
 import re
 import select
-import serializations
 import socket
 import subprocess
 import threading
@@ -23,6 +24,7 @@ from bitcoin.rpc import RawProxy as BitcoinProxy
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
+from test_framework import serializations
 from typing import Optional
 
 
@@ -364,8 +366,6 @@ class TailableProc(object):
         self.logs and signals that a new line was read so that it can
         be picked up by consumers.
         """
-        import itertools
-
         out = self.proc.stdout.readline
         err = self.proc.stderr.readline
         for line in itertools.chain(iter(out, ""), iter(err, "")):
@@ -673,9 +673,11 @@ class Revaultd(TailableProc):
         datadir_with_network = os.path.join(datadir, "regtest")
         os.makedirs(datadir_with_network, exist_ok=True)
 
-        bin = os.path.join(os.path.dirname(__file__), "..", "target/debug/revaultd")
+        bin = os.path.join(
+            os.path.dirname(__file__), "..", "..", "target/debug/revaultd"
+        )
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [bin, f"--conf", f"{self.conf_file}"]
+        self.cmd_line = [bin, "--conf", f"{self.conf_file}"]
         socket_path = os.path.join(datadir_with_network, "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
 
@@ -890,12 +892,13 @@ class Coordinatord(TailableProc):
         TailableProc.__init__(self, datadir, verbose=VERBOSE)
         bin = os.path.join(
             os.path.dirname(__file__),
+            "..",
             "servers",
             "coordinatord",
             "target/debug/revault_coordinatord",
         )
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [bin, f"--conf", f"{self.conf_file}"]
+        self.cmd_line = [bin, "--conf", f"{self.conf_file}"]
         self.prefix = "coordinatord"
 
         self.postgres_user = postgres_user

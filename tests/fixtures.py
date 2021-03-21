@@ -27,6 +27,16 @@ import time
 __attempts = {}
 
 
+@pytest.fixture(autouse=True)
+def set_backtrace():
+    prev = os.getenv("RUST_BACKTRACE", "0")
+    os.environ["RUST_BACKTRACE"] = "1"
+
+    yield
+
+    os.environ["RUST_BACKTRACE"] = prev
+
+
 @pytest.fixture(scope="session")
 def test_base_dir():
     d = os.getenv("TEST_DIR", "/tmp")

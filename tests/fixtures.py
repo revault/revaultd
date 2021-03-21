@@ -5,12 +5,11 @@ of the file i originally copied! (MIT licensed)
 """
 from concurrent import futures
 from ephemeral_port_reserve import reserve
+from test_framework.bitcoind import BitcoinD
+from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd
+from test_framework.revault_network import RevaultNetwork
 from test_framework.utils import (
-    BitcoinD,
-    ManagerRevaultd,
-    StakeholderRevaultd,
     get_participants,
-    RevaultNetwork,
     POSTGRES_USER,
     POSTGRES_PASS,
     POSTGRES_HOST,

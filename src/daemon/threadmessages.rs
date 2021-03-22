@@ -13,8 +13,8 @@ use std::{collections::BTreeMap, sync::mpsc::SyncSender};
 #[derive(Debug)]
 pub enum RpcMessageIn {
     Shutdown,
-    // Network, blockheight, sync progress
-    GetInfo(SyncSender<(String, u32, f64)>),
+    // Network, blockheight, sync progress, number of vaults
+    GetInfo(SyncSender<(String, u32, f64, usize)>),
     ListVaults(
         (Option<Vec<VaultStatus>>, Option<Vec<OutPoint>>),
         SyncSender<Vec<ListVaultsEntry>>,

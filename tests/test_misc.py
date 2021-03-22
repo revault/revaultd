@@ -14,6 +14,7 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["network"] == "regtest"
     assert res["sync"] == 1.0
     assert res["version"] == "0.0.2"
+    assert res["vaults"] == 0
 
     wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] > 0)
     height = revaultd_manager.rpc.call("getinfo")["blockheight"]
@@ -39,6 +40,7 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert vault_list[0]["derivation_index"] == 0
     assert vault_list[0]["updated_at"] == vault_list[0]["received_at"]
     assert vault_list[0]["blockheight"] == 0
+    assert revaultd_manager.rpc.call("getinfo")["vaults"] == 1
 
     # Generate 5 blocks, it is still unconfirmed
     bitcoind.generate_block(5)
@@ -104,8 +106,8 @@ def test_largewallets(revaultd_stakeholder, bitcoind):
             txids.append(bitcoind.rpc.sendtoaddress(addr, amount))
         bitcoind.generate_block(6, txids)
 
-    revaultd_stakeholder.rpc.getinfo()
-    revaultd_stakeholder.rpc.listvaults()
+    wait_for(lambda: revaultd_stakeholder.rpc.getinfo()["vaults"] == 10 * 100)
+    assert len(revaultd_stakeholder.rpc.listvaults()["vaults"]) == 10 * 100
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

@@ -495,7 +495,18 @@ pub fn handle_rpc_messages(
                     ..
                 } = db_tip(&db_path)?;
 
-                response_tx.send((network.to_string(), blockheight, progress))?;
+                let number_of_vaults = listvaults_from_db(&revaultd.read().unwrap(), None, None)?
+                    .iter()
+                    .filter(|l| {
+                        l.status != VaultStatus::Spent
+                            && l.status != VaultStatus::Canceled
+                            && l.status != VaultStatus::Unvaulted
+                            && l.status != VaultStatus::EmergencyVaulted
+                    })
+                    .collect::<Vec<_>>()
+                    .len();
+
+                response_tx.send((network.to_string(), blockheight, progress, number_of_vaults))?;
             }
             RpcMessageIn::ListVaults((statuses, outpoints), response_tx) => {
                 log::trace!("Got listvaults from RPC thread");

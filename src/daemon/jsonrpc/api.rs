@@ -202,7 +202,7 @@ impl RpcApi for RpcImpl {
             meta.tx.send(RpcMessageIn::GetInfo(response_tx)),
             "Sending 'getinfo' to main thread"
         );
-        let (net, height, progress) = assume_ok!(
+        let (net, height, progress, number_of_vaults) = assume_ok!(
             response_rx.recv(),
             "Receiving 'getinfo' result from main thread"
         );
@@ -212,6 +212,7 @@ impl RpcApi for RpcImpl {
             "network": net,
             "blockheight": height,
             "sync": progress,
+            "vaults": number_of_vaults,
         }))
     }
 

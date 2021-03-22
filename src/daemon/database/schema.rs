@@ -47,7 +47,7 @@ CREATE TABLE vaults (
     wallet_id INTEGER NOT NULL,
     status INTEGER NOT NULL,
     blockheight INTEGER NOT NULL,
-    deposit_txid BLOB UNIQUE NOT NULL,
+    deposit_txid BLOB NOT NULL,
     deposit_vout INTEGER NOT NULL,
     amount INTEGER NOT NULL,
     derivation_index INTEGER NOT NULL,

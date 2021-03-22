@@ -1,6 +1,9 @@
-use crate::revaultd::VaultStatus;
+use crate::{bitcoind::BitcoindError, revaultd::VaultStatus};
 use revault_tx::{
-    bitcoin::{util::bip32::ChildNumber, Address, Amount, OutPoint, Txid},
+    bitcoin::{
+        util::bip32::ChildNumber, Address, Amount, OutPoint, Transaction as BitcoinTransaction,
+        Txid,
+    },
     transactions::{
         CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
@@ -70,6 +73,7 @@ pub enum RpcMessageIn {
     UpdateSpendTx(SpendTransaction, SyncSender<Result<(), RpcControlError>>),
     DelSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
     ListSpendTxs(SyncSender<Result<Vec<ListSpendEntry>, RpcControlError>>),
+    SetSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
 }
 
 /// Outgoing to the bitcoind poller thread
@@ -78,6 +82,7 @@ pub enum BitcoindMessageOut {
     Shutdown,
     SyncProgress(SyncSender<f64>),
     WalletTransaction(Txid, SyncSender<Option<WalletTransaction>>),
+    BroadcastTransaction(BitcoinTransaction, SyncSender<Result<(), BitcoindError>>),
 }
 
 /// Outgoing to the signature fetcher thread
@@ -145,6 +150,12 @@ pub enum RpcControlError {
     Transaction(revault_tx::Error),
     SpendLowFeerate(u64, u64),
     SpendUnknownUnvault(Txid),
+    UnknownSpend,
+    AlreadySpentVault,
+    // FIXME: these String are only temporary, until we remove the JSONRPC thread.
+    SpendSignature(String),
+    CosigningServer(String),
+    UnvaultBroadcast(String),
 }
 
 impl std::fmt::Display for RpcControlError {
@@ -167,6 +178,15 @@ impl std::fmt::Display for RpcControlError {
             Self::SpendUnknownUnvault(txid) => {
                 write!(f, "Spend transaction refers an unknown Unvault: '{}'", txid)
             }
+            Self::UnknownSpend => write!(f, "Unknown Spend transaction"),
+            Self::AlreadySpentVault => {
+                write!(f, "Spend transaction refers to an already spent vault")
+            }
+            Self::SpendSignature(e) => {
+                write!(f, "Error checking Spend transaction signature: '{}'", e)
+            }
+            Self::CosigningServer(e) => write!(f, "Error with the Cosigning Server: '{}'", e),
+            Self::UnvaultBroadcast(e) => write!(f, "Broadcasting Unvault transaction(s): '{}'", e),
         }
     }
 }

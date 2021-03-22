@@ -3,7 +3,9 @@ use crate::{
     revaultd::{BlockchainTip, VaultStatus},
 };
 use common::config::BitcoindConfig;
-use revault_tx::bitcoin::{Address, Amount, BlockHash, OutPoint, TxOut, Txid};
+use revault_tx::bitcoin::{
+    consensus::encode, Address, Amount, BlockHash, OutPoint, Transaction, TxOut, Txid,
+};
 
 use std::{collections::HashMap, fs, str::FromStr, time::Duration};
 
@@ -623,6 +625,14 @@ impl BitcoinD {
         }
 
         Ok(None)
+    }
+
+    /// Broadcast a transaction with 'sendrawtransaction', discarding the returned txid
+    pub fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), BitcoindError> {
+        let tx_hex = encode::serialize_hex(tx);
+        log::debug!("Broadcasting '{}'", tx_hex);
+        self.make_watchonly_request("sendrawtransaction", &params!(Json::String(tx_hex)))
+            .map(|_| ())
     }
 }
 

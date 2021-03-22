@@ -579,10 +579,10 @@ fn update_deposits(
             // Note that it *might* have actually been confirmed during the last 30s, but it's not
             // a big deal to have it marked as unconfirmed for the next 30s..
             db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint)?;
+            // TODO: keep track of Unvault utxos..
             deposits_cache
-                .get_mut(&outpoint)
-                .expect("We just checked it")
-                .status = VaultStatus::Unvaulting;
+                .remove(&outpoint)
+                .expect("We just checked it");
             log::debug!(
                 "The deposit utxo created via '{}' was unvaulted via '{}'",
                 &outpoint,
@@ -754,6 +754,17 @@ pub fn bitcoind_main_loop(
                 log::trace!("Received 'wallettransaction' from main thread");
                 resp_tx
                     .send(wallet_transaction(&bitcoind.read().unwrap(), txid))
+                    .map_err(|e| {
+                        BitcoindError::Custom(format!(
+                            "Sending wallet transaction to main thread: {}",
+                            e
+                        ))
+                    })?;
+            }
+            BitcoindMessageOut::BroadcastTransaction(tx, resp_tx) => {
+                log::trace!("Received 'broadcastransaction' from main thread");
+                resp_tx
+                    .send(bitcoind.read().unwrap().broadcast_transaction(&tx))
                     .map_err(|e| {
                         BitcoindError::Custom(format!(
                             "Sending wallet transaction to main thread: {}",

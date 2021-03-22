@@ -113,6 +113,29 @@ class User(Participant):
 
         return psbt.serialize()
 
+    def sign_spend_psbt(self, psbt_str, deriv_indexes):
+        """Attach an ALL signature to each PSBT input with the keys at
+        {deriv_indexes}"""
+        assert isinstance(psbt_str, str)
+        assert isinstance(deriv_indexes, list)
+
+        psbt = serializations.PSBT()
+        psbt.deserialize(psbt_str)
+        assert len(psbt.inputs) == len(deriv_indexes), "Not enough derivation indexes"
+
+        for (i, psbtin) in enumerate(psbt.inputs):
+            script_code = psbtin.witness_script
+            sighash = serializations.sighash_all_witness(script_code, psbt, i)
+            privkey = coincurve.PrivateKey(
+                self.hd.get_privkey_from_path([deriv_indexes[i]])
+            )
+            sig = privkey.sign(sighash, hasher=None) + b"\x01"  # ALL
+
+            pubkey = self.hd.get_pubkey_from_path([deriv_indexes[i]])
+            psbtin.partial_sigs[pubkey] = sig
+
+        return psbt.serialize()
+
 
 class Cosig(Participant):
     def __init__(self):

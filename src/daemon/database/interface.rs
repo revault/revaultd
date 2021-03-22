@@ -515,3 +515,32 @@ pub fn db_spend_transaction(
     )?
     .pop())
 }
+
+/// Get a mapping of Spend transaction inputs to the vault they ultimately spend. Note that we
+/// can't have two Unvault outputs in a single Unvault transaction therefore it's fine to use the
+/// txid for identifying the Unvault output.
+pub fn db_vaults_from_spend(
+    db_path: &PathBuf,
+    spend_txid: &Txid,
+) -> Result<HashMap<Txid, DbVault>, DatabaseError> {
+    let mut db_vaults = HashMap::with_capacity(128);
+
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.txid \
+         FROM spend_transactions as stx \
+         INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
+         INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
+         INNER JOIN vaults ON vaults.id = ptx.vault_id \
+         WHERE stx.txid = (?1)",
+        params![spend_txid.to_vec()],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(10)?).expect("We store it");
+            db_vaults.insert(txid, db_vault);
+            Ok(())
+        },
+    )?;
+
+    Ok(db_vaults)
+}

@@ -967,3 +967,43 @@ def test_spendtx_management(revault_network, bitcoind):
         "deposit_outpoints": [deposit, deposit_b],
         "psbt": spend_tx_b,
     } in man.rpc.listspendtxs()["spend_txs"]
+
+    # Now we could try to broadcast it..
+    # But we couldn't broadcast a random txid
+    with pytest.raises(RpcError, match="Unknown Spend transaction"):
+        man.rpc.setspendtx(
+            "d5eb741a31ebf4d2f5d6ae223900f1bd996e209150d3604fca7d9fa5d6136337"
+        )
+
+    # ..And even with an existing one we would have to sign it beforehand!
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx_b)
+    spend_psbt.tx.calc_sha256()
+    with pytest.raises(
+        RpcError, match="Error checking Spend transaction signature: 'Missing signature"
+    ):
+        man.rpc.setspendtx(spend_psbt.tx.hash)
+
+    deriv_indexes = [vault["derivation_index"], vault_b["derivation_index"]]
+    for man in revault_network.man_wallets:
+        spend_tx_b = man.man_keychain.sign_spend_psbt(spend_tx_b, deriv_indexes)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx_b)
+    spend_psbt.tx.calc_sha256()
+    spend_tx_b = spend_psbt.serialize()
+    man.rpc.updatespendtx(spend_tx_b)
+    man.rpc.setspendtx(spend_psbt.tx.hash)
+    wait_for(
+        lambda: all(
+            v["status"] == "unvaulting"
+            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
+        )
+    )
+
+    # Of course, Cosigning Servers will cringe if we poll them twice.
+    with pytest.raises(
+        RpcError,
+        match="One of the Cosigning Server already signed a Spend transaction spending one of these vaults",
+    ):
+        man.rpc.setspendtx(spend_psbt.tx.hash)

@@ -1158,6 +1158,17 @@ mod test {
             UnvaultTransaction::from_psbt_serialized(&psbt).unwrap();
         }
 
+        // Thus there are 2 vaults too
+        let spent_outpoints: Vec<OutPoint> =
+            db_vaults_from_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid())
+                .unwrap()
+                .into_iter()
+                .map(|(_, db_vault)| db_vault.deposit_outpoint)
+                .collect();
+        assert_eq!(spent_outpoints.len(), 2);
+        assert!(spent_outpoints.contains(&outpoint));
+        assert!(spent_outpoints.contains(&outpoint_b));
+
         // And we can delete both..
         db_delete_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid()).unwrap();
         db_delete_spend(&db_path, &spend_tx.inner_tx().global.unsigned_tx.txid()).unwrap();

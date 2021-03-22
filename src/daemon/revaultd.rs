@@ -257,6 +257,10 @@ pub struct RevaultD {
     pub lock_time: u32,
     /// The CSV in the unvault_descriptor. Unfortunately segregated from the descriptor..
     pub unvault_csv: u32,
+    // FIXME: this is a hack as we'll move out of specifying xpubs in the config. We should
+    // have a way to get the managers / stakeholders keys out of a descriptor in revault_tx
+    /// All the managers public keys
+    pub managers_pubkeys: Vec<DescriptorPublicKey>,
 
     // Network stuff
     /// The static private key we use to establish connections to servers. We reuse it, but Trevor
@@ -267,6 +271,9 @@ pub struct RevaultD {
     /// The static public key to enact the Noise channel with the Coordinator
     pub coordinator_noisekey: NoisePubKey,
     pub coordinator_poll_interval: time::Duration,
+    /// The ip:port (TODO: Tor) and Noise public key of each cosigning server, only set if we are
+    /// a manager.
+    pub cosigs: Option<Vec<(SocketAddr, NoisePubKey)>>,
 
     // 'Wallet' stuff
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
@@ -304,7 +311,7 @@ fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
-        let our_man_xpub = config.manager_config.map(|x| x.xpub);
+        let our_man_xpub = config.manager_config.as_ref().map(|x| x.xpub);
         let our_stk_xpub = config.stakeholder_config.as_ref().map(|x| x.xpub);
         // Config should have checked that!
         assert!(our_man_xpub.is_some() || our_stk_xpub.is_some());
@@ -321,7 +328,7 @@ impl RevaultD {
             cosigners_pubkeys,
             config.unvault_csv,
         )?;
-        let cpfp_descriptor = cpfp_descriptor(managers_pubkeys)?;
+        let cpfp_descriptor = cpfp_descriptor(managers_pubkeys.clone())?;
         let emergency_address = config.stakeholder_config.map(|x| x.emergency_address);
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
@@ -348,6 +355,14 @@ impl RevaultD {
         let coordinator_noisekey = config.coordinator_noise_key;
         let coordinator_poll_interval = config.coordinator_poll_seconds;
 
+        let cosigs = config.manager_config.map(|config| {
+            config
+                .cosigners
+                .into_iter()
+                .map(|config| (config.host, config.noise_key))
+                .collect()
+        });
+
         let daemon = !matches!(config.daemon, Some(false));
 
         let secp_ctx = secp256k1::Secp256k1::verification_only();
@@ -357,6 +372,7 @@ impl RevaultD {
             our_man_xpub,
             deposit_descriptor,
             unvault_descriptor,
+            managers_pubkeys,
             cpfp_descriptor,
             secp_ctx,
             data_dir,
@@ -366,6 +382,7 @@ impl RevaultD {
             coordinator_host,
             coordinator_noisekey,
             coordinator_poll_interval,
+            cosigs,
             lock_time: 0,
             unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,

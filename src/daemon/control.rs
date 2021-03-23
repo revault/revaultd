@@ -20,7 +20,7 @@ use crate::{
     sigfetcher::presigned_tx_sighash,
     threadmessages::*,
 };
-use common::{assume_ok, assume_some};
+use common::assume_ok;
 
 use revault_net::{message::server::Sig, transport::KKTransport};
 use revault_tx::{
@@ -246,10 +246,8 @@ fn onchain_txs_list_from_outpoints(
         let outpoint = db_vault.deposit_outpoint;
 
         // If the vault exist, there must always be a deposit transaction available.
-        let deposit = assume_some!(
-            bitcoind_wallet_tx(bitcoind_tx, db_vault.deposit_outpoint.txid)?,
-            "Vault exists but not deposit tx?"
-        );
+        let deposit = bitcoind_wallet_tx(bitcoind_tx, db_vault.deposit_outpoint.txid)?
+            .expect("Vault exists but not deposit tx?");
 
         // For the other transactions, it depends on the status of the vault. For the sake of
         // simplicity bitcoind will tell us (but we could have some optimisation eventually here,
@@ -547,10 +545,10 @@ pub fn handle_rpc_messages(
                     let unvault_descriptor =
                         revaultd.unvault_descriptor.derive(vault.derivation_index);
                     let cpfp_descriptor = revaultd.cpfp_descriptor.derive(vault.derivation_index);
-                    let emer_address = assume_some!(
-                        revaultd.emergency_address.clone(),
-                        "The JSONRPC API checked we were a stakeholder"
-                    );
+                    let emer_address = revaultd
+                        .emergency_address
+                        .clone()
+                        .expect("The JSONRPC API checked we were a stakeholder");
 
                     let (_, cancel, emergency, unvault_emer) = transaction_chain(
                         deposit_txin,
@@ -992,10 +990,10 @@ pub fn handle_rpc_messages(
 
                 // If the feerate of the transaction would be much lower (< 90/100) than what they
                 // requested for, tell them.
-                let nochange_feerate_vb = assume_some!(
-                    nochange_tx.max_feerate().checked_mul(4),
-                    "bug in feerate computation"
-                );
+                let nochange_feerate_vb = nochange_tx
+                    .max_feerate()
+                    .checked_mul(4)
+                    .expect("bug in feerate computation");
                 if nochange_feerate_vb * 10 < feerate_vb * 9 {
                     response_tx.send(Err(RpcControlError::SpendLowFeerate(
                         feerate_vb,
@@ -1008,10 +1006,10 @@ pub fn handle_rpc_messages(
                 // atm, see DUST_LIMIT).
                 // 8 (amount) + 1 (len) + 1 (v0) + 1 (push) + 32 (witscript hash)
                 const P2WSH_TXO_WEIGHT: u64 = 43 * 4;
-                let with_change_weight = assume_some!(
-                    nochange_tx.max_weight().checked_add(P2WSH_TXO_WEIGHT),
-                    "weight computation bug"
-                );
+                let with_change_weight = nochange_tx
+                    .max_weight()
+                    .checked_add(P2WSH_TXO_WEIGHT)
+                    .expect("weight computation bug");
                 let cur_fees = nochange_tx.fees();
                 let want_fees = with_change_weight
                     // Mental gymnastic: sat/vbyte to sat/wu rounded up

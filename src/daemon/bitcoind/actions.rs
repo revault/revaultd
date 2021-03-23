@@ -13,7 +13,7 @@ use crate::{
     revaultd::{RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
-use common::{assume_ok, assume_some, config::BitcoindConfig};
+use common::{assume_ok, config::BitcoindConfig};
 use revault_tx::{
     bitcoin::{Amount, Network, OutPoint, TxOut, Txid},
     transactions::{
@@ -291,11 +291,10 @@ fn comprehensive_rescan(
                     MIN_CONF,
                 );
                 db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
-                assume_some!(
-                    deposits_cache.get_mut(&vault.deposit_outpoint),
-                    "Db vault not in cache?"
-                )
-                .status = VaultStatus::Unconfirmed;
+                deposits_cache
+                    .get_mut(&vault.deposit_outpoint)
+                    .expect("Db vault not in cache?")
+                    .status = VaultStatus::Unconfirmed;
                 continue;
             }
 
@@ -314,11 +313,10 @@ fn comprehensive_rescan(
                 vault.deposit_outpoint
             );
             db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
-            assume_some!(
-                deposits_cache.get_mut(&vault.deposit_outpoint),
-                "Db vault not in cache?"
-            )
-            .status = VaultStatus::Unconfirmed;
+            deposits_cache
+                .get_mut(&vault.deposit_outpoint)
+                .expect("Db vault not in cache?")
+                .status = VaultStatus::Unconfirmed;
         }
     }
 
@@ -408,7 +406,10 @@ fn presigned_transactions(
         DepositTxOut::new(utxo.txo.value, &deposit_descriptor, revaultd.xpub_ctx()),
     );
     if revaultd.is_stakeholder() {
-        let emer_address = assume_some!(revaultd.emergency_address.clone(), "We are a stakeholder");
+        let emer_address = revaultd
+            .emergency_address
+            .clone()
+            .expect("We are a stakeholder");
         let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
             deposit_txin,
             &deposit_descriptor,

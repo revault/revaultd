@@ -449,6 +449,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
     fn try_from(row: &Row) -> Result<Self, Self::Error> {
         let id: i64 = row.get(0)?;
         let psbt: Vec<u8> = row.get(1)?;
+        let broadcast: bool = row.get(3)?; // 2 is 'txid'
 
         let psbt = SpendTransaction::from_psbt_serialized(&psbt)
             .expect("We set it using as_psbt_serialized()");
@@ -459,7 +460,11 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
             "Insane db, txid in column is not the same as psbt's one",
         );
 
-        Ok(DbSpendTransaction { id, psbt })
+        Ok(DbSpendTransaction {
+            id,
+            psbt,
+            broadcast,
+        })
     }
 }
 
@@ -472,7 +477,7 @@ pub fn db_list_spends(
 
     db_query(
         db_path,
-        "SELECT stx.id, stx.psbt, stx.txid, vaults.deposit_txid, vaults.deposit_vout \
+        "SELECT stx.id, stx.psbt, stx.txid, stx.broadcast, vaults.deposit_txid, vaults.deposit_vout \
          FROM spend_transactions as stx \
          INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
          INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
@@ -481,8 +486,8 @@ pub fn db_list_spends(
         |row| {
             let db_spend: DbSpendTransaction = row.try_into()?;
 
-            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(3)?).expect("We store it");
-            let vout: u32 = row.get(4)?;
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(4)?).expect("We store it");
+            let vout: u32 = row.get(5)?;
             let deposit_outpoint = OutPoint { txid, vout };
 
             let spend_tx = db_spend.psbt;
@@ -500,6 +505,17 @@ pub fn db_list_spends(
     )?;
 
     Ok(res)
+}
+
+pub fn db_broadcastable_spend_transactions(
+    db_path: &PathBuf,
+) -> Result<Vec<DbSpendTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM spend_transactions WHERE broadcast = 1",
+        params![],
+        |row| row.try_into(),
+    )
 }
 
 /// Get a single Spend transaction from DB by its txid

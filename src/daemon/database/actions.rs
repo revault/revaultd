@@ -498,8 +498,8 @@ pub fn db_insert_spend(
 
     db_exec(db_path, |db_tx| {
         db_tx.execute(
-            "INSERT INTO spend_transactions (psbt, txid) VALUES (?1, ?2)",
-            params![spend_psbt, spend_txid.to_vec()],
+            "INSERT INTO spend_transactions (psbt, txid, broadcast) VALUES (?1, ?2, ?3)",
+            params![spend_psbt, spend_txid.to_vec(), false],
         )?;
         let spend_id = db_tx.last_insert_rowid();
 
@@ -539,6 +539,16 @@ pub fn db_delete_spend(db_path: &PathBuf, spend_txid: &Txid) -> Result<(), Datab
         )?;
         db_tx.execute(
             "DELETE FROM spend_transactions WHERE txid = (?1)",
+            params![spend_txid.to_vec()],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn db_mark_broadcast_spend(db_path: &PathBuf, spend_txid: &Txid) -> Result<(), DatabaseError> {
+    db_exec(db_path, |db_tx| {
+        db_tx.execute(
+            "UPDATE spend_transactions SET broadcast = 1 WHERE txid = (?1)",
             params![spend_txid.to_vec()],
         )?;
         Ok(())
@@ -1169,9 +1179,32 @@ mod test {
         assert!(spent_outpoints.contains(&outpoint));
         assert!(spent_outpoints.contains(&outpoint_b));
 
+        let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+        assert!(
+            !db_spend_transaction(&db_path, &spend_txid)
+                .unwrap()
+                .unwrap()
+                .broadcast
+        );
+        assert_eq!(
+            db_broadcastable_spend_transactions(&db_path).unwrap().len(),
+            0
+        );
+        db_mark_broadcast_spend(&db_path, &spend_txid).unwrap();
+        assert_eq!(
+            db_broadcastable_spend_transactions(&db_path).unwrap().len(),
+            1
+        );
+        assert!(
+            db_spend_transaction(&db_path, &spend_txid)
+                .unwrap()
+                .unwrap()
+                .broadcast
+        );
+
         // And we can delete both..
         db_delete_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid()).unwrap();
-        db_delete_spend(&db_path, &spend_tx.inner_tx().global.unsigned_tx.txid()).unwrap();
+        db_delete_spend(&db_path, &spend_txid).unwrap();
     }
 
     // We disabled #[test] for the above, as they may erase the db concurrently.

@@ -98,7 +98,8 @@ CREATE TABLE spend_inputs (
 CREATE TABLE spend_transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     psbt BLOB UNIQUE NOT NULL,
-    txid BLOB UNIQUE NOT NULL
+    txid BLOB UNIQUE NOT NULL,
+    broadcast BOOLEAN NOT NULL CHECK (broadcast IN (0,1))
 );
 
 CREATE INDEX vault_status ON vaults (status);
@@ -212,5 +213,6 @@ pub struct DbSpendInput {
 pub struct DbSpendTransaction {
     pub id: i64,
     pub psbt: SpendTransaction,
+    pub broadcast: bool,
     // txid is intentionally not there as it's already part of the psbt
 }

@@ -9,7 +9,10 @@
 use crate::{
     bitcoind::BitcoindError,
     database::{
-        actions::{db_delete_spend, db_insert_spend, db_update_presigned_tx, db_update_spend},
+        actions::{
+            db_delete_spend, db_insert_spend, db_mark_broadcastable_spend, db_update_presigned_tx,
+            db_update_spend,
+        },
         interface::{
             db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
             db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
@@ -411,7 +414,8 @@ fn check_unvault_signatures(
 }
 
 // Check that all the managers provided a valid signature for all the Spend transaction inputs.
-// Will panic if db_vaults does not contain an entry for each input.
+// Will panic if db_vaults does not contain an entry for each input or if the Spend transaction is
+// already finalized.
 fn check_spend_signatures(
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     xpub_ctx: DescriptorPublicKeyCtx<'_, secp256k1::VerifyOnly>,
@@ -425,7 +429,7 @@ fn check_spend_signatures(
     for (i, psbtin) in psbt.inner_tx().inputs.iter().enumerate() {
         let sighash = psbt
             .signature_hash_internal_input(i, sighash_type)
-            .expect("In bounds");
+            .expect("In bounds, and no finalized PSBT in db");
         let sighash = secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash");
 
         // Fetch the appropriate derivation index used for this Unvault output
@@ -1353,6 +1357,7 @@ pub fn handle_rpc_messages(
                         continue;
                     }
                 }
+                db_update_spend(&db_path, &spend_tx.psbt)?;
 
                 // Finally we can broadcast the Unvault(s) transaction(s) and store the Spend
                 // transaction for later broadcast
@@ -1368,8 +1373,7 @@ pub fn handle_rpc_messages(
                         continue;
                     }
                 }
-
-                // TODO: save the Spend transaction for broadcast
+                db_mark_broadcastable_spend(&db_path, &spend_txid)?;
 
                 response_tx.send(Ok(()))?;
             }

@@ -893,7 +893,8 @@ def test_getspendtx(revault_network, bitcoind):
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spendtx_management(revault_network, bitcoind):
-    revault_network.deploy(2, 1)
+    CSV = 12
+    revault_network.deploy(2, 1, csv=CSV)
     man = revault_network.man_wallets[0]
     amount = 0.24
     vault = revault_network.fund(amount)
@@ -1007,3 +1008,6 @@ def test_spendtx_management(revault_network, bitcoind):
         match="One of the Cosigning Server already signed a Spend transaction spending one of these vaults",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
+
+    bitcoind.generate_block(CSV, wait_for_mempool=2)
+    man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'")

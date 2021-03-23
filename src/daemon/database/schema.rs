@@ -92,14 +92,18 @@ CREATE TABLE spend_inputs (
         ON DELETE RESTRICT
 );
 
-/* This stores Spend transactions we created. A txid row is there to
+/* This stores Spend transactions we created. A txid column is there to
  * ease research.
+ * The 'broadcasted' column indicates wether a Spend transaction is:
+ *  - Not elligible for broadcast (NULL)
+ *  - Waiting to be broadcasted (0)
+ *  - Already broadcasted (1)
  */
 CREATE TABLE spend_transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     psbt BLOB UNIQUE NOT NULL,
     txid BLOB UNIQUE NOT NULL,
-    broadcast BOOLEAN NOT NULL CHECK (broadcast IN (0,1))
+    broadcasted BOOLEAN CHECK (broadcasted IN (NULL, 0,1))
 );
 
 CREATE INDEX vault_status ON vaults (status);
@@ -213,6 +217,6 @@ pub struct DbSpendInput {
 pub struct DbSpendTransaction {
     pub id: i64,
     pub psbt: SpendTransaction,
-    pub broadcast: bool,
+    pub broadcasted: Option<bool>,
     // txid is intentionally not there as it's already part of the psbt
 }

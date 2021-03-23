@@ -498,8 +498,8 @@ pub fn db_insert_spend(
 
     db_exec(db_path, |db_tx| {
         db_tx.execute(
-            "INSERT INTO spend_transactions (psbt, txid, broadcast) VALUES (?1, ?2, ?3)",
-            params![spend_psbt, spend_txid.to_vec(), false],
+            "INSERT INTO spend_transactions (psbt, txid, broadcasted) VALUES (?1, ?2, NULL)",
+            params![spend_psbt, spend_txid.to_vec()],
         )?;
         let spend_id = db_tx.last_insert_rowid();
 
@@ -545,10 +545,26 @@ pub fn db_delete_spend(db_path: &PathBuf, spend_txid: &Txid) -> Result<(), Datab
     })
 }
 
-pub fn db_mark_broadcast_spend(db_path: &PathBuf, spend_txid: &Txid) -> Result<(), DatabaseError> {
+pub fn db_mark_broadcastable_spend(
+    db_path: &PathBuf,
+    spend_txid: &Txid,
+) -> Result<(), DatabaseError> {
     db_exec(db_path, |db_tx| {
         db_tx.execute(
-            "UPDATE spend_transactions SET broadcast = 1 WHERE txid = (?1)",
+            "UPDATE spend_transactions SET broadcasted = 0 WHERE txid = (?1)",
+            params![spend_txid.to_vec()],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn db_mark_broadcasted_spend(
+    db_path: &PathBuf,
+    spend_txid: &Txid,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |db_tx| {
+        db_tx.execute(
+            "UPDATE spend_transactions SET broadcasted = 1 WHERE txid = (?1)",
             params![spend_txid.to_vec()],
         )?;
         Ok(())
@@ -1180,27 +1196,35 @@ mod test {
         assert!(spent_outpoints.contains(&outpoint_b));
 
         let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
-        assert!(
-            !db_spend_transaction(&db_path, &spend_txid)
-                .unwrap()
-                .unwrap()
-                .broadcast
-        );
+        assert!(db_spend_transaction(&db_path, &spend_txid)
+            .unwrap()
+            .unwrap()
+            .broadcasted
+            .is_none());
         assert_eq!(
             db_broadcastable_spend_transactions(&db_path).unwrap().len(),
             0
         );
-        db_mark_broadcast_spend(&db_path, &spend_txid).unwrap();
+        db_mark_broadcastable_spend(&db_path, &spend_txid).unwrap();
         assert_eq!(
             db_broadcastable_spend_transactions(&db_path).unwrap().len(),
             1
         );
-        assert!(
-            db_spend_transaction(&db_path, &spend_txid)
-                .unwrap()
-                .unwrap()
-                .broadcast
+        assert!(!db_spend_transaction(&db_path, &spend_txid)
+            .unwrap()
+            .unwrap()
+            .broadcasted
+            .unwrap(),);
+        db_mark_broadcasted_spend(&db_path, &spend_txid).unwrap();
+        assert_eq!(
+            db_broadcastable_spend_transactions(&db_path).unwrap().len(),
+            0
         );
+        assert!(db_spend_transaction(&db_path, &spend_txid)
+            .unwrap()
+            .unwrap()
+            .broadcasted
+            .unwrap());
 
         // And we can delete both..
         db_delete_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid()).unwrap();

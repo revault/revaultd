@@ -5,12 +5,16 @@ use crate::{
     },
     database::{
         actions::{
-            db_confirm_deposit, db_insert_new_unconfirmed_vault, db_unconfirm_deposit_dbtx,
-            db_unvault_deposit, db_update_deposit_index, db_update_tip, db_update_tip_dbtx,
+            db_confirm_deposit, db_insert_new_unconfirmed_vault, db_mark_broadcasted_spend,
+            db_unconfirm_deposit_dbtx, db_unvault_deposit, db_update_deposit_index, db_update_tip,
+            db_update_tip_dbtx,
         },
-        interface::{db_deposits, db_exec, db_tip, db_vaults_dbtx, db_wallet},
+        interface::{
+            db_broadcastable_spend_transactions, db_deposits, db_exec, db_tip, db_vaults_dbtx,
+            db_wallet,
+        },
     },
-    revaultd::{RevaultD, VaultStatus},
+    revaultd::{BlockchainTip, RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
 use common::{assume_ok, config::BitcoindConfig};
@@ -18,7 +22,7 @@ use revault_tx::{
     bitcoin::{Amount, Network, OutPoint, TxOut, Txid},
     transactions::{
         transaction_chain, transaction_chain_manager, CancelTransaction, EmergencyTransaction,
-        UnvaultEmergencyTransaction, UnvaultTransaction,
+        RevaultTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
     txins::DepositTxIn,
     txouts::DepositTxOut,
@@ -237,6 +241,49 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
     Ok(bitcoind)
 }
 
+// Everything we do when the chain moves forward
+fn new_tip_event(
+    revaultd: &mut Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+    new_tip: &BlockchainTip,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+
+    // First we update it in DB
+    db_update_tip(&db_path, new_tip)?;
+
+    // Then we check if any Spend became mature yet
+    for db_spendtx in db_broadcastable_spend_transactions(&db_path)? {
+        let mut psbt = db_spendtx.psbt;
+        let txid = psbt.inner_tx().global.unsigned_tx.txid();
+        log::debug!("Trying to broadcast Spend tx '{}'", &txid);
+
+        match psbt.finalize(&revaultd.read().unwrap().secp_ctx) {
+            Ok(()) => {}
+            Err(e) => {
+                log::debug!("Error finalizing Spend '{}': '{}'", &txid, e);
+                continue;
+            }
+        }
+
+        let tx = psbt.into_psbt().extract_tx();
+        match bitcoind.broadcast_transaction(&tx) {
+            Ok(()) => {
+                log::info!("Succesfully broadcasted Spend tx '{}'", txid);
+                // FIXME: that's not so robust as we'll never try it again. Better tracking should
+                // be part of the CPFP wallet work.
+                db_mark_broadcasted_spend(&db_path, &txid)?;
+            }
+            Err(e) => {
+                // This should not happen if it was succesfully finalized!
+                log::error!("Error broadcasting Spend tx '{}': '{}'", txid, e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // Get our state up to date with bitcoind.
 // - Drop vaults which deposit is not confirmed anymore
 // - Drop presigned transactions if the vault is downgraded to 'unconfirmed'
@@ -352,8 +399,7 @@ fn update_tip(
         let bit_curr_hash = bitcoind.getblockhash(current_tip.height)?;
         if bit_curr_hash == current_tip.hash || current_tip.height == 0 {
             // We moved forward, everything is fine.
-            db_update_tip(&revaultd.read().unwrap().db_file(), &tip)?;
-            return Ok(());
+            return new_tip_event(revaultd, bitcoind, &tip);
         }
     }
 

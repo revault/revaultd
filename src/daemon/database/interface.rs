@@ -449,7 +449,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
     fn try_from(row: &Row) -> Result<Self, Self::Error> {
         let id: i64 = row.get(0)?;
         let psbt: Vec<u8> = row.get(1)?;
-        let broadcast: bool = row.get(3)?; // 2 is 'txid'
+        let broadcasted: Option<bool> = row.get(3)?; // 2 is 'txid'
 
         let psbt = SpendTransaction::from_psbt_serialized(&psbt)
             .expect("We set it using as_psbt_serialized()");
@@ -463,7 +463,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
         Ok(DbSpendTransaction {
             id,
             psbt,
-            broadcast,
+            broadcasted,
         })
     }
 }
@@ -477,7 +477,7 @@ pub fn db_list_spends(
 
     db_query(
         db_path,
-        "SELECT stx.id, stx.psbt, stx.txid, stx.broadcast, vaults.deposit_txid, vaults.deposit_vout \
+        "SELECT stx.id, stx.psbt, stx.txid, stx.broadcasted, vaults.deposit_txid, vaults.deposit_vout \
          FROM spend_transactions as stx \
          INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
          INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
@@ -512,7 +512,7 @@ pub fn db_broadcastable_spend_transactions(
 ) -> Result<Vec<DbSpendTransaction>, DatabaseError> {
     db_query(
         db_path,
-        "SELECT * FROM spend_transactions WHERE broadcast = 1",
+        "SELECT * FROM spend_transactions WHERE broadcasted = 0",
         params![],
         |row| row.try_into(),
     )

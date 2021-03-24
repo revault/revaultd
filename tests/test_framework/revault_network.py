@@ -194,6 +194,43 @@ class RevaultNetwork:
 
         return self.get_vault(addr)
 
+    def fundmany(self, amounts=[]):
+        """Deposit coins into the architectures in a single transaction"""
+        assert len(self.man_wallets) > 0, "You must have deploy()ed first"
+        assert len(amounts) > 0, "You must provide at least an amount!"
+
+        curr_index = 0
+        vaults = self.man_wallets[0].rpc.listvaults()["vaults"]
+        for v in vaults:
+            if v["derivation_index"] > curr_index:
+                curr_index = v["derivation_index"]
+
+        indexes = list(range(curr_index + 1, curr_index + 1 + len(amounts)))
+        amounts_sendmany = {}
+        for i, amount in enumerate(amounts):
+            amounts_sendmany[
+                self.man_wallets[0].rpc.getdepositaddress(indexes[i])["address"]
+            ] = amount
+
+        txid = self.bitcoind.rpc.sendmany("", amounts_sendmany)
+        deposits = []
+        tx = self.bitcoind.rpc.gettransaction(txid, True, True)["decoded"]
+        deposits_addrs = amounts_sendmany.keys()
+        for vout in tx["vout"]:
+            for addr in vout["scriptPubKey"]["addresses"]:
+                if addr in deposits_addrs:
+                    deposits.append(f"{txid}:{vout['n']}")
+        assert len(deposits) == len(amounts)
+        self.bitcoind.generate_block(6, wait_for_mempool=txid)
+        wait_for(
+            lambda: len(
+                self.man_wallets[0].rpc.listvaults(["funded"], deposits)["vaults"]
+            )
+            == len(amounts)
+        )
+
+        return self.man_wallets[0].rpc.listvaults(["funded"], deposits)["vaults"]
+
     def secure_vault(self, vault):
         """Make all stakeholders share signatures for all revocation txs"""
         deposit = f"{vault['txid']}:{vault['vout']}"

@@ -1151,6 +1151,11 @@ pub fn handle_rpc_messages(
                     }
                 };
 
+                log::debug!(
+                    "Spend tx without change: '{}'",
+                    nochange_tx.as_psbt_string()
+                );
+
                 // If the feerate of the transaction would be much lower (< 90/100) than what they
                 // requested for, tell them.
                 let nochange_feerate_vb = nochange_tx
@@ -1179,6 +1184,10 @@ pub fn handle_rpc_messages(
                     .checked_mul(feerate_vb + 3)
                     .map(|vbyte| vbyte.checked_div(4).unwrap());
                 let change_value = want_fees.map(|f| cur_fees.checked_sub(f));
+                log::debug!(
+                    "Weight with change: '{}'  --  Fees without change: '{}'  --  Wanted feerate: '{}'  \
+                    --  Wanted fees: '{:?}'  --  Change value: '{:?}'",
+                    with_change_weight, cur_fees, feerate_vb, want_fees, change_value);
 
                 if let Some(Some(change_value)) = change_value {
                     // The overhead incurred to the value of the CPFP output by the change output

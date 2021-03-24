@@ -132,13 +132,13 @@ fn get_sigs(
         &revaultd.coordinator_noisekey,
     )?;
 
-    log::trace!(
+    log::debug!(
         "Sending to sync server: '{}'",
         serde_json::to_string(&getsigs_msg)?,
     );
     transport.write(&serde_json::to_vec(&getsigs_msg)?)?;
     let recvd_raw = transport.read()?;
-    log::trace!(
+    log::debug!(
         "Received from sync server: '{}'",
         &String::from_utf8_lossy(&recvd_raw)
     );

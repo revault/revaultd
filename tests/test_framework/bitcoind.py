@@ -125,8 +125,10 @@ class BitcoinD(TailableProc):
             else:
                 wait_for(lambda: len(self.rpc.getrawmempool()) >= wait_for_mempool)
 
+        old_blockcount = self.rpc.getblockcount()
         addr = self.rpc.getnewaddress()
-        return self.rpc.generatetoaddress(numblocks, addr)
+        self.rpc.generatetoaddress(numblocks, addr)
+        wait_for(lambda: self.rpc.getblockcount() == old_blockcount + numblocks)
 
     def get_coins(self, amount_btc):
         # subsidy halving is every 150 blocks on regtest, it's a rough estimate

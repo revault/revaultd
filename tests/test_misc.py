@@ -2,11 +2,16 @@ import copy
 import logging
 import pytest
 import random
-import serializations
 
 from bitcoin.core import COIN
 from fixtures import *
-from utils import POSTGRES_IS_SETUP, TIMEOUT, RpcError, wait_for
+from test_framework import serializations
+from test_framework.utils import (
+    POSTGRES_IS_SETUP,
+    TIMEOUT,
+    RpcError,
+    wait_for,
+)
 
 
 def test_getinfo(revaultd_manager, bitcoind):

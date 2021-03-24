@@ -583,32 +583,36 @@ mod test {
 
     use std::{fs, path::PathBuf, str::FromStr};
 
+    // Create a RevaultD state instance using a scratch data directory, trying to be portable
+    // across UNIX, MacOS, and Windows
     fn dummy_revaultd() -> RevaultD {
-        let mut datadir_path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        datadir_path.push("../../../test_data/datadir");
-        let mut config_path = datadir_path.clone();
-        config_path.push("config.toml");
-        let mut db_path = datadir_path.clone();
-        db_path.push("revaultd.sqlite3");
-
-        let config = Config::from_file(Some(config_path)).expect("Parsing valid config file");
-        let mut revaultd = RevaultD::from_config(config).expect("Creating state from config");
-        // Tweak the datadir, or it'll create it at ~/.revault/
-        revaultd.data_dir = datadir_path.clone();
+        let repo_root = PathBuf::from(file!())
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let datadir_path: PathBuf = [repo_root.to_str().unwrap(), "test_data", "scratch_datadir"]
+            .iter()
+            .collect();
+        let config_path = [
+            repo_root.to_str().unwrap(),
+            "test_data",
+            "db_test_config.toml",
+        ]
+        .iter()
+        .collect();
 
         // Just in case there is a leftover from a previous run
-        fs::remove_file(db_path).unwrap_or_else(|_| {
-            eprintln!("No leftover");
-        });
+        fs::remove_dir_all(&datadir_path).unwrap_or_else(|_| ());
 
-        revaultd
-    }
-
-    // Delete everything but the config (just our main db for now)
-    fn clear_datadir(datadir_path: &PathBuf) {
-        let mut db_path = datadir_path.clone();
-        db_path.push("revaultd.sqlite3");
-        fs::remove_file(db_path).expect("Removing db path");
+        let mut config = Config::from_file(Some(config_path)).expect("Parsing valid config file");
+        config.data_dir = Some(datadir_path);
+        RevaultD::from_config(config).expect("Creating state from config")
     }
 
     fn revault_tx_add_dummy_sig(tx: &mut impl RevaultTransaction, input_index: usize) {
@@ -651,7 +655,7 @@ mod test {
         .unwrap();
         check_db(&mut revaultd).unwrap_err();
 
-        clear_datadir(&revaultd.data_dir);
+        fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
     }
 
     fn test_db_fetch_deposits() {
@@ -759,7 +763,7 @@ mod test {
         assert!(deposit_outpoints.contains(&second_deposit_outpoint));
         assert!(!deposit_outpoints.contains(&third_deposit_outpoint));
 
-        clear_datadir(&revaultd.data_dir);
+        fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
     }
 
     fn test_db_store_presigned_txs() {
@@ -924,7 +928,7 @@ mod test {
         )
         .unwrap_err();
 
-        clear_datadir(&revaultd.data_dir);
+        fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
     }
 
     // There we trigger a concurrent write access to the database by inserting a deposit and

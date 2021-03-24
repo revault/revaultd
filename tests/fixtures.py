@@ -84,17 +84,9 @@ def directory(request, test_base_dir, test_name):
 
     yield directory
 
-    # Taken from the doc, as is the hook above.
-    # request.node is an "item" because we use the default
-    # "function" scope
-    failed = False
-    # FIXME: somehow the doc example is invalid.
-    # if request.node.rep_setup.failed:
-    # failed = True
-    # elif request.node.rep_call.failed:
-    # failed = True
-
-    if not failed:
+    # test_base_dir is at the session scope, so we can't use request.node as mentioned in
+    # the doc linked in the hook above.
+    if request.session.testsfailed > 0:
         try:
             shutil.rmtree(directory)
         except Exception:

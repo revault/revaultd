@@ -777,9 +777,9 @@ def test_getspendtx(revault_network, bitcoind):
 
     addr = bitcoind.rpc.getnewaddress()
     spent_vaults = [deposit]
-    # 10k fees, 50k CPFP, 50k unvault CPFP + fees
-    destination = {addr: vault["amount"] - 10_000 - 50_000 - 50_000}
     feerate = 2
+    fees = revault_network.compute_spendtx_fees(feerate, len(spent_vaults), 1)
+    destination = {addr: vault["amount"] - fees}
 
     revault_network.secure_vault(vault)
 
@@ -802,7 +802,7 @@ def test_getspendtx(revault_network, bitcoind):
     assert len(psbt.inputs) == 1 and len(psbt.outputs) == 2
 
     # But if we decrease it enough, it'll create a change output
-    destinations = {addr: vault["amount"] - 10_000 - 50_000 - 50_000 - 1_000_000}
+    destinations = {addr: vault["amount"] - fees - 1_000_000}
     psbt = serializations.PSBT()
     psbt.deserialize(
         man.rpc.getspendtx(spent_vaults, destinations, feerate)["spend_tx"]
@@ -841,15 +841,8 @@ def test_getspendtx(revault_network, bitcoind):
         # Note that it passes even with 100k/vb if you disable insane fees
         # sanity checks :)
         feerate = random.randint(1, 10_000)
-        # Overhead, P2WPKH, P2WSH, inputs, witnesses
-        tx_vbytes = 11 + 31 + 43 + (32 + 4 + 4 + 1) * len(deposits) + 99 * len(deposits)
-        sent_amount = (
-            sum(amounts)
-            - tx_vbytes * feerate  # fees
-            - 2 * 32 * tx_vbytes  # CPFP
-            - 30_000 * len(deposits)  # Unvault CPFP
-            # Overhead, P2WSH * 2, inputs + witnesses
-            - (11 + 43 * 2 + 91) * len(deposits) * 24  # Unvault fees (6sat/WU feerate)
+        sent_amount = sum(amounts) - revault_network.compute_spendtx_fees(
+            feerate, len(deposits), 1
         )
         destinations = {addr: sent_amount}
         psbt = serializations.PSBT()
@@ -902,9 +895,9 @@ def test_spendtx_management(revault_network, bitcoind):
 
     addr = bitcoind.rpc.getnewaddress()
     spent_vaults = [deposit]
-    # 10k fees, 50k CPFP, 50k unvault CPFP + fees
-    destination = {addr: vault["amount"] - 10_000 - 50_000 - 50_000}
     feerate = 2
+    fees = revault_network.compute_spendtx_fees(feerate, len(spent_vaults), 1)
+    destination = {addr: vault["amount"] - fees}
 
     revault_network.secure_vault(vault)
     revault_network.activate_vault(vault)
@@ -948,12 +941,12 @@ def test_spendtx_management(revault_network, bitcoind):
     deposit_b = f"{vault_b['txid']}:{vault_b['vout']}"
     addr_b = bitcoind.rpc.getnewaddress()
     spent_vaults = [deposit, deposit_b]
-    # 10k fees, 50k CPFP, 50k unvault CPFP + fees
+    feerate = 50
+    fees = revault_network.compute_spendtx_fees(feerate, len(spent_vaults), 2)
     destination = {
-        addr: vault_b["amount"] // 2 - 10_000 - 50_000 - 50_000,
-        addr_b: vault_b["amount"] // 2 - 10_000 - 50_000 - 50_000,
+        addr: (vault_b["amount"] - fees) // 2,
+        addr_b: (vault_b["amount"] - fees) // 2,
     }
-    feerate = 5
     revault_network.secure_vault(vault_b)
     revault_network.activate_vault(vault_b)
     spend_tx_b = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"]

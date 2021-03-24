@@ -226,6 +226,41 @@ class RevaultNetwork:
         for w in self.stk_wallets + self.man_wallets:
             w.wait_for_active_vaults([deposit])
 
+    def compute_spendtx_fees(
+        self, spendtx_feerate, n_vaults_spent, n_destinations, with_change=False
+    ):
+        """Get the fees necessary to include in a Spend transaction.
+        This assumes the destinations to be P2WPKH
+        """
+        n_stk = len(self.stk_wallets)
+        n_man = len(self.man_wallets)
+
+        # witscript PUSH, keys , Unvault Script overhead, signatures
+        spend_witness_vb = (
+            1 + (n_man + n_stk * 2) * 34 + 15 + (n_man + n_stk) * 73) // 4
+        # Overhead, P2WPKH, P2WSH, inputs, witnesses
+        spend_witstrip_vb = (
+            11
+            + 31 * n_destinations
+            + 43 * (1 + (1 if with_change else 0))
+            + (32 + 4 + 4 + 1) * n_vaults_spent
+        )
+        spendtx_vbytes = spend_witstrip_vb + spend_witness_vb * n_vaults_spent
+
+        # witscript PUSH, keys , Deposit Script overhead, signatures
+        unvault_witness_vb = (1 + n_stk * (34 + 73) + 3) // 4
+        # Overhead, P2WSH * 2, inputs + witness
+        unvaulttxs_vbytes = (
+            11 + 43 * 2 + (32 + 4 + 4 + 1) + unvault_witness_vb
+        ) * n_vaults_spent
+
+        return (
+            spendtx_vbytes * spendtx_feerate  # Spend fees
+            + 2 * 32 * spendtx_vbytes  # Spend CPFP
+            + unvaulttxs_vbytes * 24  # Unvault fees (6sat/WU feerate)
+            + 30_000 * n_vaults_spent  # Unvault CPFP
+        )
+
     def stop_wallets(self):
         for w in self.stk_wallets + self.man_wallets:
             assert w.stop() == 0

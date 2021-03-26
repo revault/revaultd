@@ -10,72 +10,9 @@ use revault_tx::{
     },
 };
 
-use std::{collections::BTreeMap, sync::mpsc::SyncSender};
+use std::sync::mpsc::SyncSender;
 
 use serde::{Serialize, Serializer};
-
-/// Incoming from RPC server thread
-#[derive(Debug)]
-pub enum RpcMessageIn {
-    Shutdown,
-    // Network, blockheight, sync progress, number of vaults
-    GetInfo(SyncSender<(String, u32, f64, usize)>),
-    ListVaults(
-        (Option<Vec<VaultStatus>>, Option<Vec<OutPoint>>),
-        SyncSender<Vec<ListVaultsEntry>>,
-    ),
-    DepositAddr(Option<ChildNumber>, SyncSender<Address>),
-    GetRevocationTxs(
-        OutPoint,
-        // None if the deposit does not exist
-        // FIXME: use a Result with RpcControlError!
-        SyncSender<
-            Option<(
-                CancelTransaction,
-                EmergencyTransaction,
-                UnvaultEmergencyTransaction,
-            )>,
-        >,
-    ),
-    // Returns None if the transactions could all be stored succesfully
-    // FIXME: use a Result with RpcControlError!
-    RevocationTxs(
-        (
-            OutPoint,
-            CancelTransaction,
-            EmergencyTransaction,
-            UnvaultEmergencyTransaction,
-        ),
-        SyncSender<Option<String>>,
-    ),
-    GetUnvaultTx(
-        OutPoint,
-        SyncSender<Result<UnvaultTransaction, RpcControlError>>,
-    ),
-    UnvaultTx(
-        (OutPoint, UnvaultTransaction),
-        SyncSender<Result<(), RpcControlError>>,
-    ),
-    ListPresignedTransactions(
-        Option<Vec<OutPoint>>,
-        SyncSender<Result<Vec<VaultPresignedTransactions>, RpcControlError>>,
-    ),
-    ListOnchainTransactions(
-        Option<Vec<OutPoint>>,
-        SyncSender<Result<Vec<VaultOnchainTransactions>, RpcControlError>>,
-    ),
-    GetSpendTx(
-        Vec<OutPoint>,
-        BTreeMap<Address, u64>,
-        u64,
-        SyncSender<Result<SpendTransaction, RpcControlError>>,
-    ),
-    UpdateSpendTx(SpendTransaction, SyncSender<Result<(), RpcControlError>>),
-    DelSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
-    ListSpendTxs(SyncSender<Result<Vec<ListSpendEntry>, RpcControlError>>),
-    SetSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
-    Revault(OutPoint, SyncSender<Result<(), RpcControlError>>),
-}
 
 /// Outgoing to the bitcoind poller thread
 #[derive(Debug)]

@@ -51,7 +51,7 @@ fern = "0.5"
 chrono = "0.4"
 
 # DB stuff
-rusqlite = { version = "0.24", features = ["bundled"] }
+rusqlite = { version = "0.24", features = ["bundled", "unlock_notify"] }
 
 # For umask..
 libc = "0.2.80"

@@ -837,6 +837,85 @@ mod test {
         clear_datadir(&revaultd.data_dir);
     }
 
+    // There we trigger a concurrent write access to the database by inserting a deposit and
+    // updating its presigned transaction in two different thread. It should be fine and one of
+    // them just lock thanks to the unlock_notify feature of SQLite https://sqlite.org/unlock_notify.html
+    fn test_db_concurrent_write() {
+        let mut revaultd = dummy_revaultd();
+        let db_path = revaultd.db_file();
+
+        setup_db(&mut revaultd).unwrap();
+
+        // Let's insert a deposit
+        let wallet_id = 1;
+        let status = VaultStatus::Funded;
+        let outpoint = OutPoint::from_str(
+            "adaa5a4b9fb07c860f8de460727b6bad4b5ab01d2e7f90f6f3f15a0080020168:0",
+        )
+        .unwrap();
+        let amount = Amount::from_sat(123456);
+        let received_at = 1615297315;
+        let derivation_index = ChildNumber::from(33334);
+        db_insert_new_unconfirmed_vault(
+            &db_path,
+            wallet_id,
+            &status,
+            &outpoint,
+            &amount,
+            derivation_index,
+            received_at,
+        )
+        .unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
+
+        let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAEBR1IhA9+bpoeRoYk6Fehku5U6JFn6v0b8vq0SPVzELn/n6DqBIQPRrV6R4VL8XI/QyVm2kb8+fQjbDMB9jRL5kWvIHNlkZFKuAA==").unwrap();
+        let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAT7KJ+fkvbKBDobFTsm31LqtMUfhTiR5tWA5XJA9oYgOAAAAAAD9////AkANAwAAAAAAIgAgbMJH4U4sOCdd1R9PVUuEbmS4bkbnNNlJaqxZBqXHwCcwdQAAAAAAACIAIM8vNQyMFHWpzTmNSefLOTf0spivub9JuegPqYdx0rLvAAAAAAABASuIlAMAAAAAACIAIONmt9fso2OE03OxwV4EkzSucRgHSh3ylMy/KcBayrRaAQMEAQAAAAEFR1IhAum/3N5NY9BZnqXIJxEBNzNEhHwCOY4WQ5xdZZ9XN4+dIQNwiQrXHbeULZ18BN3FOfnYK48NrsVzMDAXVEiu7HfvylKuAAEBqiEDsTozyBugih4LqhjAbDEbxv0SImcwm7uxgzAxpprx+hasUYdkdqkUq3ciI2+fP8tZgD/nHHJDhb3wHtOIrGt2qRQHsYoc0BfpfAKimvmP+V1XXUmr1YisbJNSh2dSIQMDsoKW2AvcnJM8c2BZo1U7OHGc2kUyfe5wh8GxWejwmiECwXo562TGRJPfOC0ooMYiE0XPegUlr7E9sCVTApCykntSrwJQBbJoAAEBJSEDsTozyBugih4LqhjAbDEbxv0SImcwm7uxgzAxpprx+hasUYcA").unwrap();
+
+        let blockheight = 2300000;
+        db_confirm_deposit(
+            &db_path,
+            &outpoint,
+            blockheight,
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let (tx_db_id, _) = db_cancel_transaction(&db_path, db_vault.id).unwrap();
+        let mut cancel_tx = fresh_cancel_tx.clone();
+        revault_tx_add_dummy_sig(&mut cancel_tx, 0);
+        let handle = std::thread::spawn({
+            let db_path = db_path.clone();
+            let cancel_tx = cancel_tx.clone();
+            let secp = revaultd.secp_ctx.clone();
+            move || {
+                for _ in 0..10 {
+                    db_update_presigned_tx(
+                        &db_path,
+                        db_vault.id,
+                        tx_db_id,
+                        cancel_tx.inner_tx().inputs[0].partial_sigs.clone(),
+                        &secp,
+                    )
+                    .unwrap();
+                }
+            }
+        });
+        for _ in 0..10 {
+            db_update_presigned_tx(
+                &db_path,
+                db_vault.id,
+                tx_db_id,
+                cancel_tx.inner_tx().inputs[0].partial_sigs.clone(),
+                &revaultd.secp_ctx,
+            )
+            .unwrap();
+        }
+        handle.join().unwrap();
+    }
+
     // We disabled #[test] for the above, as they may erase the db concurrently.
     // Instead, run them sequentially.
     #[test]
@@ -844,5 +923,6 @@ mod test {
         test_db_creation();
         test_db_fetch_deposits();
         test_db_store_presigned_txs();
+        test_db_concurrent_write();
     }
 }

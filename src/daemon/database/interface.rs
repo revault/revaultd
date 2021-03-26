@@ -25,13 +25,16 @@ use std::{
     str::FromStr,
 };
 
-use rusqlite::{params, types::FromSqlError, Connection, Row, ToSql, Transaction, NO_PARAMS};
+use rusqlite::{
+    params, types::FromSqlError, Connection, Row, ToSql, Transaction, TransactionBehavior,
+    NO_PARAMS,
+};
 
-// Note that we don't share a global struct that would contain the connection here.
 // As the bundled sqlite is compiled with SQLITE_THREADSAFE, quoting sqlite.org:
 // > Multi-thread. In this mode, SQLite can be safely used by multiple threads provided that
 // > no single database connection is used simultaneously in two or more threads.
-// Therefore the below routines create a new connection and can be used from any thread.
+// Therefore the below routines for now create a new connection and can be used from any thread.
+// For concurrent write accesses, we rely on the 'unlock_notify' feature of SQLite: https://sqlite.org/unlock_notify.html
 
 /// Perform a set of modifications to the database inside a single transaction
 pub fn db_exec<F>(path: &PathBuf, modifications: F) -> Result<(), DatabaseError>
@@ -41,7 +44,7 @@ where
     let mut conn = Connection::open(path)
         .map_err(|e| DatabaseError(format!("Opening database: {}", e.to_string())))?;
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| DatabaseError(format!("Creating transaction: {}", e.to_string())))?;
 
     modifications(&tx)?;

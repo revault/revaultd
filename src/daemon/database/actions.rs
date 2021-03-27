@@ -449,10 +449,10 @@ pub fn db_update_presigned_tx(
             // Are there some remaining unsigned revocation txs?
             if db_tx
                 .prepare(
-                    "SELECT * FROM presigned_transactions WHERE fullysigned = 0 AND type != (?1)",
+                    "SELECT * FROM presigned_transactions WHERE fullysigned = 0 AND type != (?1) AND vault_id = (?2)",
                 )?
                 // All presigned transactions but the Unvault are revocation txs
-                .query(params![TransactionType::Unvault as u32])?
+                .query(params![TransactionType::Unvault as u32, vault_id])?
                 .next()?
                 .is_none()
             {

@@ -673,9 +673,13 @@ pub fn handle_rpc_messages(
                     outpoints,
                 )?)?;
             }
-            RpcMessageIn::DepositAddr(response_tx) => {
+            RpcMessageIn::DepositAddr(index, response_tx) => {
                 log::trace!("Got 'depositaddr' request from RPC thread");
-                response_tx.send(revaultd.read().unwrap().deposit_address())?;
+                response_tx.send(if let Some(index) = index {
+                    revaultd.read().unwrap().vault_address(index)
+                } else {
+                    revaultd.read().unwrap().deposit_address()
+                })?;
             }
             RpcMessageIn::GetRevocationTxs(outpoint, response_tx) => {
                 log::trace!("Got 'getrevocationtxs' request from RPC thread");

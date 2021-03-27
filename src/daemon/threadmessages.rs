@@ -24,7 +24,7 @@ pub enum RpcMessageIn {
         (Option<Vec<VaultStatus>>, Option<Vec<OutPoint>>),
         SyncSender<Vec<ListVaultsEntry>>,
     ),
-    DepositAddr(SyncSender<Address>),
+    DepositAddr(Option<ChildNumber>, SyncSender<Address>),
     GetRevocationTxs(
         OutPoint,
         // None if the deposit does not exist

@@ -47,6 +47,13 @@ Get an address to build a deposit transaction.
 
 #### Response
 
+| Field         | Type              | Description                                                 |
+| ------------- | ----------------- | ----------------------------------------------------------- |
+| `index`       | string (optional) | Get a deposit address for a specific derivation index       |
+
+
+#### Response
+
 | Field         | Type   | Description                                                 |
 | ------------- | ------ | ----------------------------------------------------------- |
 | `address`     | string | An address for the N-of-N multisig deposit script           |

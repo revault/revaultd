@@ -6,7 +6,7 @@ use crate::{jsonrpc::UserRole, revaultd::VaultStatus, threadmessages::*};
 use common::{assume_ok, VERSION};
 
 use revault_tx::{
-    bitcoin::{Address, OutPoint, Txid},
+    bitcoin::{util::bip32, Address, OutPoint, Txid},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -78,7 +78,11 @@ pub trait RpcApi {
 
     /// Get an address to receive funds to the stakeholders' descriptor
     #[rpc(meta, name = "getdepositaddress")]
-    fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+    fn getdepositaddress(
+        &self,
+        meta: Self::Metadata,
+        index: Option<bip32::ChildNumber>,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Get the cancel and both emergency transactions for a vault identified by its deposit
     /// outpoint.
@@ -294,10 +298,14 @@ impl RpcApi for RpcImpl {
         Ok(json!({ "vaults": vaults }))
     }
 
-    fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+    fn getdepositaddress(
+        &self,
+        meta: Self::Metadata,
+        index: Option<bip32::ChildNumber>,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
-            meta.tx.send(RpcMessageIn::DepositAddr(response_tx)),
+            meta.tx.send(RpcMessageIn::DepositAddr(index, response_tx)),
             "Sending 'depositaddr' to main thread"
         );
         let address = assume_ok!(

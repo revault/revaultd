@@ -256,7 +256,6 @@ pub fn db_update_deposit_index(
 pub fn db_insert_new_unconfirmed_vault(
     db_path: &PathBuf,
     wallet_id: u32,
-    status: &VaultStatus,
     deposit_outpoint: &OutPoint,
     amount: &Amount,
     derivation_index: ChildNumber,
@@ -270,7 +269,7 @@ pub fn db_insert_new_unconfirmed_vault(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 wallet_id,
-                *status as u32,
+                VaultStatus::Unconfirmed as u32,
                 0, // FIXME: it should probably be NULL instead, but no big deal
                 deposit_outpoint.txid.to_vec(),
                 deposit_outpoint.vout,
@@ -664,10 +663,7 @@ mod test {
 
         setup_db(&mut revaultd).unwrap();
 
-        // Let's insert two new deposits and an unvault
-
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let first_deposit_outpoint = OutPoint::from_str(
             "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
         )
@@ -678,7 +674,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &first_deposit_outpoint,
             &amount,
             derivation_index,
@@ -687,7 +682,6 @@ mod test {
         .unwrap();
 
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let second_deposit_outpoint = OutPoint::from_str(
             "e56808d17a866de5a1d0874894c84a759a7cabc8763694966cc6423f4c597a7f:0",
         )
@@ -698,7 +692,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &second_deposit_outpoint,
             &amount,
             derivation_index,
@@ -707,7 +700,6 @@ mod test {
         .unwrap();
 
         let wallet_id = 1;
-        let status = VaultStatus::Unvaulting;
         let third_deposit_outpoint = OutPoint::from_str(
             "616efc37747c8cafc2f99692177a5400bad81b671d8d35ffa347d84b246e9a83:0",
         )
@@ -718,7 +710,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &third_deposit_outpoint,
             &amount,
             derivation_index,
@@ -731,7 +722,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id + 1,
-            &status,
             &third_deposit_outpoint,
             &amount,
             derivation_index,
@@ -739,29 +729,28 @@ mod test {
         )
         .unwrap_err();
 
-        // Now retrieve the deposits; there must be the first ones but not the
-        // unvaulting one.
+        // Now retrieve the deposits; there must all be there
         let deposit_outpoints: Vec<OutPoint> = db_deposits(&db_path)
             .unwrap()
             .into_iter()
             .map(|db_vault| db_vault.deposit_outpoint)
             .collect();
-        assert_eq!(deposit_outpoints.len(), 2);
+        assert_eq!(deposit_outpoints.len(), 3);
         assert!(deposit_outpoints.contains(&first_deposit_outpoint));
         assert!(deposit_outpoints.contains(&second_deposit_outpoint));
-        assert!(!deposit_outpoints.contains(&third_deposit_outpoint));
+        assert!(deposit_outpoints.contains(&third_deposit_outpoint));
 
-        // Now if we mark the first as being unvaulted we'll onlu fetch one
+        // Now if we mark the first as being unvaulted we'll only fetch the two last ones
         db_unvault_deposit(&db_path, &first_deposit_outpoint).unwrap();
         let deposit_outpoints: Vec<OutPoint> = db_deposits(&db_path)
             .unwrap()
             .into_iter()
             .map(|db_vault| db_vault.deposit_outpoint)
             .collect();
-        assert_eq!(deposit_outpoints.len(), 1);
+        assert_eq!(deposit_outpoints.len(), 2);
         assert!(!deposit_outpoints.contains(&first_deposit_outpoint));
         assert!(deposit_outpoints.contains(&second_deposit_outpoint));
-        assert!(!deposit_outpoints.contains(&third_deposit_outpoint));
+        assert!(deposit_outpoints.contains(&third_deposit_outpoint));
 
         fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
     }
@@ -774,7 +763,6 @@ mod test {
 
         // Let's insert a deposit
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint = OutPoint::from_str(
             "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
         )
@@ -785,7 +773,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint,
             &amount,
             derivation_index,
@@ -942,7 +929,6 @@ mod test {
 
         // Let's insert a deposit
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint = OutPoint::from_str(
             "adaa5a4b9fb07c860f8de460727b6bad4b5ab01d2e7f90f6f3f15a0080020168:0",
         )
@@ -953,7 +939,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint,
             &amount,
             derivation_index,
@@ -1021,7 +1006,6 @@ mod test {
 
         // Let's insert a deposit
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint = OutPoint::from_str(
             "c9cf38058b720050bcba47490ee27f4a29d57a5aa2ee0f3c97731e140dbeced7:1",
         )
@@ -1032,7 +1016,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint,
             &amount,
             derivation_index,
@@ -1101,7 +1084,6 @@ mod test {
         let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAe7jtZYQ3avFhc+JxU4paq8e26NIkAB1zHLgv6mKWxgBAAAAAAD9////AkANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4wdQAAAAAAACIAIAGCzzZ7K80GkoO2mUdCVIFx7Tum52UXob8ascs1uZucAAAAAAABASuIlAMAAAAAACIAIFvpTQQruW8AB+k+csGMaThNLBAzppkxo+k4Hb2SZ4hKAQMEAQAAAAEFR1IhAvkWJfB/ssW9YaE7llH/y/1FBJ/LK+ybOJiT8j+O4cnhIQIS4abTQKWATfsTrVsEPfkCUHvxY4M0F+ZDz502NXMy1FKuAAEBqiEC262VFMR0zQS8kl+14wQWuWrsU347lEh8RN7ydSV33ZWsUYdkdqkUvIrspFvJQ2XUVl4CuFGNICwJI1+IrGt2qRSfpUNGG4+BIoO9/dUxLcYpID+Aw4isbJNSh2dSIQKkxJmDMXYy1OdMI/x8PV9j3+1kQ0gpzuD+KqSeYfjzTiEDtqfLJXVbB4YRIpsvmVtBNS971+XfZqkNHdNV1Xcdw1lSrwKHG7JoAAEBJSEC262VFMR0zQS8kl+14wQWuWrsU347lEh8RN7ydSV33ZWsUYcA").unwrap();
         let fullysigned_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAe7jtZYQ3avFhc+JxU4paq8e26NIkAB1zHLgv6mKWxgBAAAAAAD9////AkANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4wdQAAAAAAACIAIAGCzzZ7K80GkoO2mUdCVIFx7Tum52UXob8ascs1uZucAAAAAAABASuIlAMAAAAAACIAIFvpTQQruW8AB+k+csGMaThNLBAzppkxo+k4Hb2SZ4hKIgICEuGm00ClgE37E61bBD35AlB78WODNBfmQ8+dNjVzMtRHMEQCID2my9yVWxgLSDKDBL5PmF9FVZC6b8mLu598Rq8oebjQAiB3FC3br7rS6bkKOKa4h9Ml1nicuPWpXTWjAWrALVTd+gEiAgL5FiXwf7LFvWGhO5ZR/8v9RQSfyyvsmziYk/I/juHJ4UcwRAIgGfJBreyXt5Isv9PjLRJCFy5jVrMGieGsvV01LTPf3/gCICS81/Mvot0WYdlXC+FnAQ4AprXIQH+g1pnDomBGO+UZAQEDBAEAAAABBUdSIQL5FiXwf7LFvWGhO5ZR/8v9RQSfyyvsmziYk/I/juHJ4SECEuGm00ClgE37E61bBD35AlB78WODNBfmQ8+dNjVzMtRSrgABAaohAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHZHapFLyK7KRbyUNl1FZeArhRjSAsCSNfiKxrdqkUn6VDRhuPgSKDvf3VMS3GKSA/gMOIrGyTUodnUiECpMSZgzF2MtTnTCP8fD1fY9/tZENIKc7g/iqknmH4804hA7anyyV1WweGESKbL5lbQTUve9fl32apDR3TVdV3HcNZUq8ChxuyaAABASUhAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHAA==").unwrap();
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint_b = OutPoint::from_str(
             "2117d7c3461ca013a099d8e60b0bcc6c33aec95db49f636c479ab85117479a91:0",
         )
@@ -1112,7 +1094,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint_b,
             &amount,
             derivation_index,

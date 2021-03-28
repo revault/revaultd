@@ -537,7 +537,6 @@ fn update_deposits(
                 .unwrap()
                 .wallet_id
                 .expect("Wallet id is set at startup in setup_db()"),
-            &utxo.status,
             &outpoint,
             &amount,
             derivation_index,

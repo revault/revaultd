@@ -1,6 +1,6 @@
 use crate::{
     bitcoind::{
-        interface::{BitcoinD, DepositInfo, SyncInfo},
+        interface::{BitcoinD, OnchainDescriptorState, SyncInfo, UtxoInfo},
         BitcoindError, MIN_CONF,
     },
     database::{
@@ -294,7 +294,7 @@ fn new_tip_event(
 fn comprehensive_rescan(
     db_tx: &rusqlite::Transaction,
     bitcoind: &BitcoinD,
-    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<(), BitcoindError> {
     log::info!("Starting rescan of all vaults in db..");
     let mut vaults = db_vaults_dbtx(&db_tx)?;
@@ -341,7 +341,7 @@ fn comprehensive_rescan(
                 deposits_cache
                     .get_mut(&vault.deposit_outpoint)
                     .expect("Db vault not in cache?")
-                    .status = VaultStatus::Unconfirmed;
+                    .is_confirmed = false;
                 continue;
             }
 
@@ -363,7 +363,7 @@ fn comprehensive_rescan(
             deposits_cache
                 .get_mut(&vault.deposit_outpoint)
                 .expect("Db vault not in cache?")
-                .status = VaultStatus::Unconfirmed;
+                .is_confirmed = false;
         }
     }
 
@@ -384,7 +384,7 @@ fn comprehensive_rescan(
 fn update_tip(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<(), BitcoindError> {
     let current_tip = db_tip(&revaultd.read().unwrap().db_file())?;
     let tip = bitcoind.get_tip()?;
@@ -424,7 +424,7 @@ fn update_tip(
 fn presigned_transactions(
     revaultd: &RevaultD,
     outpoint: &OutPoint,
-    utxo: &DepositInfo,
+    utxo: &UtxoInfo,
 ) -> Result<
     (
         UnvaultTransaction,
@@ -482,7 +482,7 @@ fn presigned_transactions(
 // Fill up the deposit UTXOs cache from db vaults
 fn populate_deposit_cache(
     revaultd: &RevaultD,
-) -> Result<HashMap<OutPoint, DepositInfo>, BitcoindError> {
+) -> Result<HashMap<OutPoint, UtxoInfo>, BitcoindError> {
     let db_vaults = db_deposits(&revaultd.db_file())?;
     let mut cache = HashMap::with_capacity(db_vaults.len());
 
@@ -496,9 +496,9 @@ fn populate_deposit_cache(
         };
         cache.insert(
             db_vault.deposit_outpoint,
-            DepositInfo {
+            UtxoInfo {
                 txo,
-                status: db_vault.status,
+                is_confirmed: !matches!(db_vault.status, VaultStatus::Unconfirmed),
             },
         );
         log::debug!("Loaded deposit '{}' from db", db_vault.deposit_outpoint);
@@ -508,13 +508,17 @@ fn populate_deposit_cache(
 }
 
 // This syncs with bitcoind our incoming deposits, and those that were spent.
-fn update_deposits(
+fn update_utxos(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<(), BitcoindError> {
     // Sync deposit of vaults we know have an unspent deposit.
-    let (new_deposits, conf_deposits, spent_deposits) = bitcoind.sync_deposits(&deposits_cache)?;
+    let OnchainDescriptorState {
+        new_unconf: new_deposits,
+        new_conf: conf_deposits,
+        new_spent: spent_deposits,
+    } = bitcoind.sync_deposits(&deposits_cache)?;
 
     for (outpoint, utxo) in new_deposits.into_iter() {
         let derivation_index = *revaultd
@@ -601,7 +605,7 @@ fn update_deposits(
         deposits_cache
             .get_mut(&outpoint)
             .ok_or_else(|| BitcoindError::Custom("An unknown vault got confirmed?".to_string()))?
-            .status = VaultStatus::Funded;
+            .is_confirmed = true;
 
         log::debug!("Vault at {} is now confirmed", &outpoint);
     }
@@ -636,19 +640,16 @@ fn update_deposits(
         } else if false {
             // TODO: handle bypass and emergency
         } else {
-            match utxo.status {
-                // Fine.
-                VaultStatus::Unconfirmed => log::debug!(
-                    "The unconfirmed deposit utxo created via '{}' just vanished",
-                    &outpoint
-                ),
-                // Bad.
-                VaultStatus::Funded | VaultStatus::Secured => log::warn!(
+            if utxo.is_confirmed {
+                log::warn!(
                     "The deposit utxo created via '{}' just vanished. Maybe a reorg is ongoing?",
                     &outpoint
-                ),
-                // Impossible.
-                _ => unreachable!(),
+                );
+            } else {
+                log::debug!(
+                    "The unconfirmed deposit utxo created via '{}' just vanished",
+                    &outpoint
+                );
             }
         }
     }
@@ -724,7 +725,7 @@ fn poller_main(
             &bitcoind.read().unwrap(),
             &mut deposits_cache,
         )?;
-        update_deposits(
+        update_utxos(
             &mut revaultd,
             &bitcoind.read().unwrap(),
             &mut deposits_cache,

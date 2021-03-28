@@ -1,6 +1,6 @@
 use crate::{
     bitcoind::{BitcoindError, MIN_CONF},
-    revaultd::{BlockchainTip, VaultStatus},
+    revaultd::BlockchainTip,
 };
 use common::config::BitcoindConfig;
 use revault_tx::bitcoin::{
@@ -397,21 +397,17 @@ impl BitcoinD {
     }
 
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
-    /// We take the currently known utxos, and return both the new deposits and the spent deposits.
-    pub fn sync_deposits(
+    /// We take the currently known utxos, and return both the new and the spent ones for this
+    /// label.
+    fn sync_chainstate(
         &self,
-        existing_utxos: &HashMap<OutPoint, DepositInfo>,
-    ) -> Result<
-        (
-            HashMap<OutPoint, DepositInfo>, // new
-            HashMap<OutPoint, DepositInfo>, // newly confirmed
-            HashMap<OutPoint, DepositInfo>, // spent
-        ),
-        BitcoindError,
-    > {
-        let (mut new_deposits, mut confirmed_deposits) = (HashMap::new(), HashMap::new());
+        current_utxos: &HashMap<OutPoint, UtxoInfo>,
+        label: String,
+    ) -> Result<OnchainDescriptorState, BitcoindError> {
+        let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
-        let mut spent_deposits = existing_utxos.clone();
+        let mut spent_utxos = current_utxos.clone();
+        let label_json: Json = label.into();
 
         for utxo in self
             .make_watchonly_request(
@@ -425,7 +421,7 @@ impl BitcoinD {
                 )
             })?
         {
-            if utxo.get("label") != Some(&self.deposit_utxos_label().into()) {
+            if utxo.get("label") != Some(&label_json) {
                 continue;
             }
             let confirmations = utxo
@@ -446,13 +442,14 @@ impl BitcoinD {
 
             let outpoint = self.outpoint_from_utxo(&utxo)?;
             // Not obvious at first sight:
-            //  - spent_deposits == existing_deposits before the loop
+            //  - spent_utxos == existing_utxos before the loop
             //  - listunspent won't send duplicated entries
-            //  - remove() will return None if it was not present in the map, ie new deposit
-            if let Some(utxo) = spent_deposits.remove(&outpoint) {
-                // It may be present but still unconfirmed, though.
-                if utxo.status == VaultStatus::Unconfirmed && confirmations >= MIN_CONF {
-                    confirmed_deposits.insert(outpoint, utxo);
+            //  - remove() will return None if it was not present in the map
+            // Therefore if there is an utxo at this outpoint, it's an already known deposit
+            if let Some(utxo) = spent_utxos.remove(&outpoint) {
+                // It may be known but still unconfirmed, though.
+                if !utxo.is_confirmed && confirmations >= MIN_CONF {
+                    confirmed_utxos.insert(outpoint, utxo);
                 }
                 continue;
             }
@@ -502,19 +499,39 @@ impl BitcoinD {
                 })?
                 .as_sat();
 
-            new_deposits.insert(
+            new_utxos.insert(
                 outpoint,
-                DepositInfo {
+                UtxoInfo {
                     txo: TxOut {
                         value,
                         script_pubkey,
                     },
-                    status: VaultStatus::Unconfirmed,
+                    // All new utxos are marked as unconfirmed. This allows for a proper state
+                    // transition.
+                    is_confirmed: false,
                 },
             );
         }
 
-        Ok((new_deposits, confirmed_deposits, spent_deposits))
+        Ok(OnchainDescriptorState {
+            new_unconf: new_utxos,
+            new_conf: confirmed_utxos,
+            new_spent: spent_utxos,
+        })
+    }
+
+    pub fn sync_deposits(
+        &self,
+        deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
+    ) -> Result<OnchainDescriptorState, BitcoindError> {
+        self.sync_chainstate(deposits_utxos, self.deposit_utxos_label())
+    }
+
+    pub fn sync_unvaults(
+        &self,
+        unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
+    ) -> Result<OnchainDescriptorState, BitcoindError> {
+        self.sync_chainstate(unvault_utxos, self.unvault_utxos_label())
     }
 
     /// Get the raw transaction as hex, the blockheight it was included in if
@@ -636,16 +653,27 @@ impl BitcoinD {
     }
 }
 
+/// Information about an utxo one of our descriptors points to.
+#[derive(Debug, Clone)]
+pub struct UtxoInfo {
+    pub txo: TxOut,
+    pub is_confirmed: bool,
+}
+
+/// New informations about sets of utxos represented by a descriptor that actually ended
+/// up onchain.
+pub struct OnchainDescriptorState {
+    /// The set of newly "received" utxos
+    pub new_unconf: HashMap<OutPoint, UtxoInfo>,
+    /// The set of newly confirmed utxos
+    pub new_conf: HashMap<OutPoint, UtxoInfo>,
+    /// The set of newly spent utxos
+    pub new_spent: HashMap<OutPoint, UtxoInfo>,
+}
+
 pub struct SyncInfo {
     pub headers: u64,
     pub blocks: u64,
     pub ibd: bool,
     pub progress: f64,
-}
-
-// Used in deposits cache for listunspent polling
-#[derive(Debug, Clone)]
-pub struct DepositInfo {
-    pub txo: TxOut,
-    pub status: VaultStatus,
 }

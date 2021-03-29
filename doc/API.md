@@ -39,6 +39,7 @@ Display general information about the current daemon state.
 | `network`     | string  | Answer can be `mainnet`, `testnet`, `regtest`                   |
 | `sync`        | float   | The synchronization progress as percentage (`0 < sync < 1`)     |
 | `version`     | string  | Version following the [SimVer](http://www.simver.org/) format   |
+| `vaults`      | integer | Current number of vaults (unconfirmed are included)             |
 
 
 ### `getdepositaddress`
@@ -213,6 +214,7 @@ See the [flows](#stakeholder-flows) for more information.
 
 | Field                  | Type   | Description                                                 |
 | ---------------------- | ------ | ----------------------------------------------------------- |
+| `outpoint`             | string | Deposit outpoint of the vault                               |
 | `cancel_tx`            | string | Base64-encoded Cancel transaction PSBT                      |
 | `emergency_tx`         | string | Base64-encoded Emergency transaction PSBT                   |
 | `emergency_unvault_tx` | string | Base64-encoded Unvault Emergency transaction PSBT           |
@@ -253,6 +255,7 @@ See the [flows](#stakeholder-flows) for more information.
 
 | Field        | Type   | Description                                                 |
 | ------------ | ------ | ----------------------------------------------------------- |
+| `outpoint`   | string | Deposit outpoint of the vault to activate                   |
 | `unvault_tx` | string | Base64-encoded Unvault transaction PSBT                     |
 
 #### Response

@@ -988,12 +988,6 @@ def test_spendtx_management(revault_network, bitcoind):
     spend_tx_b = spend_psbt.serialize()
     man.rpc.updatespendtx(spend_tx_b)
     man.rpc.setspendtx(spend_psbt.tx.hash)
-    wait_for(
-        lambda: all(
-            v["status"] == "unvaulting"
-            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
-        )
-    )
 
     # Of course, Cosigning Servers will cringe if we poll them twice.
     with pytest.raises(
@@ -1002,8 +996,37 @@ def test_spendtx_management(revault_network, bitcoind):
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
-    bitcoind.generate_block(CSV, wait_for_mempool=2)
+    # It gets marked as in the process of being unvaulted immediately (next bitcoind
+    # poll), and will get marked as succesfully unvaulted after a single confirmation.
+    wait_for(
+        lambda: all(
+            v["status"] == "unvaulting"
+            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
+        )
+    )
+    man.wait_for_logs(
+        [
+            f"The deposit utxo created via '{deposit}' was unvaulted"
+            for deposit in spent_vaults
+        ]
+    )
+    bitcoind.generate_block(1, wait_for_mempool=len(spent_vaults))
+    wait_for(
+        lambda: all(
+            v["status"] == "unvaulted"
+            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
+        )
+    )
+
+    # We'll broadcast the Spend transaction as soon as it's valid
+    bitcoind.generate_block(CSV - 1)
     man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'")
+    wait_for(
+        lambda: all(
+            v["status"] == "spending"
+            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
+        )
+    )
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -1065,12 +1088,34 @@ def test_spends_concurrent(revault_network, bitcoind):
     spend_txid_b = spend_psbt.tx.hash
     man.rpc.setspendtx(spend_txid_b)
 
-    bitcoind.generate_block(CSV, wait_for_mempool=len(deposits))
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+        == len(deposits)
+    )
+    man.wait_for_logs(
+        [
+            f"The deposit utxo created via '{deposit}' was unvaulted"
+            for deposit in deposits
+        ]
+    )
+    # We need a single confirmation to consider the Unvault transaction confirmed
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+        == len(deposits)
+    )
+
+    # We'll broadcast the Spend transaction as soon as it's valid
+    bitcoind.generate_block(CSV - 1)
     man.wait_for_logs(
         [
             f"Succesfully broadcasted Spend tx '{spend_txid_a}'",
             f"Succesfully broadcasted Spend tx '{spend_txid_b}'",
         ]
+    )
+    wait_for(
+        lambda: len(man.rpc.listvaults(["spending"], deposits)["vaults"])
+        == len(deposits)
     )
 
 
@@ -1135,8 +1180,32 @@ def test_spends_conflicting(revault_network, bitcoind):
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
-    bitcoind.generate_block(CSV, wait_for_mempool=len(deposits_a))
-    man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_txid_a}'")
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulting"], deposits_a)["vaults"])
+        == len(deposits_a)
+    )
+    man.wait_for_logs(
+        [
+            f"The deposit utxo created via '{deposit}' was unvaulted"
+            for deposit in deposits_a
+        ]
+    )
+    # We need a single confirmation to consider the Unvault transaction confirmed
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits_a))
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulted"], deposits_a)["vaults"])
+        == len(deposits_a)
+    )
+
+    # We'll broadcast the Spend transaction as soon as it's valid
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_txid_a}'",
+    )
+    wait_for(
+        lambda: len(man.rpc.listvaults(["spending"], deposits_a)["vaults"])
+        == len(deposits_a)
+    )
 
 
 # FIXME: exchange of signatures with the cosigning server gets too large too quickly
@@ -1176,12 +1245,30 @@ def test_large_spends(revault_network, bitcoind, executor):
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
     man.rpc.setspendtx(spend_psbt.tx.hash)
+
     wait_for(
-        lambda: all(
-            v["status"] == "unvaulting"
-            for v in man.rpc.listvaults([], deposits)["vaults"]
-        )
+        lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+        == len(deposits)
+    )
+    man.wait_for_logs(
+        [
+            f"The deposit utxo created via '{deposit}' was unvaulted"
+            for deposit in deposits
+        ]
+    )
+    # We need a single confirmation to consider the Unvault transaction confirmed
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+        == len(deposits)
     )
 
-    bitcoind.generate_block(CSV, wait_for_mempool=len(deposits))
-    man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'")
+    # We'll broadcast the Spend transaction as soon as it's valid
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
+    )
+    wait_for(
+        lambda: len(man.rpc.listvaults(["spending"], deposits)["vaults"])
+        == len(deposits)
+    )

@@ -374,21 +374,36 @@ pub fn db_unconfirm_deposit_dbtx(
     Ok(())
 }
 
-/// Mark an active vault as being in 'unvaulting' state
-pub fn db_unvault_deposit(db_path: &PathBuf, outpoint: &OutPoint) -> Result<(), DatabaseError> {
+fn db_status_from_unvault_txid(
+    db_path: &PathBuf,
+    unvault_txid: &Txid,
+    status: VaultStatus,
+) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
-            params![
-                VaultStatus::Unvaulting as u32,
-                outpoint.txid.to_vec(),
-                outpoint.vout
-            ],
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?2))",
+            params![status as u32, unvault_txid.to_vec(),],
         )
-        .map_err(|e| DatabaseError(format!("Updating vault to 'unvaulting': {}", e.to_string())))?;
+        .map_err(|e| DatabaseError(format!("Updating vault to '{}': {}", status, e.to_string())))?;
 
         Ok(())
     })
+}
+
+/// Mark an active vault as being in 'unvaulting' state from the Unvault txid
+pub fn db_unvault_deposit(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
+}
+
+/// Mark a vault as being in the 'unvaulted' state, out of the Unvault txid
+pub fn db_confirm_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
+}
+
+/// Mark a vault as being in the 'spending' state, out of the Unvault txid
+pub fn db_spend_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Spending)
 }
 
 fn revault_tx_merge_sigs(
@@ -741,7 +756,20 @@ mod test {
         assert!(deposit_outpoints.contains(&third_deposit_outpoint));
 
         // Now if we mark the first as being unvaulted we'll only fetch the two last ones
-        db_unvault_deposit(&db_path, &first_deposit_outpoint).unwrap();
+        db_exec(&db_path, |tx| {
+            tx.execute(
+                "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+                 WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
+                params![
+                    VaultStatus::Unvaulting as u32,
+                    first_deposit_outpoint.txid.to_vec(),
+                    first_deposit_outpoint.vout
+                ],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
         let deposit_outpoints: Vec<OutPoint> = db_deposits(&db_path)
             .unwrap()
             .into_iter()

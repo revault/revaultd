@@ -403,6 +403,7 @@ impl BitcoinD {
         &self,
         current_utxos: &HashMap<OutPoint, UtxoInfo>,
         label: String,
+        min_conf: u64,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
         let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
@@ -448,7 +449,7 @@ impl BitcoinD {
             // Therefore if there is an utxo at this outpoint, it's an already known deposit
             if let Some(utxo) = spent_utxos.remove(&outpoint) {
                 // It may be known but still unconfirmed, though.
-                if !utxo.is_confirmed && confirmations >= MIN_CONF {
+                if !utxo.is_confirmed && confirmations >= min_conf {
                     confirmed_utxos.insert(outpoint, utxo);
                 }
                 continue;
@@ -524,14 +525,14 @@ impl BitcoinD {
         &self,
         deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
-        self.sync_chainstate(deposits_utxos, self.deposit_utxos_label())
+        self.sync_chainstate(deposits_utxos, self.deposit_utxos_label(), MIN_CONF)
     }
 
     pub fn sync_unvaults(
         &self,
         unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
-        self.sync_chainstate(unvault_utxos, self.unvault_utxos_label())
+        self.sync_chainstate(unvault_utxos, self.unvault_utxos_label(), 1)
     }
 
     /// Get the raw transaction as hex, the blockheight it was included in if
@@ -573,75 +574,6 @@ impl BitcoinD {
             })? as u32;
 
         Ok((tx_hex, blockheight, received))
-    }
-
-    // This assumes wallet transactions, will error otherwise !
-    fn previous_outpoints(&self, outpoint: &OutPoint) -> Result<Vec<OutPoint>, BitcoindError> {
-        Ok(self
-            .make_watchonly_request(
-                "gettransaction",
-                &params!(
-                    Json::String(outpoint.txid.to_string()),
-                    Json::Bool(true), // include_watchonly
-                    Json::Bool(true), // verbose
-                ),
-            )?
-            .get("decoded")
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break: 'gettransaction' has no 'hex' in verbose mode?".to_string(),
-                )
-            })?
-            .get("vin")
-            .ok_or_else(|| {
-                BitcoindError::Custom("API break: 'gettransaction' has no 'vin' ?".to_string())
-            })?
-            .as_array()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break: 'gettransaction' 'vin' isn't an array?".to_string(),
-                )
-            })?
-            .iter()
-            .filter_map(|txin| {
-                Some(OutPoint {
-                    txid: Txid::from_str(txin.get("txid")?.as_str()?).ok()?,
-                    vout: txin.get("vout")?.as_u64()? as u32,
-                })
-            })
-            .collect())
-    }
-
-    /// There is no good way to get the "spending transaction" from an utxo in bitcoind.
-    /// So here we workaround it leveraging the fact we know the unvault address. So we list
-    /// the unvault address transactions and check if one spent this outpoint to this address.
-    pub fn unvault_from_vault(
-        &self,
-        vault_outpoint: &OutPoint,
-        unvault_address: String,
-    ) -> Result<Option<OutPoint>, BitcoindError> {
-        let res = self.make_watchonly_request(
-            "listunspent",
-            &params!(
-                Json::Number(serde_json::Number::from(0)),       // minconf
-                Json::Number(serde_json::Number::from(9999999)), // maxconf (default)
-                Json::Array(vec![Json::String(unvault_address)]),
-            ),
-        )?;
-        let utxos = res.as_array().ok_or_else(|| {
-            BitcoindError::Custom("API break: 'listunspent' didn't return an array".to_string())
-        })?;
-
-        for utxo in utxos {
-            let outpoint = self.outpoint_from_utxo(&utxo)?;
-            for prev_outpoint in self.previous_outpoints(&outpoint)? {
-                if &prev_outpoint == vault_outpoint {
-                    return Ok(Some(outpoint));
-                }
-            }
-        }
-
-        Ok(None)
     }
 
     /// Broadcast a transaction with 'sendrawtransaction', discarding the returned txid

@@ -247,6 +247,31 @@ pub fn db_vault_by_deposit(
     .map(|mut vault_list| vault_list.pop())
 }
 
+/// Get the vaults that were unvaulted but for which the Unvault was not spent yet from the DB.
+pub fn db_unvaulted_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, UnvaultTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults INNER JOIN presigned_transactions as ptx \
+         ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) OR vaults.status = (?2) AND ptx.type = (?3)",
+        &[
+            VaultStatus::Unvaulting as u32,
+            VaultStatus::Unvaulted as u32,
+            TransactionType::Unvault as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let unvault_tx: Vec<u8> = row.get(10)?;
+            let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, unvault_tx))
+        },
+    )
+}
+
 impl TryFrom<&Row<'_>> for DbTransaction {
     type Error = rusqlite::Error;
 
@@ -327,6 +352,23 @@ pub fn db_unvault_transaction(
         db_tx.id,
         assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"),
     ))
+}
+
+/// Get the Unvault transaction corresponding to this vault from the database.
+/// Note that unconfirmed vaults don't have the Unvault transaction stored in database.
+pub fn db_unvault_from_deposit(
+    db_path: &PathBuf,
+    deposit: &OutPoint,
+) -> Result<Option<UnvaultTransaction>, DatabaseError> {
+    let db_unvault: Option<DbTransaction> = db_query(
+        db_path,
+        "SELECT * FROM presigned_transactions as ptx INNER JOIN vaults ON ptx.vault_id = vaults.id \
+         WHERE vaults.deposit_txid = (?1) AND vaults.deposit_vout = (?2) AND ptx.type = (?3)",
+        params![deposit.txid.to_vec(), deposit.vout, TransactionType::Unvault as u32],
+        |row| row.try_into()
+    ).map(|mut rows| rows.pop())?;
+
+    Ok(db_unvault.map(|db_tx| assert_tx_type!(db_tx.psbt, Unvault, "We just queried it")))
 }
 
 /// Get the Cancel transaction corresponding to this vault

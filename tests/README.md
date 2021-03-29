@@ -57,9 +57,10 @@ must `init` the submodules (if you did not `clone` with `--recursive`) and compi
 servers code:
 ```
 # From the root of the repository
-cd tests/servers
 git submodule update --init --recursive
+cd tests/servers
 cd coordinatord && cargo build
+cd cosignerd && cargo build
 # TODO: add the other servers here when they are implemented
 ```
 

@@ -1,5 +1,7 @@
 set -xe
 
+REPO_ROOT=$(pwd)
+
 # Build the revaultd binary
 cargo build --release
 
@@ -16,8 +18,12 @@ sudo apt update && sudo apt install postgresql-12
 sudo systemctl start postgresql
 sudo su -c "psql -c \"CREATE ROLE test CREATEDB LOGIN PASSWORD 'test'\"" - postgres
 
+# Build the servers
+git submodule update --init
+cd tests/servers/coordinatord && cargo build && cd "$REPO_ROOT"
+cd tests/servers/cosignerd && cargo build && cd "$REPO_ROOT"
+
 # Run the functional tests
-cd tests/servers/coordinatord && git submodule update --init && cargo build && cd ../../../
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt

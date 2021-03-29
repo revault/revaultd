@@ -30,6 +30,8 @@ jobs:
       - name: Functional tests
         if: matrix.os == 'ubuntu-latest'
         run: ./contrib/ci-functional-tests.sh
+        env:
+          RUST_BACKTRACE: 1
 
   rustfmt_check:
     runs-on: ubuntu-latest

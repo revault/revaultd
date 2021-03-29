@@ -6,10 +6,10 @@ use crate::{jsonrpc::UserRole, revaultd::VaultStatus, threadmessages::*};
 use common::{assume_ok, VERSION};
 
 use revault_tx::{
-    bitcoin::{Address, OutPoint},
+    bitcoin::{util::bip32, Address, OutPoint, Txid},
     transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -78,7 +78,11 @@ pub trait RpcApi {
 
     /// Get an address to receive funds to the stakeholders' descriptor
     #[rpc(meta, name = "getdepositaddress")]
-    fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+    fn getdepositaddress(
+        &self,
+        meta: Self::Metadata,
+        index: Option<bip32::ChildNumber>,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 
     /// Get the cancel and both emergency transactions for a vault identified by its deposit
     /// outpoint.
@@ -143,6 +147,30 @@ pub trait RpcApi {
         outpoint: Vec<OutPoint>,
         outputs: BTreeMap<Address, u64>,
         feerate: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "updatespendtx")]
+    fn updatespendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_tx: SpendTransaction,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "delspendtx")]
+    fn delspendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_txid: Txid,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "listspendtxs")]
+    fn listspendtxs(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "setspendtx")]
+    fn setspendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_txid: Txid,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
@@ -270,10 +298,14 @@ impl RpcApi for RpcImpl {
         Ok(json!({ "vaults": vaults }))
     }
 
-    fn getdepositaddress(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+    fn getdepositaddress(
+        &self,
+        meta: Self::Metadata,
+        index: Option<bip32::ChildNumber>,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
         let (response_tx, response_rx) = mpsc::sync_channel(0);
         assume_ok!(
-            meta.tx.send(RpcMessageIn::DepositAddr(response_tx)),
+            meta.tx.send(RpcMessageIn::DepositAddr(index, response_tx)),
             "Sending 'depositaddr' to main thread"
         );
         let address = assume_ok!(
@@ -504,5 +536,92 @@ impl RpcApi for RpcImpl {
         Ok(json!({
             "spend_tx": spend_tx.as_psbt_string(),
         }))
+    }
+
+    fn updatespendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_tx: SpendTransaction,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::UpdateSpendTx(spend_tx, response_tx)),
+            "Sending 'updatespendtx' to main thread"
+        );
+
+        assume_ok!(
+            response_rx.recv(),
+            "Receiving 'updatespendtx' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({}))
+    }
+
+    fn delspendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_txid: Txid,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::DelSpendTx(spend_txid, response_tx)),
+            "Sending 'delspendtx' to main thread"
+        );
+
+        assume_ok!(
+            response_rx.recv(),
+            "Receiving 'delspendtx' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({}))
+    }
+
+    fn listspendtxs(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx.send(RpcMessageIn::ListSpendTxs(response_tx)),
+            "Sending 'listspendtxs' to main thread"
+        );
+
+        let spendtx_entries = assume_ok!(
+            response_rx.recv(),
+            "Receiving 'listspendtxs' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({ "spend_txs": spendtx_entries }))
+    }
+
+    fn setspendtx(
+        &self,
+        meta: Self::Metadata,
+        spend_txid: Txid,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        manager_only!(meta);
+
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::SetSpendTx(spend_txid, response_tx)),
+            "Sending 'setspendtx' to main thread"
+        );
+
+        assume_ok!(
+            response_rx.recv(),
+            "Receiving 'setspendtx' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({}))
     }
 }

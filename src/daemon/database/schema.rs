@@ -5,7 +5,8 @@ use revault_tx::{
         Amount, OutPoint,
     },
     transactions::{
-        CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
 };
 
@@ -46,7 +47,7 @@ CREATE TABLE vaults (
     wallet_id INTEGER NOT NULL,
     status INTEGER NOT NULL,
     blockheight INTEGER NOT NULL,
-    deposit_txid BLOB UNIQUE NOT NULL,
+    deposit_txid BLOB NOT NULL,
     deposit_vout INTEGER NOT NULL,
     amount INTEGER NOT NULL,
     derivation_index INTEGER NOT NULL,
@@ -68,10 +69,41 @@ CREATE TABLE presigned_transactions (
     vault_id INTEGER NOT NULL,
     type INTEGER NOT NULL,
     psbt BLOB UNIQUE NOT NULL,
+    txid BLOB UNIQUE NOT NULL,
     fullysigned BOOLEAN NOT NULL CHECK (fullysigned IN (0,1)),
     FOREIGN KEY (vault_id) REFERENCES vaults (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT
+);
+
+/* A bridge between the Unvault transactions a Spend transaction
+ * may refer and the possible Spend transactions an Unvault one
+ * may be associated with.
+ */
+CREATE TABLE spend_inputs (
+    id INTEGER PRIMARY KEY NOT NULL,
+    unvault_id INTEGER NOT NULL,
+    spend_id INTEGER NOT NULL,
+    FOREIGN KEY (unvault_id) REFERENCES presigned_transactions (id)
+        ON UPDATE RESTRICT
+        ON DELETE RESTRICT,
+    FOREIGN KEY (spend_id) REFERENCES spend_transactions (id)
+        ON UPDATE RESTRICT
+        ON DELETE RESTRICT
+);
+
+/* This stores Spend transactions we created. A txid column is there to
+ * ease research.
+ * The 'broadcasted' column indicates wether a Spend transaction is:
+ *  - Not elligible for broadcast (NULL)
+ *  - Waiting to be broadcasted (0)
+ *  - Already broadcasted (1)
+ */
+CREATE TABLE spend_transactions (
+    id INTEGER PRIMARY KEY NOT NULL,
+    psbt BLOB UNIQUE NOT NULL,
+    txid BLOB UNIQUE NOT NULL,
+    broadcasted BOOLEAN CHECK (broadcasted IN (NULL, 0,1))
 );
 
 CREATE INDEX vault_status ON vaults (status);
@@ -81,7 +113,7 @@ CREATE INDEX vault_transactions ON presigned_transactions (vault_id);
 /// A row in the "wallets" table
 #[derive(Clone)]
 pub struct DbWallet {
-    pub id: u32,
+    pub id: u32, // FIXME: should be an i64
     pub timestamp: u32,
     pub deposit_descriptor: String,
     pub unvault_descriptor: String,
@@ -93,7 +125,7 @@ pub struct DbWallet {
 /// A row of the "vaults" table
 #[derive(Debug, Clone, Copy)]
 pub struct DbVault {
-    pub id: u32,
+    pub id: u32, // FIXME: should be an i64
     pub wallet_id: u32,
     pub status: VaultStatus,
     pub blockheight: u32,
@@ -142,7 +174,7 @@ tx_type_from_tx!(EmergencyTransaction, Emergency);
 tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
 
 /// A transaction stored in the 'presigned_transactions' table
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RevaultTx {
     Unvault(UnvaultTransaction),
     Cancel(CancelTransaction),
@@ -162,12 +194,29 @@ macro_rules! assert_tx_type {
 }
 
 // FIXME: naming it "db transaction" was ambiguous..
-/// A row in the "transactions" table
-#[derive(Debug)]
+/// A row in the "presigned_transactions" table
+#[derive(Debug, Clone)]
 pub struct DbTransaction {
-    pub id: u32,
+    pub id: u32, // FIXME: should be an i64
     pub vault_id: u32,
     pub tx_type: TransactionType,
     pub psbt: RevaultTx,
     pub is_fully_signed: bool,
+}
+
+/// A row in the "spend_inputs" table
+#[derive(Debug)]
+pub struct DbSpendInput {
+    pub id: i64,
+    pub unvault_id: u32,
+    pub spend_id: u32,
+}
+
+/// A row in the "spend_transactions" table
+#[derive(Debug)]
+pub struct DbSpendTransaction {
+    pub id: i64,
+    pub psbt: SpendTransaction,
+    pub broadcasted: Option<bool>,
+    // txid is intentionally not there as it's already part of the psbt
 }

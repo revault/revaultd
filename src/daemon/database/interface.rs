@@ -1,7 +1,9 @@
 use crate::{
     assert_tx_type,
     database::{
-        schema::{DbTransaction, DbVault, DbWallet, RevaultTx, TransactionType},
+        schema::{
+            DbSpendTransaction, DbTransaction, DbVault, DbWallet, RevaultTx, TransactionType,
+        },
         DatabaseError,
     },
     revaultd::{BlockchainTip, VaultStatus},
@@ -13,13 +15,14 @@ use revault_tx::{
         Amount, BlockHash, Network, OutPoint, Txid,
     },
     transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
 use std::{
     boxed::Box,
+    collections::HashMap,
     convert::{TryFrom, TryInto},
     path::PathBuf,
     str::FromStr,
@@ -280,7 +283,20 @@ impl TryFrom<&Row<'_>> for DbTransaction {
             ),
         };
 
-        let is_fully_signed: bool = row.get(4)?;
+        debug_assert_eq!(
+            encode::deserialize::<revault_tx::bitcoin::util::psbt::PartiallySignedTransaction>(
+                &db_psbt
+            )
+            .unwrap()
+            .global
+            .unsigned_tx
+            .txid()
+            .to_vec(),
+            row.get::<_, Vec<u8>>(4)?,
+            "Column txid and Psbt txid mismatch"
+        );
+
+        let is_fully_signed: bool = row.get(5)?;
 
         Ok(DbTransaction {
             id,
@@ -381,6 +397,40 @@ pub fn db_unvault_emer_transaction(
     ))
 }
 
+/// Get a vault and its Unvault transaction out of an Unvault txid
+pub fn db_vault_by_unvault_txid(
+    db_path: &PathBuf,
+    txid: &Txid,
+) -> Result<Option<(DbVault, DbTransaction)>, DatabaseError> {
+    Ok(db_query(
+        db_path,
+        "SELECT vaults.*, ptx.id, ptx.psbt, ptx.fullysigned FROM presigned_transactions as ptx \
+         INNER JOIN vaults ON vaults.id = ptx.vault_id \
+         WHERE ptx.txid = (?1) and type = (?2)",
+        params![txid.to_vec(), TransactionType::Unvault as u32],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+
+            // FIXME: there is probably a more extensible way to implement the from()s so we don't
+            // have to change all those when adding a column
+            let id: u32 = row.get(10)?;
+            let psbt: Vec<u8> = row.get(11)?;
+            let psbt = UnvaultTransaction::from_psbt_serialized(&psbt).expect("We store it");
+            let is_fully_signed = row.get(12)?;
+            let db_tx = DbTransaction {
+                id,
+                vault_id: db_vault.id,
+                tx_type: TransactionType::Unvault,
+                psbt: RevaultTx::Unvault(psbt),
+                is_fully_signed,
+            };
+
+            Ok((db_vault, db_tx))
+        },
+    )?
+    .pop())
+}
+
 /// Get all the presigned transactions for which we don't have all the sigs yet.
 /// Note that it will return the emergency transactions (if unsigned) only if we
 /// are a stakeholder.
@@ -391,4 +441,122 @@ pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransactio
         params![],
         |row| row.try_into(),
     )
+}
+
+impl TryFrom<&Row<'_>> for DbSpendTransaction {
+    type Error = rusqlite::Error;
+
+    fn try_from(row: &Row) -> Result<Self, Self::Error> {
+        let id: i64 = row.get(0)?;
+        let psbt: Vec<u8> = row.get(1)?;
+        let broadcasted: Option<bool> = row.get(3)?; // 2 is 'txid'
+
+        let psbt = SpendTransaction::from_psbt_serialized(&psbt)
+            .expect("We set it using as_psbt_serialized()");
+
+        debug_assert_eq!(
+            psbt.inner_tx().global.unsigned_tx.txid().to_vec(),
+            row.get::<_, Vec<u8>>(2)?,
+            "Insane db, txid in column is not the same as psbt's one",
+        );
+
+        Ok(DbSpendTransaction {
+            id,
+            psbt,
+            broadcasted,
+        })
+    }
+}
+
+/// List all Spend transactions in DB along with the vault they are spending
+pub fn db_list_spends(
+    db_path: &PathBuf,
+) -> Result<HashMap<Txid, (SpendTransaction, Vec<OutPoint>)>, DatabaseError> {
+    // SpendTransaction can't be Hash for the moment
+    let mut res: HashMap<Txid, (SpendTransaction, Vec<OutPoint>)> = HashMap::with_capacity(128);
+
+    db_query(
+        db_path,
+        "SELECT stx.id, stx.psbt, stx.txid, stx.broadcasted, vaults.deposit_txid, vaults.deposit_vout \
+         FROM spend_transactions as stx \
+         INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
+         INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
+         INNER JOIN vaults ON vaults.id = ptx.vault_id",
+        params![],
+        |row| {
+            let db_spend: DbSpendTransaction = row.try_into()?;
+
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(4)?).expect("We store it");
+            let vout: u32 = row.get(5)?;
+            let deposit_outpoint = OutPoint { txid, vout };
+
+            let spend_tx = db_spend.psbt;
+            let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+
+            if res.contains_key(&spend_txid) {
+                let (_, outpoints) = res.get_mut(&spend_txid).unwrap();
+                outpoints.push(deposit_outpoint);
+            } else {
+                res.insert(spend_txid, (spend_tx, vec![deposit_outpoint]));
+            }
+
+            Ok(())
+        },
+    )?;
+
+    Ok(res)
+}
+
+pub fn db_broadcastable_spend_transactions(
+    db_path: &PathBuf,
+) -> Result<Vec<DbSpendTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM spend_transactions WHERE broadcasted = 0",
+        params![],
+        |row| row.try_into(),
+    )
+}
+
+/// Get a single Spend transaction from DB by its txid
+pub fn db_spend_transaction(
+    db_path: &PathBuf,
+    spend_txid: &Txid,
+) -> Result<Option<DbSpendTransaction>, DatabaseError> {
+    Ok(db_query(
+        db_path,
+        "SELECT * FROM spend_transactions WHERE txid = (?1)",
+        params![spend_txid.to_vec()],
+        |row| row.try_into(),
+    )?
+    .pop())
+}
+
+/// Get a mapping of Spend transaction inputs to the vault they ultimately spend. Note that we
+/// can't have two Unvault outputs in a single Unvault transaction therefore it's fine to use the
+/// txid for identifying the Unvault output.
+pub fn db_vaults_from_spend(
+    db_path: &PathBuf,
+    spend_txid: &Txid,
+) -> Result<HashMap<Txid, DbVault>, DatabaseError> {
+    let mut db_vaults = HashMap::with_capacity(128);
+
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.txid \
+         FROM spend_transactions as stx \
+         INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
+         INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
+         INNER JOIN vaults ON vaults.id = ptx.vault_id \
+         WHERE stx.txid = (?1)",
+        params![spend_txid.to_vec()],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(10)?).expect("We store it");
+            db_vaults.insert(txid, db_vault);
+            Ok(())
+        },
+    )?;
+
+    Ok(db_vaults)
 }

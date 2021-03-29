@@ -5,6 +5,7 @@ import random
 from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
 from test_framework.coordinatord import Coordinatord
+from test_framework.cosignerd import Cosignerd
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd
 from test_framework.utils import get_participants, wait_for
 
@@ -28,6 +29,7 @@ class RevaultNetwork:
         self.postgres_pass = postgres_pass
         self.postgres_host = postgres_host
         self.coordinator_port = reserve()
+        self.cosigners_ports = []
 
         self.stk_wallets = []
         self.man_wallets = []
@@ -42,6 +44,11 @@ class RevaultNetwork:
             # Not more than 6 months
             csv = random.randint(1, 26784)
 
+        # FIXME: this is getting dirty.. We should re-centralize information
+        # about each participant in specified data structures
+        for _ in range(n_stakeholders):
+            self.cosigners_ports.append(reserve())
+
         # The Noise keys are interdependant, so generate everything in advance
         # to avoid roundtrips
         coordinator_noisepriv = os.urandom(32)
@@ -50,16 +57,23 @@ class RevaultNetwork:
         )
         (stk_noiseprivs, stk_noisepubs) = ([], [])
         (wt_noiseprivs, wt_noisepubs) = ([], [])
+        (cosig_noiseprivs, cosig_noisepubs) = ([], [])
         for i in range(len(stks)):
             stk_noiseprivs.append(os.urandom(32))
             stk_noisepubs.append(bytes(Curve25519Private(stk_noiseprivs[i]).public_key))
+            cosig_noiseprivs.append(os.urandom(32))
+            cosig_noisepubs.append(
+                bytes(Curve25519Private(cosig_noiseprivs[i]).public_key)
+            )
             # Unused yet
             wt_noiseprivs.append(os.urandom(32))
             wt_noisepubs.append(bytes(Curve25519Private(wt_noiseprivs[i]).public_key))
+
         (man_noiseprivs, man_noisepubs) = ([], [])
         for i in range(len(mans)):
             man_noiseprivs.append(os.urandom(32))
             man_noisepubs.append(bytes(Curve25519Private(man_noiseprivs[i]).public_key))
+
         logging.debug(
             f"Using Noise pubkeys:\n- Stakeholders: {stk_noisepubs}"
             f"\n- Managers: {man_noisepubs}\n- Watchtowers:"
@@ -83,7 +97,7 @@ class RevaultNetwork:
         coordinatord.start()
         self.daemons.append(coordinatord)
 
-        # Spin up the stakeholders wallets
+        # Spin up the stakeholders wallets and their cosigning servers
         for i in range(len(stks)):
             datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
             os.makedirs(datadir, exist_ok=True)
@@ -94,12 +108,11 @@ class RevaultNetwork:
                 "watchtowers": [
                     {
                         "host": "127.0.0.1:1",
-                        "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                        "5cc6f49a9bddaacf93cd77def697",
+                        "noise_key": os.urandom(32),
                     }
                 ],
             }
-            daemon = StakeholderRevaultd(
+            revaultd = StakeholderRevaultd(
                 datadir,
                 stks,
                 cosigs,
@@ -111,25 +124,36 @@ class RevaultNetwork:
                 self.bitcoind,
                 stk_config,
             )
-            daemon.start()
-            self.stk_wallets.append(daemon)
+            revaultd.start()
+            self.stk_wallets.append(revaultd)
+
+            datadir = os.path.join(self.root_dir, f"cosignerd-stk-{i}")
+            os.makedirs(datadir, exist_ok=True)
+
+            cosignerd = Cosignerd(
+                datadir,
+                cosig_noiseprivs[i],
+                cosigs[i].get_bitcoin_priv(),
+                self.cosigners_ports[i],
+                man_noisepubs,
+            )
+            cosignerd.start()
+            self.daemons.append(cosignerd)
+
+        cosigners_info = [
+            {
+                "host": f"127.0.0.1:{self.cosigners_ports[i]}",
+                "noise_key": cosig_noisepubs[i],
+            }
+            for i in range(len(stks))
+        ]
 
         # Spin up the managers wallets
         for i in range(len(mans)):
             datadir = os.path.join(self.root_dir, f"revaultd-man-{i}")
             os.makedirs(datadir, exist_ok=True)
 
-            man_config = {
-                "keychain": mans[i],
-                # FIXME: Eventually use real ones
-                "cosigners": [
-                    {
-                        "host": "127.0.0.1:1",
-                        "noise_key": "03c3fee141e97ed33a50875a092179684c1145"
-                        "5cc6f49a9bddaacf93cd77def697",
-                    }
-                ],
-            }
+            man_config = {"keychain": mans[i], "cosigners": cosigners_info}
             daemon = ManagerRevaultd(
                 datadir,
                 stks,
@@ -170,6 +194,43 @@ class RevaultNetwork:
 
         return self.get_vault(addr)
 
+    def fundmany(self, amounts=[]):
+        """Deposit coins into the architectures in a single transaction"""
+        assert len(self.man_wallets) > 0, "You must have deploy()ed first"
+        assert len(amounts) > 0, "You must provide at least an amount!"
+
+        curr_index = 0
+        vaults = self.man_wallets[0].rpc.listvaults()["vaults"]
+        for v in vaults:
+            if v["derivation_index"] > curr_index:
+                curr_index = v["derivation_index"]
+
+        indexes = list(range(curr_index + 1, curr_index + 1 + len(amounts)))
+        amounts_sendmany = {}
+        for i, amount in enumerate(amounts):
+            amounts_sendmany[
+                self.man_wallets[0].rpc.getdepositaddress(indexes[i])["address"]
+            ] = amount
+
+        txid = self.bitcoind.rpc.sendmany("", amounts_sendmany)
+        deposits = []
+        tx = self.bitcoind.rpc.gettransaction(txid, True, True)["decoded"]
+        deposits_addrs = amounts_sendmany.keys()
+        for vout in tx["vout"]:
+            for addr in vout["scriptPubKey"]["addresses"]:
+                if addr in deposits_addrs:
+                    deposits.append(f"{txid}:{vout['n']}")
+        assert len(deposits) == len(amounts)
+        self.bitcoind.generate_block(6, wait_for_mempool=txid)
+        wait_for(
+            lambda: len(
+                self.man_wallets[0].rpc.listvaults(["funded"], deposits)["vaults"]
+            )
+            == len(amounts)
+        )
+
+        return self.man_wallets[0].rpc.listvaults(["funded"], deposits)["vaults"]
+
     def secure_vault(self, vault):
         """Make all stakeholders share signatures for all revocation txs"""
         deposit = f"{vault['txid']}:{vault['vout']}"
@@ -201,6 +262,41 @@ class RevaultNetwork:
             stk.rpc.unvaulttx(deposit, unvault_psbt)
         for w in self.stk_wallets + self.man_wallets:
             w.wait_for_active_vaults([deposit])
+
+    def compute_spendtx_fees(
+        self, spendtx_feerate, n_vaults_spent, n_destinations, with_change=False
+    ):
+        """Get the fees necessary to include in a Spend transaction.
+        This assumes the destinations to be P2WPKH
+        """
+        n_stk = len(self.stk_wallets)
+        n_man = len(self.man_wallets)
+
+        # witscript PUSH, keys , Unvault Script overhead, signatures
+        spend_witness_vb = (
+            1 + (n_man + n_stk * 2) * 34 + 15 + (n_man + n_stk) * 73) // 4
+        # Overhead, P2WPKH, P2WSH, inputs, witnesses
+        spend_witstrip_vb = (
+            11
+            + 31 * n_destinations
+            + 43 * (1 + (1 if with_change else 0))
+            + (32 + 4 + 4 + 1) * n_vaults_spent
+        )
+        spendtx_vbytes = spend_witstrip_vb + spend_witness_vb * n_vaults_spent
+
+        # witscript PUSH, keys , Deposit Script overhead, signatures
+        unvault_witness_vb = (1 + n_stk * (34 + 73) + 3) // 4
+        # Overhead, P2WSH * 2, inputs + witness
+        unvaulttxs_vbytes = (
+            11 + 43 * 2 + (32 + 4 + 4 + 1) + unvault_witness_vb
+        ) * n_vaults_spent
+
+        return (
+            spendtx_vbytes * spendtx_feerate  # Spend fees
+            + 2 * 32 * spendtx_vbytes  # Spend CPFP
+            + unvaulttxs_vbytes * 24  # Unvault fees (6sat/WU feerate)
+            + 30_000 * n_vaults_spent  # Unvault CPFP
+        )
 
     def stop_wallets(self):
         for w in self.stk_wallets + self.man_wallets:

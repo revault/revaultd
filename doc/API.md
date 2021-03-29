@@ -16,7 +16,12 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`listvaults`](#listvaults)                                 | Display a paginated list of vaults                   |
 | [`revocationtxs`](#revocationtxs)                           | Give back the revocation transactions signed         |
 | [`unvaulttx`](#unvaulttx)                                   | Give back the unvault transaction signed             |
-| [`spendtx`](#spendtx)                                       | Give back the spend transaction signed               |
+| [`updatespendtx`](#updatespendtx)                            | Store or update the stored Spend transaction         |
+| [`delspendtx`](#delspendtx)                                 | Delete a stored Spend transaction                    |
+| [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
+| [`listspendtxs`](#listspendtxs)                             | List all stored Spend transactions                   |
+
+
 
 # Reference
 
@@ -39,6 +44,13 @@ Display general information about the current daemon state.
 ### `getdepositaddress`
 
 Get an address to build a deposit transaction.
+
+#### Response
+
+| Field         | Type              | Description                                                 |
+| ------------- | ----------------- | ----------------------------------------------------------- |
+| `index`       | string (optional) | Get a deposit address for a specific derivation index       |
+
 
 #### Response
 
@@ -80,7 +92,6 @@ Get an address to build a deposit transaction.
 | `vout`        | int    | Index of the deposit output in the deposit transaction.     |
 
 Note that the `scriptPubKey` is implicitly known as we have the vault output Miniscript descriptor.
-**TODO** Maybe we should store and give the xpub derivation index as well ?
 
 
 ### `listvaults`
@@ -278,13 +289,72 @@ feerate.
 | ---------- | ------ | ----------------------------------------------- |
 | `spend_tx` | string | Base64-encoded Spend transaction PSBT           |
 
-### `spendtx`
+
+### `updatespendtx`
+
+The `updatespendtx` RPC Command stores or update the stored Spend transaction with the
+given one.
 
 #### Request
 
-| Field        | Type   | Description                                    |
-| ------------ | ------ | ---------------------------------------------- |
-| `spend_tx`   | string | Base64-encoded Spend transaction PSBT          |
+| Field       | Type         | Description                                                           |
+| ----------- | ------------ | --------------------------------------------------------------------- |
+| `spend_tx`  | string       | Base64-encoded Spend transaction PSBT                                 |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
+
+### `delspendtx`
+
+#### Request
+
+| Field          | Type   | Description                                         |
+| -------------- | ------ | --------------------------------------------------- |
+| `spend_txid`   | string | Hex encoded txid of the Spend transaction to delete |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
+
+### `listspendtxs`
+
+#### Request
+
+| Field          | Type   | Description                                         |
+| -------------- | ------ | --------------------------------------------------- |
+
+#### Response
+
+| Field          | Type   | Description                                                          |
+| -------------- | ------ | -------------------------------------------------------------------- |
+| `spend_txs`    | array  | Array of [Spend transaction resources](#spend_transaction_reources)  |
+
+##### Spend transaction resources
+
+| Field                  | Type          | Description                                                           |
+| ---------------------- | ------------- | --------------------------------------------------------------------- |
+| `deposit_outpoints`    | string array  | Array of the deposit outpoints of the vaults this transaction spends  |
+| `psbt`                 | string        | Base64-encoded Spend transaction PSBT                                 |
+
+
+### `setspendtx`
+
+#### Request
+
+| Field          | Type   | Description                                    |
+| -------------- | ------ | ---------------------------------------------- |
+| `spend_txid`   | string | Txid of the Spend transaction to use           |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
 
 ## User flows
 
@@ -317,7 +387,7 @@ feerate.
                          +                          +
 ```
 
-#### Sign the unvault transaction
+#### Sign the Unvault transaction
 
 ```
 HSM                  client                      revaultd
@@ -355,7 +425,7 @@ HSM                client                      revaultd
 client 2                 |                          |
   +                      |                          |
   | <---sign psbt------+ |                          |
-  | +-----psbt---------> |                          | // daemon ask wt opinion
+  | +-----psbt---------> |                          |
   +                      | +---spendtx------------> | // if ack, cosign server sign
                          | <---OK or wt nack------+ | // then daemon broadcasts tx
                          |                          |

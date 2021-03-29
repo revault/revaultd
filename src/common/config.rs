@@ -110,8 +110,10 @@ pub struct StakeholderConfig {
 // Same fields as the WatchtowerConfig struct for now, but leave them separate.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CosignerConfig {
-    pub host: String,
-    pub noise_key: String,
+    // TODO: Tor
+    pub host: SocketAddr,
+    #[serde(deserialize_with = "deserialize_noisepubkey")]
+    pub noise_key: NoisePubkey,
 }
 
 /// If we are a manager, we need to connect to cosigning servers

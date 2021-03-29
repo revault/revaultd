@@ -9,11 +9,16 @@
 use crate::{
     bitcoind::BitcoindError,
     database::{
-        actions::db_update_presigned_tx,
-        interface::{
-            db_cancel_transaction, db_emer_transaction, db_tip, db_unvault_emer_transaction,
-            db_unvault_transaction, db_vault_by_deposit, db_vaults,
+        actions::{
+            db_delete_spend, db_insert_spend, db_mark_broadcastable_spend, db_update_presigned_tx,
+            db_update_spend,
         },
+        interface::{
+            db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
+            db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
+            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend,
+        },
+        schema::DbVault,
         DatabaseError,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
@@ -22,23 +27,33 @@ use crate::{
 };
 use common::assume_ok;
 
-use revault_net::{message::server::Sig, transport::KKTransport};
+use revault_net::{
+    message::{
+        cosigner::{SignRequest, SignResponse},
+        server::{SetSpendTx, Sig},
+    },
+    transport::KKTransport,
+};
 use revault_tx::{
     bitcoin::{
         secp256k1::{self, Signature},
         util::bip32::ChildNumber,
         Network, OutPoint, PublicKey as BitcoinPubKey, SigHashType, TxOut, Txid,
     },
+    miniscript::{
+        descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
+        ToPublicKey,
+    },
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
-        RevaultTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
+        RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
     txins::DepositTxIn,
     txouts::{DepositTxOut, ExternalTxOut, SpendTxOut},
 };
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     path::PathBuf,
     process,
@@ -118,6 +133,36 @@ fn bitcoind_wallet_tx(
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
     bitcoind_tx.send(BitcoindMessageOut::WalletTransaction(txid, bitrep_tx))?;
     bitrep_rx.recv().map_err(|e| e.into())
+}
+
+// Tell bitcoind to broadcast the Unvault transactions of all these vaults.
+// The vaults must be active for the Unvault to be finalizable.
+fn bitcoind_broadcast_unvaults(
+    bitcoind_tx: &Sender<BitcoindMessageOut>,
+    db_path: &PathBuf,
+    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    db_vaults: &HashMap<Txid, DbVault>,
+) -> Result<(), ControlError> {
+    log::debug!(
+        "Broadcasting Unvault transactions with ids '{:?}'",
+        db_vaults.keys()
+    );
+
+    // For each vault, get the Unvault transaction, finalize it, and tell bitcoind to broadcast it
+    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
+    for db_vault in db_vaults.values() {
+        let (_, mut unvault_tx) = db_unvault_transaction(db_path, db_vault.id)?;
+        unvault_tx.finalize(secp)?;
+        let transaction = unvault_tx.into_psbt().extract_tx();
+
+        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
+            transaction,
+            bitrep_tx.clone(),
+        ))?;
+        bitrep_rx.recv()??;
+    }
+
+    Ok(())
 }
 
 // List the vaults from DB, and filter out the info the RPC wants
@@ -301,6 +346,7 @@ enum SigError {
     InvalidLength,
     InvalidSighash,
     VerifError(secp256k1::Error),
+    MissingSignature(BitcoinPubKey),
 }
 
 impl std::fmt::Display for SigError {
@@ -309,6 +355,7 @@ impl std::fmt::Display for SigError {
             Self::InvalidLength => write!(f, "Invalid length of signature"),
             Self::InvalidSighash => write!(f, "Invalid SIGHASH type"),
             Self::VerifError(e) => write!(f, "Signature verification error: '{}'", e),
+            Self::MissingSignature(pk) => write!(f, "Missing signature for '{}'", pk),
         }
     }
 }
@@ -361,6 +408,51 @@ fn check_unvault_signatures(
             return Err(SigError::InvalidSighash);
         }
         secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
+    }
+
+    Ok(())
+}
+
+// Check that all the managers provided a valid signature for all the Spend transaction inputs.
+// Will panic if db_vaults does not contain an entry for each input or if the Spend transaction is
+// already finalized.
+fn check_spend_signatures(
+    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    xpub_ctx: DescriptorPublicKeyCtx<'_, secp256k1::VerifyOnly>,
+    psbt: &SpendTransaction,
+    managers_pubkeys: Vec<DescriptorPublicKey>,
+    db_vaults: &HashMap<Txid, DbVault>,
+) -> Result<(), SigError> {
+    let sighash_type = SigHashType::All;
+    let unsigned_tx = &psbt.inner_tx().global.unsigned_tx;
+
+    for (i, psbtin) in psbt.inner_tx().inputs.iter().enumerate() {
+        let sighash = psbt
+            .signature_hash_internal_input(i, sighash_type)
+            .expect("In bounds, and no finalized PSBT in db");
+        let sighash = secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash");
+
+        // Fetch the appropriate derivation index used for this Unvault output
+        let unvault_txid = &unsigned_tx.input[i].previous_output.txid;
+        let db_vault = db_vaults.get(unvault_txid).expect("Must be present");
+
+        // All pubkeys use the same one, fortunately!
+        for pubkey in managers_pubkeys.clone().into_iter() {
+            let pubkey = pubkey
+                .derive(db_vault.derivation_index)
+                .to_public_key(xpub_ctx);
+            let sig = psbtin
+                .partial_sigs
+                .get(&pubkey)
+                .ok_or_else(|| SigError::MissingSignature(pubkey))?;
+
+            let (given_sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
+            if *given_sighash_type != sighash_type as u8 {
+                return Err(SigError::InvalidSighash);
+            }
+
+            secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
+        }
     }
 
     Ok(())
@@ -455,6 +547,73 @@ fn share_unvault_signatures(
     send_sig_msg(&mut transport, txid, sigs.clone())
 }
 
+// Will panic if not called by a manager
+fn fetch_cosigner_signatures(
+    revaultd: &RevaultD,
+    spend_tx: &mut SpendTransaction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (host, noise_key) in revaultd.cosigs.as_ref().expect("We are manager").iter() {
+        // FIXME: connect should take a reference... This copy is useless
+        let mut transport = KKTransport::connect(*host, &revaultd.noise_secret, &noise_key)?;
+        let msg = SignRequest {
+            tx: spend_tx.clone(),
+        };
+        log::debug!(
+            "Sending '{}' to cosigning server at '{}' (key: '{:?}')",
+            &serde_json::to_string(&msg)?,
+            host,
+            noise_key
+        );
+        transport.write(&serde_json::to_vec(&msg)?)?;
+
+        let res_msg: SignResponse = serde_json::from_slice(&transport.read()?)?;
+        log::debug!(
+            "Receiving '{}' from cosigning server",
+            &serde_json::to_string(&res_msg)?,
+        );
+
+        // FIXME: i abuse jsonrpc_core::Error here to avoid creating YA Error struct when we are
+        // going to actually start throwing JSONRPC errors in this thread soon!
+        let res_tx = res_msg.tx.ok_or(jsonrpc_core::Error::invalid_params(
+            "One of the Cosigning Server already signed a Spend transaction spending \
+                one of these vaults!"
+                .to_string(),
+        ))?;
+
+        for (i, psbtin) in res_tx.into_psbt().inputs.into_iter().enumerate() {
+            spend_tx
+                .inner_tx_mut()
+                .inputs
+                .get_mut(i)
+                .expect(
+                    "A SpendTransaction cannot have a different number of txins and PSBT inputs",
+                )
+                .partial_sigs
+                .extend(psbtin.partial_sigs);
+        }
+    }
+
+    Ok(())
+}
+
+fn announce_spend_transaction(
+    revaultd: &RevaultD,
+    spend_tx: SpendTransaction,
+    deposit_outpoints: Vec<OutPoint>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut transport = KKTransport::connect(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+    )?;
+
+    let msg = SetSpendTx::from_spend_tx(deposit_outpoints, spend_tx);
+    transport.write(&serde_json::to_vec(&msg)?)?;
+    //TODO: we should have an explicit response
+
+    Ok(())
+}
+
 /// Handle events incoming from the JSONRPC interface.
 pub fn handle_rpc_messages(
     revaultd: Arc<RwLock<RevaultD>>,
@@ -514,9 +673,13 @@ pub fn handle_rpc_messages(
                     outpoints,
                 )?)?;
             }
-            RpcMessageIn::DepositAddr(response_tx) => {
+            RpcMessageIn::DepositAddr(index, response_tx) => {
                 log::trace!("Got 'depositaddr' request from RPC thread");
-                response_tx.send(revaultd.read().unwrap().deposit_address())?;
+                response_tx.send(if let Some(index) = index {
+                    revaultd.read().unwrap().vault_address(index)
+                } else {
+                    revaultd.read().unwrap().deposit_address()
+                })?;
             }
             RpcMessageIn::GetRevocationTxs(outpoint, response_tx) => {
                 log::trace!("Got 'getrevocationtxs' request from RPC thread");
@@ -962,7 +1125,7 @@ pub fn handle_rpc_messages(
                     .collect();
 
                 log::debug!(
-                    "Creating a Spend transaction with txins: '{:?}' and txos: '{:?}'",
+                    "Creating a Spend transaction with deposit txins: '{:?}' and txos: '{:?}'",
                     &txins,
                     &txos
                 );
@@ -987,6 +1150,11 @@ pub fn handle_rpc_messages(
                         continue;
                     }
                 };
+
+                log::debug!(
+                    "Spend tx without change: '{}'",
+                    nochange_tx.as_psbt_string()
+                );
 
                 // If the feerate of the transaction would be much lower (< 90/100) than what they
                 // requested for, tell them.
@@ -1016,6 +1184,10 @@ pub fn handle_rpc_messages(
                     .checked_mul(feerate_vb + 3)
                     .map(|vbyte| vbyte.checked_div(4).unwrap());
                 let change_value = want_fees.map(|f| cur_fees.checked_sub(f));
+                log::debug!(
+                    "Weight with change: '{}'  --  Fees without change: '{}'  --  Wanted feerate: '{}'  \
+                    --  Wanted fees: '{:?}'  --  Change value: '{:?}'",
+                    with_change_weight, cur_fees, feerate_vb, want_fees, change_value);
 
                 if let Some(Some(change_value)) = change_value {
                     // The overhead incurred to the value of the CPFP output by the change output
@@ -1049,6 +1221,174 @@ pub fn handle_rpc_messages(
                     tx_res.as_ref().map(|tx| tx.as_psbt_string())
                 );
                 response_tx.send(tx_res.map_err(|e| RpcControlError::Transaction(e.into())))?;
+            }
+            RpcMessageIn::UpdateSpendTx(spend_tx, response_tx) => {
+                log::trace!("Got 'updatespendtx' request from RPC thread");
+                let revaultd = revaultd.read().unwrap();
+                let db_path = revaultd.db_file();
+                let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+
+                // Fetch the Unvault it spends from the DB
+                let spend_inputs = &spend_tx.inner_tx().global.unsigned_tx.input;
+                let mut db_unvaults = Vec::with_capacity(spend_inputs.len());
+                for txin in spend_inputs.iter() {
+                    let (db_vault, db_unvault) =
+                        match db_vault_by_unvault_txid(&db_path, &txin.previous_output.txid)? {
+                            Some(res) => res,
+                            None => {
+                                response_tx.send(Err(RpcControlError::SpendUnknownUnvault(
+                                    txin.previous_output.txid,
+                                )))?;
+                                break;
+                            }
+                        };
+
+                    if !matches!(db_vault.status, VaultStatus::Active) {
+                        response_tx.send(Err(RpcControlError::InvalidStatus((
+                            db_vault.status,
+                            VaultStatus::Active,
+                        ))))?;
+                        break;
+                    }
+
+                    db_unvaults.push(db_unvault);
+                }
+                // There was an issue with an outpoint, error is already sent in the loop.
+                if db_unvaults.len() != spend_inputs.len() {
+                    continue;
+                }
+
+                if db_spend_transaction(&db_path, &spend_txid)?.is_some() {
+                    log::debug!("Updating Spend transaction '{}'", spend_txid);
+                    db_update_spend(&db_path, &spend_tx)?;
+                } else {
+                    log::debug!("Storing new Spend transaction '{}'", spend_txid);
+                    db_insert_spend(&db_path, &db_unvaults, &spend_tx)?;
+                }
+                response_tx.send(Ok(()))?;
+            }
+            RpcMessageIn::DelSpendTx(spend_txid, response_tx) => {
+                let db_path = revaultd.read().unwrap().db_file();
+
+                db_delete_spend(&db_path, &spend_txid)?;
+
+                response_tx.send(Ok(()))?;
+            }
+            RpcMessageIn::ListSpendTxs(response_tx) => {
+                let db_path = revaultd.read().unwrap().db_file();
+
+                let spend_tx_map = db_list_spends(&db_path)?;
+                let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
+                for (_, (psbt, deposit_outpoints)) in spend_tx_map {
+                    listspend_entries.push(ListSpendEntry {
+                        psbt,
+                        deposit_outpoints,
+                    });
+                }
+
+                response_tx.send(Ok(listspend_entries))?;
+            }
+            RpcMessageIn::SetSpendTx(spend_txid, response_tx) => {
+                log::debug!(
+                    "Got 'setspendtx' request from RPC thread for '{}'",
+                    spend_txid
+                );
+                let revaultd = revaultd.read().unwrap();
+                let db_path = revaultd.db_file();
+                let xpub_ctx = revaultd.xpub_ctx();
+
+                // Get the Spend they reference from DB
+                let mut spend_tx = match db_spend_transaction(&db_path, &spend_txid)? {
+                    Some(tx) => tx,
+                    None => {
+                        response_tx.send(Err(RpcControlError::UnknownSpend))?;
+                        continue;
+                    }
+                };
+
+                // Then check all our fellow managers already signed it
+                let spent_vaults = db_vaults_from_spend(&db_path, &spend_txid)?;
+                let tx = &spend_tx.psbt.inner_tx().global.unsigned_tx;
+                if spent_vaults.len() < tx.input.len() {
+                    response_tx.send(Err(RpcControlError::AlreadySpentVault))?;
+                    continue;
+                }
+                #[cfg(debug_assertions)]
+                {
+                    for i in tx.input.iter() {
+                        assert!(
+                            spent_vaults.contains_key(&i.previous_output.txid),
+                            "Insane DB: Spend transaction refers to unknown vaults"
+                        );
+                    }
+                }
+                match check_spend_signatures(
+                    &revaultd.secp_ctx,
+                    xpub_ctx,
+                    &spend_tx.psbt,
+                    revaultd.managers_pubkeys.clone(),
+                    &spent_vaults,
+                ) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        response_tx.send(Err(RpcControlError::SpendSignature(e.to_string())))?;
+                        continue;
+                    }
+                }
+
+                // Now we can ask all the cosigning servers for their signatures
+                log::debug!("Fetching signatures from Cosigning servers");
+                match fetch_cosigner_signatures(&revaultd, &mut spend_tx.psbt) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        response_tx.send(Err(RpcControlError::Communication(e.to_string())))?;
+                        continue;
+                    }
+                }
+                let mut finalized_spend = spend_tx.psbt.clone();
+                match finalized_spend.finalize(&revaultd.secp_ctx) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        response_tx.send(Err(RpcControlError::CosigningServer(format!(
+                            "Invalid signature given by the cosigners, psbt: '{}' (error: '{}')",
+                            spend_tx.psbt.as_psbt_string(),
+                            e
+                        ))))?;
+                        continue;
+                    }
+                }
+
+                // And then announce it to the Coordinator
+                let deposit_outpoints = spent_vaults
+                    .values()
+                    .map(|db_vault| db_vault.deposit_outpoint)
+                    .collect();
+                match announce_spend_transaction(&revaultd, finalized_spend, deposit_outpoints) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        response_tx.send(Err(RpcControlError::Communication(e.to_string())))?;
+                        continue;
+                    }
+                }
+                db_update_spend(&db_path, &spend_tx.psbt)?;
+
+                // Finally we can broadcast the Unvault(s) transaction(s) and store the Spend
+                // transaction for later broadcast
+                match bitcoind_broadcast_unvaults(
+                    &bitcoind_tx,
+                    &db_path,
+                    &revaultd.secp_ctx,
+                    &spent_vaults,
+                ) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        response_tx.send(Err(RpcControlError::UnvaultBroadcast(e.to_string())))?;
+                        continue;
+                    }
+                }
+                db_mark_broadcastable_spend(&db_path, &spend_txid)?;
+
+                response_tx.send(Ok(()))?;
             }
         }
     }

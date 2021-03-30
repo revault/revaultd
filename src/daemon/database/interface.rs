@@ -189,6 +189,9 @@ impl TryFrom<&Row<'_>> for DbVault {
         let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
         let received_at = row.get(8)?;
         let updated_at = row.get(9)?;
+        let spend_txid = row
+            .get::<_, Option<Vec<u8>>>(10)?
+            .map(|raw_txid| encode::deserialize(&raw_txid).expect("We only store valid txids"));
 
         Ok(DbVault {
             id,
@@ -200,6 +203,7 @@ impl TryFrom<&Row<'_>> for DbVault {
             derivation_index,
             received_at,
             updated_at,
+            spend_txid,
         })
     }
 }
@@ -263,7 +267,32 @@ pub fn db_unvaulted_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let unvault_tx: Vec<u8> = row.get(10)?;
+            let unvault_tx: Vec<u8> = row.get(11)?;
+            let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, unvault_tx))
+        },
+    )
+}
+
+/// Get the vaults that are in the process of being spent, along with the respective Unvault
+/// transaction.
+pub fn db_spending_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, UnvaultTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults \
+         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) AND ptx.type = (?2)",
+        &[
+            VaultStatus::Spending as u32,
+            TransactionType::Unvault as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let unvault_tx: Vec<u8> = row.get(11)?;
             let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
                 .expect("We store it with to_psbt_serialized");
 
@@ -455,10 +484,10 @@ pub fn db_vault_by_unvault_txid(
 
             // FIXME: there is probably a more extensible way to implement the from()s so we don't
             // have to change all those when adding a column
-            let id: u32 = row.get(10)?;
-            let psbt: Vec<u8> = row.get(11)?;
+            let id: u32 = row.get(11)?;
+            let psbt: Vec<u8> = row.get(12)?;
             let psbt = UnvaultTransaction::from_psbt_serialized(&psbt).expect("We store it");
-            let is_fully_signed = row.get(12)?;
+            let is_fully_signed = row.get(13)?;
             let db_tx = DbTransaction {
                 id,
                 vault_id: db_vault.id,
@@ -594,7 +623,7 @@ pub fn db_vaults_from_spend(
         params![spend_txid.to_vec()],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(10)?).expect("We store it");
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(11)?).expect("We store it");
             db_vaults.insert(txid, db_vault);
             Ok(())
         },

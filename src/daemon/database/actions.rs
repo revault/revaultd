@@ -264,9 +264,11 @@ pub fn db_insert_new_unconfirmed_vault(
     db_exec(db_path, |tx| {
         let derivation_index: u32 = derivation_index.into();
         tx.execute(
-            "INSERT INTO vaults (wallet_id, status, blockheight, deposit_txid, \
-             deposit_vout, amount, derivation_index, received_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO vaults ( \
+                wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
+                received_at, updated_at, spend_txid \
+            ) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
             params![
                 wallet_id,
                 VaultStatus::Unconfirmed as u32,
@@ -402,8 +404,34 @@ pub fn db_confirm_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), 
 }
 
 /// Mark a vault as being in the 'spending' state, out of the Unvault txid
-pub fn db_spend_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Spending)
+pub fn db_spend_unvault(
+    db_path: &PathBuf,
+    unvault_txid: &Txid,
+    spend_txid: &Txid,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now'), spend_txid = (?2) \
+             WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?3))",
+            params![VaultStatus::Spending as u32, spend_txid.to_vec(), unvault_txid.to_vec(),],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to 'spending': {}", e.to_string())))?;
+
+        Ok(())
+    })
+}
+
+pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id = (?2)",
+            params![VaultStatus::Spent as u32, vault_id,],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to 'spent': {}", e.to_string())))?;
+
+        Ok(())
+    })
 }
 
 fn revault_tx_merge_sigs(

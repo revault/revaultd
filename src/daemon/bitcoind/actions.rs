@@ -6,11 +6,12 @@ use crate::{
     database::{
         actions::{
             db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
-            db_mark_broadcasted_spend, db_spend_unvault, db_unconfirm_deposit_dbtx,
-            db_unvault_deposit, db_update_deposit_index, db_update_tip, db_update_tip_dbtx,
+            db_mark_broadcasted_spend, db_mark_spent_unvault, db_spend_unvault,
+            db_unconfirm_deposit_dbtx, db_unvault_deposit, db_update_deposit_index, db_update_tip,
+            db_update_tip_dbtx,
         },
         interface::{
-            db_broadcastable_spend_transactions, db_deposits, db_exec, db_tip,
+            db_broadcastable_spend_transactions, db_deposits, db_exec, db_spending_vaults, db_tip,
             db_unvault_from_deposit, db_unvaulted_vaults, db_vault_by_deposit, db_vaults_dbtx,
             db_wallet,
         },
@@ -242,18 +243,13 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
     Ok(bitcoind)
 }
 
-// Everything we do when the chain moves forward
-fn new_tip_event(
-    revaultd: &mut Arc<RwLock<RevaultD>>,
+// Try to broadcast fully signed spend transactions, only mature ones will get through
+fn maybe_broadcast_spend_transactions(
+    revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    new_tip: &BlockchainTip,
 ) -> Result<(), BitcoindError> {
     let db_path = revaultd.read().unwrap().db_file();
 
-    // First we update it in DB
-    db_update_tip(&db_path, new_tip)?;
-
-    // Then we check if any Spend became mature yet
     for db_spendtx in db_broadcastable_spend_transactions(&db_path)? {
         let mut psbt = db_spendtx.psbt;
         let txid = psbt.inner_tx().global.unsigned_tx.txid();
@@ -281,6 +277,66 @@ fn new_tip_event(
             }
         }
     }
+
+    Ok(())
+}
+
+// Check if some Spend transaction that were marked as broadcasted were confirmed, if so upgrade
+// the vault state to 'spent'.
+fn mark_confirmed_spends(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+
+    for (db_vault, unvault_tx) in db_spending_vaults(&db_path)? {
+        let unvault_descriptor = revaultd
+            .read()
+            .unwrap()
+            .unvault_descriptor
+            .derive(db_vault.derivation_index);
+        let unvault_txin = unvault_tx
+            .revault_unvault_txin(&unvault_descriptor, revaultd.read().unwrap().xpub_ctx());
+        let unvault_outpoint = unvault_txin.outpoint();
+
+        let (spend_tx_hex, blockheight, _) = bitcoind
+            .get_wallet_transaction(&db_vault.spend_txid.expect("Must be set for 'spending'"))?;
+        if let Some(height) = blockheight {
+            db_mark_spent_unvault(&db_path, db_vault.id)?;
+            log::debug!(
+                "Spend tx '{}', spending Unvault '{}' was confirmed at height '{}'",
+                spend_tx_hex,
+                unvault_outpoint,
+                height
+            );
+        } else {
+            log::trace!(
+                "Spend tx '{}', spending Unvault '{}' is still unconfirmed",
+                spend_tx_hex,
+                unvault_outpoint
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// Everything we do when the chain moves forward
+fn new_tip_event(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+    new_tip: &BlockchainTip,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+
+    // First we update it in DB
+    db_update_tip(&db_path, new_tip)?;
+
+    // Then we check if any Spend became mature yet
+    maybe_broadcast_spend_transactions(revaultd, bitcoind)?;
+
+    // Did some Spend transaction confirmed?
+    mark_confirmed_spends(revaultd, bitcoind)?;
 
     Ok(())
 }
@@ -400,7 +456,7 @@ fn update_tip(
         let bit_curr_hash = bitcoind.getblockhash(current_tip.height)?;
         if bit_curr_hash == current_tip.hash || current_tip.height == 0 {
             // We moved forward, everything is fine.
-            return new_tip_event(revaultd, bitcoind, &tip);
+            return new_tip_event(&revaultd, bitcoind, &tip);
         }
     }
 
@@ -617,7 +673,16 @@ fn update_utxos(
     for (outpoint, _) in spent_unvaults {
         // TODO: detect if it was spent by a Cancel or Emergency transaction before considering it
         // a Spend transaction.
-        db_spend_unvault(&db_path, &outpoint.txid)?;
+        let tip = db_tip(&revaultd.read().unwrap().db_file())?;
+        let spend_txid = bitcoind
+            .get_spender_txid(&outpoint, &tip.hash)?
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!(
+                    "No spending transaction in wallet for Unvault '{}', but it *is* being spent",
+                    outpoint
+                ))
+            })?;
+        db_spend_unvault(&db_path, &outpoint.txid, &spend_txid)?;
         unvaults_cache
             .remove(&outpoint)
             .ok_or_else(|| BitcoindError::Custom("An unknown unvault got spent?".to_string()))?;

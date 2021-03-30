@@ -583,6 +583,106 @@ impl BitcoinD {
         self.make_watchonly_request("sendrawtransaction", &params!(Json::String(tx_hex)))
             .map(|_| ())
     }
+
+    /// So, bitcoind has no API for getting the transaction spending a wallet UTXO. Instead we are
+    /// therefore using a rather convoluted way to get it the other way around, since the spending
+    /// transaction is actually *part of the wallet transactions*.
+    /// So, what we do there is listing all outgoing transactions of the wallet since the last poll
+    /// and iterating through each of those to check if it spends the transaction we are interested
+    /// in (requiring an other RPC call for each!!).
+    pub fn get_spender_txid(
+        &self,
+        spent_outpoint: &OutPoint,
+        block_hash: &BlockHash,
+    ) -> Result<Option<Txid>, BitcoindError> {
+        let lsb_res = self.make_watchonly_request(
+            "listsinceblock",
+            &params!(Json::String(block_hash.to_string())),
+        )?;
+        let transactions = lsb_res
+            .get("transactions")
+            .map(|t| t.as_array())
+            .flatten()
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!(
+                    "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
+                    block_hash
+                ))
+            })?;
+
+        for transaction in transactions {
+            if transaction.get("category").map(|c| c.as_str()).flatten() != Some("send") {
+                continue;
+            }
+
+            // TODO: i think we can also filter out the entries *with* a "revault-somthing" label,
+            // but we need to be sure.
+
+            let spending_txid = transaction
+                .get("txid")
+                .map(|t| t.as_str())
+                .flatten()
+                .ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
+                        block_hash
+                    ))
+                })?;
+
+            let gettx_res = self.make_watchonly_request(
+                "gettransaction",
+                &params!(
+                    Json::String(spending_txid.to_string()),
+                    Json::Bool(true), // watchonly
+                    Json::Bool(true)  // verbose
+                ),
+            )?;
+            let vin = gettx_res
+                .get("decoded")
+                .map(|d| d.get("vin").map(|vin| vin.as_array()))
+                .flatten()
+                .flatten()
+                .ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
+                        block_hash
+                    ))
+                })?;
+
+            for input in vin {
+                let txid = input
+                    .get("txid")
+                    .map(|t| t.as_str().map(|t| Txid::from_str(t).ok()))
+                    .flatten()
+                    .flatten().ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
+                        block_hash
+                    ))
+                })?;
+                let vout = input.get("vout").map(|v| v.as_u64()).flatten().ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: Invalid or no vout in 'vin' entry in 'gettransaction' (blockhash: {})",
+                        block_hash
+                    ))
+                })? as u32;
+                let input_outpoint = OutPoint { txid, vout };
+
+                if spent_outpoint == &input_outpoint {
+                    return Txid::from_str(spending_txid)
+                        .map(|txid| Some(txid))
+                        .map_err(|e| {
+                            BitcoindError::Custom(format!(
+                                "bitcoind gave an invalid txid in 'listsinceblock': '{}'",
+                                e
+                            ))
+                        });
+                }
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 /// Information about an utxo one of our descriptors points to.

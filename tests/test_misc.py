@@ -659,7 +659,9 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_deposit_status(revault_network, bitcoind):
-    revault_network.deploy(4, 2)
+    # A csv of 2 because bitcoind would discard updating the mempool if the reorg is >10
+    # blocks long.
+    revault_network.deploy(4, 2, csv=2)
     vault = revault_network.fund(0.14)
     revault_network.secure_vault(vault)
     deposit = f"{vault['txid']}:{vault['vout']}"
@@ -755,6 +757,157 @@ def test_reorged_deposit_status(revault_network, bitcoind):
     revault_network.start_wallets()
     for w in revault_network.stk_wallets + revault_network.man_wallets:
         w.wait_for_active_vaults([deposit])
+
+    # Now do the same dance with a spent vault
+
+    # If the deposit is not unconfirmed, it's fine
+    revault_network.spend_vaults_anyhow([vault])
+    for w in revault_network.man_wallets:
+        assert len(w.rpc.listspendtxs()["spend_txs"]) == 1
+    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault deposit '{deposit}' still has .* confirmations",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+
+    # If it is then we drop the spend transactions for this vault
+    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3, shift=-1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault deposit '{deposit}' ended up without confirmation",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+    for w in revault_network.man_wallets:
+        assert len(w.rpc.listspendtxs()["spend_txs"]) == 0
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_reorged_unvault(revault_network, bitcoind):
+    revault_network.deploy(4, 2, csv=12)
+    man = revault_network.man_wallets[0]
+    vaults = revault_network.fundmany([32, 3])
+    deposits = []
+    amounts = []
+    for v in vaults:
+        revault_network.secure_vault(v)
+        revault_network.activate_vault(v)
+        deposits.append(f"{v['txid']}:{v['vout']}")
+        amounts.append(v["amount"])
+
+    addr = bitcoind.rpc.getnewaddress()
+    amount = sum(amounts)
+    feerate = 1
+    fee = revault_network.compute_spendtx_fees(feerate, len(vaults), 1)
+    destinations = {addr: amount - fee}
+    revault_network.unvault_vaults(vaults, destinations, feerate)
+
+    unvault_tx_a = man.rpc.listonchaintransactions([deposits[0]])[
+        "onchain_transactions"
+    ][0]["unvault"]
+    unvault_tx_b = man.rpc.listonchaintransactions([deposits[1]])[
+        "onchain_transactions"
+    ][0]["unvault"]
+
+    # If the Unvault moves but it still confirmed, everything is fine :tm:
+    assert unvault_tx_a["blockheight"] == unvault_tx_b["blockheight"]
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        assert len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"]) == len(deposits)
+    bitcoind.simple_reorg(unvault_tx_a["blockheight"], shift=1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault {deposits[0]}'s Unvault transaction is still confirmed",
+                f"Vault {deposits[1]}'s Unvault transaction is still confirmed",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        assert len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"]) == len(deposits)
+
+    # If it's not confirmed anymore, we'll detect it and mark the vault as unvaulting
+    bitcoind.simple_reorg(unvault_tx_a["blockheight"] + 1, shift=-1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault {deposits[0]}'s Unvault transaction .* got unconfirmed",
+                f"Vault {deposits[1]}'s Unvault transaction .* got unconfirmed",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        assert len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"]) == len(
+            deposits
+        )
+
+    # Now if we are spending
+    # unvault_vault() above actually registered the Spend transaction, so we can activate
+    # it by generating enough block for it to be mature.
+    bitcoind.generate_block(1, wait_for_mempool=len(vaults))
+    bitcoind.generate_block(revault_network.csv - 1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spending"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # If we are 'spending' and the Unvault gets unconfirmed, it'll get marked for
+    # re-broadcast
+    bitcoind.simple_reorg(unvault_tx_a["blockheight"] + 1, shift=-1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault {deposits[0]}'s Unvault transaction .* got unconfirmed",
+                f"Vault {deposits[1]}'s Unvault transaction .* got unconfirmed",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+    # FIXME: it should not get marked as spending right away (the Spend transaction is not
+    # valid yet). I think that bitcoind's watchonly wallet will not list in listunspent
+    # the UTXO that are spent by wallet transactions, even if those wallet transactions
+    # are not yet valid.
+    bitcoind.generate_block(1, wait_for_mempool=len(vaults))
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spending"], deposits)["vaults"])
+            == len(deposits)
+        )
+    bitcoind.generate_block(revault_network.csv - 1)
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # If we are 'spent' and the Unvault gets unconfirmed, it'll get marked for
+    # re-broadcast
+    blockheight = bitcoind.rpc.getblockcount()
+    bitcoind.simple_reorg(blockheight, shift=-1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault {deposits[0]}'s Spend transaction .* got unconfirmed",
+                f"Vault {deposits[1]}'s Spend transaction .* got unconfirmed",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
+            == len(deposits)
+        )
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

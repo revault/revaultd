@@ -84,6 +84,27 @@ where
     x
 }
 
+fn db_query_tx<'a, P, F, T>(
+    db_tx: &Transaction,
+    stmt_str: &'a str,
+    params: P,
+    f: F,
+) -> Result<Vec<T>, DatabaseError>
+where
+    P: IntoIterator,
+    P::Item: ToSql,
+    F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
+{
+    // rustc says 'borrowed value does not live long enough'
+    db_tx
+        .prepare(stmt_str)
+        .map_err(|e| DatabaseError(format!("Preparing query: '{}'", e.to_string())))?
+        .query_map(params, f)
+        .map_err(|e| DatabaseError(format!("Mapping query: '{}'", e.to_string())))?
+        .collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(|e| DatabaseError(format!("Executing query: '{}'", e.to_string())))
+}
+
 /// Get the database version
 pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
     let mut rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
@@ -220,11 +241,9 @@ pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
 
 /// Get all the vaults we know about from an already-created transaction
 pub fn db_vaults_dbtx(db_tx: &Transaction) -> Result<Vec<DbVault>, DatabaseError> {
-    db_tx
-        .prepare("SELECT * FROM vaults")?
-        .query_map(params![], |row| row.try_into())?
-        .collect::<rusqlite::Result<Vec<DbVault>>>()
-        .map_err(|e| e.into())
+    db_query_tx(db_tx, "SELECT * FROM vaults", params![], |row| {
+        row.try_into()
+    })
 }
 
 /// Get the vaults that didn't move onchain yet from the DB.
@@ -381,6 +400,23 @@ pub fn db_unvault_transaction(
         db_tx.id,
         assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"),
     ))
+}
+
+/// Get the Unvault transaction for this vault from an existing database transaction
+pub fn db_unvault_dbtx(
+    db_tx: &Transaction,
+    vault_id: u32,
+) -> Result<Option<UnvaultTransaction>, DatabaseError> {
+    db_query_tx(
+        db_tx,
+        "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
+        params![vault_id, TransactionType::Unvault as u32],
+        |row| row.try_into(),
+    )
+    .map(|mut rows| {
+        rows.pop()
+            .map(|db_tx: DbTransaction| assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"))
+    })
 }
 
 /// Get the Unvault transaction corresponding to this vault from the database.

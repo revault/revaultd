@@ -357,12 +357,21 @@ pub fn db_confirm_deposit(
     })
 }
 
-/// Drop all presigned transactions for a vault, and mark it as unconfirmed. The opposite of
-/// [db_confirm_deposit].
+/// Drop all presigned transactions for a vault, therefore dropping all Spend attempts as well and mark
+/// it as unconfirmed. The opposite of [db_confirm_deposit].
 pub fn db_unconfirm_deposit_dbtx(
     db_tx: &rusqlite::Transaction,
     vault_id: u32,
 ) -> Result<(), DatabaseError> {
+    // This is going to cascade and DELETE the spend_inputs.
+    db_tx.execute(
+        "DELETE FROM spend_transactions WHERE id = ( \
+            SELECT sin.spend_id FROM presigned_transactions as ptx \
+            INNER JOIN spend_inputs as sin ON ptx.id = sin.unvault_id \
+            WHERE ptx.vault_id = (?1) \
+         )",
+        params![vault_id],
+    )?;
     db_tx.execute(
         "DELETE FROM presigned_transactions WHERE vault_id = (?1)",
         params![vault_id],
@@ -374,6 +383,35 @@ pub fn db_unconfirm_deposit_dbtx(
     )?;
 
     Ok(())
+}
+
+fn dbtx_downgrade(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+    status: VaultStatus,
+) -> Result<(), DatabaseError> {
+    db_tx.execute(
+        "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE id = (?2)",
+        params![status as u32, vault_id],
+    )?;
+
+    Ok(())
+}
+
+/// Downgrade a vault from 'unvaulted' to 'unvaulting'
+pub fn db_unconfirm_unvault_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::Unvaulting)
+}
+
+/// Downgrade a vault from 'spent' to 'spending'
+pub fn db_unconfirm_spend_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::Spending)
 }
 
 fn db_status_from_unvault_txid(
@@ -611,6 +649,24 @@ pub fn db_mark_broadcasted_spend(
         )?;
         Ok(())
     })
+}
+
+/// Downgrade a Spend transaction that was broadcasted to being broadcastable
+pub fn db_mark_rebroadcastable_spend(
+    db_tx: &rusqlite::Transaction,
+    unvault_txid: &Txid,
+) -> Result<(), DatabaseError> {
+    db_tx.execute(
+        "UPDATE spend_transactions SET broadcasted = 0 WHERE id = ( \
+                SELECT sin.spend_id FROM spend_inputs as sin \
+                INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
+                INNER JOIN spend_transactions as stx ON stx.id = sin.spend_id \
+                WHERE ptx.txid = (?1) AND stx.broadcasted = 1 \
+            )",
+        params![unvault_txid.to_vec()],
+    )?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1267,9 +1323,20 @@ mod test {
             .broadcasted
             .unwrap());
 
-        // And we can delete both..
-        db_delete_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid()).unwrap();
+        // And we can delete the transaction
         db_delete_spend(&db_path, &spend_txid).unwrap();
+        assert!(db_spend_transaction(&db_path, &spend_txid)
+            .unwrap()
+            .is_none());
+
+        // And if we unconfirm the vault, it'll delete the last remaining transaction
+        let txid_b = spend_tx_b.inner_tx().global.unsigned_tx.txid();
+        db_exec(&db_path, |db_tx| {
+            db_unconfirm_deposit_dbtx(&db_tx, db_vault.id).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert!(db_spend_transaction(&db_path, &txid_b).unwrap().is_none());
     }
 
     // We disabled #[test] for the above, as they may erase the db concurrently.

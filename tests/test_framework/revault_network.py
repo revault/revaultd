@@ -4,6 +4,7 @@ import random
 
 from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
+from test_framework import serializations
 from test_framework.coordinatord import Coordinatord
 from test_framework.cosignerd import Cosignerd
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd
@@ -34,6 +35,8 @@ class RevaultNetwork:
         self.stk_wallets = []
         self.man_wallets = []
 
+        self.csv = None
+
     def deploy(self, n_stakeholders, n_managers, csv=None):
         """
         Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
@@ -43,6 +46,7 @@ class RevaultNetwork:
         if csv is None:
             # Not more than 6 months
             csv = random.randint(1, 26784)
+        self.csv = csv
 
         # FIXME: this is getting dirty.. We should re-centralize information
         # about each participant in specified data structures
@@ -272,6 +276,96 @@ class RevaultNetwork:
             stk.rpc.unvaulttx(deposit, unvault_psbt)
         for w in self.stk_wallets + self.man_wallets:
             w.wait_for_active_vaults([deposit])
+
+    def unvault_vaults(self, vaults, destinations, feerate):
+        """
+        Unvault these {vaults}, advertizing a Spend tx spending to these {destinations}
+        (mapping of addresses to amounts)
+        """
+        man = self.man_wallets[0]
+        deposits = []
+        deriv_indexes = []
+        for v in vaults:
+            deposits.append(f"{v['txid']}:{v['vout']}")
+            deriv_indexes.append(v["derivation_index"])
+        man.wait_for_active_vaults(deposits)
+
+        spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+        for man in self.man_wallets:
+            spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
+            man.rpc.updatespendtx(spend_tx)
+
+        spend_psbt = serializations.PSBT()
+        spend_psbt.deserialize(spend_tx)
+        spend_psbt.tx.calc_sha256()
+        man.rpc.setspendtx(spend_psbt.tx.hash)
+
+        for w in self.man_wallets + self.stk_wallets:
+            wait_for(
+                lambda: len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+                == len(deposits)
+            )
+        self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+        for w in self.man_wallets + self.stk_wallets:
+            wait_for(
+                lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+                == len(deposits)
+            )
+
+        unvault_txs = [
+            txs["unvault"]
+            for txs in man.rpc.listonchaintransactions(deposits)["onchain_transactions"]
+        ]
+        assert all(unvtx["blockheight"] is not None for unvtx in unvault_txs)
+        return unvault_txs
+
+    def spend_vaults(self, vaults, destinations, feerate):
+        """Spend these {vaults} to these {destinations} (mapping of addresses to amounts)"""
+        man = self.man_wallets[0]
+        deposits = []
+        deriv_indexes = []
+        for v in vaults:
+            deposits.append(f"{v['txid']}:{v['vout']}")
+            deriv_indexes.append(v["derivation_index"])
+
+        for man in self.man_wallets:
+            man.wait_for_active_vaults(deposits)
+
+        spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+        for man in self.man_wallets:
+            spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
+            man.rpc.updatespendtx(spend_tx)
+
+        spend_psbt = serializations.PSBT()
+        spend_psbt.deserialize(spend_tx)
+        spend_psbt.tx.calc_sha256()
+        man.rpc.setspendtx(spend_psbt.tx.hash)
+
+        self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+        for w in self.man_wallets + self.stk_wallets:
+            wait_for(
+                lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+                == len(deposits)
+            )
+        self.bitcoind.generate_block(self.csv)
+        man.wait_for_log(
+            f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
+        )
+        self.bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
+        wait_for(
+            lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+        return spend_psbt.tx.hash
+
+    def spend_vaults_anyhow(self, vaults):
+        """Spend these vaults to a random address for a maximum amount for a fixed feerate"""
+        addr = self.bitcoind.rpc.getnewaddress()
+        total_spent = sum(v["amount"] for v in vaults)
+        feerate = 2
+        fees = self.compute_spendtx_fees(feerate, len(vaults), 1)
+        return self.spend_vaults(vaults, {addr: total_spent - fees}, feerate)
 
     def compute_spendtx_fees(
         self, spendtx_feerate, n_vaults_spent, n_destinations, with_change=False

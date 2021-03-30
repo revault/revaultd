@@ -584,6 +584,14 @@ impl BitcoinD {
             .map(|_| ())
     }
 
+    /// Broadcast a transaction that is already part of the wallet
+    pub fn rebroadcast_wallet_tx(&self, txid: &Txid) -> Result<(), BitcoindError> {
+        let (hex, _, _) = self.get_wallet_transaction(txid)?;
+        log::debug!("Re-broadcasting '{}'", hex);
+        self.make_watchonly_request("sendrawtransaction", &params!(Json::String(hex)))
+            .map(|_| ())
+    }
+
     /// So, bitcoind has no API for getting the transaction spending a wallet UTXO. Instead we are
     /// therefore using a rather convoluted way to get it the other way around, since the spending
     /// transaction is actually *part of the wallet transactions*.

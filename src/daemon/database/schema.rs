@@ -93,7 +93,7 @@ CREATE TABLE spend_inputs (
         ON DELETE RESTRICT,
     FOREIGN KEY (spend_id) REFERENCES spend_transactions (id)
         ON UPDATE RESTRICT
-        ON DELETE RESTRICT
+        ON DELETE CASCADE
 );
 
 /* This stores Spend transactions we created. A txid column is there to

@@ -7,7 +7,7 @@ from nacl.public import PrivateKey as Curve25519Private
 from test_framework.coordinatord import Coordinatord
 from test_framework.cosignerd import Cosignerd
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd
-from test_framework.utils import get_participants, wait_for
+from test_framework.utils import get_participants, wait_for, RpcError
 
 
 class RevaultNetwork:
@@ -183,16 +183,26 @@ class RevaultNetwork:
         """Deposit coins into the architectures, by paying to the deposit
         descriptor and getting the tx 6 blocks confirmations."""
         assert len(self.man_wallets) > 0, "You must have deploy()ed first"
+        man = self.man_wallets[0]
 
         if amount is None:
             amount = 49.9999
 
-        addr = self.man_wallets[0].rpc.getdepositaddress()["address"]
+        addr = man.rpc.getdepositaddress()["address"]
         txid = self.bitcoind.rpc.sendtoaddress(addr, amount)
+        man.wait_for_log("Got a new unconfirmed deposit")
         self.bitcoind.generate_block(6, wait_for_mempool=txid)
-        wait_for(lambda: self.get_vault(addr) is not None)
 
-        return self.get_vault(addr)
+        # A hack to get the deposit outpoint
+        vout = 0
+        while True:
+            deposit = f"{txid}:{vout}"
+            if len(man.rpc.listvaults([], [deposit])["vaults"]) == 1:
+                break
+            vout += 1
+
+        wait_for(lambda: len(man.rpc.listvaults(["funded"], [deposit])["vaults"]) == 1)
+        return man.rpc.listvaults(["funded"], [deposit])["vaults"][0]
 
     def fundmany(self, amounts=[]):
         """Deposit coins into the architectures in a single transaction"""
@@ -274,7 +284,8 @@ class RevaultNetwork:
 
         # witscript PUSH, keys , Unvault Script overhead, signatures
         spend_witness_vb = (
-            1 + (n_man + n_stk * 2) * 34 + 15 + (n_man + n_stk) * 73) // 4
+            1 + (n_man + n_stk * 2) * 34 + 15 + (n_man + n_stk) * 73
+        ) // 4
         # Overhead, P2WPKH, P2WSH, inputs, witnesses
         spend_witstrip_vb = (
             11

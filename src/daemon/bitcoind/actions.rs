@@ -387,18 +387,18 @@ fn comprehensive_rescan(
 
             let deposit_conf = tip.height.checked_sub(height).expect("Checked above") + 1;
             if deposit_conf < MIN_CONF as u32 {
-                log::warn!(
-                    "Vault deposit '{}' ended up with '{}' confirmations (<{}), \
-                     marking as unconfirmed",
-                    vault.deposit_outpoint,
-                    deposit_conf,
-                    MIN_CONF,
-                );
                 db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
                 deposits_cache
                     .get_mut(&vault.deposit_outpoint)
                     .expect("Db vault not in cache?")
                     .is_confirmed = false;
+                log::warn!(
+                    "Vault deposit '{}' ended up with '{}' confirmations (<{}), \
+                     marked as unconfirmed",
+                    vault.deposit_outpoint,
+                    deposit_conf,
+                    MIN_CONF,
+                );
                 continue;
             }
 
@@ -411,16 +411,16 @@ fn comprehensive_rescan(
                 MIN_CONF
             );
         } else {
-            log::warn!(
-                "Vault deposit '{}' ended up without confirmation, marking as \
-                 unconfirmed",
-                vault.deposit_outpoint
-            );
             db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
             deposits_cache
                 .get_mut(&vault.deposit_outpoint)
                 .expect("Db vault not in cache?")
                 .is_confirmed = false;
+            log::warn!(
+                "Vault deposit '{}' ended up without confirmation, marked as \
+                 unconfirmed",
+                vault.deposit_outpoint
+            );
         }
     }
 

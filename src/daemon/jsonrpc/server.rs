@@ -195,19 +195,27 @@ fn read_handle_request(
                 let t_meta = metadata.clone();
                 let t_queue = resp_queue.clone();
 
-                // If there are too many threads spawned, wait for the oldest one to complete.
-                // FIXME: we can be smarter than that..
-                if handler_threads.len() >= MAX_HANDLER_THREADS {
-                    handler_threads
-                        .pop_front()
-                        .expect("Just checked the length")
-                        .join()
-                        .unwrap();
-                }
+                // We special case the 'stop' command to treat it synchronously, as we could miss
+                // the "read closed" event in the main loop and hang up forever otherwise.
+                // FIXME: We could not have a handler for it, and just write the raw response by
+                // hand.
+                if m.method.as_str() == "stop" {
+                    handle_single_request(t_io_handler, t_meta, t_queue, m);
+                } else {
+                    // If there are too many threads spawned, wait for the oldest one to complete.
+                    // FIXME: we can be smarter than that..
+                    if handler_threads.len() >= MAX_HANDLER_THREADS {
+                        handler_threads
+                            .pop_front()
+                            .expect("Just checked the length")
+                            .join()
+                            .unwrap();
+                    }
 
-                handler_threads.push_back(thread::spawn(move || {
-                    handle_single_request(t_io_handler, t_meta, t_queue, m)
-                }));
+                    handler_threads.push_back(thread::spawn(move || {
+                        handle_single_request(t_io_handler, t_meta, t_queue, m)
+                    }));
+                }
             }
             // Parsing error? Assume it's a message we'll be able to read later.
             Err(e) => {
@@ -252,7 +260,8 @@ fn mio_loop(
     let mut read_cache_map: HashMap<Token, Vec<u8>> = HashMap::with_capacity(8);
     let jsonrpc_io = Arc::from(RwLock::from(jsonrpc_io));
     // Handle to thread currently handling commands we were sent.
-    let mut handler_threads = VecDeque::with_capacity(MAX_HANDLER_THREADS);
+    let mut handler_threads: VecDeque<std::thread::JoinHandle<_>> =
+        VecDeque::with_capacity(MAX_HANDLER_THREADS);
 
     poller
         .registry()
@@ -300,20 +309,6 @@ fn mio_loop(
                     }
                 }
             } else if connections_map.contains_key(&event.token()) {
-                // TODO: determine if it shoudl include event.is_write_closed()
-                if event.is_read_closed() || event.is_error() {
-                    log::trace!("Dropping connection for {:?}", event.token());
-                    connections_map.remove(&event.token());
-
-                    // If this was the last connection alive and we are shutting down,
-                    // actually shut down.
-                    if metadata.is_shutdown() && connections_map.is_empty() {
-                        return Ok(());
-                    }
-
-                    continue;
-                }
-
                 // Under normal circumstances we are always interested in both
                 // Writable (do we got something for them from the resp_queue?)
                 // and Readable (do they have something for us?) events
@@ -372,6 +367,20 @@ fn mio_loop(
                                 log::error!("Error writing resp for {:?}: '{}'", event.token(), e)
                             }
                         }
+                    }
+                }
+
+                if event.is_read_closed() || event.is_error() {
+                    log::trace!("Dropping connection for {:?}", event.token());
+                    connections_map.remove(&event.token());
+
+                    // If this was the last connection alive and we are shutting down,
+                    // actually shut down.
+                    if metadata.is_shutdown() && connections_map.is_empty() {
+                        while let Some(t) = handler_threads.pop_front() {
+                            t.join().unwrap();
+                        }
+                        return Ok(());
                     }
                 }
             }
@@ -686,7 +695,6 @@ mod tests {
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);
         sock.write(msg.as_bytes()).unwrap();
         sock.flush().unwrap();
-        thread::sleep(Duration::from_secs(1));
         drop(sock);
         server_loop_thread.join().unwrap();
 

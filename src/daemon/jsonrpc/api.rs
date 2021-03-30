@@ -40,6 +40,7 @@ use revault_tx::{
 
 use std::{
     collections::BTreeMap,
+    io::{self, Write},
     process,
     str::FromStr,
     sync::{
@@ -260,6 +261,8 @@ impl RpcApi for RpcImpl {
     type Metadata = JsonRpcMetaData;
 
     fn stop(&self, meta: JsonRpcMetaData) -> jsonrpc_core::Result<()> {
+        log::info!("Stopping revaultd");
+
         meta.rpc_utils
             .bitcoind_tx
             .send(BitcoindMessageOut::Shutdown)
@@ -288,7 +291,13 @@ impl RpcApi for RpcImpl {
                 .join(),
             "Joining sigfetcher thread"
         );
+
+        // We are always logging to stdout, should it be then piped to the log file (if daemon) or
+        // not. So just make sure that all messages made it to the other end of the connection before
+        // terminating the process.
+        assume_ok!(io::stdout().flush(), "Flushing stdout");
         meta.shutdown();
+
         Ok(())
     }
 

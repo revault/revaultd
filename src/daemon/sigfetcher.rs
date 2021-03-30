@@ -293,17 +293,20 @@ pub fn signature_fetcher_loop(
             }
         }
 
-        // This will ignore emergency transactions if we are manager-only
-        let txs = db_transactions_sig_missing(&revaultd.read().unwrap().db_file())?;
-        log::trace!("Fetching transactions for {:#?}", txs);
-        fetch_all_signatures(&revaultd.read().unwrap(), txs).unwrap_or_else(|e| {
-            log::warn!("Error while fetching signatures: '{}'", e);
-        });
-
         let elapsed = last_poll.elapsed();
-        if elapsed < poll_interval {
-            thread::sleep(poll_interval - elapsed);
+        // If enough time has elapsed, poll the sigs
+        if elapsed >= poll_interval {
+            // This will ignore emergency transactions if we are manager-only
+            let txs = db_transactions_sig_missing(&revaultd.read().unwrap().db_file())?;
+            log::trace!("Fetching transactions for {:#?}", txs);
+            fetch_all_signatures(&revaultd.read().unwrap(), txs).unwrap_or_else(|e| {
+                log::warn!("Error while fetching signatures: '{}'", e);
+            });
+
+            last_poll = time::Instant::now();
         }
-        last_poll = time::Instant::now();
+
+        // Avoid clogging the CPU by sleeping for a while
+        thread::sleep(time::Duration::from_millis(500));
     }
 }

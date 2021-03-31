@@ -10,7 +10,8 @@ use crate::{
     bitcoind::BitcoindError,
     database::{
         actions::{
-            db_delete_spend, db_insert_spend, db_mark_broadcastable_spend, db_update_presigned_tx,
+            db_delete_spend, db_insert_spend, db_mark_activating_vault,
+            db_mark_broadcastable_spend, db_mark_securing_vault, db_update_presigned_tx,
             db_update_spend,
         },
         interface::{
@@ -734,6 +735,7 @@ pub fn handle_rpc_messages(
             ) => {
                 log::trace!("Got 'revocationtxs' from RPC thread");
                 let revaultd = revaultd.read().unwrap();
+                let db_path = revaultd.db_file();
                 let secp_ctx = &revaultd.secp_ctx;
 
                 // Checked by the RPC server
@@ -741,7 +743,7 @@ pub fn handle_rpc_messages(
 
                 // They may only send revocation transactions for confirmed and not-yet-presigned
                 // vaults.
-                let db_vault = match db_vault_by_deposit(&revaultd.db_file(), &outpoint)? {
+                let db_vault = match db_vault_by_deposit(&db_path, &outpoint)? {
                     Some(v) => match v.status {
                         VaultStatus::Funded => v,
                         status => {
@@ -762,8 +764,7 @@ pub fn handle_rpc_messages(
                 };
 
                 // Sanity check they didn't send us garbaged PSBTs
-                let (cancel_db_id, db_cancel_tx) =
-                    db_cancel_transaction(&revaultd.db_file(), db_vault.id)?;
+                let (cancel_db_id, db_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)?;
                 let rpc_txid = cancel_tx.inner_tx().global.unsigned_tx.wtxid();
                 let db_txid = db_cancel_tx.inner_tx().global.unsigned_tx.wtxid();
                 if rpc_txid != db_txid {
@@ -773,8 +774,7 @@ pub fn handle_rpc_messages(
                     )))?;
                     continue;
                 }
-                let (emer_db_id, db_emer_tx) =
-                    db_emer_transaction(&revaultd.db_file(), db_vault.id)?;
+                let (emer_db_id, db_emer_tx) = db_emer_transaction(&db_path, db_vault.id)?;
                 let rpc_txid = emer_tx.inner_tx().global.unsigned_tx.wtxid();
                 let db_txid = db_emer_tx.inner_tx().global.unsigned_tx.wtxid();
                 if rpc_txid != db_txid {
@@ -785,7 +785,7 @@ pub fn handle_rpc_messages(
                     continue;
                 }
                 let (unvault_emer_db_id, db_unemer_tx) =
-                    db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)?;
+                    db_unvault_emer_transaction(&db_path, db_vault.id)?;
                 let rpc_txid = unvault_emer_tx.inner_tx().global.unsigned_tx.wtxid();
                 let db_txid = db_unemer_tx.inner_tx().global.unsigned_tx.wtxid();
                 if rpc_txid != db_txid {
@@ -877,22 +877,26 @@ pub fn handle_rpc_messages(
                 // Ok, signatures look legit. Add them to the PSBTs in database.
                 // FIXME: edgy edge case: don't crash here, rather return an error if
                 // deposit tx was reorged out in between now and the above status check.
+
+                // NOTE: we update it first as 'securing' as db_update_presigned_tx may update it
+                // to 'secured' if it's fully signed.
+                db_mark_securing_vault(&db_path, db_vault.id)?;
                 db_update_presigned_tx(
-                    &revaultd.db_file(),
+                    &db_path,
                     db_vault.id,
                     cancel_db_id,
                     cancel_sigs.clone(),
                     secp_ctx,
                 )?;
                 db_update_presigned_tx(
-                    &revaultd.db_file(),
+                    &db_path,
                     db_vault.id,
                     emer_db_id,
                     emer_sigs.clone(),
                     secp_ctx,
                 )?;
                 db_update_presigned_tx(
-                    &revaultd.db_file(),
+                    &db_path,
                     db_vault.id,
                     unvault_emer_db_id,
                     unvault_emer_sigs.clone(),
@@ -959,13 +963,14 @@ pub fn handle_rpc_messages(
             RpcMessageIn::UnvaultTx((outpoint, unvault_tx), response_tx) => {
                 log::trace!("Got 'unvaulttx' from RPC thread");
                 let revaultd = revaultd.read().unwrap();
+                let db_path = revaultd.db_file();
                 let secp_ctx = &revaultd.secp_ctx;
 
                 // If they haven't got all the signatures for the revocation transactions, we'd
                 // better not send our unvault sig!
                 // If the vault is already active (or more) there is no point in spamming the
                 // coordinator.
-                let db_vault = match db_vault_by_deposit(&revaultd.db_file(), &outpoint)? {
+                let db_vault = match db_vault_by_deposit(&db_path, &outpoint)? {
                     None => {
                         response_tx.send(Err(RpcControlError::UnknownOutpoint(outpoint)))?;
                         continue;
@@ -983,8 +988,7 @@ pub fn handle_rpc_messages(
                 };
 
                 // Sanity check they didn't send us a garbaged PSBT
-                let (unvault_db_id, db_unvault_tx) =
-                    db_unvault_transaction(&revaultd.db_file(), db_vault.id)?;
+                let (unvault_db_id, db_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id)?;
                 let rpc_txid = unvault_tx.inner_tx().global.unsigned_tx.wtxid();
                 let db_txid = db_unvault_tx.inner_tx().global.unsigned_tx.wtxid();
                 if rpc_txid != db_txid {
@@ -1028,8 +1032,12 @@ pub fn handle_rpc_messages(
                 // Sanity checks passed. Store it then share it.
                 // FIXME: edgy edge case: don't crash here, rather return an error if
                 // deposit tx was reorged out in between now and the above status check.
+
+                // NOTE: we update it first as 'unvaulting' as db_update_presigned_tx may update it
+                // to 'unvaulted' if it's fully signed.
+                db_mark_activating_vault(&db_path, db_vault.id)?;
                 db_update_presigned_tx(
-                    &revaultd.db_file(),
+                    &db_path,
                     db_vault.id,
                     unvault_db_id,
                     sigs.clone(),

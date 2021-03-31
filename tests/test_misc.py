@@ -412,6 +412,16 @@ def test_revocationtxs(revault_network):
     with pytest.raises(RpcError, match="Invalid signature in Unvault Emergency"):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, mal_unemer)
 
+    # If we input valid presigned transactions, it will acknowledge that *we* already
+    # signed and that we are waiting for others' signatures now.
+    stks[0].rpc.revocationtxs(
+        deposit,
+        cancel_psbt,
+        emer_psbt,
+        unemer_psbt,
+    )
+    assert len(stks[0].rpc.listvaults(["securing"], [deposit])["vaults"]) == 1
+
 
 def test_unvaulttx(revault_network):
     """Sanity checks for the unvaulttx command"""
@@ -486,6 +496,9 @@ def test_unvaulttx(revault_network):
         unvault_psbt = stk.rpc.getunvaulttx(deposit)["unvault_tx"]
         unvault_psbt = stk.stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
         stk.rpc.unvaulttx(deposit, unvault_psbt)
+        assert (
+            len(stk.rpc.listvaults(["activating", "active"], [deposit])["vaults"]) == 1
+        )
     for stk in stks:
         wait_for(
             lambda: stk.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "active"

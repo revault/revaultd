@@ -172,6 +172,13 @@ pub trait RpcApi {
         meta: Self::Metadata,
         spend_txid: Txid,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "revault")]
+    fn revault(
+        &self,
+        meta: Self::Metadata,
+        deposit_outpoint: OutPoint,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 // TODO: we should probably make these proc macros and apply them above?
@@ -619,6 +626,27 @@ impl RpcApi for RpcImpl {
         assume_ok!(
             response_rx.recv(),
             "Receiving 'setspendtx' result from main thread"
+        )
+        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+
+        Ok(json!({}))
+    }
+
+    fn revault(
+        &self,
+        meta: Self::Metadata,
+        deposit_outpoint: OutPoint,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let (response_tx, response_rx) = mpsc::sync_channel(0);
+        assume_ok!(
+            meta.tx
+                .send(RpcMessageIn::Revault(deposit_outpoint, response_tx)),
+            "Sending 'revault' to main thread"
+        );
+
+        assume_ok!(
+            response_rx.recv(),
+            "Receiving 'revault' result from main thread"
         )
         .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
 

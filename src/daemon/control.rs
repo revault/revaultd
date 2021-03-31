@@ -166,6 +166,34 @@ fn bitcoind_broadcast_unvaults(
     Ok(())
 }
 
+// Tell bitcoind to broadcast the Cancel transactions of this vault.
+fn bitcoind_broadcast_cancel(
+    bitcoind_tx: &Sender<BitcoindMessageOut>,
+    db_path: &PathBuf,
+    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    vault: DbVault,
+) -> Result<(), ControlError> {
+    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
+    let (_, mut cancel_tx) = db_cancel_transaction(&db_path, vault.id)
+        .expect("TODO: generate cancel if not in database");
+
+    cancel_tx.finalize(secp)?;
+    let transaction = cancel_tx.into_psbt().extract_tx();
+    log::debug!(
+        "Broadcasting Cancel transactions with id '{:?}'",
+        transaction.txid()
+    );
+
+    bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
+        transaction,
+        bitrep_tx.clone(),
+    ))?;
+
+    bitrep_rx.recv()??;
+
+    Ok(())
+}
+
 // List the vaults from DB, and filter out the info the RPC wants
 // FIXME: we could make this more efficient with smarter SQL queries
 fn listvaults_from_db(
@@ -1397,6 +1425,35 @@ pub fn handle_rpc_messages(
                 db_mark_broadcastable_spend(&db_path, &spend_txid)?;
 
                 response_tx.send(Ok(()))?;
+            }
+            RpcMessageIn::Revault(outpoint, response_tx) => {
+                let revaultd = revaultd.read().unwrap();
+                let db_path = revaultd.db_file();
+
+                // Checking that the vault is secured, otherwise we don't have the cancel
+                // transaction
+                let vault = if let Some(vault) = db_vault_by_deposit(&db_path, &outpoint)? {
+                    match vault.status {
+                        VaultStatus::Unvaulting
+                        | VaultStatus::Unvaulted
+                        | VaultStatus::Spending => vault,
+                        _ => {
+                            response_tx.send(Err(RpcControlError::InvalidStatus((
+                                vault.status,
+                                VaultStatus::Unvaulting,
+                            ))))?;
+                            continue;
+                        }
+                    }
+                } else {
+                    response_tx.send(Err(RpcControlError::UnknownOutpoint(outpoint)))?;
+                    continue;
+                };
+
+                response_tx.send(
+                    bitcoind_broadcast_cancel(&bitcoind_tx, &db_path, &revaultd.secp_ctx, vault)
+                        .map_err(|e| RpcControlError::CancelBroadcast(e.to_string())),
+                )?;
             }
         }
     }

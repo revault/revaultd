@@ -41,8 +41,13 @@ pub enum VaultStatus {
     Unconfirmed,
     /// The deposit transaction has more than 6 confirmations
     Funded,
-    /// The emergency transaction is signed
+    /// The revocation transactions are signed by us
+    Securing,
+    /// The revocation transactions are signed by everyone
     Secured,
+    /// The unvault transaction is signed (implies that the second emergency and the
+    /// cancel transaction are signed).
+    Activating,
     /// The unvault transaction is signed (implies that the second emergency and the
     /// cancel transaction are signed).
     Active,
@@ -76,18 +81,20 @@ impl TryFrom<u32> for VaultStatus {
         match n {
             0 => Ok(Self::Unconfirmed),
             1 => Ok(Self::Funded),
-            2 => Ok(Self::Secured),
-            3 => Ok(Self::Active),
-            4 => Ok(Self::Unvaulting),
-            5 => Ok(Self::Unvaulted),
-            6 => Ok(Self::Canceling),
-            7 => Ok(Self::Canceled),
-            8 => Ok(Self::EmergencyVaulting),
-            9 => Ok(Self::EmergencyVaulted),
-            10 => Ok(Self::UnvaultEmergencyVaulting),
-            11 => Ok(Self::UnvaultEmergencyVaulted),
-            12 => Ok(Self::Spending),
-            13 => Ok(Self::Spent),
+            2 => Ok(Self::Securing),
+            3 => Ok(Self::Secured),
+            4 => Ok(Self::Activating),
+            5 => Ok(Self::Active),
+            6 => Ok(Self::Unvaulting),
+            7 => Ok(Self::Unvaulted),
+            8 => Ok(Self::Canceling),
+            9 => Ok(Self::Canceled),
+            10 => Ok(Self::EmergencyVaulting),
+            11 => Ok(Self::EmergencyVaulted),
+            12 => Ok(Self::UnvaultEmergencyVaulting),
+            13 => Ok(Self::UnvaultEmergencyVaulted),
+            14 => Ok(Self::Spending),
+            15 => Ok(Self::Spent),
             _ => Err(()),
         }
     }
@@ -100,7 +107,9 @@ impl FromStr for VaultStatus {
         match s {
             "unconfirmed" => Ok(Self::Unconfirmed),
             "funded" => Ok(Self::Funded),
+            "securing" => Ok(Self::Securing),
             "secured" => Ok(Self::Secured),
+            "activating" => Ok(Self::Activating),
             "active" => Ok(Self::Active),
             "unvaulting" => Ok(Self::Unvaulting),
             "unvaulted" => Ok(Self::Unvaulted),
@@ -125,7 +134,9 @@ impl fmt::Display for VaultStatus {
             match *self {
                 Self::Unconfirmed => "unconfirmed",
                 Self::Funded => "funded",
+                Self::Securing => "securing",
                 Self::Secured => "secured",
+                Self::Activating => "activating",
                 Self::Active => "active",
                 Self::Unvaulting => "unvaulting",
                 Self::Unvaulted => "unvaulted",

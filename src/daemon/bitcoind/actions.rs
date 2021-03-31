@@ -354,7 +354,11 @@ fn unconfirm_vault(
     // For these states we still have the entry in the deposit cache.
     if matches!(
         vault.status,
-        VaultStatus::Funded | VaultStatus::Secured | VaultStatus::Active
+        VaultStatus::Funded
+            | VaultStatus::Securing
+            | VaultStatus::Secured
+            | VaultStatus::Activating
+            | VaultStatus::Active
     ) {
         deposits_cache
             .get_mut(&vault.deposit_outpoint)

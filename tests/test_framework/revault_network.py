@@ -403,6 +403,36 @@ class RevaultNetwork:
             + 30_000 * n_vaults_spent  # Unvault CPFP
         )
 
+    def cancel_vault(self, vault):
+        deposit = f"{vault['txid']}:{vault['vout']}"
+
+        for w in self.stk_wallets + self.man_wallets:
+            wait_for(
+                lambda: len(
+                    w.rpc.listvaults(
+                        ["unvaulting", "unvaulted", "spending"], [deposit]
+                    )["vaults"]
+                )
+                == 1
+            )
+
+        self.stk_wallets[0].rpc.revault(deposit)
+        for w in self.stk_wallets + self.man_wallets:
+            w.wait_for_log("Unvault transaction at .* is now being canceled")
+            wait_for(
+                lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+                == "canceling"
+            )
+
+        self.bitcoind.generate_block(6, wait_for_mempool=1)
+
+        for w in self.stk_wallets + self.man_wallets:
+            w.wait_for_log("Cancel tx .* was confirmed at height .*")
+            wait_for(
+                lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+                == "canceled"
+            )
+
     def stop_wallets(self):
         for w in self.stk_wallets + self.man_wallets:
             assert w.stop() == 0

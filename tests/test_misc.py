@@ -1452,3 +1452,80 @@ def test_large_spends(revault_network, bitcoind, executor):
     wait_for(
         lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
     )
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_revault(revault_network, bitcoind, executor):
+    """
+    Here we manually broadcast the unvualt_tx, followed by the cancel_tx
+    """
+    revault_network.deploy(3, 1)
+    man = revault_network.man_wallets[0]
+    stks = revault_network.stk_wallets
+    vault = revault_network.fund(18)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    stks[0].wait_for_deposits([deposit])
+
+    # Can't cancel an unconfirmed deposit
+    with pytest.raises(
+        RpcError, match="Invalid vault status: 'funded'. Need 'unvaulting'"
+    ):
+        stks[0].rpc.revault(deposit)
+
+    # A manager gets the same error: both parties can revault
+    with pytest.raises(
+        RpcError, match="Invalid vault status: 'funded'. Need 'unvaulting'"
+    ):
+        man.rpc.revault(deposit)
+
+    revault_network.secure_vault(vault)
+
+    # Secured is not good enough though
+    with pytest.raises(
+        RpcError, match="Invalid vault status: 'secured'. Need 'unvaulting'"
+    ):
+        stks[0].rpc.revault(deposit)
+
+    revault_network.activate_vault(vault)
+
+    # Active? Not enough!
+    with pytest.raises(
+        RpcError, match="Invalid vault status: 'active'. Need 'unvaulting'"
+    ):
+        stks[0].rpc.revault(deposit)
+
+    # Now we want to broadcast the unvault tx without having an associated spend tx
+    # First of all, we need the unvault psbt finalized
+    unvault_psbt = stks[0].rpc.listpresignedtransactions([deposit])[
+        "presigned_transactions"
+    ][0]["unvault"]
+    unvault_tx = bitcoind.rpc.finalizepsbt(unvault_psbt)["hex"]
+    bitcoind.rpc.sendrawtransaction(unvault_tx)
+
+    # Unvaulting! And there's no associated spend tx! Is revault broken?
+    for w in stks + [man]:
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == "unvaulting"
+        )
+
+    # Nah it's not, just broadcast the cancel
+    man.rpc.revault(deposit)
+
+    # Not confirmed yet...
+    for w in stks + [man]:
+        w.wait_for_log("Unvault transaction at .* is now being canceled")
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == "canceling"
+        )
+
+    bitcoind.generate_block(6, wait_for_mempool=1)
+
+    # Funds are safe, we happy
+    for w in stks + [man]:
+        wait_for(lambda: w.rpc.call("getinfo")["blockheight"] == 113)
+        w.wait_for_log("Cancel tx .* was confirmed at height '108'")
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
+        )

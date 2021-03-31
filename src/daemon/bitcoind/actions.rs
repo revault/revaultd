@@ -1,18 +1,22 @@
 use crate::{
     bitcoind::{
-        interface::{BitcoinD, DepositInfo, SyncInfo},
+        interface::{BitcoinD, OnchainDescriptorState, SyncInfo, UtxoInfo},
         BitcoindError, MIN_CONF,
     },
     database::{
         actions::{
-            db_confirm_deposit, db_insert_new_unconfirmed_vault, db_mark_broadcasted_spend,
-            db_unconfirm_deposit_dbtx, db_unvault_deposit, db_update_deposit_index, db_update_tip,
+            db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
+            db_mark_broadcasted_spend, db_mark_rebroadcastable_spend, db_mark_spent_unvault,
+            db_spend_unvault, db_unconfirm_deposit_dbtx, db_unconfirm_spend_dbtx,
+            db_unconfirm_unvault_dbtx, db_unvault_deposit, db_update_deposit_index, db_update_tip,
             db_update_tip_dbtx,
         },
         interface::{
-            db_broadcastable_spend_transactions, db_deposits, db_exec, db_tip, db_vaults_dbtx,
-            db_wallet,
+            db_broadcastable_spend_transactions, db_deposits, db_exec, db_spending_vaults, db_tip,
+            db_unvault_dbtx, db_unvault_from_deposit, db_unvaulted_vaults, db_vault_by_deposit,
+            db_vaults_dbtx, db_wallet,
         },
+        schema::DbVault,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
     threadmessages::{BitcoindMessageOut, WalletTransaction},
@@ -24,8 +28,8 @@ use revault_tx::{
         transaction_chain, transaction_chain_manager, CancelTransaction, EmergencyTransaction,
         RevaultTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
-    txins::DepositTxIn,
-    txouts::DepositTxOut,
+    txins::{DepositTxIn, RevaultTxIn},
+    txouts::{DepositTxOut, RevaultTxOut},
 };
 
 use std::{
@@ -241,18 +245,13 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
     Ok(bitcoind)
 }
 
-// Everything we do when the chain moves forward
-fn new_tip_event(
-    revaultd: &mut Arc<RwLock<RevaultD>>,
+// Try to broadcast fully signed spend transactions, only mature ones will get through
+fn maybe_broadcast_spend_transactions(
+    revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    new_tip: &BlockchainTip,
 ) -> Result<(), BitcoindError> {
     let db_path = revaultd.read().unwrap().db_file();
 
-    // First we update it in DB
-    db_update_tip(&db_path, new_tip)?;
-
-    // Then we check if any Spend became mature yet
     for db_spendtx in db_broadcastable_spend_transactions(&db_path)? {
         let mut psbt = db_spendtx.psbt;
         let txid = psbt.inner_tx().global.unsigned_tx.txid();
@@ -284,17 +283,101 @@ fn new_tip_event(
     Ok(())
 }
 
+// Check if some Spend transaction that were marked as broadcasted were confirmed, if so upgrade
+// the vault state to 'spent'.
+fn mark_confirmed_spends(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+
+    for (db_vault, unvault_tx) in db_spending_vaults(&db_path)? {
+        let unvault_descriptor = revaultd
+            .read()
+            .unwrap()
+            .unvault_descriptor
+            .derive(db_vault.derivation_index);
+        let unvault_txin = unvault_tx
+            .revault_unvault_txin(&unvault_descriptor, revaultd.read().unwrap().xpub_ctx());
+        let unvault_outpoint = unvault_txin.outpoint();
+
+        let (spend_tx_hex, blockheight, _) = bitcoind
+            .get_wallet_transaction(&db_vault.spend_txid.expect("Must be set for 'spending'"))?;
+        if let Some(height) = blockheight {
+            db_mark_spent_unvault(&db_path, db_vault.id)?;
+            log::debug!(
+                "Spend tx '{}', spending Unvault '{}' was confirmed at height '{}'",
+                spend_tx_hex,
+                unvault_outpoint,
+                height
+            );
+        } else {
+            log::trace!(
+                "Spend tx '{}', spending Unvault '{}' is still unconfirmed",
+                spend_tx_hex,
+                unvault_outpoint
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// Everything we do when the chain moves forward
+fn new_tip_event(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+    new_tip: &BlockchainTip,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+
+    // First we update it in DB
+    db_update_tip(&db_path, new_tip)?;
+
+    // Then we check if any Spend became mature yet
+    maybe_broadcast_spend_transactions(revaultd, bitcoind)?;
+
+    // Did some Spend transaction confirmed?
+    mark_confirmed_spends(revaultd, bitcoind)?;
+
+    Ok(())
+}
+
+fn unconfirm_vault(
+    db_tx: &rusqlite::Transaction,
+    vault: DbVault,
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
+) -> Result<(), BitcoindError> {
+    // This will delete the presigned transactions, as well as the Spend tranactions
+    // spending this vault.
+    db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
+    // For these states we still have the entry in the deposit cache.
+    if matches!(
+        vault.status,
+        VaultStatus::Funded | VaultStatus::Secured | VaultStatus::Active
+    ) {
+        deposits_cache
+            .get_mut(&vault.deposit_outpoint)
+            .expect("Db vault not in cache?")
+            .is_confirmed = false;
+    }
+
+    Ok(())
+}
+
 // Get our state up to date with bitcoind.
 // - Drop vaults which deposit is not confirmed anymore
 // - Drop presigned transactions if the vault is downgraded to 'unconfirmed'
-// - (TODO) Downgrade our state if necessary (if another transaction was reorg'ed out)
+// - Downgrade our state if necessary (if a transaction of the chain was reorg'ed out)
 //
 // Note that we want this operation to be atomic: we don't want to be midly updating to the new
 // tip. Either we are updated to the new tip or we roll back to the previous one in case of error.
 fn comprehensive_rescan(
+    revaultd: &Arc<RwLock<RevaultD>>,
     db_tx: &rusqlite::Transaction,
     bitcoind: &BitcoinD,
-    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
+    unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<(), BitcoindError> {
     log::info!("Starting rescan of all vaults in db..");
     let mut vaults = db_vaults_dbtx(&db_tx)?;
@@ -322,57 +405,155 @@ fn comprehensive_rescan(
 
         // bitcoind's wallet will always keep track of our transaction, even in case of reorg.
         let (_, blockheight, _) = bitcoind.get_wallet_transaction(&vault.deposit_outpoint.txid)?;
-        if let Some(height) = blockheight {
-            // Edge case: what if our tip is actually not up to date anymore
-            if height > tip.height {
-                return comprehensive_rescan(db_tx, bitcoind, deposits_cache);
-            }
-
-            let deposit_conf = tip.height.checked_sub(height).expect("Checked above") + 1;
-            if deposit_conf < MIN_CONF as u32 {
-                log::warn!(
-                    "Vault deposit '{}' ended up with '{}' confirmations (<{}), \
-                     marking as unconfirmed",
-                    vault.deposit_outpoint,
-                    deposit_conf,
-                    MIN_CONF,
-                );
-                db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
-                deposits_cache
-                    .get_mut(&vault.deposit_outpoint)
-                    .expect("Db vault not in cache?")
-                    .status = VaultStatus::Unconfirmed;
-                continue;
-            }
-
-            // TODO: if secured, active, unvaulted, spent, emergencied check each transaction.
-
-            log::debug!(
-                "Vault deposit '{}' still has '{}' confirmations (>={}), not doing anything",
-                vault.deposit_outpoint,
-                deposit_conf,
-                MIN_CONF
-            );
+        let dep_height = if let Some(height) = blockheight {
+            height
         } else {
+            unconfirm_vault(db_tx, vault, deposits_cache)?;
             log::warn!(
-                "Vault deposit '{}' ended up without confirmation, marking as \
+                "Vault deposit '{}' ended up without confirmation, marked as \
                  unconfirmed",
                 vault.deposit_outpoint
             );
-            db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
-            deposits_cache
-                .get_mut(&vault.deposit_outpoint)
-                .expect("Db vault not in cache?")
-                .status = VaultStatus::Unconfirmed;
+            continue;
+        };
+
+        // Edge case: what if our tip is actually not up to date anymore
+        if dep_height > tip.height {
+            return comprehensive_rescan(revaultd, db_tx, bitcoind, deposits_cache, unvaults_cache);
+        }
+
+        // First layer: if the deposit itself becomes unconfirmed, no need to go further: mark the
+        // vault as unconfirmed and be done.
+        let deposit_conf = tip.height.checked_sub(dep_height).expect("Checked above") + 1;
+        if deposit_conf < MIN_CONF as u32 {
+            unconfirm_vault(db_tx, vault, deposits_cache)?;
+            log::warn!(
+                "Vault deposit '{}' ended up with '{}' confirmations (<{}), \
+                     marked as unconfirmed",
+                vault.deposit_outpoint,
+                deposit_conf,
+                MIN_CONF,
+            );
+
+            continue;
+        }
+
+        log::debug!(
+            "Vault deposit '{}' still has '{}' confirmations (>={}), not doing anything",
+            vault.deposit_outpoint,
+            deposit_conf,
+            MIN_CONF
+        );
+
+        // Second layer: if the Unvault was confirmed and becomes unconfirmed, we mark it as such
+        // and make such to rebroadcast the transaction that were depending on it.
+        if matches!(
+            vault.status,
+            VaultStatus::Unvaulted
+                | VaultStatus::Spending
+                | VaultStatus::Spent
+                | VaultStatus::Canceling
+                | VaultStatus::Canceled
+                | VaultStatus::UnvaultEmergencyVaulting
+                | VaultStatus::UnvaultEmergencyVaulted
+        ) {
+            let unvault_tx = db_unvault_dbtx(db_tx, vault.id)?.ok_or_else(|| {
+                BitcoindError::Custom(format!(
+                    "Vault '{}' has status '{}' but no Unvault in database!",
+                    vault.deposit_outpoint, vault.status
+                ))
+            })?;
+            let unvault_txid = unvault_tx.inner_tx().global.unsigned_tx.txid();
+            let (_, blockheight, _) = bitcoind.get_wallet_transaction(&unvault_txid)?;
+
+            let unv_height = if let Some(height) = blockheight {
+                height
+            } else {
+                // First and foremost, mark it as unconfirmed in the db
+                db_unconfirm_unvault_dbtx(db_tx, vault.id)?;
+
+                // Then either repopulate the cache (we remove the entry on spend) or update the
+                // cache accordingly.
+                let unvault_descriptor = revaultd
+                    .read()
+                    .unwrap()
+                    .unvault_descriptor
+                    .derive(vault.derivation_index);
+                let unvault_txin = unvault_tx
+                    .revault_unvault_txin(&unvault_descriptor, revaultd.read().unwrap().xpub_ctx());
+                let unvault_outpoint = unvault_txin.outpoint();
+                let txo = unvault_txin.into_txout().into_txout();
+                if matches!(vault.status, VaultStatus::Spent | VaultStatus::Spending) {
+                    db_mark_rebroadcastable_spend(db_tx, &unvault_txid)?;
+                    unvaults_cache.insert(
+                        unvault_outpoint,
+                        UtxoInfo {
+                            txo,
+                            is_confirmed: false,
+                        },
+                    );
+                } else if matches!(vault.status, VaultStatus::Unvaulted) {
+                    unvaults_cache
+                        .get_mut(&unvault_outpoint)
+                        .expect("Db unvault not in cache for 'unvaulted'?")
+                        .is_confirmed = false;
+                }
+
+                // For some reasons bitcoind's wallet may need a small kick-in
+                if revaultd.read().unwrap().is_manager() {
+                    match bitcoind.rebroadcast_wallet_tx(&unvault_txid) {
+                        Ok(()) => {}
+                        Err(e) => log::debug!(
+                            "Error re-broadcasting Unvault tx '{}': '{}'",
+                            unvault_txid,
+                            e
+                        ),
+                    }
+                }
+
+                // And finally hook the tests (and the eyeballs)
+                log::debug!(
+                    "Vault {}'s Unvault transaction {} got unconfirmed.",
+                    vault.deposit_outpoint,
+                    unvault_txid
+                );
+
+                continue;
+            };
+
+            log::debug!(
+                "Vault {}'s Unvault transaction is still confirmed (height '{}')",
+                vault.deposit_outpoint,
+                unv_height
+            );
+
+            // Third layer: if the Spend transaction *only* was confirmed and becomes unconfirmed,
+            // we just mark it as such. The bitcoind wallet will take care of the rebroadcast.
+            if matches!(vault.status, VaultStatus::Spent) {
+                let spend_txid = &vault.spend_txid.expect("Must be Some in 'spent'");
+                let (_, blockheight, _) = bitcoind.get_wallet_transaction(spend_txid)?;
+                if let Some(height) = blockheight {
+                    log::debug!(
+                        "Vault {}'s Spend transaction is still confirmed (height '{}')",
+                        vault.deposit_outpoint,
+                        height
+                    );
+                } else {
+                    db_unconfirm_spend_dbtx(db_tx, vault.id)?;
+                    log::debug!(
+                        "Vault {}'s Spend transaction {} got unconfirmed.",
+                        vault.deposit_outpoint,
+                        spend_txid
+                    );
+                    continue;
+                }
+            }
+
+            // TODO: First Emergency
         }
     }
 
     db_update_tip_dbtx(db_tx, &tip)?;
-    log::info!(
-        "\n\nCurrent vaults: {:?}\n Current cache: {:?}\n\n",
-        db_vaults_dbtx(db_tx),
-        &deposits_cache
-    );
 
     Ok(())
 }
@@ -380,18 +561,19 @@ fn comprehensive_rescan(
 // Check the latest tip, if it does not change or moves forward just do nothing or
 // update in in the database. However if it goes backward or the tip block hash changes
 // resynchronize ourself with the Bitcoin network.
-// Returns the new deposit cache up-to-date with the database
+// Returns the previous tip.
 fn update_tip(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
-) -> Result<(), BitcoindError> {
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
+    unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
+) -> Result<BlockchainTip, BitcoindError> {
     let current_tip = db_tip(&revaultd.read().unwrap().db_file())?;
     let tip = bitcoind.get_tip()?;
 
     // Nothing changed, shortcut.
     if tip == current_tip {
-        return Ok(());
+        return Ok(tip);
     }
 
     if tip.height > current_tip.height {
@@ -399,7 +581,8 @@ fn update_tip(
         let bit_curr_hash = bitcoind.getblockhash(current_tip.height)?;
         if bit_curr_hash == current_tip.hash || current_tip.height == 0 {
             // We moved forward, everything is fine.
-            return new_tip_event(revaultd, bitcoind, &tip);
+            new_tip_event(&revaultd, bitcoind, &tip)?;
+            return Ok(current_tip);
         }
     }
 
@@ -409,22 +592,23 @@ fn update_tip(
         &tip
     );
     db_exec(&revaultd.read().unwrap().db_file(), |db_tx| {
-        comprehensive_rescan(db_tx, bitcoind, deposits_cache).unwrap_or_else(|e| {
-            log::error!("Error while rescaning vaults: '{}'", e);
-            std::process::exit(1);
-        });
+        comprehensive_rescan(revaultd, db_tx, bitcoind, deposits_cache, unvaults_cache)
+            .unwrap_or_else(|e| {
+                log::error!("Error while rescaning vaults: '{}'", e);
+                std::process::exit(1);
+            });
         Ok(())
     })?;
     log::info!("Rescan of all vaults in db done.");
 
-    Ok(())
+    Ok(current_tip)
 }
 
 // Get fresh to-be-presigned transactions for this deposit utxo
 fn presigned_transactions(
     revaultd: &RevaultD,
     outpoint: &OutPoint,
-    utxo: &DepositInfo,
+    utxo: &UtxoInfo,
 ) -> Result<
     (
         UnvaultTransaction,
@@ -482,7 +666,7 @@ fn presigned_transactions(
 // Fill up the deposit UTXOs cache from db vaults
 fn populate_deposit_cache(
     revaultd: &RevaultD,
-) -> Result<HashMap<OutPoint, DepositInfo>, BitcoindError> {
+) -> Result<HashMap<OutPoint, UtxoInfo>, BitcoindError> {
     let db_vaults = db_deposits(&revaultd.db_file())?;
     let mut cache = HashMap::with_capacity(db_vaults.len());
 
@@ -496,9 +680,9 @@ fn populate_deposit_cache(
         };
         cache.insert(
             db_vault.deposit_outpoint,
-            DepositInfo {
+            UtxoInfo {
                 txo,
-                status: db_vault.status,
+                is_confirmed: !matches!(db_vault.status, VaultStatus::Unconfirmed),
             },
         );
         log::debug!("Loaded deposit '{}' from db", db_vault.deposit_outpoint);
@@ -507,16 +691,139 @@ fn populate_deposit_cache(
     Ok(cache)
 }
 
-// This syncs with bitcoind our incoming deposits, and those that were spent.
-fn update_deposits(
+// Fill up the unvault UTXOs cache from db vaults
+fn populate_unvaults_cache(
+    revaultd: &RevaultD,
+) -> Result<HashMap<OutPoint, UtxoInfo>, BitcoindError> {
+    let db_unvaults = db_unvaulted_vaults(&revaultd.db_file())?;
+    let mut cache = HashMap::with_capacity(db_unvaults.len());
+
+    for (db_vault, unvault_tx) in db_unvaults.into_iter() {
+        let unvault_descriptor = revaultd
+            .unvault_descriptor
+            .derive(db_vault.derivation_index);
+        let unvault_txin =
+            unvault_tx.revault_unvault_txin(&unvault_descriptor, revaultd.xpub_ctx());
+        let unvault_outpoint = unvault_txin.outpoint();
+        let txo = unvault_txin.into_txout().into_txout();
+        cache.insert(
+            unvault_outpoint,
+            UtxoInfo {
+                txo,
+                is_confirmed: !matches!(db_vault.status, VaultStatus::Unvaulting),
+            },
+        );
+        log::debug!("Loaded Unvault Utxo '{}' from db", unvault_outpoint);
+    }
+
+    Ok(cache)
+}
+
+// Get the Unvault transaction outpoint from a deposit, trying first to fetch the transaction
+// from the DB and falling back to generating it.
+// Assumes the given deposit outpoint actually corresponds to an existing vaults, will panic
+// otherwise.
+fn unvault_outpoint_from_deposit(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    deposit_outpoint: &OutPoint,
+    deposit_utxo: TxOut,
+) -> Result<OutPoint, BitcoindError> {
+    let revaultd = revaultd.read().unwrap();
+    let db_path = revaultd.db_file();
+    let xpub_ctx = revaultd.xpub_ctx();
+    let db_vault = db_vault_by_deposit(&db_path, &deposit_outpoint)?
+        .expect("Checking Unvault txid for an unknow deposit");
+    let unvault_descriptor = revaultd
+        .unvault_descriptor
+        .derive(db_vault.derivation_index);
+
+    let unvault_tx = if let Some(tx) = db_unvault_from_deposit(&db_path, &deposit_outpoint)? {
+        tx
+    } else {
+        let deposit_descriptor = revaultd
+            .deposit_descriptor
+            .derive(db_vault.derivation_index);
+        let deposit_txo = DepositTxOut::new(deposit_utxo.value, &deposit_descriptor, xpub_ctx);
+        let deposit_txin = DepositTxIn::new(*deposit_outpoint, deposit_txo);
+
+        let cpfp_descriptor = revaultd.cpfp_descriptor.derive(db_vault.derivation_index);
+        UnvaultTransaction::new(
+            deposit_txin,
+            &unvault_descriptor,
+            &cpfp_descriptor,
+            xpub_ctx,
+            revaultd.lock_time,
+        )
+        .map_err(|e| BitcoindError::Custom(format!("Error deriving Unvault tx: '{}'", e)))?
+    };
+
+    Ok(unvault_tx
+        .revault_unvault_txin(&unvault_descriptor, xpub_ctx)
+        .outpoint())
+}
+
+// This syncs with bitcoind our onchain utxos. We track the deposits and unvaults ones.
+fn update_utxos(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    deposits_cache: &mut HashMap<OutPoint, DepositInfo>,
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
+    unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
+    previous_tip: &BlockchainTip,
 ) -> Result<(), BitcoindError> {
-    // Sync deposit of vaults we know have an unspent deposit.
-    let (new_deposits, conf_deposits, spent_deposits) = bitcoind.sync_deposits(&deposits_cache)?;
+    let db_path = revaultd.read().unwrap().db_file();
 
-    for (outpoint, utxo) in new_deposits.into_iter() {
+    // We are tracking it backward down the transaction chain, to check if a spent deposit was
+    // previously detected as a new unconfirmed Unvault.
+    // So, first, synchronize us with the onchain state of our Unvault utxos.
+    let OnchainDescriptorState {
+        new_unconf: new_unvaults,
+        new_conf: conf_unvaults,
+        new_spent: spent_unvaults,
+    } = bitcoind.sync_unvaults(&unvaults_cache)?;
+
+    for (outpoint, utxo) in new_unvaults {
+        // Note that it *might* have actually been confirmed in-between the last poll, but we keep
+        // single transitions, and it's no big deal to mark it confirmed during the next poll.
+        db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint.txid)?;
+        unvaults_cache.insert(outpoint, utxo);
+        log::debug!("Got a new unconfirmed unvault utxo at {} ", outpoint);
+    }
+
+    for (outpoint, _) in conf_unvaults {
+        db_confirm_unvault(&db_path, &outpoint.txid)?;
+        unvaults_cache
+            .get_mut(&outpoint)
+            .ok_or_else(|| BitcoindError::Custom("An unknown unvault got confirmed?".to_string()))?
+            .is_confirmed = true;
+        log::debug!("Unvault transaction at {} is now confirmed", &outpoint);
+    }
+
+    for (outpoint, _) in spent_unvaults {
+        // TODO: detect if it was spent by a Cancel or Emergency transaction before considering it
+        // a Spend transaction.
+        let spend_txid = bitcoind
+            .get_spender_txid(&outpoint, &previous_tip.hash)?
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!(
+                    "No spending transaction in wallet for Unvault '{}', but it *is* being spent",
+                    outpoint
+                ))
+            })?;
+        db_spend_unvault(&db_path, &outpoint.txid, &spend_txid)?;
+        unvaults_cache
+            .remove(&outpoint)
+            .ok_or_else(|| BitcoindError::Custom("An unknown unvault got spent?".to_string()))?;
+        log::debug!("Unvault transaction at {} is now being spent", &outpoint);
+    }
+
+    // Sync deposit of vaults we know have an unspent deposit.
+    let OnchainDescriptorState {
+        new_unconf: new_deposits,
+        new_conf: conf_deposits,
+        new_spent: spent_deposits,
+    } = bitcoind.sync_deposits(&deposits_cache)?;
+
+    for (outpoint, utxo) in new_deposits {
         let derivation_index = *revaultd
             .read()
             .unwrap()
@@ -537,7 +844,6 @@ fn update_deposits(
                 .unwrap()
                 .wallet_id
                 .expect("Wallet id is set at startup in setup_db()"),
-            &utxo.status,
             &outpoint,
             &amount,
             derivation_index,
@@ -580,7 +886,7 @@ fn update_deposits(
         }
     }
 
-    for (outpoint, utxo) in conf_deposits.into_iter() {
+    for (outpoint, utxo) in conf_deposits {
         let blockheight = bitcoind
             .get_wallet_transaction(&outpoint.txid)?
             .1
@@ -602,59 +908,49 @@ fn update_deposits(
         deposits_cache
             .get_mut(&outpoint)
             .ok_or_else(|| BitcoindError::Custom("An unknown vault got confirmed?".to_string()))?
-            .status = VaultStatus::Funded;
+            .is_confirmed = true;
 
         log::debug!("Vault at {} is now confirmed", &outpoint);
     }
 
-    for (outpoint, utxo) in spent_deposits.into_iter() {
-        let deriv_index = *revaultd.read().unwrap()
-            .derivation_index_map
-            .get(&utxo.txo.script_pubkey)
-            .ok_or_else(|| BitcoindError::Custom(
-                    format!("A deposit was spent for which we don't know the corresponding xpub derivation. Outpoint: '{}'\nUtxo: '{:#?}'",
-                        &outpoint,
-                        &utxo)))?;
-        let unvault_addr = revaultd
-            .read()
-            .unwrap()
-            .unvault_address(deriv_index)
-            .to_string();
+    for (deposit_outpoint, utxo) in spent_deposits {
+        let unvault_outpoint =
+            match unvault_outpoint_from_deposit(&revaultd, &deposit_outpoint, utxo.txo) {
+                Ok(txid) => txid,
+                Err(e) => {
+                    log::error!(
+                        "Error while getting Unvault outpoint for deposit '{}': '{}'",
+                        &deposit_outpoint,
+                        e
+                    );
+                    continue;
+                }
+            };
 
-        if let Some(unvault_outpoint) = bitcoind.unvault_from_vault(&outpoint, unvault_addr)? {
-            // Note that it *might* have actually been confirmed during the last 30s, but it's not
-            // a big deal to have it marked as unconfirmed for the next 30s..
-            db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint)?;
-            // TODO: keep track of Unvault utxos..
+        if unvaults_cache.contains_key(&unvault_outpoint) {
             deposits_cache
-                .remove(&outpoint)
+                .remove(&deposit_outpoint)
                 .expect("We just checked it");
             log::debug!(
                 "The deposit utxo created via '{}' was unvaulted via '{}'",
-                &outpoint,
+                &deposit_outpoint,
                 &unvault_outpoint
             );
-        } else if false {
-            // TODO: handle bypass and emergency
         } else {
-            match utxo.status {
-                // Fine.
-                VaultStatus::Unconfirmed => log::debug!(
-                    "The unconfirmed deposit utxo created via '{}' just vanished",
-                    &outpoint
-                ),
-                // Bad.
-                VaultStatus::Funded | VaultStatus::Secured => log::warn!(
+            // TODO: handle bypass and emergency
+            if utxo.is_confirmed {
+                log::warn!(
                     "The deposit utxo created via '{}' just vanished. Maybe a reorg is ongoing?",
-                    &outpoint
-                ),
-                // Impossible.
-                _ => unreachable!(),
+                    &deposit_outpoint
+                );
+            } else {
+                log::debug!(
+                    "The unconfirmed deposit utxo created via '{}' just vanished",
+                    &deposit_outpoint
+                );
             }
         }
     }
-
-    // TODO: keep track of unconfirmed unvaults and eventually mark them as confirmed
 
     Ok(())
 }
@@ -669,6 +965,8 @@ fn poller_main(
     let mut sync_waittime = None;
     // We use a cache for maintaining our deposits' state up-to-date by polling `listunspent`
     let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())?;
+    // Same for the unvaults
+    let mut unvaults_cache = populate_unvaults_cache(&revaultd.read().unwrap())?;
     // When bitcoind is synced, we poll each 30s. On regtest we speed it up for testing.
     let poll_interval = revaultd.read().unwrap().bitcoind_config.poll_interval_secs;
 
@@ -720,15 +1018,18 @@ fn poller_main(
         }
 
         last_poll = Some(now);
-        update_tip(
+        let previous_tip = update_tip(
             &mut revaultd,
             &bitcoind.read().unwrap(),
             &mut deposits_cache,
+            &mut unvaults_cache,
         )?;
-        update_deposits(
+        update_utxos(
             &mut revaultd,
             &bitcoind.read().unwrap(),
             &mut deposits_cache,
+            &mut unvaults_cache,
+            &previous_tip,
         )?;
     }
 

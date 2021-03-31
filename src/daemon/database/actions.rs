@@ -256,7 +256,6 @@ pub fn db_update_deposit_index(
 pub fn db_insert_new_unconfirmed_vault(
     db_path: &PathBuf,
     wallet_id: u32,
-    status: &VaultStatus,
     deposit_outpoint: &OutPoint,
     amount: &Amount,
     derivation_index: ChildNumber,
@@ -265,12 +264,14 @@ pub fn db_insert_new_unconfirmed_vault(
     db_exec(db_path, |tx| {
         let derivation_index: u32 = derivation_index.into();
         tx.execute(
-            "INSERT INTO vaults (wallet_id, status, blockheight, deposit_txid, \
-             deposit_vout, amount, derivation_index, received_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO vaults ( \
+                wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
+                received_at, updated_at, spend_txid \
+            ) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
             params![
                 wallet_id,
-                *status as u32,
+                VaultStatus::Unconfirmed as u32,
                 0, // FIXME: it should probably be NULL instead, but no big deal
                 deposit_outpoint.txid.to_vec(),
                 deposit_outpoint.vout,
@@ -356,12 +357,21 @@ pub fn db_confirm_deposit(
     })
 }
 
-/// Drop all presigned transactions for a vault, and mark it as unconfirmed. The opposite of
-/// [db_confirm_deposit].
+/// Drop all presigned transactions for a vault, therefore dropping all Spend attempts as well and mark
+/// it as unconfirmed. The opposite of [db_confirm_deposit].
 pub fn db_unconfirm_deposit_dbtx(
     db_tx: &rusqlite::Transaction,
     vault_id: u32,
 ) -> Result<(), DatabaseError> {
+    // This is going to cascade and DELETE the spend_inputs.
+    db_tx.execute(
+        "DELETE FROM spend_transactions WHERE id = ( \
+            SELECT sin.spend_id FROM presigned_transactions as ptx \
+            INNER JOIN spend_inputs as sin ON ptx.id = sin.unvault_id \
+            WHERE ptx.vault_id = (?1) \
+         )",
+        params![vault_id],
+    )?;
     db_tx.execute(
         "DELETE FROM presigned_transactions WHERE vault_id = (?1)",
         params![vault_id],
@@ -375,18 +385,88 @@ pub fn db_unconfirm_deposit_dbtx(
     Ok(())
 }
 
-/// Mark an active vault as being in 'unvaulting' state
-pub fn db_unvault_deposit(db_path: &PathBuf, outpoint: &OutPoint) -> Result<(), DatabaseError> {
+fn dbtx_downgrade(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+    status: VaultStatus,
+) -> Result<(), DatabaseError> {
+    db_tx.execute(
+        "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE id = (?2)",
+        params![status as u32, vault_id],
+    )?;
+
+    Ok(())
+}
+
+/// Downgrade a vault from 'unvaulted' to 'unvaulting'
+pub fn db_unconfirm_unvault_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::Unvaulting)
+}
+
+/// Downgrade a vault from 'spent' to 'spending'
+pub fn db_unconfirm_spend_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::Spending)
+}
+
+fn db_status_from_unvault_txid(
+    db_path: &PathBuf,
+    unvault_txid: &Txid,
+    status: VaultStatus,
+) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
-            params![
-                VaultStatus::Unvaulting as u32,
-                outpoint.txid.to_vec(),
-                outpoint.vout
-            ],
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?2))",
+            params![status as u32, unvault_txid.to_vec(),],
         )
-        .map_err(|e| DatabaseError(format!("Updating vault to 'unvaulting': {}", e.to_string())))?;
+        .map_err(|e| DatabaseError(format!("Updating vault to '{}': {}", status, e.to_string())))?;
+
+        Ok(())
+    })
+}
+
+/// Mark an active vault as being in 'unvaulting' state from the Unvault txid
+pub fn db_unvault_deposit(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
+}
+
+/// Mark a vault as being in the 'unvaulted' state, out of the Unvault txid
+pub fn db_confirm_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
+}
+
+/// Mark a vault as being in the 'spending' state, out of the Unvault txid
+pub fn db_spend_unvault(
+    db_path: &PathBuf,
+    unvault_txid: &Txid,
+    spend_txid: &Txid,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now'), spend_txid = (?2) \
+             WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?3))",
+            params![VaultStatus::Spending as u32, spend_txid.to_vec(), unvault_txid.to_vec(),],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to 'spending': {}", e.to_string())))?;
+
+        Ok(())
+    })
+}
+
+pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id = (?2)",
+            params![VaultStatus::Spent as u32, vault_id,],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to 'spent': {}", e.to_string())))?;
 
         Ok(())
     })
@@ -571,6 +651,24 @@ pub fn db_mark_broadcasted_spend(
     })
 }
 
+/// Downgrade a Spend transaction that was broadcasted to being broadcastable
+pub fn db_mark_rebroadcastable_spend(
+    db_tx: &rusqlite::Transaction,
+    unvault_txid: &Txid,
+) -> Result<(), DatabaseError> {
+    db_tx.execute(
+        "UPDATE spend_transactions SET broadcasted = 0 WHERE id = ( \
+                SELECT sin.spend_id FROM spend_inputs as sin \
+                INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
+                INNER JOIN spend_transactions as stx ON stx.id = sin.spend_id \
+                WHERE ptx.txid = (?1) AND stx.broadcasted = 1 \
+            )",
+        params![unvault_txid.to_vec()],
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -664,10 +762,7 @@ mod test {
 
         setup_db(&mut revaultd).unwrap();
 
-        // Let's insert two new deposits and an unvault
-
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let first_deposit_outpoint = OutPoint::from_str(
             "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
         )
@@ -678,7 +773,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &first_deposit_outpoint,
             &amount,
             derivation_index,
@@ -687,7 +781,6 @@ mod test {
         .unwrap();
 
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let second_deposit_outpoint = OutPoint::from_str(
             "e56808d17a866de5a1d0874894c84a759a7cabc8763694966cc6423f4c597a7f:0",
         )
@@ -698,7 +791,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &second_deposit_outpoint,
             &amount,
             derivation_index,
@@ -707,7 +799,6 @@ mod test {
         .unwrap();
 
         let wallet_id = 1;
-        let status = VaultStatus::Unvaulting;
         let third_deposit_outpoint = OutPoint::from_str(
             "616efc37747c8cafc2f99692177a5400bad81b671d8d35ffa347d84b246e9a83:0",
         )
@@ -718,7 +809,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &third_deposit_outpoint,
             &amount,
             derivation_index,
@@ -731,7 +821,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id + 1,
-            &status,
             &third_deposit_outpoint,
             &amount,
             derivation_index,
@@ -739,29 +828,41 @@ mod test {
         )
         .unwrap_err();
 
-        // Now retrieve the deposits; there must be the first ones but not the
-        // unvaulting one.
+        // Now retrieve the deposits; there must all be there
+        let deposit_outpoints: Vec<OutPoint> = db_deposits(&db_path)
+            .unwrap()
+            .into_iter()
+            .map(|db_vault| db_vault.deposit_outpoint)
+            .collect();
+        assert_eq!(deposit_outpoints.len(), 3);
+        assert!(deposit_outpoints.contains(&first_deposit_outpoint));
+        assert!(deposit_outpoints.contains(&second_deposit_outpoint));
+        assert!(deposit_outpoints.contains(&third_deposit_outpoint));
+
+        // Now if we mark the first as being unvaulted we'll only fetch the two last ones
+        db_exec(&db_path, |tx| {
+            tx.execute(
+                "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+                 WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
+                params![
+                    VaultStatus::Unvaulting as u32,
+                    first_deposit_outpoint.txid.to_vec(),
+                    first_deposit_outpoint.vout
+                ],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
         let deposit_outpoints: Vec<OutPoint> = db_deposits(&db_path)
             .unwrap()
             .into_iter()
             .map(|db_vault| db_vault.deposit_outpoint)
             .collect();
         assert_eq!(deposit_outpoints.len(), 2);
-        assert!(deposit_outpoints.contains(&first_deposit_outpoint));
-        assert!(deposit_outpoints.contains(&second_deposit_outpoint));
-        assert!(!deposit_outpoints.contains(&third_deposit_outpoint));
-
-        // Now if we mark the first as being unvaulted we'll onlu fetch one
-        db_unvault_deposit(&db_path, &first_deposit_outpoint).unwrap();
-        let deposit_outpoints: Vec<OutPoint> = db_deposits(&db_path)
-            .unwrap()
-            .into_iter()
-            .map(|db_vault| db_vault.deposit_outpoint)
-            .collect();
-        assert_eq!(deposit_outpoints.len(), 1);
         assert!(!deposit_outpoints.contains(&first_deposit_outpoint));
         assert!(deposit_outpoints.contains(&second_deposit_outpoint));
-        assert!(!deposit_outpoints.contains(&third_deposit_outpoint));
+        assert!(deposit_outpoints.contains(&third_deposit_outpoint));
 
         fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
     }
@@ -774,7 +875,6 @@ mod test {
 
         // Let's insert a deposit
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint = OutPoint::from_str(
             "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
         )
@@ -785,7 +885,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint,
             &amount,
             derivation_index,
@@ -942,7 +1041,6 @@ mod test {
 
         // Let's insert a deposit
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint = OutPoint::from_str(
             "adaa5a4b9fb07c860f8de460727b6bad4b5ab01d2e7f90f6f3f15a0080020168:0",
         )
@@ -953,7 +1051,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint,
             &amount,
             derivation_index,
@@ -1021,7 +1118,6 @@ mod test {
 
         // Let's insert a deposit
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint = OutPoint::from_str(
             "c9cf38058b720050bcba47490ee27f4a29d57a5aa2ee0f3c97731e140dbeced7:1",
         )
@@ -1032,7 +1128,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint,
             &amount,
             derivation_index,
@@ -1101,7 +1196,6 @@ mod test {
         let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAe7jtZYQ3avFhc+JxU4paq8e26NIkAB1zHLgv6mKWxgBAAAAAAD9////AkANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4wdQAAAAAAACIAIAGCzzZ7K80GkoO2mUdCVIFx7Tum52UXob8ascs1uZucAAAAAAABASuIlAMAAAAAACIAIFvpTQQruW8AB+k+csGMaThNLBAzppkxo+k4Hb2SZ4hKAQMEAQAAAAEFR1IhAvkWJfB/ssW9YaE7llH/y/1FBJ/LK+ybOJiT8j+O4cnhIQIS4abTQKWATfsTrVsEPfkCUHvxY4M0F+ZDz502NXMy1FKuAAEBqiEC262VFMR0zQS8kl+14wQWuWrsU347lEh8RN7ydSV33ZWsUYdkdqkUvIrspFvJQ2XUVl4CuFGNICwJI1+IrGt2qRSfpUNGG4+BIoO9/dUxLcYpID+Aw4isbJNSh2dSIQKkxJmDMXYy1OdMI/x8PV9j3+1kQ0gpzuD+KqSeYfjzTiEDtqfLJXVbB4YRIpsvmVtBNS971+XfZqkNHdNV1Xcdw1lSrwKHG7JoAAEBJSEC262VFMR0zQS8kl+14wQWuWrsU347lEh8RN7ydSV33ZWsUYcA").unwrap();
         let fullysigned_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAe7jtZYQ3avFhc+JxU4paq8e26NIkAB1zHLgv6mKWxgBAAAAAAD9////AkANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4wdQAAAAAAACIAIAGCzzZ7K80GkoO2mUdCVIFx7Tum52UXob8ascs1uZucAAAAAAABASuIlAMAAAAAACIAIFvpTQQruW8AB+k+csGMaThNLBAzppkxo+k4Hb2SZ4hKIgICEuGm00ClgE37E61bBD35AlB78WODNBfmQ8+dNjVzMtRHMEQCID2my9yVWxgLSDKDBL5PmF9FVZC6b8mLu598Rq8oebjQAiB3FC3br7rS6bkKOKa4h9Ml1nicuPWpXTWjAWrALVTd+gEiAgL5FiXwf7LFvWGhO5ZR/8v9RQSfyyvsmziYk/I/juHJ4UcwRAIgGfJBreyXt5Isv9PjLRJCFy5jVrMGieGsvV01LTPf3/gCICS81/Mvot0WYdlXC+FnAQ4AprXIQH+g1pnDomBGO+UZAQEDBAEAAAABBUdSIQL5FiXwf7LFvWGhO5ZR/8v9RQSfyyvsmziYk/I/juHJ4SECEuGm00ClgE37E61bBD35AlB78WODNBfmQ8+dNjVzMtRSrgABAaohAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHZHapFLyK7KRbyUNl1FZeArhRjSAsCSNfiKxrdqkUn6VDRhuPgSKDvf3VMS3GKSA/gMOIrGyTUodnUiECpMSZgzF2MtTnTCP8fD1fY9/tZENIKc7g/iqknmH4804hA7anyyV1WweGESKbL5lbQTUve9fl32apDR3TVdV3HcNZUq8ChxuyaAABASUhAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHAA==").unwrap();
         let wallet_id = 1;
-        let status = VaultStatus::Funded;
         let outpoint_b = OutPoint::from_str(
             "2117d7c3461ca013a099d8e60b0bcc6c33aec95db49f636c479ab85117479a91:0",
         )
@@ -1112,7 +1206,6 @@ mod test {
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
-            &status,
             &outpoint_b,
             &amount,
             derivation_index,
@@ -1230,9 +1323,20 @@ mod test {
             .broadcasted
             .unwrap());
 
-        // And we can delete both..
-        db_delete_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid()).unwrap();
+        // And we can delete the transaction
         db_delete_spend(&db_path, &spend_txid).unwrap();
+        assert!(db_spend_transaction(&db_path, &spend_txid)
+            .unwrap()
+            .is_none());
+
+        // And if we unconfirm the vault, it'll delete the last remaining transaction
+        let txid_b = spend_tx_b.inner_tx().global.unsigned_tx.txid();
+        db_exec(&db_path, |db_tx| {
+            db_unconfirm_deposit_dbtx(&db_tx, db_vault.id).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert!(db_spend_transaction(&db_path, &txid_b).unwrap().is_none());
     }
 
     // We disabled #[test] for the above, as they may erase the db concurrently.

@@ -84,6 +84,27 @@ where
     x
 }
 
+fn db_query_tx<'a, P, F, T>(
+    db_tx: &Transaction,
+    stmt_str: &'a str,
+    params: P,
+    f: F,
+) -> Result<Vec<T>, DatabaseError>
+where
+    P: IntoIterator,
+    P::Item: ToSql,
+    F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
+{
+    // rustc says 'borrowed value does not live long enough'
+    db_tx
+        .prepare(stmt_str)
+        .map_err(|e| DatabaseError(format!("Preparing query: '{}'", e.to_string())))?
+        .query_map(params, f)
+        .map_err(|e| DatabaseError(format!("Mapping query: '{}'", e.to_string())))?
+        .collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(|e| DatabaseError(format!("Executing query: '{}'", e.to_string())))
+}
+
 /// Get the database version
 pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
     let mut rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
@@ -189,6 +210,9 @@ impl TryFrom<&Row<'_>> for DbVault {
         let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
         let received_at = row.get(8)?;
         let updated_at = row.get(9)?;
+        let spend_txid = row
+            .get::<_, Option<Vec<u8>>>(10)?
+            .map(|raw_txid| encode::deserialize(&raw_txid).expect("We only store valid txids"));
 
         Ok(DbVault {
             id,
@@ -200,6 +224,7 @@ impl TryFrom<&Row<'_>> for DbVault {
             derivation_index,
             received_at,
             updated_at,
+            spend_txid,
         })
     }
 }
@@ -216,11 +241,9 @@ pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
 
 /// Get all the vaults we know about from an already-created transaction
 pub fn db_vaults_dbtx(db_tx: &Transaction) -> Result<Vec<DbVault>, DatabaseError> {
-    db_tx
-        .prepare("SELECT * FROM vaults")?
-        .query_map(params![], |row| row.try_into())?
-        .collect::<rusqlite::Result<Vec<DbVault>>>()
-        .map_err(|e| e.into())
+    db_query_tx(db_tx, "SELECT * FROM vaults", params![], |row| {
+        row.try_into()
+    })
 }
 
 /// Get the vaults that didn't move onchain yet from the DB.
@@ -245,6 +268,56 @@ pub fn db_vault_by_deposit(
         |row| row.try_into(),
     )
     .map(|mut vault_list| vault_list.pop())
+}
+
+/// Get the vaults that were unvaulted but for which the Unvault was not spent yet from the DB.
+pub fn db_unvaulted_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, UnvaultTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults INNER JOIN presigned_transactions as ptx \
+         ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) OR vaults.status = (?2) AND ptx.type = (?3)",
+        &[
+            VaultStatus::Unvaulting as u32,
+            VaultStatus::Unvaulted as u32,
+            TransactionType::Unvault as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let unvault_tx: Vec<u8> = row.get(11)?;
+            let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, unvault_tx))
+        },
+    )
+}
+
+/// Get the vaults that are in the process of being spent, along with the respective Unvault
+/// transaction.
+pub fn db_spending_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, UnvaultTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults \
+         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) AND ptx.type = (?2)",
+        &[
+            VaultStatus::Spending as u32,
+            TransactionType::Unvault as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let unvault_tx: Vec<u8> = row.get(11)?;
+            let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, unvault_tx))
+        },
+    )
 }
 
 impl TryFrom<&Row<'_>> for DbTransaction {
@@ -327,6 +400,40 @@ pub fn db_unvault_transaction(
         db_tx.id,
         assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"),
     ))
+}
+
+/// Get the Unvault transaction for this vault from an existing database transaction
+pub fn db_unvault_dbtx(
+    db_tx: &Transaction,
+    vault_id: u32,
+) -> Result<Option<UnvaultTransaction>, DatabaseError> {
+    db_query_tx(
+        db_tx,
+        "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
+        params![vault_id, TransactionType::Unvault as u32],
+        |row| row.try_into(),
+    )
+    .map(|mut rows| {
+        rows.pop()
+            .map(|db_tx: DbTransaction| assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"))
+    })
+}
+
+/// Get the Unvault transaction corresponding to this vault from the database.
+/// Note that unconfirmed vaults don't have the Unvault transaction stored in database.
+pub fn db_unvault_from_deposit(
+    db_path: &PathBuf,
+    deposit: &OutPoint,
+) -> Result<Option<UnvaultTransaction>, DatabaseError> {
+    let db_unvault: Option<DbTransaction> = db_query(
+        db_path,
+        "SELECT * FROM presigned_transactions as ptx INNER JOIN vaults ON ptx.vault_id = vaults.id \
+         WHERE vaults.deposit_txid = (?1) AND vaults.deposit_vout = (?2) AND ptx.type = (?3)",
+        params![deposit.txid.to_vec(), deposit.vout, TransactionType::Unvault as u32],
+        |row| row.try_into()
+    ).map(|mut rows| rows.pop())?;
+
+    Ok(db_unvault.map(|db_tx| assert_tx_type!(db_tx.psbt, Unvault, "We just queried it")))
 }
 
 /// Get the Cancel transaction corresponding to this vault
@@ -413,10 +520,10 @@ pub fn db_vault_by_unvault_txid(
 
             // FIXME: there is probably a more extensible way to implement the from()s so we don't
             // have to change all those when adding a column
-            let id: u32 = row.get(10)?;
-            let psbt: Vec<u8> = row.get(11)?;
+            let id: u32 = row.get(11)?;
+            let psbt: Vec<u8> = row.get(12)?;
             let psbt = UnvaultTransaction::from_psbt_serialized(&psbt).expect("We store it");
-            let is_fully_signed = row.get(12)?;
+            let is_fully_signed = row.get(13)?;
             let db_tx = DbTransaction {
                 id,
                 vault_id: db_vault.id,
@@ -552,7 +659,7 @@ pub fn db_vaults_from_spend(
         params![spend_txid.to_vec()],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(10)?).expect("We store it");
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(11)?).expect("We store it");
             db_vaults.insert(txid, db_vault);
             Ok(())
         },

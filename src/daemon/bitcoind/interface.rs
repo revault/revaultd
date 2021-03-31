@@ -1,6 +1,6 @@
 use crate::{
     bitcoind::{BitcoindError, MIN_CONF},
-    revaultd::{BlockchainTip, VaultStatus},
+    revaultd::BlockchainTip,
 };
 use common::config::BitcoindConfig;
 use revault_tx::bitcoin::{
@@ -397,21 +397,18 @@ impl BitcoinD {
     }
 
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
-    /// We take the currently known utxos, and return both the new deposits and the spent deposits.
-    pub fn sync_deposits(
+    /// We take the currently known utxos, and return both the new and the spent ones for this
+    /// label.
+    fn sync_chainstate(
         &self,
-        existing_utxos: &HashMap<OutPoint, DepositInfo>,
-    ) -> Result<
-        (
-            HashMap<OutPoint, DepositInfo>, // new
-            HashMap<OutPoint, DepositInfo>, // newly confirmed
-            HashMap<OutPoint, DepositInfo>, // spent
-        ),
-        BitcoindError,
-    > {
-        let (mut new_deposits, mut confirmed_deposits) = (HashMap::new(), HashMap::new());
+        current_utxos: &HashMap<OutPoint, UtxoInfo>,
+        label: String,
+        min_conf: u64,
+    ) -> Result<OnchainDescriptorState, BitcoindError> {
+        let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
-        let mut spent_deposits = existing_utxos.clone();
+        let mut spent_utxos = current_utxos.clone();
+        let label_json: Json = label.into();
 
         for utxo in self
             .make_watchonly_request(
@@ -425,7 +422,7 @@ impl BitcoinD {
                 )
             })?
         {
-            if utxo.get("label") != Some(&self.deposit_utxos_label().into()) {
+            if utxo.get("label") != Some(&label_json) {
                 continue;
             }
             let confirmations = utxo
@@ -446,13 +443,14 @@ impl BitcoinD {
 
             let outpoint = self.outpoint_from_utxo(&utxo)?;
             // Not obvious at first sight:
-            //  - spent_deposits == existing_deposits before the loop
+            //  - spent_utxos == existing_utxos before the loop
             //  - listunspent won't send duplicated entries
-            //  - remove() will return None if it was not present in the map, ie new deposit
-            if let Some(utxo) = spent_deposits.remove(&outpoint) {
-                // It may be present but still unconfirmed, though.
-                if utxo.status == VaultStatus::Unconfirmed && confirmations >= MIN_CONF {
-                    confirmed_deposits.insert(outpoint, utxo);
+            //  - remove() will return None if it was not present in the map
+            // Therefore if there is an utxo at this outpoint, it's an already known deposit
+            if let Some(utxo) = spent_utxos.remove(&outpoint) {
+                // It may be known but still unconfirmed, though.
+                if !utxo.is_confirmed && confirmations >= min_conf {
+                    confirmed_utxos.insert(outpoint, utxo);
                 }
                 continue;
             }
@@ -502,19 +500,39 @@ impl BitcoinD {
                 })?
                 .as_sat();
 
-            new_deposits.insert(
+            new_utxos.insert(
                 outpoint,
-                DepositInfo {
+                UtxoInfo {
                     txo: TxOut {
                         value,
                         script_pubkey,
                     },
-                    status: VaultStatus::Unconfirmed,
+                    // All new utxos are marked as unconfirmed. This allows for a proper state
+                    // transition.
+                    is_confirmed: false,
                 },
             );
         }
 
-        Ok((new_deposits, confirmed_deposits, spent_deposits))
+        Ok(OnchainDescriptorState {
+            new_unconf: new_utxos,
+            new_conf: confirmed_utxos,
+            new_spent: spent_utxos,
+        })
+    }
+
+    pub fn sync_deposits(
+        &self,
+        deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
+    ) -> Result<OnchainDescriptorState, BitcoindError> {
+        self.sync_chainstate(deposits_utxos, self.deposit_utxos_label(), MIN_CONF)
+    }
+
+    pub fn sync_unvaults(
+        &self,
+        unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
+    ) -> Result<OnchainDescriptorState, BitcoindError> {
+        self.sync_chainstate(unvault_utxos, self.unvault_utxos_label(), 1)
     }
 
     /// Get the raw transaction as hex, the blockheight it was included in if
@@ -558,75 +576,6 @@ impl BitcoinD {
         Ok((tx_hex, blockheight, received))
     }
 
-    // This assumes wallet transactions, will error otherwise !
-    fn previous_outpoints(&self, outpoint: &OutPoint) -> Result<Vec<OutPoint>, BitcoindError> {
-        Ok(self
-            .make_watchonly_request(
-                "gettransaction",
-                &params!(
-                    Json::String(outpoint.txid.to_string()),
-                    Json::Bool(true), // include_watchonly
-                    Json::Bool(true), // verbose
-                ),
-            )?
-            .get("decoded")
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break: 'gettransaction' has no 'hex' in verbose mode?".to_string(),
-                )
-            })?
-            .get("vin")
-            .ok_or_else(|| {
-                BitcoindError::Custom("API break: 'gettransaction' has no 'vin' ?".to_string())
-            })?
-            .as_array()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break: 'gettransaction' 'vin' isn't an array?".to_string(),
-                )
-            })?
-            .iter()
-            .filter_map(|txin| {
-                Some(OutPoint {
-                    txid: Txid::from_str(txin.get("txid")?.as_str()?).ok()?,
-                    vout: txin.get("vout")?.as_u64()? as u32,
-                })
-            })
-            .collect())
-    }
-
-    /// There is no good way to get the "spending transaction" from an utxo in bitcoind.
-    /// So here we workaround it leveraging the fact we know the unvault address. So we list
-    /// the unvault address transactions and check if one spent this outpoint to this address.
-    pub fn unvault_from_vault(
-        &self,
-        vault_outpoint: &OutPoint,
-        unvault_address: String,
-    ) -> Result<Option<OutPoint>, BitcoindError> {
-        let res = self.make_watchonly_request(
-            "listunspent",
-            &params!(
-                Json::Number(serde_json::Number::from(0)),       // minconf
-                Json::Number(serde_json::Number::from(9999999)), // maxconf (default)
-                Json::Array(vec![Json::String(unvault_address)]),
-            ),
-        )?;
-        let utxos = res.as_array().ok_or_else(|| {
-            BitcoindError::Custom("API break: 'listunspent' didn't return an array".to_string())
-        })?;
-
-        for utxo in utxos {
-            let outpoint = self.outpoint_from_utxo(&utxo)?;
-            for prev_outpoint in self.previous_outpoints(&outpoint)? {
-                if &prev_outpoint == vault_outpoint {
-                    return Ok(Some(outpoint));
-                }
-            }
-        }
-
-        Ok(None)
-    }
-
     /// Broadcast a transaction with 'sendrawtransaction', discarding the returned txid
     pub fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), BitcoindError> {
         let tx_hex = encode::serialize_hex(tx);
@@ -634,6 +583,132 @@ impl BitcoinD {
         self.make_watchonly_request("sendrawtransaction", &params!(Json::String(tx_hex)))
             .map(|_| ())
     }
+
+    /// Broadcast a transaction that is already part of the wallet
+    pub fn rebroadcast_wallet_tx(&self, txid: &Txid) -> Result<(), BitcoindError> {
+        let (hex, _, _) = self.get_wallet_transaction(txid)?;
+        log::debug!("Re-broadcasting '{}'", hex);
+        self.make_watchonly_request("sendrawtransaction", &params!(Json::String(hex)))
+            .map(|_| ())
+    }
+
+    /// So, bitcoind has no API for getting the transaction spending a wallet UTXO. Instead we are
+    /// therefore using a rather convoluted way to get it the other way around, since the spending
+    /// transaction is actually *part of the wallet transactions*.
+    /// So, what we do there is listing all outgoing transactions of the wallet since the last poll
+    /// and iterating through each of those to check if it spends the transaction we are interested
+    /// in (requiring an other RPC call for each!!).
+    pub fn get_spender_txid(
+        &self,
+        spent_outpoint: &OutPoint,
+        block_hash: &BlockHash,
+    ) -> Result<Option<Txid>, BitcoindError> {
+        let lsb_res = self.make_watchonly_request(
+            "listsinceblock",
+            &params!(Json::String(block_hash.to_string())),
+        )?;
+        let transactions = lsb_res
+            .get("transactions")
+            .map(|t| t.as_array())
+            .flatten()
+            .ok_or_else(|| {
+                BitcoindError::Custom(format!(
+                    "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
+                    block_hash
+                ))
+            })?;
+
+        for transaction in transactions {
+            if transaction.get("category").map(|c| c.as_str()).flatten() != Some("send") {
+                continue;
+            }
+
+            // TODO: i think we can also filter out the entries *with* a "revault-somthing" label,
+            // but we need to be sure.
+
+            let spending_txid = transaction
+                .get("txid")
+                .map(|t| t.as_str())
+                .flatten()
+                .ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
+                        block_hash
+                    ))
+                })?;
+
+            let gettx_res = self.make_watchonly_request(
+                "gettransaction",
+                &params!(
+                    Json::String(spending_txid.to_string()),
+                    Json::Bool(true), // watchonly
+                    Json::Bool(true)  // verbose
+                ),
+            )?;
+            let vin = gettx_res
+                .get("decoded")
+                .map(|d| d.get("vin").map(|vin| vin.as_array()))
+                .flatten()
+                .flatten()
+                .ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
+                        block_hash
+                    ))
+                })?;
+
+            for input in vin {
+                let txid = input
+                    .get("txid")
+                    .map(|t| t.as_str().map(|t| Txid::from_str(t).ok()))
+                    .flatten()
+                    .flatten().ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
+                        block_hash
+                    ))
+                })?;
+                let vout = input.get("vout").map(|v| v.as_u64()).flatten().ok_or_else(|| {
+                    BitcoindError::Custom(format!(
+                        "API break: Invalid or no vout in 'vin' entry in 'gettransaction' (blockhash: {})",
+                        block_hash
+                    ))
+                })? as u32;
+                let input_outpoint = OutPoint { txid, vout };
+
+                if spent_outpoint == &input_outpoint {
+                    return Txid::from_str(spending_txid)
+                        .map(|txid| Some(txid))
+                        .map_err(|e| {
+                            BitcoindError::Custom(format!(
+                                "bitcoind gave an invalid txid in 'listsinceblock': '{}'",
+                                e
+                            ))
+                        });
+                }
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+/// Information about an utxo one of our descriptors points to.
+#[derive(Debug, Clone)]
+pub struct UtxoInfo {
+    pub txo: TxOut,
+    pub is_confirmed: bool,
+}
+
+/// New informations about sets of utxos represented by a descriptor that actually ended
+/// up onchain.
+pub struct OnchainDescriptorState {
+    /// The set of newly "received" utxos
+    pub new_unconf: HashMap<OutPoint, UtxoInfo>,
+    /// The set of newly confirmed utxos
+    pub new_conf: HashMap<OutPoint, UtxoInfo>,
+    /// The set of newly spent utxos
+    pub new_spent: HashMap<OutPoint, UtxoInfo>,
 }
 
 pub struct SyncInfo {
@@ -641,11 +716,4 @@ pub struct SyncInfo {
     pub blocks: u64,
     pub ibd: bool,
     pub progress: f64,
-}
-
-// Used in deposits cache for listunspent polling
-#[derive(Debug, Clone)]
-pub struct DepositInfo {
-    pub txo: TxOut,
-    pub status: VaultStatus,
 }

@@ -39,7 +39,6 @@ use revault_tx::{
 pub enum VaultStatus {
     /// The deposit transaction has less than 6 confirmations
     Unconfirmed,
-    // FIXME: Do we assume "no reorgs > 6 blocks" ?
     /// The deposit transaction has more than 6 confirmations
     Funded,
     /// The emergency transaction is signed
@@ -63,8 +62,6 @@ pub enum VaultStatus {
     UnvaultEmergencyVaulting,
     /// The unvault emergency transactions is confirmed
     UnvaultEmergencyVaulted,
-    /// The unvault transaction CSV is expired
-    Spendable,
     /// The spend transaction has been broadcast
     Spending,
     // TODO: At what depth do we forget it ?
@@ -89,9 +86,8 @@ impl TryFrom<u32> for VaultStatus {
             9 => Ok(Self::EmergencyVaulted),
             10 => Ok(Self::UnvaultEmergencyVaulting),
             11 => Ok(Self::UnvaultEmergencyVaulted),
-            12 => Ok(Self::Spendable),
-            13 => Ok(Self::Spending),
-            14 => Ok(Self::Spent),
+            12 => Ok(Self::Spending),
+            13 => Ok(Self::Spent),
             _ => Err(()),
         }
     }
@@ -114,7 +110,6 @@ impl FromStr for VaultStatus {
             "emergencyvaulted" => Ok(Self::EmergencyVaulted),
             "unvaultermergencyvaulting" => Ok(Self::UnvaultEmergencyVaulting),
             "unvaultermergencyvaulted" => Ok(Self::UnvaultEmergencyVaulted),
-            "spendable" => Ok(Self::Spendable),
             "spending" => Ok(Self::Spending),
             "spent" => Ok(Self::Spent),
             _ => Err(()),
@@ -140,7 +135,6 @@ impl fmt::Display for VaultStatus {
                 Self::EmergencyVaulted => "emergencyvaulted",
                 Self::UnvaultEmergencyVaulting => "unvaultermergencyvaulting",
                 Self::UnvaultEmergencyVaulted => "unvaultermergencyvaulted",
-                Self::Spendable => "spendable",
                 Self::Spending => "spending",
                 Self::Spent => "spent",
             }

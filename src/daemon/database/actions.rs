@@ -472,6 +472,34 @@ pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), Dat
     })
 }
 
+/// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.
+pub fn db_mark_securing_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id = (?2)",
+            params![VaultStatus::Securing as u32, vault_id],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to 'securing': {}", e.to_string())))?;
+
+        Ok(())
+    })
+}
+
+/// Mark that we actually signed this vault's Unvault tx, and stored the signature for it.
+pub fn db_mark_activating_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id = (?2)",
+            params![VaultStatus::Activating as u32, vault_id],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to 'securing': {}", e.to_string())))?;
+
+        Ok(())
+    })
+}
+
 fn revault_tx_merge_sigs(
     tx: &mut impl RevaultTransaction,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,

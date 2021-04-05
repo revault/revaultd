@@ -68,17 +68,19 @@ Get an address to build a deposit transaction.
 | ----- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
 | 0     | `unconfirmed`        | The vault's deposit transaction is less than 6 blocks-deep in the chain                                      |
 | 1     | `funded`             | The vault is initiated by a deposit transaction                                                              |
-| 2     | `secured`            | The vault's emergency transaction is fully signed and shared with the watchtowers                            |
-| 3     | `active`             | The vault's unvault, cancel, and unvault-emergency txs are fully signed and shared with the watchtowers      |
-| 4     | `unvaulting`         | The vault has its unvault tx broadcasted                                                                     |
-| 5     | `unvaulted`          | The vault has its unvault tx confirmed                                                                       |
-| 6     | `cancelling`         | The vault has its cancel tx broadcasted, funds are sent to an other vault                                    |
-| 7     | `cancelled`          | The vault has its cancel tx confirmed, funds are in an other vault                                           |
-| 3 / 6 | `emergency_vaulting` | The vault has its emergency tx broadcasted, funds are sent to the Deep Emergency Vault                       |
-| 4 / 7 | `emergency_vaulted`  | The vault has its emergency tx confirmed, funds are in the Deep Emergency Vault                              |
-| 6     | `spendable`          | The vault has its unvault tx timelock expired and can be spent                                               |
-| 7     | `spending`           | The vault has a spending tx broadcasted                                                                      |
-| 8     | `spent`              | The vault has a spending tx confirmed, the vault is spent                                                    |
+| 2     | `securing`           | We signed and shared the revocation transactions signatures for this vault                                   |
+| 3     | `secured`            | Everyone signed and shared the revocation transactions signatures for this vault                             |
+| 4     | `activating`         | We signed and shared the Unvault transaction signature for this vault                                        |
+| 5     | `active`             | Everyone signed and shared the Unvault transaction signature for this vault                                  |
+| 6     | `unvaulting`         | The vault has its unvault tx broadcasted                                                                     |
+| 7     | `unvaulted`          | The vault has its unvault tx confirmed                                                                       |
+| 8     | `cancelling`         | The vault has its cancel tx broadcasted, funds are sent to an other vault                                    |
+| 9     | `cancelled`          | The vault has its cancel tx confirmed, funds are in an other vault                                           |
+| 4 / 8 | `emergency_vaulting` | The vault has its emergency tx broadcasted, funds are sent to the Deep Emergency Vault                       |
+| 5 / 9 | `emergency_vaulted`  | The vault has its emergency tx confirmed, funds are in the Deep Emergency Vault                              |
+| 8     | `spendable`          | The vault has its unvault tx timelock expired and can be spent                                               |
+| 9     | `spending`           | The vault has a spending tx broadcasted                                                                      |
+| 10    | `spent`              | The vault has a spending tx confirmed, the vault is spent                                                    |
 
 ### Vault resource
 

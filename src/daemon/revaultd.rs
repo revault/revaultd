@@ -22,10 +22,10 @@ use revault_tx::{
         util::bip32::{ChildNumber, ExtendedPubKey},
         Address, BlockHash, Script, TxOut,
     },
-    miniscript::descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
+    miniscript::descriptor::{DescriptorPublicKey, DescriptorTrait},
     scripts::{
-        cpfp_descriptor, deposit_descriptor, unvault_descriptor, CpfpDescriptor, DepositDescriptor,
-        EmergencyAddress, UnvaultDescriptor,
+        CpfpDescriptor, DepositDescriptor, DerivedCpfpDescriptor, DerivedDepositDescriptor,
+        DerivedUnvaultDescriptor, EmergencyAddress, UnvaultDescriptor,
     },
     transactions::{
         CancelTransaction, DepositTransaction, EmergencyTransaction, UnvaultEmergencyTransaction,
@@ -245,11 +245,11 @@ pub struct RevaultD {
     pub our_stk_xpub: Option<ExtendedPubKey>,
     pub our_man_xpub: Option<ExtendedPubKey>,
     /// The miniscript descriptor of vault's outputs scripts
-    pub deposit_descriptor: DepositDescriptor<DescriptorPublicKey>,
+    pub deposit_descriptor: DepositDescriptor,
     /// The miniscript descriptor of unvault's outputs scripts
-    pub unvault_descriptor: UnvaultDescriptor<DescriptorPublicKey>,
+    pub unvault_descriptor: UnvaultDescriptor,
     /// The miniscript descriptor of CPFP output scripts (in unvault and spend transaction)
-    pub cpfp_descriptor: CpfpDescriptor<DescriptorPublicKey>,
+    pub cpfp_descriptor: CpfpDescriptor,
     /// The Emergency address, only available if we are a stakeholder
     pub emergency_address: Option<EmergencyAddress>,
     /// We don't make an enormous deal of address reuse (we cancel to the same keys),
@@ -325,15 +325,15 @@ impl RevaultD {
         let stakeholders_pubkeys = config.stakeholders_xpubs;
         let cosigners_pubkeys = config.cosigners_keys;
 
-        let deposit_descriptor = deposit_descriptor(stakeholders_pubkeys.clone())?;
-        let unvault_descriptor = unvault_descriptor(
+        let deposit_descriptor = DepositDescriptor::new(stakeholders_pubkeys.clone())?;
+        let unvault_descriptor = UnvaultDescriptor::new(
             stakeholders_pubkeys,
             managers_pubkeys.clone(),
             managers_pubkeys.len(),
             cosigners_pubkeys,
             config.unvault_csv,
         )?;
-        let cpfp_descriptor = cpfp_descriptor(managers_pubkeys.clone())?;
+        let cpfp_descriptor = CpfpDescriptor::new(managers_pubkeys.clone())?;
         let emergency_address = config.stakeholder_config.map(|x| x.emergency_address);
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
@@ -410,12 +410,6 @@ impl RevaultD {
         [data_dir_str, file_name].iter().collect()
     }
 
-    /// The context required for deriving keys. We don't use it, as it's redundant with the
-    /// descriptor derivation, therefore the ChildNumber is always 0.
-    pub fn xpub_ctx(&self) -> DescriptorPublicKeyCtx<'_, secp256k1::VerifyOnly> {
-        DescriptorPublicKeyCtx::new(&self.secp_ctx, ChildNumber::from(0))
-    }
-
     /// Our Noise static public key
     pub fn noise_pubkey(&self) -> NoisePubKey {
         let scalar = curve25519::Scalar(self.noise_secret.0);
@@ -424,17 +418,17 @@ impl RevaultD {
 
     pub fn vault_address(&self, child_number: ChildNumber) -> Address {
         self.deposit_descriptor
-            .derive(child_number)
-            .0
-            .address(self.bitcoind_config.network, self.xpub_ctx())
+            .derive(child_number, &self.secp_ctx)
+            .inner()
+            .address(self.bitcoind_config.network)
             .expect("deposit_descriptor is a wsh")
     }
 
     pub fn unvault_address(&self, child_number: ChildNumber) -> Address {
         self.unvault_descriptor
-            .derive(child_number)
-            .0
-            .address(self.bitcoind_config.network, self.xpub_ctx())
+            .derive(child_number, &self.secp_ctx)
+            .inner()
+            .address(self.bitcoind_config.network)
             .expect("unvault_descriptor is a wsh")
     }
 
@@ -518,6 +512,18 @@ impl RevaultD {
                     .to_string()
             })
             .collect()
+    }
+
+    pub fn derived_deposit_descriptor(&self, index: ChildNumber) -> DerivedDepositDescriptor {
+        self.deposit_descriptor.derive(index, &self.secp_ctx)
+    }
+
+    pub fn derived_unvault_descriptor(&self, index: ChildNumber) -> DerivedUnvaultDescriptor {
+        self.unvault_descriptor.derive(index, &self.secp_ctx)
+    }
+
+    pub fn derived_cpfp_descriptor(&self, index: ChildNumber) -> DerivedCpfpDescriptor {
+        self.cpfp_descriptor.derive(index, &self.secp_ctx)
     }
 }
 

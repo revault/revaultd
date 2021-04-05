@@ -26,6 +26,7 @@ use crate::{
 use common::{assume_ok, config::BitcoindConfig};
 use revault_tx::{
     bitcoin::{Amount, Network, OutPoint, TxOut, Txid},
+    miniscript::DescriptorTrait,
     transactions::{
         transaction_chain, transaction_chain_manager, CancelTransaction, EmergencyTransaction,
         RevaultTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -62,6 +63,7 @@ fn check_bitcoind_network(
         Network::Bitcoin => "main",
         Network::Testnet => "test",
         Network::Regtest => "regtest",
+        Network::Signet => "signet",
     };
 
     if !bip70_net.eq(chain) {
@@ -295,13 +297,11 @@ fn mark_confirmed_spends(
     let db_path = revaultd.read().unwrap().db_file();
 
     for (db_vault, unvault_tx) in db_spending_vaults(&db_path)? {
-        let unvault_descriptor = revaultd
+        let der_unvault_descriptor = revaultd
             .read()
             .unwrap()
-            .unvault_descriptor
-            .derive(db_vault.derivation_index);
-        let unvault_txin = unvault_tx
-            .revault_unvault_txin(&unvault_descriptor, revaultd.read().unwrap().xpub_ctx());
+            .derived_unvault_descriptor(db_vault.derivation_index);
+        let unvault_txin = unvault_tx.revault_unvault_txin(&der_unvault_descriptor);
         let unvault_outpoint = unvault_txin.outpoint();
         let spend_txid = &db_vault.spend_txid.expect("Must be set for 'spending'");
 
@@ -370,13 +370,11 @@ fn mark_confirmed_cancels(
             // If it was evicted, downgrade it to `unvaulted`, the listunspent polling loop will
             // take care of checking its new state immediately.
             let (_, unvault_tx) = db_unvault_transaction(&db_path, db_vault.id)?;
-            let unvault_descriptor = revaultd
-                .read()
-                .unwrap()
-                .unvault_descriptor
-                .derive(db_vault.derivation_index);
-            let unvault_txin = unvault_tx
-                .revault_unvault_txin(&unvault_descriptor, revaultd.read().unwrap().xpub_ctx());
+            let unvault_descriptor = revaultd.read().unwrap().unvault_descriptor.derive(
+                db_vault.derivation_index,
+                &revaultd.read().unwrap().secp_ctx,
+            );
+            let unvault_txin = unvault_tx.revault_unvault_txin(&unvault_descriptor);
             let unvault_outpoint = unvault_txin.outpoint();
 
             db_confirm_unvault(&db_path, &unvault_tx.inner_tx().global.unsigned_tx.txid())?;
@@ -457,13 +455,12 @@ fn unconfirm_unvault(
 
     // Then either repopulate the cache (we remove the entry on spend) or update the
     // cache accordingly.
-    let unvault_descriptor = revaultd
+    let der_unvault_descriptor = revaultd
         .read()
         .unwrap()
         .unvault_descriptor
-        .derive(vault.derivation_index);
-    let unvault_txin =
-        unvault_tx.revault_unvault_txin(&unvault_descriptor, revaultd.read().unwrap().xpub_ctx());
+        .derive(vault.derivation_index, &revaultd.read().unwrap().secp_ctx);
+    let unvault_txin = unvault_tx.revault_unvault_txin(&der_unvault_descriptor);
     let unvault_outpoint = unvault_txin.outpoint();
     let txo = unvault_txin.into_txout().into_txout();
     if matches!(vault.status, VaultStatus::Spent | VaultStatus::Spending) {
@@ -834,8 +831,8 @@ fn update_tip(
 // Get fresh to-be-presigned transactions for this deposit utxo
 fn presigned_transactions(
     revaultd: &RevaultD,
-    outpoint: &OutPoint,
-    utxo: &UtxoInfo,
+    outpoint: OutPoint,
+    utxo: UtxoInfo,
 ) -> Result<
     (
         UnvaultTransaction,
@@ -852,39 +849,36 @@ fn presigned_transactions(
         .ok_or_else(|| {
             BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
         })?;
-    let deposit_descriptor = revaultd.deposit_descriptor.derive(derivation_index);
-    let unvault_descriptor = revaultd.unvault_descriptor.derive(derivation_index);
-    let cpfp_descriptor = revaultd.cpfp_descriptor.derive(derivation_index);
 
     // Reconstruct the deposit UTXO and derive all pre-signed transactions out of it
     // if we are a stakeholder, and only the Unvault and the Cancel if we are a manager.
-    let deposit_txin = DepositTxIn::new(
-        *outpoint,
-        DepositTxOut::new(utxo.txo.value, &deposit_descriptor, revaultd.xpub_ctx()),
-    );
     if revaultd.is_stakeholder() {
         let emer_address = revaultd
             .emergency_address
             .clone()
             .expect("We are a stakeholder");
         let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
-            deposit_txin,
-            &deposit_descriptor,
-            &unvault_descriptor,
-            &cpfp_descriptor,
+            outpoint,
+            Amount::from_sat(utxo.txo.value),
+            &revaultd.deposit_descriptor,
+            &revaultd.unvault_descriptor,
+            &revaultd.cpfp_descriptor,
+            derivation_index,
             emer_address,
-            revaultd.xpub_ctx(),
             revaultd.lock_time,
+            &revaultd.secp_ctx,
         )?;
         Ok((unvault_tx, cancel_tx, Some(emer_tx), Some(unemer_tx)))
     } else {
         let (unvault_tx, cancel_tx) = transaction_chain_manager(
-            deposit_txin,
-            &deposit_descriptor,
-            &unvault_descriptor,
-            &cpfp_descriptor,
-            revaultd.xpub_ctx(),
+            outpoint,
+            Amount::from_sat(utxo.txo.value),
+            &revaultd.deposit_descriptor,
+            &revaultd.unvault_descriptor,
+            &revaultd.cpfp_descriptor,
+            derivation_index,
             revaultd.lock_time,
+            &revaultd.secp_ctx,
         )?;
         Ok((unvault_tx, cancel_tx, None, None))
     }
@@ -898,10 +892,10 @@ fn populate_deposit_cache(
     let mut cache = HashMap::with_capacity(db_vaults.len());
 
     for db_vault in db_vaults.into_iter() {
-        // FIXME: use descriptor script pubkey post revault_tx update
-        let script_pubkey = revaultd
-            .vault_address(db_vault.derivation_index)
-            .script_pubkey();
+        let der_deposit_descriptor = revaultd
+            .deposit_descriptor
+            .derive(db_vault.derivation_index, &revaultd.secp_ctx);
+        let script_pubkey = der_deposit_descriptor.inner().script_pubkey();
         let txo = TxOut {
             script_pubkey,
             value: db_vault.amount.as_sat(),
@@ -927,11 +921,8 @@ fn populate_unvaults_cache(
     let mut cache = HashMap::with_capacity(db_unvaults.len());
 
     for (db_vault, unvault_tx) in db_unvaults.into_iter() {
-        let unvault_descriptor = revaultd
-            .unvault_descriptor
-            .derive(db_vault.derivation_index);
-        let unvault_txin =
-            unvault_tx.revault_unvault_txin(&unvault_descriptor, revaultd.xpub_ctx());
+        let unvault_descriptor = revaultd.derived_unvault_descriptor(db_vault.derivation_index);
+        let unvault_txin = unvault_tx.revault_unvault_txin(&unvault_descriptor);
         let unvault_outpoint = unvault_txin.outpoint();
         let txo = unvault_txin.into_txout().into_txout();
         cache.insert(
@@ -958,35 +949,30 @@ fn unvault_outpoint_from_deposit(
 ) -> Result<OutPoint, BitcoindError> {
     let revaultd = revaultd.read().unwrap();
     let db_path = revaultd.db_file();
-    let xpub_ctx = revaultd.xpub_ctx();
     let db_vault = db_vault_by_deposit(&db_path, &deposit_outpoint)?
         .expect("Checking Unvault txid for an unknow deposit");
-    let unvault_descriptor = revaultd
-        .unvault_descriptor
-        .derive(db_vault.derivation_index);
+    let unvault_descriptor = revaultd.derived_unvault_descriptor(db_vault.derivation_index);
 
     let unvault_tx = if let Some(tx) = db_unvault_from_deposit(&db_path, &deposit_outpoint)? {
         tx
     } else {
-        let deposit_descriptor = revaultd
-            .deposit_descriptor
-            .derive(db_vault.derivation_index);
-        let deposit_txo = DepositTxOut::new(deposit_utxo.value, &deposit_descriptor, xpub_ctx);
+        let deposit_descriptor = revaultd.derived_deposit_descriptor(db_vault.derivation_index);
+
+        let deposit_txo = DepositTxOut::new(deposit_utxo.value, &deposit_descriptor);
         let deposit_txin = DepositTxIn::new(*deposit_outpoint, deposit_txo);
 
-        let cpfp_descriptor = revaultd.cpfp_descriptor.derive(db_vault.derivation_index);
+        let cpfp_descriptor = revaultd.derived_cpfp_descriptor(db_vault.derivation_index);
         UnvaultTransaction::new(
             deposit_txin,
             &unvault_descriptor,
             &cpfp_descriptor,
-            xpub_ctx,
             revaultd.lock_time,
         )
         .map_err(|e| BitcoindError::Custom(format!("Error deriving Unvault tx: '{}'", e)))?
     };
 
     Ok(unvault_tx
-        .revault_unvault_txin(&unvault_descriptor, xpub_ctx)
+        .revault_unvault_txin(&unvault_descriptor)
         .outpoint())
 }
 
@@ -1004,31 +990,15 @@ fn cancel_txid(
     let cancel_tx = if let Some((_, db_tx)) = db_cancel_transaction(&db_path, db_vault.id)? {
         db_tx
     } else {
-        // TODO: clean up after upgrading revault_tx to latest rust-miniscript
-        let deposit_descriptor = revaultd
-            .deposit_descriptor
-            .derive(db_vault.derivation_index);
-        let unvault_descriptor = revaultd
-            .unvault_descriptor
-            .derive(db_vault.derivation_index);
-        let cpfp_descriptor = revaultd.cpfp_descriptor.derive(db_vault.derivation_index);
-
-        let deposit_txin = DepositTxIn::new(
-            db_vault.deposit_outpoint,
-            DepositTxOut::new(
-                db_vault.amount.as_sat(),
-                &deposit_descriptor,
-                revaultd.xpub_ctx(),
-            ),
-        );
-
         let (_, cancel_tx) = transaction_chain_manager(
-            deposit_txin,
-            &deposit_descriptor,
-            &unvault_descriptor,
-            &cpfp_descriptor,
-            revaultd.xpub_ctx(),
+            db_vault.deposit_outpoint,
+            db_vault.amount,
+            &revaultd.deposit_descriptor,
+            &revaultd.unvault_descriptor,
+            &revaultd.cpfp_descriptor,
+            db_vault.derivation_index,
             revaultd.lock_time,
+            &revaultd.secp_ctx,
         )?;
         cancel_tx
     };
@@ -1208,7 +1178,7 @@ fn update_utxos(
             })?;
         // emer_tx and unemer_tx are None for managers
         let (unvault_tx, cancel_tx, emer_tx, unemer_tx) =
-            presigned_transactions(&revaultd.read().unwrap(), &outpoint, &utxo)?;
+            presigned_transactions(&revaultd.read().unwrap(), outpoint, utxo)?;
         db_confirm_deposit(
             &revaultd.read().unwrap().db_file(),
             &outpoint,

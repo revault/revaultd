@@ -41,10 +41,7 @@ use revault_tx::{
         util::bip32::ChildNumber,
         Network, OutPoint, PublicKey as BitcoinPubKey, SigHashType, TxOut, Txid,
     },
-    miniscript::{
-        descriptor::{DescriptorPublicKey, DescriptorPublicKeyCtx},
-        ToPublicKey,
-    },
+    miniscript::descriptor::DescriptorPublicKey,
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
         RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -452,7 +449,6 @@ fn check_unvault_signatures(
 // already finalized.
 fn check_spend_signatures(
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    xpub_ctx: DescriptorPublicKeyCtx<'_, secp256k1::VerifyOnly>,
     psbt: &SpendTransaction,
     managers_pubkeys: Vec<DescriptorPublicKey>,
     db_vaults: &HashMap<Txid, DbVault>,
@@ -472,9 +468,12 @@ fn check_spend_signatures(
 
         // All pubkeys use the same one, fortunately!
         for pubkey in managers_pubkeys.clone().into_iter() {
-            let pubkey = pubkey
-                .derive(db_vault.derivation_index)
-                .to_public_key(xpub_ctx);
+            let pubkey = assume_ok!(
+                pubkey
+                    .derive(db_vault.derivation_index.into())
+                    .derive_public_key(secp),
+                "We just derived a non hardened index"
+            );
             let sig = psbtin
                 .partial_sigs
                 .get(&pubkey)
@@ -718,7 +717,6 @@ pub fn handle_rpc_messages(
             RpcMessageIn::GetRevocationTxs(outpoint, response_tx) => {
                 log::trace!("Got 'getrevocationtxs' request from RPC thread");
                 let revaultd = revaultd.read().unwrap();
-                let xpub_ctx = revaultd.xpub_ctx();
                 let db_file = &revaultd.db_file();
 
                 // First, make sure the vault exists and is confirmed.
@@ -730,31 +728,22 @@ pub fn handle_rpc_messages(
                     },
                 };
                 if let Some(vault) = vault {
-                    // Second, derive the fully-specified deposit txout.
-                    let deposit_descriptor =
-                        revaultd.deposit_descriptor.derive(vault.derivation_index);
-                    let deposit_txin = DepositTxIn::new(
-                        outpoint,
-                        DepositTxOut::new(vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
-                    );
-
                     // Third, re-derive all the transactions out of it.
-                    let unvault_descriptor =
-                        revaultd.unvault_descriptor.derive(vault.derivation_index);
-                    let cpfp_descriptor = revaultd.cpfp_descriptor.derive(vault.derivation_index);
                     let emer_address = revaultd
                         .emergency_address
                         .clone()
                         .expect("The JSONRPC API checked we were a stakeholder");
 
                     let (_, cancel, emergency, unvault_emer) = transaction_chain(
-                        deposit_txin,
-                        &deposit_descriptor,
-                        &unvault_descriptor,
-                        &cpfp_descriptor,
+                        outpoint,
+                        vault.amount,
+                        &revaultd.deposit_descriptor,
+                        &revaultd.unvault_descriptor,
+                        &revaultd.cpfp_descriptor,
+                        vault.derivation_index,
                         emer_address,
-                        xpub_ctx,
                         revaultd.lock_time,
+                        &revaultd.secp_ctx,
                     )?;
 
                     response_tx.send(Some((cancel, emergency, unvault_emer)))?;
@@ -955,7 +944,6 @@ pub fn handle_rpc_messages(
             RpcMessageIn::GetUnvaultTx(outpoint, response_tx) => {
                 log::trace!("Got 'getunvaulttx' request from RPC thread");
                 let revaultd = revaultd.read().unwrap();
-                let xpub_ctx = revaultd.xpub_ctx();
                 let db_file = &revaultd.db_file();
 
                 // We allow the call for Funded 'only' as unvaulttx would later fail if it's
@@ -978,19 +966,24 @@ pub fn handle_rpc_messages(
                 };
 
                 // Derive the descriptors needed to create the UnvaultTransaction
-                let deposit_descriptor = revaultd.deposit_descriptor.derive(vault.derivation_index);
+                let deposit_descriptor = revaultd
+                    .deposit_descriptor
+                    .derive(vault.derivation_index, &revaultd.secp_ctx);
                 let deposit_txin = DepositTxIn::new(
                     outpoint,
-                    DepositTxOut::new(vault.amount.as_sat(), &deposit_descriptor, xpub_ctx),
+                    DepositTxOut::new(vault.amount.as_sat(), &deposit_descriptor),
                 );
-                let unvault_descriptor = revaultd.unvault_descriptor.derive(vault.derivation_index);
-                let cpfp_descriptor = revaultd.cpfp_descriptor.derive(vault.derivation_index);
+                let unvault_descriptor = revaultd
+                    .unvault_descriptor
+                    .derive(vault.derivation_index, &revaultd.secp_ctx);
+                let cpfp_descriptor = revaultd
+                    .cpfp_descriptor
+                    .derive(vault.derivation_index, &revaultd.secp_ctx);
 
                 let unvault_tx = UnvaultTransaction::new(
                     deposit_txin,
                     &unvault_descriptor,
                     &cpfp_descriptor,
-                    xpub_ctx,
                     0,
                 )?;
                 response_tx.send(Ok(unvault_tx))?;
@@ -1106,7 +1099,6 @@ pub fn handle_rpc_messages(
             RpcMessageIn::GetSpendTx(outpoints, destinations, feerate_vb, response_tx) => {
                 log::trace!("Got 'getspendtx' request from RPC thread");
                 let revaultd = revaultd.read().unwrap();
-                let xpub_ctx = revaultd.xpub_ctx();
                 let db_file = &revaultd.db_file();
 
                 // Reconstruct the DepositTxin s from the outpoints and the vaults informations
@@ -1119,22 +1111,11 @@ pub fn handle_rpc_messages(
                     match db_vault_by_deposit(db_file, &outpoint)? {
                         Some(vault) => match vault.status {
                             VaultStatus::Active => {
-                                let deposit_descriptor =
-                                    revaultd.deposit_descriptor.derive(vault.derivation_index);
                                 if vault.derivation_index > change_index {
                                     change_index = vault.derivation_index;
                                 }
-                                txins.push((
-                                    DepositTxIn::new(
-                                        *outpoint,
-                                        DepositTxOut::new(
-                                            vault.amount.as_sat(),
-                                            &deposit_descriptor,
-                                            xpub_ctx,
-                                        ),
-                                    ),
-                                    vault.derivation_index,
-                                ));
+
+                                txins.push((*outpoint, vault.amount, vault.derivation_index));
                             }
                             status => {
                                 response_tx.send(Err(RpcControlError::InvalidStatus((
@@ -1178,13 +1159,13 @@ pub fn handle_rpc_messages(
                 let nochange_tx = match spend_tx_from_deposits(
                     txins.clone(),
                     txos.clone(),
+                    &revaultd.deposit_descriptor,
                     &revaultd.unvault_descriptor,
                     &revaultd.cpfp_descriptor,
-                    xpub_ctx,
-                    revaultd.unvault_csv,
                     revaultd.lock_time,
                     /* Deactivate insane feerate check */
                     false,
+                    &revaultd.secp_ctx,
                 ) {
                     Ok(tx) => tx,
                     Err(e) => {
@@ -1240,8 +1221,9 @@ pub fn handle_rpc_messages(
                         let change_txo = DepositTxOut::new(
                             // arithmetic checked above
                             change_value - cpfp_overhead,
-                            &revaultd.deposit_descriptor.derive(change_index),
-                            xpub_ctx,
+                            &revaultd
+                                .deposit_descriptor
+                                .derive(change_index, &revaultd.secp_ctx),
                         );
                         log::debug!("Adding a change txo: '{:?}'", change_txo);
                         txos.push(SpendTxOut::Change(change_txo));
@@ -1252,12 +1234,12 @@ pub fn handle_rpc_messages(
                 let tx_res = spend_tx_from_deposits(
                     txins,
                     txos,
+                    &revaultd.deposit_descriptor,
                     &revaultd.unvault_descriptor,
                     &revaultd.cpfp_descriptor,
-                    xpub_ctx,
-                    revaultd.unvault_csv,
                     revaultd.lock_time,
-                    true,
+                    true, /* Activate insane fee check */
+                    &revaultd.secp_ctx,
                 );
                 log::debug!(
                     "Final Spend transaction: '{:?}'",
@@ -1338,7 +1320,6 @@ pub fn handle_rpc_messages(
                 );
                 let revaultd = revaultd.read().unwrap();
                 let db_path = revaultd.db_file();
-                let xpub_ctx = revaultd.xpub_ctx();
 
                 // Get the Spend they reference from DB
                 let mut spend_tx = match db_spend_transaction(&db_path, &spend_txid)? {
@@ -1367,7 +1348,6 @@ pub fn handle_rpc_messages(
                 }
                 match check_spend_signatures(
                     &revaultd.secp_ctx,
-                    xpub_ctx,
                     &spend_tx.psbt,
                     revaultd.managers_pubkeys.clone(),
                     &spent_vaults,

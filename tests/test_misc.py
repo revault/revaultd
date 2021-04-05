@@ -924,6 +924,86 @@ def test_reorged_unvault(revault_network, bitcoind):
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_reorged_cancel(revault_network, bitcoind):
+    revault_network.deploy(4, 2, csv=12)
+    stks = revault_network.stk_wallets
+    mans = revault_network.man_wallets
+    vault = revault_network.fund(32)
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    amount = vault["amount"]
+
+    addr = bitcoind.rpc.getnewaddress()
+    feerate = 1
+    fee = revault_network.compute_spendtx_fees(feerate, 1, 1)
+    destinations = {addr: amount - fee}
+    revault_network.unvault_vaults([vault], destinations, feerate)
+    unvault_tx = mans[0].rpc.listonchaintransactions([deposit])["onchain_transactions"][
+        0
+    ]["unvault"]
+
+    # Now let's cancel the spending
+    revault_network.cancel_vault(vault)
+    cancel_tx = mans[0].rpc.listonchaintransactions([deposit])["onchain_transactions"][
+        0
+    ]["cancel"]
+
+    # Reorging, but not unconfirming the cancel
+    bitcoind.simple_reorg(cancel_tx["blockheight"])
+    for w in stks + mans:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault {deposit}'s Cancel transaction is still confirmed",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+
+    # Let's unconfirm the cancel and check that the vault is now in 'canceling' state
+    bitcoind.simple_reorg(cancel_tx["blockheight"], shift=-1)
+    for w in stks + mans:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault {deposit}'s Cancel transaction .* got unconfirmed",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+    for w in stks + mans:
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == "canceling"
+        )
+
+    # Confirming the cancel again
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for w in stks + mans:
+        w.wait_for_log("Cancel tx .* was confirmed at height .*")
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
+        )
+
+    # Let's unconfirm the unvault
+    bitcoind.simple_reorg(unvault_tx["blockheight"], shift=-1)
+    for w in stks + mans:
+        w.wait_for_log(f"Vault {deposit}'s Unvault transaction .* got unconfirmed")
+
+    # Here we go canceling everything again
+    bitcoind.generate_block(1, wait_for_mempool=2)
+    for w in stks + mans:
+        w.wait_for_logs(
+            [
+                "Unvault transaction at .* is now being canceled",
+                "Cancel tx .* was confirmed",
+            ]
+        )
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
+        )
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_getspendtx(revault_network, bitcoind):
     revault_network.deploy(2, 1)
     man = revault_network.man_wallets[0]

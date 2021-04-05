@@ -479,6 +479,23 @@ pub fn db_cancel_transaction(
     }))
 }
 
+/// Get the Cancel transaction corresponding to this vault
+pub fn db_cancel_dbtx(
+    db_tx: &Transaction,
+    vault_id: u32,
+) -> Result<Option<CancelTransaction>, DatabaseError> {
+    db_query_tx(
+        db_tx,
+        "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
+        params![vault_id, TransactionType::Cancel as u32],
+        |row| row.try_into(),
+    )
+    .map(|mut rows| {
+        rows.pop()
+            .map(|db_tx: DbTransaction| assert_tx_type!(db_tx.psbt, Cancel, "We just queryed it"))
+    })
+}
+
 /// Get the Emergency transaction corresponding to this vault.
 /// Will error if there are none, ie if called by a non-stakeholder!
 pub fn db_emer_transaction(

@@ -414,6 +414,14 @@ pub fn db_unconfirm_spend_dbtx(
     dbtx_downgrade(db_tx, vault_id, VaultStatus::Spending)
 }
 
+/// Downgrade a vault from 'canceled' to 'canceling'
+pub fn db_unconfirm_cancel_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::Canceling)
+}
+
 fn db_status_from_unvault_txid(
     db_path: &PathBuf,
     unvault_txid: &Txid,

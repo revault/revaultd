@@ -8,12 +8,13 @@ use crate::{
             db_cancel_unvault, db_confirm_deposit, db_confirm_unvault,
             db_insert_new_unconfirmed_vault, db_mark_broadcasted_spend, db_mark_canceled_unvault,
             db_mark_rebroadcastable_spend, db_mark_spent_unvault, db_spend_unvault,
-            db_unconfirm_deposit_dbtx, db_unconfirm_spend_dbtx, db_unconfirm_unvault_dbtx,
-            db_unvault_deposit, db_update_deposit_index, db_update_tip, db_update_tip_dbtx,
+            db_unconfirm_cancel_dbtx, db_unconfirm_deposit_dbtx, db_unconfirm_spend_dbtx,
+            db_unconfirm_unvault_dbtx, db_unvault_deposit, db_update_deposit_index, db_update_tip,
+            db_update_tip_dbtx,
         },
         interface::{
-            db_broadcastable_spend_transactions, db_cancel_transaction, db_canceling_vaults,
-            db_deposits, db_exec, db_spending_vaults, db_tip, db_unvault_dbtx,
+            db_broadcastable_spend_transactions, db_cancel_dbtx, db_cancel_transaction,
+            db_canceling_vaults, db_deposits, db_exec, db_spending_vaults, db_tip, db_unvault_dbtx,
             db_unvault_from_deposit, db_unvaulted_vaults, db_vault_by_deposit,
             db_vault_by_unvault_txid, db_vaults_dbtx, db_wallet,
         },
@@ -529,6 +530,37 @@ fn comprehensive_rescan(
                         .get_mut(&unvault_outpoint)
                         .expect("Db unvault not in cache for 'unvaulted'?")
                         .is_confirmed = false;
+                } else if matches!(vault.status, VaultStatus::Canceled | VaultStatus::Canceling) {
+                    let cancel_tx = match db_cancel_dbtx(&db_tx, vault.id)? {
+                        Some(tx) => tx,
+                        None => {
+                            log::error!(
+                                "Vault '{}' has status '{}' but no Cancel in database!",
+                                vault.deposit_outpoint,
+                                vault.status
+                            );
+                            continue;
+                        }
+                    };
+
+                    let cancel_tx = cancel_tx.into_psbt().extract_tx();
+                    let cancel_txid = cancel_tx.txid();
+                    match bitcoind.rebroadcast_wallet_tx(&cancel_txid) {
+                        Ok(()) => {}
+                        Err(e) => log::debug!(
+                            "Error re-broadcasting Cancel tx '{}': '{}'",
+                            cancel_txid,
+                            e
+                        ),
+                    }
+
+                    unvaults_cache.insert(
+                        unvault_outpoint,
+                        UtxoInfo {
+                            txo,
+                            is_confirmed: false,
+                        },
+                    );
                 }
 
                 // For some reasons bitcoind's wallet may need a small kick-in
@@ -576,6 +608,27 @@ fn comprehensive_rescan(
                         "Vault {}'s Spend transaction {} got unconfirmed.",
                         vault.deposit_outpoint,
                         spend_txid
+                    );
+                    continue;
+                }
+            }
+
+            // Same for the Cancel transaction
+            if matches!(vault.status, VaultStatus::Canceled) {
+                let cancel_txid = cancel_txid(revaultd, &vault)?;
+                let (_, blockheight, _) = bitcoind.get_wallet_transaction(&cancel_txid)?;
+                if let Some(height) = blockheight {
+                    log::debug!(
+                        "Vault {}'s Cancel transaction is still confirmed (height '{}')",
+                        vault.deposit_outpoint,
+                        height
+                    );
+                } else {
+                    db_unconfirm_cancel_dbtx(db_tx, vault.id)?;
+                    log::debug!(
+                        "Vault {}'s Cancel transaction {} got unconfirmed.",
+                        vault.deposit_outpoint,
+                        cancel_txid
                     );
                     continue;
                 }
@@ -794,6 +847,52 @@ fn unvault_outpoint_from_deposit(
         .outpoint())
 }
 
+// Get the Cancel txid of a give vault, trying first to fetch the transaction from the DB and
+// falling back to generating it.
+// Assumes the given deposit outpoint actually corresponds to an existing vaults, will panic
+// otherwise.
+fn cancel_txid(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    db_vault: &DbVault,
+) -> Result<Txid, BitcoindError> {
+    let revaultd = revaultd.read().unwrap();
+    let db_path = revaultd.db_file();
+
+    let cancel_tx = if let Some((_, db_tx)) = db_cancel_transaction(&db_path, db_vault.id)? {
+        db_tx
+    } else {
+        // TODO: clean up after upgrading revault_tx to latest rust-miniscript
+        let deposit_descriptor = revaultd
+            .deposit_descriptor
+            .derive(db_vault.derivation_index);
+        let unvault_descriptor = revaultd
+            .unvault_descriptor
+            .derive(db_vault.derivation_index);
+        let cpfp_descriptor = revaultd.cpfp_descriptor.derive(db_vault.derivation_index);
+
+        let deposit_txin = DepositTxIn::new(
+            db_vault.deposit_outpoint,
+            DepositTxOut::new(
+                db_vault.amount.as_sat(),
+                &deposit_descriptor,
+                revaultd.xpub_ctx(),
+            ),
+        );
+
+        let (_, cancel_tx) = transaction_chain_manager(
+            deposit_txin,
+            &deposit_descriptor,
+            &unvault_descriptor,
+            &cpfp_descriptor,
+            revaultd.xpub_ctx(),
+            revaultd.lock_time,
+        )?;
+        cancel_tx
+    };
+
+    Ok(cancel_tx.inner_tx().global.unsigned_tx.txid())
+}
+
 // This syncs with bitcoind our onchain utxos. We track the deposits and unvaults ones.
 fn update_utxos(
     revaultd: &mut Arc<RwLock<RevaultD>>,
@@ -844,48 +943,8 @@ fn update_utxos(
         // the vault as being confirmed), take it here. If for some reason it jumped from
         // unconfirmed to being Unvaulted then fallback to generating the transaction from
         // the descriptors.
-        let cancel_tx = if let Some((_, db_tx)) = db_cancel_transaction(&db_path, vault.id)? {
-            db_tx
-        } else {
-            // TODO: clean up after upgrading revault_tx to latest rust-miniscript
-            let deposit_descriptor = revaultd
-                .read()
-                .unwrap()
-                .deposit_descriptor
-                .derive(vault.derivation_index);
-            let unvault_descriptor = revaultd
-                .read()
-                .unwrap()
-                .unvault_descriptor
-                .derive(vault.derivation_index);
-            let cpfp_descriptor = revaultd
-                .read()
-                .unwrap()
-                .cpfp_descriptor
-                .derive(vault.derivation_index);
-
-            let deposit_txin = DepositTxIn::new(
-                vault.deposit_outpoint,
-                DepositTxOut::new(
-                    vault.amount.as_sat(),
-                    &deposit_descriptor,
-                    revaultd.read().unwrap().xpub_ctx(),
-                ),
-            );
-
-            let (_, cancel_tx) = transaction_chain_manager(
-                deposit_txin,
-                &deposit_descriptor,
-                &unvault_descriptor,
-                &cpfp_descriptor,
-                revaultd.read().unwrap().xpub_ctx(),
-                revaultd.read().unwrap().lock_time,
-            )?;
-            cancel_tx
-        };
-
-        let cancel_tx = cancel_tx.into_psbt().extract_tx();
-        if let Ok(_) = bitcoind.get_wallet_transaction(&cancel_tx.txid()) {
+        let cancel_txid = cancel_txid(revaultd, &vault)?;
+        if let Ok(_) = bitcoind.get_wallet_transaction(&cancel_txid) {
             // The cancel transaction for this vault exists, aka this is the cancel tx
             db_cancel_unvault(&db_path, &unvault_outpoint.txid)?;
             log::debug!(

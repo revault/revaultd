@@ -174,8 +174,9 @@ fn bitcoind_broadcast_cancel(
     vault: DbVault,
 ) -> Result<(), ControlError> {
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-    let (_, mut cancel_tx) = db_cancel_transaction(&db_path, vault.id)
-        .expect("TODO: generate cancel if not in database");
+    // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+    let (_, mut cancel_tx) =
+        db_cancel_transaction(&db_path, vault.id)?.expect("Must be in DB post 'Secured' status");
 
     cancel_tx.finalize(secp)?;
     let transaction = cancel_tx.into_psbt().extract_tx();
@@ -270,7 +271,9 @@ fn presigned_txs_list_from_outpoints(
         let outpoint = db_vault.deposit_outpoint;
 
         let (_, unvault) = db_unvault_transaction(db_path, db_vault.id)?;
-        let (_, cancel) = db_cancel_transaction(db_path, db_vault.id)?;
+        // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+        let (_, cancel) =
+            db_cancel_transaction(db_path, db_vault.id)?.expect("Must be here post 'Funded' state");
         let mut emergency = None;
         let mut unvault_emergency = None;
         if revaultd.is_stakeholder() {
@@ -333,7 +336,9 @@ fn onchain_txs_list_from_outpoints(
                 let (_, unvault) = db_unvault_transaction(db_path, db_vault.id)?;
                 let unvault =
                     bitcoind_wallet_tx(bitcoind_tx, unvault.into_psbt().extract_tx().txid())?;
-                let (_, cancel) = db_cancel_transaction(db_path, db_vault.id)?;
+                // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                let (_, cancel) = db_cancel_transaction(db_path, db_vault.id)?
+                    .expect("Must be here if not 'unconfirmed'");
                 let cancel =
                     bitcoind_wallet_tx(bitcoind_tx, cancel.into_psbt().extract_tx().txid())?;
 
@@ -792,7 +797,9 @@ pub fn handle_rpc_messages(
                 };
 
                 // Sanity check they didn't send us garbaged PSBTs
-                let (cancel_db_id, db_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)?;
+                // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                let (cancel_db_id, db_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)?
+                    .expect("must be here if at least in 'Funded' state");
                 let rpc_txid = cancel_tx.inner_tx().global.unsigned_tx.wtxid();
                 let db_txid = db_cancel_tx.inner_tx().global.unsigned_tx.wtxid();
                 if rpc_txid != db_txid {

@@ -441,6 +441,10 @@ pub fn db_confirm_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), 
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
 }
 
+pub fn db_cancel_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Canceling)
+}
+
 /// Mark a vault as being in the 'spending' state, out of the Unvault txid
 pub fn db_spend_unvault(
     db_path: &PathBuf,
@@ -459,17 +463,28 @@ pub fn db_spend_unvault(
     })
 }
 
-pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+fn db_mark_vault_as(
+    db_path: &PathBuf,
+    vault_id: u32,
+    status: VaultStatus,
+) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
             "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
              WHERE vaults.id = (?2)",
-            params![VaultStatus::Spent as u32, vault_id,],
+            params![status as u32, vault_id,],
         )
-        .map_err(|e| DatabaseError(format!("Updating vault to 'spent': {}", e.to_string())))?;
+        .map_err(|e| DatabaseError(format!("Updating vault to '{}': {}", status, e.to_string())))?;
 
         Ok(())
     })
+}
+pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::Spent)
+}
+
+pub fn db_mark_canceled_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::Canceled)
 }
 
 /// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.
@@ -940,7 +955,9 @@ mod test {
         .unwrap();
 
         // Sanity check we can add sigs to them now
-        let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id).unwrap();
+        let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
         let mut cancel_tx = fresh_cancel_tx.clone();
         revault_tx_add_dummy_sig(&mut cancel_tx, 0);
@@ -952,7 +969,9 @@ mod test {
             &revaultd.secp_ctx,
         )
         .unwrap();
-        let (_, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id).unwrap();
+        let (_, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
         let (tx_db_id, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
@@ -1008,7 +1027,10 @@ mod test {
         );
         assert_eq!(
             cancel_tx,
-            db_cancel_transaction(&db_path, db_vault.id).unwrap().1
+            db_cancel_transaction(&db_path, db_vault.id)
+                .unwrap()
+                .unwrap()
+                .1
         );
         assert_eq!(
             unemer_tx,
@@ -1028,7 +1050,9 @@ mod test {
         })
         .unwrap();
         db_emer_transaction(&db_path, db_vault.id).unwrap_err();
-        db_cancel_transaction(&db_path, db_vault.id).unwrap_err();
+        assert!(db_cancel_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .is_none());
         db_unvault_emer_transaction(&db_path, db_vault.id).unwrap_err();
         db_unvault_transaction(&db_path, db_vault.id).unwrap_err();
 
@@ -1102,7 +1126,9 @@ mod test {
         )
         .unwrap();
 
-        let (tx_db_id, _) = db_cancel_transaction(&db_path, db_vault.id).unwrap();
+        let (tx_db_id, _) = db_cancel_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
         let mut cancel_tx = fresh_cancel_tx.clone();
         revault_tx_add_dummy_sig(&mut cancel_tx, 0);
         let handle = std::thread::spawn({

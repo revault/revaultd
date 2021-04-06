@@ -549,11 +549,11 @@ fn share_rev_signatures(
         &revaultd.coordinator_noisekey,
     )?;
 
-    let cancel_txid = cancel.0.inner_tx().global.unsigned_tx.txid();
+    let cancel_txid = cancel.0.txid();
     send_sig_msg(&mut transport, cancel_txid, cancel.1)?;
-    let emer_txid = emer.0.inner_tx().global.unsigned_tx.txid();
+    let emer_txid = emer.0.txid();
     send_sig_msg(&mut transport, emer_txid, emer.1)?;
-    let unvault_emer_txid = unvault_emer.0.inner_tx().global.unsigned_tx.txid();
+    let unvault_emer_txid = unvault_emer.0.txid();
     send_sig_msg(&mut transport, unvault_emer_txid, unvault_emer.1)?;
 
     Ok(())
@@ -576,7 +576,7 @@ fn share_unvault_signatures(
         .expect("Unvault has a single input")
         .partial_sigs;
     log::trace!("Sharing unvault sigs {:?}", sigs);
-    let txid = unvault_tx.inner_tx().global.unsigned_tx.txid();
+    let txid = unvault_tx.txid();
     send_sig_msg(&mut transport, txid, sigs.clone())
 }
 
@@ -789,8 +789,8 @@ pub fn handle_rpc_messages(
                 // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
                 let (cancel_db_id, db_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)?
                     .expect("must be here if at least in 'Funded' state");
-                let rpc_txid = cancel_tx.inner_tx().global.unsigned_tx.wtxid();
-                let db_txid = db_cancel_tx.inner_tx().global.unsigned_tx.wtxid();
+                let rpc_txid = cancel_tx.wtxid();
+                let db_txid = db_cancel_tx.wtxid();
                 if rpc_txid != db_txid {
                     response_tx.send(Some(format!(
                         "Invalid Cancel tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -799,8 +799,8 @@ pub fn handle_rpc_messages(
                     continue;
                 }
                 let (emer_db_id, db_emer_tx) = db_emer_transaction(&db_path, db_vault.id)?;
-                let rpc_txid = emer_tx.inner_tx().global.unsigned_tx.wtxid();
-                let db_txid = db_emer_tx.inner_tx().global.unsigned_tx.wtxid();
+                let rpc_txid = emer_tx.wtxid();
+                let db_txid = db_emer_tx.wtxid();
                 if rpc_txid != db_txid {
                     response_tx.send(Some(format!(
                         "Invalid Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -810,8 +810,8 @@ pub fn handle_rpc_messages(
                 }
                 let (unvault_emer_db_id, db_unemer_tx) =
                     db_unvault_emer_transaction(&db_path, db_vault.id)?;
-                let rpc_txid = unvault_emer_tx.inner_tx().global.unsigned_tx.wtxid();
-                let db_txid = db_unemer_tx.inner_tx().global.unsigned_tx.wtxid();
+                let rpc_txid = unvault_emer_tx.wtxid();
+                let db_txid = db_unemer_tx.wtxid();
                 if rpc_txid != db_txid {
                     response_tx.send(Some(format!(
                         "Invalid Unvault Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -1017,8 +1017,8 @@ pub fn handle_rpc_messages(
 
                 // Sanity check they didn't send us a garbaged PSBT
                 let (unvault_db_id, db_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id)?;
-                let rpc_txid = unvault_tx.inner_tx().global.unsigned_tx.wtxid();
-                let db_txid = db_unvault_tx.inner_tx().global.unsigned_tx.wtxid();
+                let rpc_txid = unvault_tx.wtxid();
+                let db_txid = db_unvault_tx.wtxid();
                 if rpc_txid != db_txid {
                     response_tx.send(Err(RpcControlError::InvalidPsbt(format!(
                         "Invalid Unvault tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -1251,7 +1251,7 @@ pub fn handle_rpc_messages(
                 log::trace!("Got 'updatespendtx' request from RPC thread");
                 let revaultd = revaultd.read().unwrap();
                 let db_path = revaultd.db_file();
-                let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+                let spend_txid = spend_tx.txid();
 
                 // Fetch the Unvault it spends from the DB
                 let spend_inputs = &spend_tx.inner_tx().global.unsigned_tx.input;

@@ -258,7 +258,7 @@ fn maybe_broadcast_spend_transactions(
 
     for db_spendtx in db_broadcastable_spend_transactions(&db_path)? {
         let mut psbt = db_spendtx.psbt;
-        let txid = psbt.inner_tx().global.unsigned_tx.txid();
+        let txid = psbt.txid();
         log::debug!("Trying to broadcast Spend tx '{}'", &txid);
 
         match psbt.finalize(&revaultd.read().unwrap().secp_ctx) {
@@ -319,7 +319,7 @@ fn mark_confirmed_spends(
             // At least, is this transaction still in mempool?
             // If it was evicted, downgrade it to `unvaulted`, the listunspent polling loop will
             // take care of checking its new state immediately.
-            db_confirm_unvault(&db_path, &unvault_tx.inner_tx().global.unsigned_tx.txid())?;
+            db_confirm_unvault(&db_path, &unvault_tx.txid())?;
 
             let txo = unvault_txin.into_txout().into_txout();
             unvaults_cache.insert(
@@ -355,7 +355,6 @@ fn mark_confirmed_cancels(
     let db_path = revaultd.read().unwrap().db_file();
 
     for (db_vault, cancel_tx) in db_canceling_vaults(&db_path)? {
-        let cancel_tx = cancel_tx.into_psbt().extract_tx();
         let (cancel_tx_hex, blockheight, _) = bitcoind.get_wallet_transaction(&cancel_tx.txid())?;
 
         if let Some(height) = blockheight {
@@ -434,7 +433,7 @@ fn unconfirm_unvault(
     vault: &DbVault,
     unvault_tx: &UnvaultTransaction,
 ) -> Result<(), BitcoindError> {
-    let unvault_txid = unvault_tx.inner_tx().global.unsigned_tx.txid();
+    let unvault_txid = unvault_tx.txid();
 
     // Mark it as 'unvaulting', note however that if it was Spent or Canceled it will be marked as
     // 'spending' or 'canceling' right away by the bitcoind polling loop as `listunspent` will
@@ -497,7 +496,6 @@ fn unconfirm_unvault(
                 return Ok(());
             }
         };
-        let cancel_tx = cancel_tx.into_psbt().extract_tx();
         let cancel_txid = cancel_tx.txid();
         match bitcoind.rebroadcast_wallet_tx(&cancel_txid) {
             Ok(()) => {}
@@ -700,7 +698,7 @@ fn comprehensive_rescan(
                     continue;
                 }
             };
-            let unvault_txid = unvault_tx.inner_tx().global.unsigned_tx.txid();
+            let unvault_txid = unvault_tx.txid();
             let (_, blockheight, _) = bitcoind.get_wallet_transaction(&unvault_txid)?;
 
             let unv_height = if let Some(height) = blockheight {
@@ -1003,7 +1001,7 @@ fn cancel_txid(
         cancel_tx
     };
 
-    Ok(cancel_tx.inner_tx().global.unsigned_tx.txid())
+    Ok(cancel_tx.txid())
 }
 
 // This syncs with bitcoind our onchain utxos. We track the deposits and unvaults ones.

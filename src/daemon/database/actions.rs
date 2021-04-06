@@ -295,7 +295,7 @@ macro_rules! db_store_unsigned_transactions {
                 assert!($tx.inner_tx().inputs[0].partial_sigs.is_empty());
 
                 let tx_type = TransactionType::from($tx);
-                let txid = $tx.inner_tx().global.unsigned_tx.txid();
+                let txid = $tx.txid();
                 $db_tx
                     .execute(
                         "INSERT INTO presigned_transactions (vault_id, type, psbt, txid, fullysigned) VALUES (?1, ?2, ?3 , ?4, ?5)",
@@ -624,7 +624,7 @@ pub fn db_insert_spend(
     unvault_txs: &[DbTransaction],
     spend_tx: &SpendTransaction,
 ) -> Result<(), DatabaseError> {
-    let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+    let spend_txid = spend_tx.txid();
     let spend_psbt = spend_tx.as_psbt_serialized();
 
     db_exec(db_path, |db_tx| {
@@ -649,7 +649,7 @@ pub fn db_update_spend(
     db_path: &PathBuf,
     spend_tx: &SpendTransaction,
 ) -> Result<(), DatabaseError> {
-    let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+    let spend_txid = spend_tx.txid();
     let spend_psbt = spend_tx.as_psbt_serialized();
 
     db_exec(db_path, |db_tx| {
@@ -1229,7 +1229,7 @@ mod test {
                 .unwrap()
                 .unwrap();
         db_insert_spend(&db_path, &[db_unvault.clone()], &spend_tx).unwrap();
-        let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+        let spend_txid = spend_tx.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid),
             Some(&(spend_tx.clone(), vec![outpoint]))
@@ -1238,14 +1238,14 @@ mod test {
         // We can update it, eg with a Spend with more sigs
         let spend_tx = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAciTbKS43sH49TJWX6xJ+MxqWfNQhRl+vkttRZ9sLUkHAAAAAAClAQAAAoAyAAAAAAAAIgAggxumgjPgMj5oHWn8QkvKqPIN0N5nuAbyQ+FEgOJZpjygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgKb0SdnuqeHAJpRuZTbk3r81qbXpuHrMEmxT9Kph47HQiAgKl21mZX7WAQhRvdhhwqUAuQfIemg9zkTCCyMQ+Q8CVFUgwRQIhAJynJJuu8tq0mN1SEeWUZRN67KlKL0zHOyrWuPRUp6UjAiAjYDl5/pwMHns9XUYHzrHfLaxjHFg419NFQPCX2wfHrQEiAgMfu47eLiYeHN6Y3C1Vk0ckgmWifMy5IUhaPHbNELV93UcwRAIgF4HaNIfFLQ537aR9opqlY4SN+v3dt7GnSKR2kIGp8n4CIBQQQg13scqRYVQHJf1oS4N8cb6PHmyzGpcDCp6rIbMNASICAzTPPnjrvzPFmi+raNR6sY8WTt1KNusVwp82uWebzWDwRzBEAiBuu/TH4/aBrZPy/+TtpJLxztEJQWcYxjEpPe2s6iChCAIgfE09pqQAcDhYaoEVG7tPOUsc3B/HuOrHOyDfCzSz5kABAQMEAQAAAAEFqiEDH7uO3i4mHhzemNwtVZNHJIJlonzMuSFIWjx2zRC1fd2sUYdkdqkU7YhsQQ+SqzEEFOlBsds7CjDH+pyIrGt2qRQgyrXvSLg3hdA+BgPyUVDV+MYLfoisbJNSh2dSIQM0zz54678zxZovq2jUerGPFk7dSjbrFcKfNrlnm81g8CECpdtZmV+1gEIUb3YYcKlALkHyHpoPc5EwgsjEPkPAlRVSrwKlAbJoAAEBJSEDH7uO3i4mHhzemNwtVZNHJIJlonzMuSFIWjx2zRC1fd2sUYcAAA==").unwrap();
         db_update_spend(&db_path, &spend_tx).unwrap();
-        let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+        let spend_txid = spend_tx.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid),
             Some(&(spend_tx.clone(), vec![outpoint]))
         );
 
         // And delete it
-        db_delete_spend(&db_path, &spend_tx.inner_tx().global.unsigned_tx.txid()).unwrap();
+        db_delete_spend(&db_path, &spend_tx.txid()).unwrap();
         assert_eq!(db_list_spends(&db_path).unwrap().get(&spend_txid), None,);
 
         // And this works with multiple unvaults too
@@ -1304,12 +1304,12 @@ mod test {
                 .unwrap()
                 .unwrap();
         db_insert_spend(&db_path, &[db_unvault, db_unvault_b], &spend_tx_b).unwrap();
-        let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+        let spend_txid = spend_tx.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid),
             Some(&(spend_tx.clone(), vec![outpoint]))
         );
-        let spend_txid_b = spend_tx_b.inner_tx().global.unsigned_tx.txid();
+        let spend_txid_b = spend_tx_b.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid_b),
             Some(&(spend_tx_b.clone(), vec![outpoint, outpoint_b]))
@@ -1320,7 +1320,7 @@ mod test {
 
         // There are 2 Unvaults referenced by this Spend
         let db_spend =
-            db_spend_transaction(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid())
+            db_spend_transaction(&db_path, &spend_tx_b.txid())
                 .unwrap()
                 .unwrap();
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -1345,7 +1345,7 @@ mod test {
 
         // Thus there are 2 vaults too
         let spent_outpoints: Vec<OutPoint> =
-            db_vaults_from_spend(&db_path, &spend_tx_b.inner_tx().global.unsigned_tx.txid())
+            db_vaults_from_spend(&db_path, &spend_tx_b.txid())
                 .unwrap()
                 .into_iter()
                 .map(|(_, db_vault)| db_vault.deposit_outpoint)
@@ -1354,7 +1354,7 @@ mod test {
         assert!(spent_outpoints.contains(&outpoint));
         assert!(spent_outpoints.contains(&outpoint_b));
 
-        let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+        let spend_txid = spend_tx.txid();
         assert!(db_spend_transaction(&db_path, &spend_txid)
             .unwrap()
             .unwrap()
@@ -1392,7 +1392,7 @@ mod test {
             .is_none());
 
         // And if we unconfirm the vault, it'll delete the last remaining transaction
-        let txid_b = spend_tx_b.inner_tx().global.unsigned_tx.txid();
+        let txid_b = spend_tx_b.txid();
         db_exec(&db_path, |db_tx| {
             db_unconfirm_deposit_dbtx(&db_tx, db_vault.id).unwrap();
             Ok(())

@@ -63,10 +63,11 @@ poll_interval_secs = 3
 # - /path/to/your/data_dir/revaultd-watchonly-wallet-1
 # xprv9yFvjFWhx6hEJ3srPPCMAhQyrUhwJ9joByaQcJJAC37HsavncgLzq5ppWeb6QmkYEaYDkiJf424zHzmcjXx3Fn6DZqKx9EKpiv94suYjZ6e
 xpub = "xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp"
+# At the moment this is unused
 watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
 emergency_address = "bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq"
 
-# This section must be copied only if you're a stakeholder. Put here your xpub and cosigner configuration
+# This section must be copied only if you're a manager. Put here your xpub and cosigner configuration
 [manager_config]
 # This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
 # - /path/to/your/data_dir/revaultd.sqlite3

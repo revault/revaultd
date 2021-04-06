@@ -1,10 +1,16 @@
+# If `true`, revaultd will start as a daemon. If you're using revaultd with revault-gui, you might want to keep it to `true`, so that the gui can start revaultd on its own. If you're starting `revaultd` for the first time, you may want to change it to `false`, so that you can see if something goes wrong.
 daemon = true
 log_level = "debug"
-data_dir = "/home/darosior/projects/revault/d/regtest/revault"
+# The directory where all your revault data will be saved
+data_dir = "/path/to/your/datadir/revault"
 
 coordinator_host = "127.0.0.1:8383"
 coordinator_noise_key = "f35b02f12ff3d64f3c7982b88ffb66fec37bce5796374a7be9e8e2dd9abbb558"
 
+# The xpubs of all the stakeholders.
+# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
+# - /path/to/your/data_dir/revaultd.sqlite3
+# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
 stakeholders_xpubs = [
 	# xprv9yFvjFWhx6hEJ3srPPCMAhQyrUhwJ9joByaQcJJAC37HsavncgLzq5ppWeb6QmkYEaYDkiJf424zHzmcjXx3Fn6DZqKx9EKpiv94suYjZ6e
 	"xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp",
@@ -15,34 +21,56 @@ stakeholders_xpubs = [
 	# xprvA1UEBJLZFm1oZUKLubtgeqhYBKjKPQqWaw5qMkg7GyyEjc9PQs5HiBVR3CpEAAawkF9jhd9LyV6arxBCYat8DAF5ChDDDKYB4GCVwUGz87C
 	"xpub6ETaaosT68a6mxPp1dRh1yeGjMZonsZMxA1SA95iqKWDcQUXxQPYFyottUR58E8qjjnAwPcEtYS9iejkERbnGuNqfF2wgToLcxzf97FHevs"
 ]
+
+# The keys of all the cosigners
+# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
+# - /path/to/your/data_dir/revaultd.sqlite3
+# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
 cosigners_keys = [
 	"02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
 	"03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
 	"026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
 	"030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3",
 ]
+
+# The xpubs of all the managers
+# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
+# - /path/to/your/data_dir/revaultd.sqlite3
+# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
 managers_xpubs = [
 	# xprv9yFvjFWhx6hEhx2fRYSC31pU3nH3Mrok4sBwUt4pV3RJZYN1oex2imuuxUt3eyhbZ2mKdBAWQaVyhg3WXuzrnRhRZbicr2X5hmNuhTxHGEn
 	"xpub6CFH8m3bnUFXvS78XZyCQ9mCbp7XmKXbS67YHGUS3NxHSLhAMCGHGaEPojcoYt5PYnocyuScAM5xuDzf4BqFQt3fhmKEaRgmVzDcAR46Byh",
 	# xprvA1DDS2qX9vCdRxSJmFA6AJPQPKS32S5hiUpzi9Xot9hzN4z1g6ip5oKJWXUeQDn2W48vaSWYVLaypC1JztUcrx23kucEtFzyU8t5Ay7NrDD
-	"xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"
+        "xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"
 ]
+
+# The CSV for the spend transaction
+# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
+# - /path/to/your/data_dir/revaultd.sqlite3
+# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
 unvault_csv = 18
 
 [bitcoind_config]
 network = "regtest"
-cookie_path = "/home/darosior/projects/revault/d/regtest/bcdir1/regtest/.cookie"
+cookie_path = "/path/to/your/cookie/path/.cookie"
 addr = "127.0.0.1:9001"
 poll_interval_secs = 3
 
-# We are one of the below stakeholders
+# This section must be copied only if you're a stakeholder. Put here your xpub, watchtower configuration and emergency address
 [stakeholder_config]
+# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
+# - /path/to/your/data_dir/revaultd.sqlite3
+# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
 # xprv9yFvjFWhx6hEJ3srPPCMAhQyrUhwJ9joByaQcJJAC37HsavncgLzq5ppWeb6QmkYEaYDkiJf424zHzmcjXx3Fn6DZqKx9EKpiv94suYjZ6e
 xpub = "xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp"
 watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
 emergency_address = "bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq"
 
+# This section must be copied only if you're a stakeholder. Put here your xpub and cosigner configuration
 [manager_config]
+# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
+# - /path/to/your/data_dir/revaultd.sqlite3
+# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
 # xprvA1DDS2qX9vCdRxSJmFA6AJPQPKS32S5hiUpzi9Xot9hzN4z1g6ip5oKJWXUeQDn2W48vaSWYVLaypC1JztUcrx23kucEtFzyU8t5Ay7NrDD
 xpub = "xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"
 cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]

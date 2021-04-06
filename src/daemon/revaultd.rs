@@ -260,8 +260,6 @@ pub struct RevaultD {
     pub secp_ctx: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     /// The locktime to use on all created transaction. Always 0 for now.
     pub lock_time: u32,
-    /// The CSV in the unvault_descriptor. Unfortunately segregated from the descriptor..
-    pub unvault_csv: u32,
     // FIXME: this is a hack as we'll move out of specifying xpubs in the config. We should
     // have a way to get the managers / stakeholders keys out of a descriptor in revault_tx
     /// All the managers public keys
@@ -389,7 +387,6 @@ impl RevaultD {
             coordinator_poll_interval,
             cosigs,
             lock_time: 0,
-            unvault_csv: config.unvault_csv,
             bitcoind_config: config.bitcoind_config,
             tip: None,
             // Will be updated by the database

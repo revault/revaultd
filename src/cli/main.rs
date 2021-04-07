@@ -17,29 +17,47 @@ use uds_windows::UnixStream;
 // Exits with error
 fn show_usage() {
     eprintln!("Usage:");
-    eprintln!(" revault-cli [--conf conf_path] <command> [<param 1> <param 2> ...]");
+    eprintln!(" revault-cli [--conf conf_path] [--raw] <command> [<param 1> <param 2> ...]");
     process::exit(1);
 }
 
-// Returns (Maybe(special conf file), Method name, Maybe(List of parameters))
-fn parse_args(mut args: Vec<String>) -> (Option<PathBuf>, String, Vec<String>) {
+// Returns (Maybe(special conf file), Raw, Method name, Maybe(List of parameters))
+fn parse_args(mut args: Vec<String>) -> (Option<PathBuf>, bool, String, Vec<String>) {
     if args.len() < 2 {
         eprintln!("Not enough arguments.");
         show_usage();
     }
 
     args.remove(0); // Program name
-    let method_or_conf = args.remove(0);
-    if method_or_conf == "--conf" {
-        if args.len() < 2 {
-            eprintln!("Not enough arguments.");
-            show_usage();
-        }
 
-        let conf_file = Some(PathBuf::from(args.remove(0)));
-        (conf_file, args.remove(0), args)
-    } else {
-        (None, method_or_conf, args)
+    let mut args = args.into_iter();
+    let mut raw = false;
+    let mut conf_file = None;
+
+    loop {
+        match args.next().as_deref() {
+            Some("--conf") => {
+                if args.len() < 2 {
+                    eprintln!("Not enough arguments.");
+                    show_usage();
+                }
+
+                conf_file = Some(PathBuf::from(args.next().expect("Just checked")));
+            },
+            Some("--raw") => {
+                if args.len() < 1 {
+                    eprintln!("Not enough arguments.");
+                    show_usage();
+                }
+                raw = true;
+            },
+            Some(method) => return (conf_file, raw, method.to_owned(), args.collect()),
+            None => {
+                // Should never happen...
+                eprintln!("Not enough arguments.");
+                show_usage();
+            }
+        }
     }
 }
 
@@ -105,7 +123,7 @@ fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
 
 fn main() {
     let args = env::args().collect();
-    let (conf_file, method, params) = parse_args(args);
+    let (conf_file, raw, method, params) = parse_args(args);
     let request = rpc_request(method, params);
     let socket_file = socket_file(conf_file);
     let mut raw_response = vec![0; 256];
@@ -140,7 +158,11 @@ fn main() {
         match serde_json::from_slice::<Json>(&raw_response) {
             Ok(response) => {
                 if response.get("id") == request.get("id") {
-                    print!("{}", response);
+                    if raw {
+                        print!("{}", response);
+                    } else {
+                        print!("{:#}\n", response);
+                    }
                     return;
                 }
             }

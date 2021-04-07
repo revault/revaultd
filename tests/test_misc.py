@@ -773,6 +773,12 @@ def test_reorged_deposit_status(revault_network, bitcoind):
 
     # Now do the same dance with a spent vault
 
+    # Keep track of the deposit transaction for later use as we'll reorg deeply enough that
+    # bitcoind won't add the transactions back to mempool.
+    deposit_tx = revault_network.stk_wallets[0].rpc.listonchaintransactions([deposit])[
+        "onchain_transactions"
+    ][0]["deposit"]["hex"]
+
     # If the deposit is not unconfirmed, it's fine
     revault_network.spend_vaults_anyhow([vault])
     for w in revault_network.man_wallets:
@@ -800,6 +806,40 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == 1)
+
+    # Now the same dance with a canceled vault
+
+    # Re-confirm the vault, get it active, then unvault and cancel it.
+    bitcoind.rpc.sendrawtransaction(deposit_tx)
+    bitcoind.generate_block(1, wait_for_mempool=2)
+    vault = revault_network.stk_wallets[0].rpc.listvaults(
+        # NB: 'spending' because we reuse a vault that was previously spent!
+        ["spending"]
+    )["vaults"][0]
+    revault_network.cancel_vault(vault)
+
+    # If the deposit is not unconfirmed, nothing changes
+    bitcoind.simple_reorg(vault["blockheight"], shift=2)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault deposit '{deposit}' still has .* confirmations",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+
+    # If it is then it'll be marked as 'canceling'
+    bitcoind.simple_reorg(vault["blockheight"] + 2, shift=-1)
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Vault deposit '{deposit}' ended up without confirmation",
+                "Rescan of all vaults in db done.",
+            ]
+        )
+        wait_for(lambda: len(w.rpc.listvaults(["canceling"])["vaults"]) == 1)
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -1545,7 +1585,6 @@ def test_revault(revault_network, bitcoind, executor):
     stks = revault_network.stk_wallets
     vault = revault_network.fund(18)
     deposit = f"{vault['txid']}:{vault['vout']}"
-    stks[0].wait_for_deposits([deposit])
 
     # Can't cancel an unconfirmed deposit
     with pytest.raises(
@@ -1558,7 +1597,6 @@ def test_revault(revault_network, bitcoind, executor):
         RpcError, match="Invalid vault status: 'funded'. Need 'unvaulting'"
     ):
         man.rpc.revault(deposit)
-
     revault_network.secure_vault(vault)
 
     # Secured is not good enough though
@@ -1566,7 +1604,6 @@ def test_revault(revault_network, bitcoind, executor):
         RpcError, match="Invalid vault status: 'secured'. Need 'unvaulting'"
     ):
         stks[0].rpc.revault(deposit)
-
     revault_network.activate_vault(vault)
 
     # Active? Not enough!
@@ -1600,13 +1637,111 @@ def test_revault(revault_network, bitcoind, executor):
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
             == "canceling"
         )
-
-    bitcoind.generate_block(6, wait_for_mempool=1)
+    bitcoind.generate_block(1, wait_for_mempool=1)
 
     # Funds are safe, we happy
     for w in stks + [man]:
-        wait_for(lambda: w.rpc.call("getinfo")["blockheight"] == 113)
+        wait_for(lambda: w.rpc.call("getinfo")["blockheight"] == 108)
         w.wait_for_log("Cancel tx .* was confirmed at height '108'")
         wait_for(
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
+        )
+
+    # Now, do the same process with two new vaults (thus with different derivation indexes)
+    # at the same time, and with the Unvault not being mined yet
+    vault_a = revault_network.fund(12)
+    vault_b = revault_network.fund(0.4)
+
+    revault_network.secure_vault(vault_a)
+    revault_network.secure_vault(vault_b)
+
+    revault_network.activate_vault(vault_a)
+    revault_network.activate_vault(vault_b)
+
+    for v in [vault_a, vault_b]:
+        deposit = f"{v['txid']}:{v['vout']}"
+        unvault_psbt = man.rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["unvault"]
+        unvault_tx = bitcoind.rpc.finalizepsbt(unvault_psbt)["hex"]
+        bitcoind.rpc.sendrawtransaction(unvault_tx)
+
+        # On purpose, only wait for the one we want to revault with, to trigger some race conditions
+        wait_for(
+            lambda: len(stks[0].rpc.listvaults(["unvaulting"], [deposit])["vaults"])
+            == 1
+        )
+        stks[0].rpc.revault(deposit)
+
+    for w in stks + [man]:
+        wait_for(lambda: len(stks[0].rpc.listvaults(["canceling"])["vaults"]) == 2)
+    bitcoind.generate_block(1, wait_for_mempool=4)
+    for w in stks + [man]:
+        # 3 cause the first part of the test already had one canceled.
+        wait_for(lambda: len(stks[0].rpc.listvaults(["canceled"])["vaults"]) == 3)
+
+    # We have as many new deposits as canceled vaults
+    bitcoind.generate_block(6)
+    wait_for(
+        lambda: len(stks[0].rpc.listvaults(["canceled"])["vaults"])
+        == len(stks[0].rpc.listvaults(["funded"])["vaults"])
+    )
+
+    # And the deposit txid is the Cancel txid
+    for v in stks[0].rpc.listvaults(["canceled"])["vaults"]:
+        deposit = f"{v['txid']}:{v['vout']}"
+        cancel_psbt = serializations.PSBT()
+        cancel_b64 = stks[0].rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["cancel"]
+        cancel_psbt.deserialize(cancel_b64)
+
+        cancel_psbt.tx.calc_sha256()
+        cancel_txid = cancel_psbt.tx.hash
+        new_deposits = stks[0].rpc.listvaults(["funded"])["vaults"]
+        assert cancel_txid in [v["txid"] for v in new_deposits]
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_revaulted_spend(revault_network, bitcoind, executor):
+    """
+    Revault an ongoing Spend transaction carried out by the managers, under misc
+    circumstances.
+    """
+    CSV = 12
+    revault_network.deploy(2, 2, csv=CSV)
+    mans = revault_network.man_wallets
+    stks = revault_network.stk_wallets
+
+    # Simple case. Managers Spend a single vault.
+    vault = revault_network.fund(0.05)
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+
+    revault_network.spend_vaults_anyhow_unconfirmed([vault])
+    revault_network.cancel_vault(vault)
+
+    # Managers spend two vaults, both are canceled.
+    vaults = [revault_network.fund(0.05), revault_network.fund(0.1)]
+    for v in vaults:
+        revault_network.secure_vault(vault)
+        revault_network.activate_vault(vault)
+
+    revault_network.unvault_vaults_anyhow(vaults)
+    for vault in vaults:
+        revault_network.cancel_vault(vault)
+
+    # Managers spend three vaults, only a single one is canceled. And both of them were
+    # created in the same deposit transaction.
+    vaults = revault_network.fundmany([0.2, 0.08])
+    vaults.append(revault_network.fund(0.03))
+    revault_network.unvault_vaults_anyhow(vaults)
+    revault_network.cancel_vault(vaults[0])
+
+    # vaults[0] is canceled, therefore the Spend transaction is now invalid. The vaults
+    # should be marked as unvaulted since they are not being spent anymore.
+    deposits = [f"{v['txid']}:{v['vout']}" for v in vaults[1:]]
+    for w in mans + stks:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)) == len(deposits)
         )

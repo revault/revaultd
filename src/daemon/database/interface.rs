@@ -239,6 +239,16 @@ pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
     )
 }
 
+/// Get all the vaults where status is *at least* `status`
+pub fn db_vaults_min_status(db_path: &PathBuf, status: VaultStatus) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query::<_, _, DbVault>(
+        db_path,
+        "SELECT * FROM vaults WHERE status >= (?1) ORDER BY updated_at DESC",
+        params![status as u32],
+        |row| row.try_into(),
+    )
+}
+
 /// Get all the vaults we know about from an already-created transaction
 pub fn db_vaults_dbtx(db_tx: &Transaction) -> Result<Vec<DbVault>, DatabaseError> {
     db_query_tx(db_tx, "SELECT * FROM vaults", params![], |row| {

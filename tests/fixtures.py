@@ -86,7 +86,7 @@ def directory(request, test_base_dir, test_name):
 
     # test_base_dir is at the session scope, so we can't use request.node as mentioned in
     # the doc linked in the hook above.
-    if request.session.testsfailed > 0:
+    if request.session.testsfailed == 0:
         try:
             shutil.rmtree(directory)
         except Exception:

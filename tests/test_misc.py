@@ -701,7 +701,7 @@ def test_reorged_deposit_status(revault_network, bitcoind):
                 "Rescan of all vaults in db done.",
             ]
         )
-        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
+        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) == 1)
 
     # All presigned transactions must have been removed from the db,
     # if we get it confirmed again, it will re-create the pre-signed
@@ -787,7 +787,9 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
 
-    # If it is then we drop the spend transactions for this vault
+    # If it is then we'll mark it as spending since the Unvault transaction is
+    # still valid and in the mempool, and bitcoind's wallet considers the Spend
+    # transaction to still be as well (spoiler: it's not).
     bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3, shift=-1)
     for w in revault_network.stk_wallets + revault_network.man_wallets:
         w.wait_for_logs(
@@ -797,8 +799,7 @@ def test_reorged_deposit_status(revault_network, bitcoind):
                 "Rescan of all vaults in db done.",
             ]
         )
-    for w in revault_network.man_wallets:
-        assert len(w.rpc.listspendtxs()["spend_txs"]) == 0
+        wait_for(lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == 1)
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

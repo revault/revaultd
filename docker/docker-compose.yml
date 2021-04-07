@@ -1,0 +1,28 @@
+version: "3.9"
+services:
+  coordinator_db:
+    image: postgres
+    restart: always
+    volumes: 
+      - ./coordinator_volume/db:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: 'revault'
+      POSTGRES_PASSWORD: 'revault'
+      POSTGRES_DB: 'coordinator_db'
+
+  coordinatord:
+    image: coordinatord
+    expose:
+      - 8383
+    ports:
+      - 8383:8383
+    volumes: 
+      - ./coordinator_volume/datadir:/home/.revault_coordinatord
+    container_name: coordinatord
+    depends_on:
+      - coordinator_db
+    build:
+      context: coordinatord/
+    entrypoint: ["./entrypoint.sh"]

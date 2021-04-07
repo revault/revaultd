@@ -1,0 +1,9 @@
+daemon = true
+data_dir = "/home/.revault_coordinatord"
+postgres_uri = "postgresql://revault:revault@coordinator_db:5432/coordinator_db"
+
+# Edit below with participants noise keys.
+managers = []
+stakeholders = []
+watchtowers = []
+

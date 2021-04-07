@@ -100,8 +100,9 @@ def test_listvaults(revaultd_manager, bitcoind):
 
 
 def test_largewallets(revaultd_stakeholder, bitcoind):
-    """Test a wallet with 1000 deposits"""
+    """Test a wallet with 1000 deposits and 10 dust deposits"""
     amount = 0.01
+    dust_amount = 0.00012345
     bitcoind.generate_block(10)
 
     for i in range(10):
@@ -109,10 +110,17 @@ def test_largewallets(revaultd_stakeholder, bitcoind):
         for i in range(100):
             addr = revaultd_stakeholder.rpc.call("getdepositaddress")["address"]
             txids.append(bitcoind.rpc.sendtoaddress(addr, amount))
-        bitcoind.generate_block(6, txids)
+
+        addr = revaultd_stakeholder.rpc.call("getdepositaddress")["address"]
+        txids.append(bitcoind.rpc.sendtoaddress(addr, dust_amount))
+
+        bitcoind.generate_block(6, wait_for_mempool=txids)
 
     wait_for(lambda: revaultd_stakeholder.rpc.getinfo()["vaults"] == 10 * 100)
     assert len(revaultd_stakeholder.rpc.listvaults()["vaults"]) == 10 * 100
+    # We previously experienced crashes when calling listpresignedtransactions
+    # with a large number of vaults
+    revaultd_stakeholder.rpc.listpresignedtransactions()
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

@@ -177,6 +177,8 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         })?;
     let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
 
+    // TODO: sanity check descriptors are imported when migrating to 0.22
+
     if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
         bitcoind.createwallet_startup(bitcoind_wallet_path)?;
         log::info!("Importing descriptors to bitcoind watchonly wallet.");

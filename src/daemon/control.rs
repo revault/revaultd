@@ -17,7 +17,7 @@ use crate::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
             db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
-            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status
+            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status,
         },
         schema::DbVault,
         DatabaseError,
@@ -498,7 +498,7 @@ fn check_spend_signatures(
 // which generates fresh unsigned transactions.
 //
 // `sigs` MUST contain valid signatures (including the attached sighash type)
-fn send_sig_msg(
+pub fn send_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,

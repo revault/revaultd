@@ -392,7 +392,7 @@ impl RpcApi for RpcImpl {
         assume_ok!(
             meta.tx.send(RpcMessageIn::ListPresignedTransactions(
                 outpoints,
-                response_tx
+                response_tx,
             )),
             "Sending 'listpresignedtransactions' to main thread"
         );

@@ -1,18 +1,18 @@
 use crate::{bitcoind::BitcoindError, revaultd::VaultStatus};
 use revault_tx::{
     bitcoin::{
-        util::bip32::ChildNumber, Address, Amount, OutPoint, Transaction as BitcoinTransaction,
-        Txid,
+        consensus::encode, util::bip32::ChildNumber, Address, Amount, OutPoint,
+        Transaction as BitcoinTransaction, Txid,
     },
     transactions::{
-        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
 use std::{collections::BTreeMap, sync::mpsc::SyncSender};
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 /// Incoming from RPC server thread
 #[derive(Debug)]
@@ -100,14 +100,21 @@ pub struct WalletTransaction {
     pub received_time: u32,
 }
 
+#[derive(Debug, Serialize)]
+pub struct VaultPresignedTransaction<T: RevaultTransaction> {
+    pub psbt: T,
+    #[serde(rename(serialize = "hex"), serialize_with = "serialize_option_tx_hex")]
+    pub transaction: Option<BitcoinTransaction>,
+}
+
 #[derive(Debug)]
 pub struct VaultPresignedTransactions {
     pub outpoint: OutPoint,
-    pub unvault: UnvaultTransaction,
-    pub cancel: CancelTransaction,
+    pub unvault: VaultPresignedTransaction<UnvaultTransaction>,
+    pub cancel: VaultPresignedTransaction<CancelTransaction>,
     // None if not stakeholder
-    pub emergency: Option<EmergencyTransaction>,
-    pub unvault_emergency: Option<UnvaultEmergencyTransaction>,
+    pub emergency: Option<VaultPresignedTransaction<EmergencyTransaction>>,
+    pub unvault_emergency: Option<VaultPresignedTransaction<UnvaultEmergencyTransaction>>,
 }
 
 #[derive(Debug)]
@@ -138,6 +145,25 @@ pub struct ListVaultsEntry {
     pub address: Address,
     pub received_at: u32,
     pub updated_at: u32,
+}
+
+fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let tx_hex = encode::serialize_hex(&tx);
+    s.serialize_str(&tx_hex)
+}
+
+fn serialize_option_tx_hex<S>(tx: &Option<BitcoinTransaction>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if let Some(ref tx) = tx {
+        serialize_tx_hex(tx, s)
+    } else {
+        s.serialize_none()
+    }
 }
 
 /// An error that occured during RPC message handling

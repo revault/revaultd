@@ -17,7 +17,7 @@ use crate::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
             db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
-            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status
+            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status,
         },
         schema::DbVault,
         DatabaseError,
@@ -263,19 +263,59 @@ fn presigned_txs_list_from_outpoints(
         db_vaults_min_status(db_path, VaultStatus::Funded)?
     };
 
+    // For each presigned transaction, append it as well as its extracted version if it's final.
     let mut tx_list = Vec::with_capacity(db_vaults.len());
     for db_vault in db_vaults {
         let outpoint = db_vault.deposit_outpoint;
 
-        let (_, unvault) = db_unvault_transaction(db_path, db_vault.id)?;
+        let (_, unvault_psbt) = db_unvault_transaction(db_path, db_vault.id)?;
+        let mut finalized_unvault = unvault_psbt.clone();
+        let unvault = VaultPresignedTransaction {
+            transaction: if finalized_unvault.finalize(&revaultd.secp_ctx).is_ok() {
+                Some(finalized_unvault.into_psbt().extract_tx())
+            } else {
+                None
+            },
+            psbt: unvault_psbt,
+        };
+
         // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-        let (_, cancel) =
+        let (_, cancel_psbt) =
             db_cancel_transaction(db_path, db_vault.id)?.expect("Must be here post 'Funded' state");
+        let mut finalized_cancel = cancel_psbt.clone();
+        let cancel = VaultPresignedTransaction {
+            transaction: if finalized_cancel.finalize(&revaultd.secp_ctx).is_ok() {
+                Some(finalized_cancel.into_psbt().extract_tx())
+            } else {
+                None
+            },
+            psbt: cancel_psbt,
+        };
+
         let mut emergency = None;
         let mut unvault_emergency = None;
         if revaultd.is_stakeholder() {
-            emergency = Some(db_emer_transaction(db_path, db_vault.id)?.1);
-            unvault_emergency = Some(db_unvault_emer_transaction(db_path, db_vault.id)?.1);
+            let (_, emer_psbt) = db_emer_transaction(db_path, db_vault.id)?;
+            let mut finalized_emer = emer_psbt.clone();
+            emergency = Some(VaultPresignedTransaction {
+                transaction: if finalized_emer.finalize(&revaultd.secp_ctx).is_ok() {
+                    Some(finalized_emer.into_psbt().extract_tx())
+                } else {
+                    None
+                },
+                psbt: emer_psbt,
+            });
+
+            let (_, unemer_psbt) = db_unvault_emer_transaction(db_path, db_vault.id)?;
+            let mut finalized_unemer = unemer_psbt.clone();
+            unvault_emergency = Some(VaultPresignedTransaction {
+                transaction: if finalized_unemer.finalize(&revaultd.secp_ctx).is_ok() {
+                    Some(finalized_unemer.into_psbt().extract_tx())
+                } else {
+                    None
+                },
+                psbt: unemer_psbt,
+            });
         }
 
         tx_list.push(VaultPresignedTransactions {

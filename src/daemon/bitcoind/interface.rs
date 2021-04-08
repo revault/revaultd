@@ -691,6 +691,17 @@ impl BitcoinD {
 
         Ok(None)
     }
+
+    pub fn is_in_mempool(&self, txid: &Txid) -> Result<bool, BitcoindError> {
+        match self.make_node_request("getmempoolentry", &params!(Json::String(txid.to_string()))) {
+            Ok(_) => Ok(true),
+            Err(BitcoindError::Server(jsonrpc::Error::Rpc(jsonrpc::error::RpcError {
+                code: -5,
+                ..
+            }))) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// Information about an utxo one of our descriptors points to.

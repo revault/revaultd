@@ -793,9 +793,7 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
 
-    # If it is then we'll mark it as spending since the Unvault transaction is
-    # still valid and in the mempool, and bitcoind's wallet considers the Spend
-    # transaction to still be as well (spoiler: it's not).
+    # If it is then we'll mark it back as unvaulting
     bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3, shift=-1)
     for w in revault_network.stk_wallets + revault_network.man_wallets:
         w.wait_for_logs(
@@ -805,7 +803,7 @@ def test_reorged_deposit_status(revault_network, bitcoind):
                 "Rescan of all vaults in db done.",
             ]
         )
-        wait_for(lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == 1)
+        wait_for(lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == 1)
 
     # Now the same dance with a canceled vault
 
@@ -813,8 +811,10 @@ def test_reorged_deposit_status(revault_network, bitcoind):
     bitcoind.rpc.sendrawtransaction(deposit_tx)
     bitcoind.generate_block(1, wait_for_mempool=2)
     vault = revault_network.stk_wallets[0].rpc.listvaults(
-        # NB: 'spending' because we reuse a vault that was previously spent!
-        ["spending"]
+        # NB: 'unvaulting' because we reuse a vault that was previously spent! (ie
+        # the Spend transaction is in the walelt and therefore we don't keep track
+        # of the Unvault confirmation)
+        ["unvaulting"]
     )["vaults"][0]
     revault_network.cancel_vault(vault)
 
@@ -925,17 +925,22 @@ def test_reorged_unvault(revault_network, bitcoind):
                 "Rescan of all vaults in db done.",
             ]
         )
-    # FIXME: it should not get marked as spending right away (the Spend transaction is not
-    # valid yet). I think that bitcoind's watchonly wallet will not list in listunspent
-    # the UTXO that are spent by wallet transactions, even if those wallet transactions
-    # are not yet valid.
+    # NOTE: it will stay in the 'unvaulting' state until it can finally gets marked as
+    # 'spending' (ie once the Spend transaction is valid and can be in mempool). That's
+    # because bitcoind's wallet will consider the Unvault at spent even if it's actually
+    # 'spent' by a yet-invalid transaction, and this prevents us to track confirmation.
+    for w in revault_network.stk_wallets + revault_network.man_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+            == len(deposits)
+        )
     bitcoind.generate_block(1, wait_for_mempool=len(vaults))
+    bitcoind.generate_block(revault_network.csv - 1)
     for w in revault_network.stk_wallets + revault_network.man_wallets:
         wait_for(
             lambda: len(w.rpc.listvaults(["spending"], deposits)["vaults"])
             == len(deposits)
         )
-    bitcoind.generate_block(revault_network.csv - 1)
     bitcoind.generate_block(1, wait_for_mempool=1)
     for w in revault_network.stk_wallets + revault_network.man_wallets:
         wait_for(
@@ -1724,8 +1729,8 @@ def test_revaulted_spend(revault_network, bitcoind, executor):
     # Managers spend two vaults, both are canceled.
     vaults = [revault_network.fund(0.05), revault_network.fund(0.1)]
     for v in vaults:
-        revault_network.secure_vault(vault)
-        revault_network.activate_vault(vault)
+        revault_network.secure_vault(v)
+        revault_network.activate_vault(v)
 
     revault_network.unvault_vaults_anyhow(vaults)
     for vault in vaults:
@@ -1735,6 +1740,9 @@ def test_revaulted_spend(revault_network, bitcoind, executor):
     # created in the same deposit transaction.
     vaults = revault_network.fundmany([0.2, 0.08])
     vaults.append(revault_network.fund(0.03))
+    for v in vaults:
+        revault_network.secure_vault(v)
+        revault_network.activate_vault(v)
     revault_network.unvault_vaults_anyhow(vaults)
     revault_network.cancel_vault(vaults[0])
 
@@ -1743,5 +1751,6 @@ def test_revaulted_spend(revault_network, bitcoind, executor):
     deposits = [f"{v['txid']}:{v['vout']}" for v in vaults[1:]]
     for w in mans + stks:
         wait_for(
-            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)) == len(deposits)
+            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+            == len(deposits)
         )

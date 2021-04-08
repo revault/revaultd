@@ -606,6 +606,46 @@ def test_revocation_sig_sharing(revault_network):
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
 
 
+def test_raw_broadcast_cancel(revault_network, bitcoind):
+    """
+    Test broadcasting a dozen of pair of Unvault and Cancel for vaults with
+    different derivation indexes.
+    """
+    revault_network.deploy(3, 2)
+    stks = revault_network.stk_wallets
+    mans = revault_network.man_wallets
+
+    for i in range(10):
+        logging.debug(f"\n\nRound {i}\n\n")
+        vault = revault_network.fund(10)
+        assert (
+            vault["derivation_index"] == i
+        ), "Derivation index isn't increasing one by one?"
+
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        revault_network.secure_vault(vault)
+        revault_network.activate_vault(vault)
+
+        unvault_tx = stks[0].rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["unvault"]["hex"]
+        txid = bitcoind.rpc.sendrawtransaction(unvault_tx)
+        bitcoind.generate_block(1, wait_for_mempool=txid)
+
+        for w in stks + mans:
+            wait_for(lambda: len(w.rpc.listvaults(["unvaulted"], [deposit])) == 1)
+
+        cancel_tx = stks[0].rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["cancel"]["hex"]
+        logging.debug(f"{cancel_tx}")
+        txid = bitcoind.rpc.sendrawtransaction(cancel_tx)
+        bitcoind.generate_block(1, wait_for_mempool=txid)
+
+        for w in stks + mans:
+            wait_for(lambda: len(w.rpc.listvaults(["canceled"], [deposit])) == 1)
+
+
 def test_reorged_deposit(revaultd_stakeholder, bitcoind):
     stk = revaultd_stakeholder
 

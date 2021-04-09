@@ -74,6 +74,7 @@ pub enum RpcMessageIn {
     DelSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
     ListSpendTxs(SyncSender<Result<Vec<ListSpendEntry>, RpcControlError>>),
     SetSpendTx(Txid, SyncSender<Result<(), RpcControlError>>),
+    Revault(OutPoint, SyncSender<Result<(), RpcControlError>>),
 }
 
 /// Outgoing to the bitcoind poller thread
@@ -156,6 +157,7 @@ pub enum RpcControlError {
     SpendSignature(String),
     CosigningServer(String),
     UnvaultBroadcast(String),
+    CancelBroadcast(String),
 }
 
 impl std::fmt::Display for RpcControlError {
@@ -187,6 +189,7 @@ impl std::fmt::Display for RpcControlError {
             }
             Self::CosigningServer(e) => write!(f, "Error with the Cosigning Server: '{}'", e),
             Self::UnvaultBroadcast(e) => write!(f, "Broadcasting Unvault transaction(s): '{}'", e),
+            Self::CancelBroadcast(e) => write!(f, "Broadcasting Cancel transaction: '{}'", e),
         }
     }
 }

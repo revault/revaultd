@@ -13,7 +13,7 @@ use revault_tx::{
 fn parse_args(args: Vec<String>) -> (PrivateKey, Psbt, usize) {
     if args.len() < 3 {
         eprintln!(
-            "Usage: '{} <xpriv/derivation/path OR hex_privkey> <psbt> [input index]'",
+            "Usage: '{} <xpriv/derivation/path OR wif_privkey> <psbt> [input index]'",
             args[0]
         );
         process::exit(1);

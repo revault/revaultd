@@ -43,14 +43,14 @@ fn parse_args(mut args: Vec<String>) -> (Option<PathBuf>, bool, String, Vec<Stri
                 }
 
                 conf_file = Some(PathBuf::from(args.next().expect("Just checked")));
-            },
+            }
             Some("--raw") => {
                 if args.len() < 1 {
                     eprintln!("Not enough arguments.");
                     show_usage();
                 }
                 raw = true;
-            },
+            }
             Some(method) => return (conf_file, raw, method.to_owned(), args.collect()),
             None => {
                 // Should never happen...

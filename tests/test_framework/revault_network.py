@@ -205,7 +205,11 @@ class RevaultNetwork:
                 break
             vout += 1
 
-        wait_for(lambda: len(man.rpc.listvaults(["funded"], [deposit])["vaults"]) == 1)
+        for w in self.stk_wallets + self.man_wallets:
+            wait_for(
+                lambda: len(w.rpc.listvaults(["funded"], [deposit])["vaults"]) == 1
+            )
+
         return man.rpc.listvaults(["funded"], [deposit])["vaults"][0]
 
     def fundmany(self, amounts=[]):
@@ -312,15 +316,13 @@ class RevaultNetwork:
                 == len(deposits)
             )
 
-        unvault_txs = [
-            txs["unvault"]
-            for txs in man.rpc.listonchaintransactions(deposits)["onchain_transactions"]
-        ]
-        assert all(unvtx["blockheight"] is not None for unvtx in unvault_txs)
-        return unvault_txs
+    def spend_vaults_unconfirmed(self, vaults, destinations, feerate):
+        """
+        Spend these {vaults} to these {destinations} (mapping of addresses to amounts), not
+        confirming the Spend transaction.
 
-    def spend_vaults(self, vaults, destinations, feerate):
-        """Spend these {vaults} to these {destinations} (mapping of addresses to amounts)"""
+        :return: the list of spent deposits along with the Spend PSBT.
+        """
         man = self.man_wallets[0]
         deposits = []
         deriv_indexes = []
@@ -351,21 +353,62 @@ class RevaultNetwork:
         man.wait_for_log(
             f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
         )
-        self.bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
         wait_for(
-            lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"])
+            lambda: len(
+                self.man_wallets[0].rpc.listvaults(["spending"], deposits)["vaults"]
+            )
             == len(deposits)
         )
 
-        return spend_psbt.tx.hash
+        return deposits, spend_psbt
 
-    def spend_vaults_anyhow(self, vaults):
-        """Spend these vaults to a random address for a maximum amount for a fixed feerate"""
+    def spend_vaults(self, vaults, destinations, feerate):
+        """
+        Spend these {vaults} to these {destinations} (mapping of addresses to amounts).
+
+        :return: the list of spent deposits along with the Spend PSBT.
+        """
+        deposits, spend_psbt = self.spend_vaults_unconfirmed(
+            vaults, destinations, feerate
+        )
+
+        self.bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
+        wait_for(
+            lambda: len(
+                self.man_wallets[0].rpc.listvaults(["spent"], deposits)["vaults"]
+            )
+            == len(deposits)
+        )
+
+        return deposits, spend_psbt.tx.hash
+
+    def _any_spend_data(self, vaults):
         addr = self.bitcoind.rpc.getnewaddress()
         total_spent = sum(v["amount"] for v in vaults)
         feerate = 2
         fees = self.compute_spendtx_fees(feerate, len(vaults), 1)
-        return self.spend_vaults(vaults, {addr: total_spent - fees}, feerate)
+        return {addr: total_spent - fees}, feerate
+
+    def unvault_vaults_anyhow(self, vaults):
+        """
+        Unvault these vaults with a random Spend transaction for a maximum amount and a
+        fixed feerate.
+        """
+        destinations, feerate = self._any_spend_data(vaults)
+        return self.unvault_vaults(vaults, destinations, feerate)
+
+    def spend_vaults_anyhow(self, vaults):
+        """Spend these vaults to a random address for a maximum amount for a fixed feerate"""
+        destinations, feerate = self._any_spend_data(vaults)
+        return self.spend_vaults(vaults, destinations, feerate)
+
+    def spend_vaults_anyhow_unconfirmed(self, vaults):
+        """
+        Spend these vaults to a random address for a maximum amount for a fixed feerate,
+        not confirming the Spend transaction.
+        """
+        destinations, feerate = self._any_spend_data(vaults)
+        return self.spend_vaults_unconfirmed(vaults, destinations, feerate)
 
     def compute_spendtx_fees(
         self, spendtx_feerate, n_vaults_spent, n_destinations, with_change=False
@@ -402,6 +445,35 @@ class RevaultNetwork:
             + unvaulttxs_vbytes * 24  # Unvault fees (6sat/WU feerate)
             + 30_000 * n_vaults_spent  # Unvault CPFP
         )
+
+    def cancel_vault(self, vault):
+        deposit = f"{vault['txid']}:{vault['vout']}"
+
+        for w in self.stk_wallets + self.man_wallets:
+            wait_for(
+                lambda: len(
+                    w.rpc.listvaults(
+                        ["unvaulting", "unvaulted", "spending"], [deposit]
+                    )["vaults"]
+                )
+                == 1
+            )
+
+        self.stk_wallets[0].rpc.revault(deposit)
+        # Strange hack: we're mining a block without the cancel tx so if we're in the spending->canceling status
+        # revaultd will notice and update its state
+        cancel_txid = self.bitcoind.rpc.getrawmempool()[0]
+        self.bitcoind.generate_blocks_censor(1, [cancel_txid])
+        for w in self.stk_wallets + self.man_wallets:
+            wait_for(
+                lambda: len(w.rpc.listvaults(["canceling"], [deposit])["vaults"]) == 1
+            )
+
+        self.bitcoind.generate_block(1, wait_for_mempool=1)
+        for w in self.stk_wallets + self.man_wallets:
+            wait_for(
+                lambda: len(w.rpc.listvaults(["canceled"], [deposit])["vaults"]) == 1
+            )
 
     def stop_wallets(self):
         for w in self.stk_wallets + self.man_wallets:

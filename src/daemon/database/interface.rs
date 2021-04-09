@@ -294,7 +294,6 @@ pub fn db_unvaulted_vaults(
         },
     )
 }
-
 /// Get the vaults that are in the process of being spent, along with the respective Unvault
 /// transaction.
 pub fn db_spending_vaults(
@@ -316,6 +315,31 @@ pub fn db_spending_vaults(
                 .expect("We store it with to_psbt_serialized");
 
             Ok((db_vault, unvault_tx))
+        },
+    )
+}
+
+/// Get the vaults that are in the process of being canceled, along with the respective Cancel
+/// transaction.
+pub fn db_canceling_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, CancelTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults \
+         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) AND ptx.type = (?2)",
+        &[
+            VaultStatus::Canceling as u32,
+            TransactionType::Cancel as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let cancel_tx: Vec<u8> = row.get(11)?;
+            let cancel_tx = CancelTransaction::from_psbt_serialized(&cancel_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, cancel_tx))
         },
     )
 }
@@ -440,21 +464,36 @@ pub fn db_unvault_from_deposit(
 pub fn db_cancel_transaction(
     db_path: &PathBuf,
     vault_id: u32,
-) -> Result<(u32, CancelTransaction), DatabaseError> {
+) -> Result<Option<(u32, CancelTransaction)>, DatabaseError> {
     let mut rows: Vec<DbTransaction> = db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::Cancel as u32],
         |row| row.try_into(),
     )?;
-    let db_tx = rows
-        .pop()
-        .ok_or_else(|| DatabaseError(format!("No cancel tx in db for vault id '{}'", vault_id)))?;
+    Ok(rows.pop().map(|db_tx| {
+        (
+            db_tx.id,
+            assert_tx_type!(db_tx.psbt, Cancel, "We just queryed it"),
+        )
+    }))
+}
 
-    Ok((
-        db_tx.id,
-        assert_tx_type!(db_tx.psbt, Cancel, "We just queryed it"),
-    ))
+/// Get the Cancel transaction corresponding to this vault
+pub fn db_cancel_dbtx(
+    db_tx: &Transaction,
+    vault_id: u32,
+) -> Result<Option<CancelTransaction>, DatabaseError> {
+    db_query_tx(
+        db_tx,
+        "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
+        params![vault_id, TransactionType::Cancel as u32],
+        |row| row.try_into(),
+    )
+    .map(|mut rows| {
+        rows.pop()
+            .map(|db_tx: DbTransaction| assert_tx_type!(db_tx.psbt, Cancel, "We just queryed it"))
+    })
 }
 
 /// Get the Emergency transaction corresponding to this vault.

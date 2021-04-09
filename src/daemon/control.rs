@@ -538,7 +538,7 @@ fn check_spend_signatures(
 // which generates fresh unsigned transactions.
 //
 // `sigs` MUST contain valid signatures (including the attached sighash type)
-fn send_sig_msg(
+pub fn send_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,

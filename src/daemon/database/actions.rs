@@ -1319,10 +1319,9 @@ mod test {
         db_update_spend(&db_path, &spend_tx_b).unwrap();
 
         // There are 2 Unvaults referenced by this Spend
-        let db_spend =
-            db_spend_transaction(&db_path, &spend_tx_b.txid())
-                .unwrap()
-                .unwrap();
+        let db_spend = db_spend_transaction(&db_path, &spend_tx_b.txid())
+            .unwrap()
+            .unwrap();
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let unvault_psbts = conn
             .prepare(
@@ -1344,12 +1343,11 @@ mod test {
         }
 
         // Thus there are 2 vaults too
-        let spent_outpoints: Vec<OutPoint> =
-            db_vaults_from_spend(&db_path, &spend_tx_b.txid())
-                .unwrap()
-                .into_iter()
-                .map(|(_, db_vault)| db_vault.deposit_outpoint)
-                .collect();
+        let spent_outpoints: Vec<OutPoint> = db_vaults_from_spend(&db_path, &spend_tx_b.txid())
+            .unwrap()
+            .into_iter()
+            .map(|(_, db_vault)| db_vault.deposit_outpoint)
+            .collect();
         assert_eq!(spent_outpoints.len(), 2);
         assert!(spent_outpoints.contains(&outpoint));
         assert!(spent_outpoints.contains(&outpoint_b));

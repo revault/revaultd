@@ -124,7 +124,7 @@ fn get_sigs(
 ) -> Result<(), SignatureFetcherError> {
     let db_path = &revaultd.db_file();
     let secp_ctx = &revaultd.secp_ctx;
-    let id = tx.inner_tx().global.unsigned_tx.txid();
+    let id = tx.txid();
     let getsigs_msg = GetSigs { id };
     let mut transport = KKTransport::connect(
         revaultd.coordinator_host,

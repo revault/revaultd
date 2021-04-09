@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration, vec::Vec
 use revault_net::noise::PublicKey as NoisePubkey;
 use revault_tx::{
     bitcoin::{hashes::hex::FromHex, util::bip32, Network, PublicKey as BitcoinPubkey},
-    miniscript::descriptor::{DescriptorPublicKey, DescriptorSinglePub, DescriptorXKey},
+    miniscript::descriptor::{DescriptorPublicKey, DescriptorSinglePub, DescriptorXKey, Wildcard},
     scripts::EmergencyAddress,
 };
 
@@ -14,7 +14,7 @@ fn xpub_to_desc_xpub(xkey: bip32::ExtendedPubKey) -> DescriptorPublicKey {
         origin: None,
         xkey,
         derivation_path: bip32::DerivationPath::from(vec![]),
-        is_wildcard: true,
+        wildcard: Wildcard::Unhardened,
     })
 }
 
@@ -251,7 +251,7 @@ impl Config {
                 origin: None,
                 xkey: stk_config.xpub.clone(),
                 derivation_path: bip32::DerivationPath::from(vec![]),
-                is_wildcard: true,
+                wildcard: Wildcard::Unhardened,
             });
 
             if !config
@@ -280,7 +280,7 @@ impl Config {
                 origin: None,
                 xkey: man_config.xpub.clone(),
                 derivation_path: bip32::DerivationPath::from(vec![]),
-                is_wildcard: true,
+                wildcard: Wildcard::Unhardened,
             });
 
             if !config.managers_xpubs.iter().any(|x| x == &our_desc_xpub) {

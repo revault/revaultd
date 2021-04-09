@@ -1165,6 +1165,14 @@ def test_getspendtx(revault_network, bitcoind):
         and len(psbt.outputs) == len(destinations.keys()) + 1 + 1
     ), "expected a change output"
 
+    # We can't create an insanely large transaction
+    destinations = {bitcoind.rpc.getnewaddress(): 200_001 for _ in range(10_000)}
+    with pytest.raises(
+        RpcError,
+        match="Transaction too large: satisfied it could be >400k weight units",
+    ):
+        man.rpc.getspendtx(deposits, destinations, feerate)
+
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spendtx_management(revault_network, bitcoind):

@@ -1655,7 +1655,7 @@ def test_large_spends(revault_network, bitcoind, executor):
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
-def test_revault(revault_network, bitcoind, executor):
+def test_revault_command(revault_network, bitcoind, executor):
     """
     Here we manually broadcast the unvualt_tx, followed by the cancel_tx
     """

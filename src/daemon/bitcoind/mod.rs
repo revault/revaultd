@@ -18,6 +18,7 @@ pub enum BitcoindError {
     Custom(String),
     /// Or directly to bitcoind's RPC server
     Server(Error),
+    RevaultTx(revault_tx::Error),
 }
 
 impl BitcoindError {
@@ -36,6 +37,7 @@ impl std::fmt::Display for BitcoindError {
         match self {
             BitcoindError::Custom(ref s) => write!(f, "Bitcoind manager error: {}", s),
             BitcoindError::Server(ref e) => write!(f, "Bitcoind server error: {}", e),
+            BitcoindError::RevaultTx(ref s) => write!(f, "Bitcoind manager error: {}", s),
         }
     }
 }
@@ -56,6 +58,6 @@ impl From<simple_http::Error> for BitcoindError {
 
 impl From<revault_tx::Error> for BitcoindError {
     fn from(e: revault_tx::Error) -> Self {
-        Self::Custom(format!("revault_tx error in bitcoind thread: {}", e))
+        Self::RevaultTx(e)
     }
 }

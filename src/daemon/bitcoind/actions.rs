@@ -1105,6 +1105,16 @@ fn update_utxos(
     } = bitcoind.sync_deposits(&deposits_cache)?;
 
     for (outpoint, utxo) in new_deposits {
+        if utxo.txo.value <= revault_tx::transactions::DUST_LIMIT {
+            log::info!(
+                "Received a deposit that we considered being dust. Ignoring it. \
+                 Outpoint: '{}', amount: '{}'",
+                outpoint,
+                utxo.txo.value
+            );
+            continue;
+        }
+
         let derivation_index = *revaultd
             .read()
             .unwrap()
@@ -1174,9 +1184,23 @@ fn update_utxos(
             .ok_or_else(|| {
                 BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
             })?;
+
+        let txo_value = utxo.txo.value;
         // emer_tx and unemer_tx are None for managers
         let (unvault_tx, cancel_tx, emer_tx, unemer_tx) =
-            presigned_transactions(&revaultd.read().unwrap(), outpoint, utxo)?;
+            match presigned_transactions(&revaultd.read().unwrap(), outpoint, utxo) {
+                Ok(txs) => txs,
+                Err(e) => {
+                    log::error!(
+                        "Unexpected error deriving transaction for '{}', amount: '{}': '{}'",
+                        outpoint,
+                        txo_value,
+                        e
+                    );
+                    continue;
+                }
+            };
+
         db_confirm_deposit(
             &revaultd.read().unwrap().db_file(),
             &outpoint,

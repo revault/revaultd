@@ -194,16 +194,17 @@ class RevaultNetwork:
 
         addr = man.rpc.getdepositaddress()["address"]
         txid = self.bitcoind.rpc.sendtoaddress(addr, amount)
-        man.wait_for_log("Got a new unconfirmed deposit")
+        man.wait_for_log(f"Got a new unconfirmed deposit at {txid}")
         self.bitcoind.generate_block(6, wait_for_mempool=txid)
 
         # A hack to get the deposit outpoint
-        vout = 0
-        while True:
-            deposit = f"{txid}:{vout}"
-            if len(man.rpc.listvaults([], [deposit])["vaults"]) == 1:
-                break
-            vout += 1
+        deposit = None
+        tx = self.bitcoind.rpc.gettransaction(txid, True, True)["decoded"]
+        for i, vout in enumerate(tx["vout"]):
+            for vo_addr in vout["scriptPubKey"]["addresses"]:
+                if addr == vo_addr:
+                    deposit = f"{txid}:{i}"
+        assert deposit is not None
 
         for w in self.stk_wallets + self.man_wallets:
             wait_for(

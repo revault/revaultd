@@ -253,6 +253,24 @@ def test_listpresignedtransactions(revault_network):
         if res["unvault_emergency"] is not None:
             assert res["unvault_emergency"] == stk_res["unvault_emergency"]
 
+    # If the vault gets secured the extracted revocation transactions will be
+    # available
+    revault_network.secure_vault(vaultA)
+    stk_res = stks[0].rpc.listpresignedtransactions([depositA])[
+        "presigned_transactions"
+    ][0]
+    assert stk_res["unvault"]["hex"] is None, "not active yet"
+    assert stk_res["cancel"]["hex"] is not None
+    assert stk_res["emergency"]["hex"] is not None
+    assert stk_res["unvault_emergency"]["hex"] is not None
+
+    # If the vault gets activated the unvault transaction will then be available
+    revault_network.activate_vault(vaultA)
+    man_res = mans[0].rpc.listpresignedtransactions([depositA])[
+        "presigned_transactions"
+    ][0]
+    assert man_res["unvault"]["hex"] is not None
+
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listonchaintransactions(revault_network):
@@ -586,6 +604,46 @@ def test_revocation_sig_sharing(revault_network):
         stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
     for stk in stks + mans:
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
+
+
+def test_raw_broadcast_cancel(revault_network, bitcoind):
+    """
+    Test broadcasting a dozen of pair of Unvault and Cancel for vaults with
+    different derivation indexes.
+    """
+    revault_network.deploy(3, 2)
+    stks = revault_network.stk_wallets
+    mans = revault_network.man_wallets
+
+    for i in range(10):
+        logging.debug(f"\n\nRound {i}\n\n")
+        vault = revault_network.fund(10)
+        assert (
+            vault["derivation_index"] == i
+        ), "Derivation index isn't increasing one by one?"
+
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        revault_network.secure_vault(vault)
+        revault_network.activate_vault(vault)
+
+        unvault_tx = stks[0].rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["unvault"]["hex"]
+        txid = bitcoind.rpc.sendrawtransaction(unvault_tx)
+        bitcoind.generate_block(1, wait_for_mempool=txid)
+
+        for w in stks + mans:
+            wait_for(lambda: len(w.rpc.listvaults(["unvaulted"], [deposit])) == 1)
+
+        cancel_tx = stks[0].rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["cancel"]["hex"]
+        logging.debug(f"{cancel_tx}")
+        txid = bitcoind.rpc.sendrawtransaction(cancel_tx)
+        bitcoind.generate_block(1, wait_for_mempool=txid)
+
+        for w in stks + mans:
+            wait_for(lambda: len(w.rpc.listvaults(["canceled"], [deposit])) == 1)
 
 
 def test_reorged_deposit(revaultd_stakeholder, bitcoind):
@@ -1637,7 +1695,7 @@ def test_revault(revault_network, bitcoind, executor):
     # First of all, we need the unvault psbt finalized
     unvault_psbt = stks[0].rpc.listpresignedtransactions([deposit])[
         "presigned_transactions"
-    ][0]["unvault"]
+    ][0]["unvault"]["psbt"]
     unvault_tx = bitcoind.rpc.finalizepsbt(unvault_psbt)["hex"]
     bitcoind.rpc.sendrawtransaction(unvault_tx)
 
@@ -1681,10 +1739,9 @@ def test_revault(revault_network, bitcoind, executor):
 
     for v in [vault_a, vault_b]:
         deposit = f"{v['txid']}:{v['vout']}"
-        unvault_psbt = man.rpc.listpresignedtransactions([deposit])[
+        unvault_tx = man.rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["unvault"]
-        unvault_tx = bitcoind.rpc.finalizepsbt(unvault_psbt)["hex"]
+        ][0]["unvault"]["hex"]
         bitcoind.rpc.sendrawtransaction(unvault_tx)
 
         # On purpose, only wait for the one we want to revault with, to trigger some race conditions
@@ -1714,7 +1771,7 @@ def test_revault(revault_network, bitcoind, executor):
         cancel_psbt = serializations.PSBT()
         cancel_b64 = stks[0].rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["cancel"]
+        ][0]["cancel"]["psbt"]
         cancel_psbt.deserialize(cancel_b64)
 
         cancel_psbt.tx.calc_sha256()

@@ -140,11 +140,19 @@ vault's state).
 
 | Field               | Type                                                           | Description                                                              |
 | ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `vault_outpoint`    | string                                                         | The vault deposit transaction outpoint.                                  |
-| `unvault`           | string                                                         | The unvaulting transaction as a base64-encoded PSBT                      |
-| `cancel`            | string                                                         | The cancel transaction as a base64-encoded PSBT                          |
-| `emergency`         | string or `null`                                               | The Emergency transaction, or `null` if we are not a stakeholder         |
-| `unvault_emergency` | string or `null`                                               | The Unvault Emergency transaction, or `null` if we are not a stakeholder |
+| `vault_outpoint`    | [presigned_tx](#presigned-tx)                                  | The vault deposit transaction outpoint.                                  |
+| `unvault`           | [presigned_tx](#presigned-tx)                                  | The Unvaulting transaction                                               |
+| `cancel`            | [presigned_tx](#presigned-tx)                                  | The Cancel transaction                                                   |
+| `emergency`         | [presigned_tx](#presigned-tx)                                  | The Emergency transaction, or `null` if we are not a stakeholder         |
+| `unvault_emergency` | [presigned_tx](#presigned-tx)                                  | The Unvault Emergency transaction, or `null` if we are not a stakeholder |
+
+
+#### Presigned tx
+
+| Field    | Type                     | Description                                                                      |
+| -------- | ------------------------ | -------------------------------------------------------------------------------- |
+| `psbt`   | string                   | The presigned transaction as a base64-encoded PSBT                               |
+| `hex`    | string or `null`         | If fully-signed, the presigned transaction as a hex-encoded Bitcoin transaction  |
 
 
 ### `listonchaintransactions`

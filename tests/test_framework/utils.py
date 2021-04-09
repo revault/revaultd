@@ -156,13 +156,24 @@ class Cosig(Participant):
         return self.hd.get_privkey_from_path(self.static_key_path)
 
 
-def get_participants(n_stk, n_man):
+def get_participants(n_stk, n_man, n_stkman=0):
     """Get the configuration entries for each participant."""
     stakeholders = [User() for _ in range(n_stk)]
     cosigs = [Cosig() for _ in range(n_stk)]
     managers = [User() for _ in range(n_man)]
 
-    return (stakeholders, cosigs, managers)
+    stkman_stk = [User() for _ in range(n_stkman)]
+    stkman_cosig = [Cosig() for _ in range(n_stkman)]
+    stkman_man = [User() for _ in range(n_stkman)]
+
+    return (
+        stakeholders,
+        cosigs,
+        managers,
+        stkman_stk,
+        stkman_cosig,
+        stkman_man,
+    )
 
 
 class UnixSocket(object):

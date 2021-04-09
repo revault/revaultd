@@ -135,7 +135,7 @@ def bitcoind(directory):
 def revaultd_stakeholder(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
-    (stks, cosigs, mans) = get_participants(2, 3)
+    (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
 
     stk_config = {
         "keychain": stks[0],
@@ -168,7 +168,7 @@ def revaultd_stakeholder(bitcoind, directory):
 def revaultd_manager(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
-    (stks, cosigs, mans) = get_participants(2, 3)
+    (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
 
     man_config = {
         "keychain": mans[0],

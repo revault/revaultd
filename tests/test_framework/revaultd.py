@@ -230,6 +230,38 @@ class StakeholderRevaultd(Revaultd):
             coordinator_noise_key,
             coordinator_port,
             bitcoind,
-            stk_config=stk_config,
+            stk_config,
+            man_config=None,
         )
         assert self.stk_keychain is not None
+
+
+class StkManRevaultd(Revaultd):
+    def __init__(
+        self,
+        datadir,
+        stks,
+        cosigs,
+        mans,
+        csv,
+        noise_priv,
+        coordinator_noise_key,
+        coordinator_port,
+        bitcoind,
+        stk_config,
+        man_config,
+    ):
+        """A revaultd instance that is both stakeholder and manager."""
+        super(StkManRevaultd, self).__init__(
+            datadir,
+            stks,
+            cosigs,
+            mans,
+            csv,
+            noise_priv,
+            coordinator_noise_key,
+            coordinator_port,
+            bitcoind,
+            stk_config,
+            man_config,
+        )

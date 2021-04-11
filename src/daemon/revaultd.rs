@@ -158,7 +158,6 @@ impl fmt::Display for VaultStatus {
 enum KeyError {
     ReadingKey(io::Error),
     WritingKey(io::Error),
-    InvalidKeySize,
 }
 
 impl fmt::Display for KeyError {
@@ -166,7 +165,6 @@ impl fmt::Display for KeyError {
         match self {
             Self::ReadingKey(e) => write!(f, "Error reading Noise key: '{}'", e),
             Self::WritingKey(e) => write!(f, "Error writing Noise key: '{}'", e),
-            Self::InvalidKeySize => write!(f, "Invalid Noise key length"),
         }
     }
 }

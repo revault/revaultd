@@ -404,24 +404,41 @@ impl BitcoinD {
         current_utxos: &HashMap<OutPoint, UtxoInfo>,
         label: String,
         min_conf: u64,
+        min_amount: Option<f64>,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
         let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
         let mut spent_utxos = current_utxos.clone();
         let label_json: Json = label.into();
 
-        for utxo in self
-            .make_watchonly_request(
+        let req = if let Some(min_amount) = min_amount {
+            // FIXME: should we make it static somehow? Re-allocating a constant each time is kinda
+            // ugly..
+            let mut query_options = serde_json::Map::with_capacity(1);
+            query_options.insert("minimumAmount".into(), min_amount.into());
+
+            self.make_watchonly_request(
                 "listunspent",
-                &params!(Json::Number(serde_json::Number::from(0))), // minconf
-            )?
-            .as_array()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' didn't return an array.".to_string(),
-                )
-            })?
-        {
+                &params!(
+                    Json::Number(0.into()),       // minconf
+                    Json::Number(9999999.into()), // maxconf (default)
+                    Json::Array(vec![]),          // addresses (default)
+                    Json::Bool(true),             // include_unsafe (default)
+                    Json::Object(query_options),  // query_options
+                ),
+            )
+        } else {
+            self.make_watchonly_request(
+                "listunspent",
+                &params!(
+                    Json::Number(0.into()), // minconf
+                ),
+            )
+        };
+
+        for utxo in req?.as_array().ok_or_else(|| {
+            BitcoindError::Custom("API break, 'listunspent' didn't return an array.".to_string())
+        })? {
             if utxo.get("label") != Some(&label_json) {
                 continue;
             }
@@ -525,14 +542,19 @@ impl BitcoinD {
         &self,
         deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
-        self.sync_chainstate(deposits_utxos, self.deposit_utxos_label(), MIN_CONF)
+        self.sync_chainstate(
+            deposits_utxos,
+            self.deposit_utxos_label(),
+            MIN_CONF,
+            Some(Amount::from_sat(revault_tx::transactions::DUST_LIMIT).as_btc()),
+        )
     }
 
     pub fn sync_unvaults(
         &self,
         unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
-        self.sync_chainstate(unvault_utxos, self.unvault_utxos_label(), 1)
+        self.sync_chainstate(unvault_utxos, self.unvault_utxos_label(), 1, None)
     }
 
     /// Get the raw transaction as hex, the blockheight it was included in if

@@ -27,4 +27,4 @@ cd tests/servers/cosignerd && cargo build && cd "$REPO_ROOT"
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt
-TIMEOUT=120 TEST_DEBUG=1 POSTGRES_USER="test" POSTGRES_PASS="test" pytest -n3 -vvv --log-cli-level=DEBUG tests/
+VERBOSE=1 LOG_LEVEL=debug TIMEOUT=120 TEST_DEBUG=1 POSTGRES_USER="test" POSTGRES_PASS="test" pytest -n3 -vvv --log-cli-level=DEBUG tests/

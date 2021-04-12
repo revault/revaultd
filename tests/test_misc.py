@@ -1858,11 +1858,6 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     mans[0].rpc.setspendtx(spend_psbt.tx.hash)
 
     bitcoind.generate_block(1, wait_for_mempool=len(deposits))
-    for w in mans + revault_network.stk_wallets:
-        wait_for(
-            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
-            == len(deposits)
-        )
     bitcoind.generate_block(CSV)
     mans[0].wait_for_log(
         f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
@@ -1906,11 +1901,6 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     mans[0].rpc.setspendtx(spend_psbt.tx.hash)
 
     bitcoind.generate_block(1, wait_for_mempool=len(deposits))
-    for w in mans + revault_network.stk_wallets:
-        wait_for(
-            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
-            == len(deposits)
-        )
     bitcoind.generate_block(CSV)
     mans[0].wait_for_log(
         f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
@@ -1949,15 +1939,14 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
     mans[0].rpc.setspendtx(spend_psbt.tx.hash)
-
     bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+
+    # Cancel it
     for w in mans + revault_network.stk_wallets:
         wait_for(
             lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
             == len(deposits)
         )
-
-    # Cancel it
     mans[0].rpc.revault(deposits[0])
     for w in mans + revault_network.stk_wallets:
         wait_for(
@@ -1991,15 +1980,14 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
     mans[0].rpc.setspendtx(spend_psbt.tx.hash)
-
     bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+
+    # Cancel it
     for w in mans + revault_network.stk_wallets:
         wait_for(
             lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
             == len(deposits)
         )
-
-    # Cancel it
     mans[0].rpc.revault(deposits[0])
     bitcoind.generate_block(1, wait_for_mempool=1)
     for w in mans + revault_network.stk_wallets:

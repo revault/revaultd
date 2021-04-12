@@ -455,6 +455,7 @@ class RevaultNetwork:
             )
 
         self.stk_wallets[0].rpc.revault(deposit)
+        # FIXME: the hack should not be necessary and is confusing to the caller!!
         # Strange hack: we're mining a block without the cancel tx so if we're in the spending->canceling status
         # revaultd will notice and update its state
         cancel_txid = self.bitcoind.rpc.getrawmempool()[0]

@@ -1,7 +1,7 @@
 use crate::{
     bitcoind::{
         interface::{BitcoinD, OnchainDescriptorState, SyncInfo, UtxoInfo},
-        BitcoindError, MIN_CONF,
+        BitcoindError,
     },
     database::{
         actions::{
@@ -702,7 +702,8 @@ fn comprehensive_rescan(
         // First layer: if the deposit itself becomes unconfirmed, no need to go further: mark the
         // vault as unconfirmed and be done.
         let deposit_conf = tip.height.checked_sub(dep_height).expect("Checked above") + 1;
-        if deposit_conf < MIN_CONF as u32 {
+        let min_conf = revaultd.read().unwrap().min_conf;
+        if deposit_conf < min_conf as u32 {
             unconfirm_vault(
                 revaultd,
                 bitcoind,
@@ -715,7 +716,7 @@ fn comprehensive_rescan(
                 "Vault deposit '{}' ended up with '{}' confirmations (<{})",
                 vault.deposit_outpoint,
                 deposit_conf,
-                MIN_CONF,
+                min_conf,
             );
             continue;
         }
@@ -724,7 +725,7 @@ fn comprehensive_rescan(
             "Vault deposit '{}' still has '{}' confirmations (>={}), not doing anything",
             vault.deposit_outpoint,
             deposit_conf,
-            MIN_CONF
+            min_conf
         );
 
         // Second layer: if the Unvault was confirmed and becomes unconfirmed, we mark it as such
@@ -1205,7 +1206,7 @@ fn update_utxos(
         new_unconf: new_deposits,
         new_conf: conf_deposits,
         new_spent: spent_deposits,
-    } = bitcoind.sync_deposits(&deposits_cache)?;
+    } = bitcoind.sync_deposits(&deposits_cache, revaultd.read().unwrap().min_conf)?;
 
     for (outpoint, utxo) in new_deposits {
         if utxo.txo.value <= revault_tx::transactions::DUST_LIMIT {

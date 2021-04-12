@@ -941,10 +941,6 @@ pub fn handle_rpc_messages(
                 // Ok, signatures look legit. Add them to the PSBTs in database.
                 // FIXME: edgy edge case: don't crash here, rather return an error if
                 // deposit tx was reorged out in between now and the above status check.
-
-                // NOTE: we update it first as 'securing' as db_update_presigned_tx may update it
-                // to 'secured' if it's fully signed.
-                db_mark_securing_vault(&db_path, db_vault.id)?;
                 db_update_presigned_tx(
                     &db_path,
                     db_vault.id,
@@ -966,8 +962,7 @@ pub fn handle_rpc_messages(
                     unvault_emer_sigs.clone(),
                     secp_ctx,
                 )?;
-
-                // Share them with our felow stakeholders.
+                // Share before marking as securing, so they can retry.
                 if let Err(e) = share_rev_signatures(
                     &revaultd,
                     (&cancel_tx, cancel_sigs),
@@ -977,6 +972,9 @@ pub fn handle_rpc_messages(
                     response_tx.send(Some(format!("Error while sharing signatures: {}", e)))?;
                     continue;
                 }
+                // NOTE: it will only mark it as 'securing' if it was 'funded', not if it was
+                // marked as 'secured' by db_update_presigned_tx() !
+                db_mark_securing_vault(&db_path, db_vault.id)?;
 
                 // Ok, RPC server, tell them that everything is fine.
                 response_tx.send(None)?;
@@ -1100,10 +1098,6 @@ pub fn handle_rpc_messages(
                 // Sanity checks passed. Store it then share it.
                 // FIXME: edgy edge case: don't crash here, rather return an error if
                 // deposit tx was reorged out in between now and the above status check.
-
-                // NOTE: we update it first as 'unvaulting' as db_update_presigned_tx may update it
-                // to 'unvaulted' if it's fully signed.
-                db_mark_activating_vault(&db_path, db_vault.id)?;
                 db_update_presigned_tx(
                     &db_path,
                     db_vault.id,
@@ -1111,6 +1105,7 @@ pub fn handle_rpc_messages(
                     sigs.clone(),
                     secp_ctx,
                 )?;
+                // Share before marking as activating, so they can retry.
                 if let Err(e) = share_unvault_signatures(&revaultd, &unvault_tx) {
                     response_tx.send(Err(RpcControlError::Communication(format!(
                         "Sharing Unvault signatures with coordinator: '{}'",
@@ -1118,6 +1113,9 @@ pub fn handle_rpc_messages(
                     ))))?;
                     continue;
                 }
+                // NOTE: it will only mark it as 'unvaulting' if it was 'secured', not if it was
+                // marked as 'activated' by db_update_presigned_tx() !
+                db_mark_activating_vault(&db_path, db_vault.id)?;
 
                 response_tx.send(Ok(()))?;
             }

@@ -2,11 +2,13 @@ import copy
 import logging
 import pytest
 import random
+import os
 
 from bitcoin.core import COIN
 from fixtures import *
 from test_framework import serializations
 from test_framework.utils import (
+    TailableProc,
     POSTGRES_IS_SETUP,
     TIMEOUT,
     RpcError,
@@ -2101,3 +2103,59 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     mans[0].wait_for_secured_vaults([deposit])
 
     # TODO: same dance with all emergency statuses
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_sigfetcher(revault_network, bitcoind, executor):
+    (stks, mans) = revault_network.deploy(7, 3)
+    # First of all, activate a vault
+    vault = revault_network.fund(0.05)
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+
+    # Stopping revaultd, deleting the database
+    for w in stks + mans:
+        w.stop()
+        datadir_db = os.path.join(w.datadir_with_network, "revaultd.sqlite3")
+        os.remove(datadir_db)
+
+    # Starting revaultd again
+    for w in stks + mans:
+        # Manually starting it so that we can check that
+        # the db is being created again
+        TailableProc.start(w)
+        w.wait_for_logs(
+            [
+                "No database at .*, creating a new one",
+                "revaultd started on network regtest",
+                "bitcoind now synced",
+                "JSONRPC server started",
+                "Signature fetcher thread started",
+            ]
+        )
+
+    for w in stks + mans:
+        w.wait_for_log(
+            "Got a new unconfirmed deposit"
+        )
+        wait_for(lambda: len(w.rpc.listvaults(["funded"], [])) == 1)
+
+    for w in stks:
+        w.wait_for_logs(
+            [
+                "Fetching Unvault Emergency signature",
+                "Fetching Emergency signature",
+                "Fetching Cancel signature",
+                "Fetching Unvault signature",
+            ]
+        )
+
+    for w in mans:
+        w.wait_for_logs(
+            [
+                "Fetching Cancel signature",
+                "Fetching Unvault signature",
+            ]
+        )
+
+    for w in stks + mans:
+        wait_for(lambda: len(w.rpc.listvaults(["active"], [])) == 1)

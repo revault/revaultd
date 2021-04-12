@@ -72,6 +72,8 @@ where
     let conn = Connection::open(path)
         .map_err(|e| DatabaseError(format!("Opening database for query: {}", e.to_string())))?;
 
+    conn.busy_timeout(std::time::Duration::from_secs(60))?;
+
     // rustc says 'borrowed value does not live long enough'
     let x = conn
         .prepare(stmt_str)

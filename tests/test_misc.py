@@ -1827,3 +1827,277 @@ def test_revaulted_spend(revault_network, bitcoind, executor):
             lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
             == len(deposits)
         )
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_retrieve_vault_status(revault_network, bitcoind):
+    """Test we keep track of coins that moved without us actively noticing it."""
+    CSV = 3
+    revault_network.deploy(2, 2, csv=CSV)
+    mans = revault_network.man_wallets
+
+    # Create a new deposit, makes everyone aware of it. Then stop one of the
+    # wallets for it to not notice anything from now on.
+    vault = revault_network.fund(0.05)
+    man = mans.pop(0)
+    man.stop()
+
+    # Now activate and Spend the vault, the manager does not acknowledge it (yet)
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    deposits = [f"{vault['txid']}:{vault['vout']}"]
+    destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    for m in [man] + mans:
+        spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
+        mans[0].rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    mans[0].rpc.setspendtx(spend_psbt.tx.hash)
+
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    bitcoind.generate_block(CSV)
+    mans[0].wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
+    )
+    wait_for(lambda: len(mans[0].rpc.listvaults(["spending"], deposits)["vaults"]) == 1)
+
+    # The manager should restart, and acknowledge the vault as being "spending"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(mans[0].rpc.listvaults(["spending"], deposits)["vaults"])
+        == len(deposits)
+    )
+
+    # And if we mine it now everyone will see it as "spent"
+    bitcoind.generate_block(1, wait_for_mempool=spend_psbt.tx.hash)
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # Now do the same dance with a "spent" vault
+    vault = revault_network.fund(0.14)
+    man = mans.pop(0)
+    man.stop()
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    deposits = [f"{vault['txid']}:{vault['vout']}"]
+    destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    for m in [man] + mans:
+        spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
+        mans[0].rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    mans[0].rpc.setspendtx(spend_psbt.tx.hash)
+
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    bitcoind.generate_block(CSV)
+    mans[0].wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
+    )
+    bitcoind.generate_block(1, wait_for_mempool=spend_psbt.tx.hash)
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # The manager should restart, and acknowledge the vault as being "spent"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(mans[0].rpc.listvaults(["spent"], [deposit])["vaults"])
+        == len(deposits)
+    )
+
+    # Now do the same dance with a "canceling" vault
+    vault = revault_network.fund(8)
+    man = mans.pop(0)
+    man.stop()
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    deposits = [f"{vault['txid']}:{vault['vout']}"]
+    destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    for m in [man] + mans:
+        spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
+        mans[0].rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    mans[0].rpc.setspendtx(spend_psbt.tx.hash)
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+
+    # Cancel it
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+            == len(deposits)
+        )
+    mans[0].rpc.revault(deposits[0])
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["canceling"], deposits)["vaults"])
+            == len(deposits)
+        )
+    # The manager should restart, and acknowledge the vault as being "canceling"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(mans[0].rpc.listvaults(["canceling"], [deposit])["vaults"])
+        == len(deposits)
+    )
+
+    # Now do the same dance with a "canceled" vault
+    vault = revault_network.fund(19)
+    man = mans.pop(0)
+    man.stop()
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    deposits = [f"{vault['txid']}:{vault['vout']}"]
+    destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    for m in [man] + mans:
+        spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
+        mans[0].rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    mans[0].rpc.setspendtx(spend_psbt.tx.hash)
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+
+    # Cancel it
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+            == len(deposits)
+        )
+    mans[0].rpc.revault(deposits[0])
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["canceled"], deposits)["vaults"])
+            == len(deposits)
+        )
+    # The manager should restart, and acknowledge the vault as being "canceled"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(mans[0].rpc.listvaults(["canceled"], [deposit])["vaults"])
+        == len(deposits)
+    )
+
+    # Now do the same dance with a "unvaulting" vault
+    vault = revault_network.fund(41)
+    man = mans.pop(0)
+    man.stop()
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    deposits = [f"{vault['txid']}:{vault['vout']}"]
+    destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    for m in [man] + mans:
+        spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
+        mans[0].rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    mans[0].rpc.setspendtx(spend_psbt.tx.hash)
+
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # The manager should restart, and acknowledge the vault as being "unvaulting"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(mans[0].rpc.listvaults(["unvaulting"], [deposit])["vaults"])
+        == len(deposits)
+    )
+
+    # Now do the same dance with a "unvaulted" vault
+    vault = revault_network.fund(99)
+    man = mans.pop(0)
+    man.stop()
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    deposits = [f"{vault['txid']}:{vault['vout']}"]
+    destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    for m in [man] + mans:
+        spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
+        mans[0].rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    mans[0].rpc.setspendtx(spend_psbt.tx.hash)
+
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    for w in mans + revault_network.stk_wallets:
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # The manager should restart, and acknowledge the vault as being "unvaulted"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(mans[0].rpc.listvaults(["unvaulted"], [deposit])["vaults"])
+        == len(deposits)
+    )
+
+    # Now do the same dance with an "active" vault
+    vault = revault_network.fund(0.0556789)
+    man = mans.pop(0)
+    man.stop()
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+
+    # The manager should restart, and acknowledge the vault as being "active"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    mans[0].wait_for_active_vaults([deposit])
+
+    # Now do the same dance with a "secured" vault
+    vault = revault_network.fund(0.123456)
+    man = mans.pop(0)
+    man.stop()
+
+    revault_network.secure_vault(vault)
+
+    # The manager should restart, and acknowledge the vault as being "secured"
+    mans.insert(0, man)
+    mans[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    mans[0].wait_for_secured_vaults([deposit])
+
+    # TODO: same dance with all emergency statuses

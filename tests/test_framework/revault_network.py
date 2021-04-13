@@ -299,11 +299,6 @@ class RevaultNetwork:
         spend_psbt.tx.calc_sha256()
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
-        for w in self.man_wallets + self.stk_wallets:
-            wait_for(
-                lambda: len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"])
-                == len(deposits)
-            )
         self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
         for w in self.man_wallets + self.stk_wallets:
             wait_for(
@@ -339,11 +334,6 @@ class RevaultNetwork:
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
         self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
-        for w in self.man_wallets + self.stk_wallets:
-            wait_for(
-                lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
-                == len(deposits)
-            )
         self.bitcoind.generate_block(self.csv)
         man.wait_for_log(
             f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
@@ -455,15 +445,6 @@ class RevaultNetwork:
             )
 
         self.stk_wallets[0].rpc.revault(deposit)
-        # Strange hack: we're mining a block without the cancel tx so if we're in the spending->canceling status
-        # revaultd will notice and update its state
-        cancel_txid = self.bitcoind.rpc.getrawmempool()[0]
-        self.bitcoind.generate_blocks_censor(1, [cancel_txid])
-        for w in self.stk_wallets + self.man_wallets:
-            wait_for(
-                lambda: len(w.rpc.listvaults(["canceling"], [deposit])["vaults"]) == 1
-            )
-
         self.bitcoind.generate_block(1, wait_for_mempool=1)
         for w in self.stk_wallets + self.man_wallets:
             wait_for(

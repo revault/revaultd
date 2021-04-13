@@ -76,6 +76,10 @@ fn default_sig_poll_interval() -> Duration {
     Duration::from_secs(60)
 }
 
+fn default_minconf() -> u32 {
+    6
+}
+
 /// Everything we need to know for talking to bitcoind serenely
 #[derive(Debug, Clone, Deserialize)]
 pub struct BitcoindConfig {
@@ -165,7 +169,9 @@ pub struct Config {
         default = "default_loglevel"
     )]
     pub log_level: log::LevelFilter,
-    // TODO: sync server address
+    /// After how many blocks should we consider a deposit as confirmed?
+    #[serde(default = "default_minconf")]
+    pub min_conf: u32,
 }
 
 #[derive(PartialEq, Eq, Debug)]

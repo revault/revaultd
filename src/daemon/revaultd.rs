@@ -237,6 +237,8 @@ pub struct RevaultD {
     pub bitcoind_config: BitcoindConfig,
     /// Last block we heard about
     pub tip: Option<BlockchainTip>,
+    /// Minimum confirmations before considering a deposit as mature
+    pub min_conf: u32,
 
     // Scripts stuff
     /// Who am i, and where am i in all this mess ?
@@ -385,6 +387,7 @@ impl RevaultD {
             coordinator_poll_interval,
             cosigs,
             lock_time: 0,
+            min_conf: config.min_conf,
             bitcoind_config: config.bitcoind_config,
             tip: None,
             // Will be updated by the database

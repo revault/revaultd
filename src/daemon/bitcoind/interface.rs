@@ -1,7 +1,4 @@
-use crate::{
-    bitcoind::{BitcoindError, MIN_CONF},
-    revaultd::BlockchainTip,
-};
+use crate::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use common::config::BitcoindConfig;
 use revault_tx::bitcoin::{
     consensus::encode, Address, Amount, BlockHash, OutPoint, Transaction, TxOut, Txid,
@@ -403,7 +400,7 @@ impl BitcoinD {
         &self,
         current_utxos: &HashMap<OutPoint, UtxoInfo>,
         label: String,
-        min_conf: u64,
+        min_conf: u32,
         min_amount: Option<f64>,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
         let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
@@ -466,7 +463,7 @@ impl BitcoinD {
             // Therefore if there is an utxo at this outpoint, it's an already known deposit
             if let Some(utxo) = spent_utxos.remove(&outpoint) {
                 // It may be known but still unconfirmed, though.
-                if !utxo.is_confirmed && confirmations >= min_conf {
+                if !utxo.is_confirmed && confirmations >= min_conf as u64 {
                     confirmed_utxos.insert(outpoint, utxo);
                 }
                 continue;
@@ -541,11 +538,12 @@ impl BitcoinD {
     pub fn sync_deposits(
         &self,
         deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
+        min_conf: u32,
     ) -> Result<OnchainDescriptorState, BitcoindError> {
         self.sync_chainstate(
             deposits_utxos,
             self.deposit_utxos_label(),
-            MIN_CONF,
+            min_conf,
             Some(Amount::from_sat(revault_tx::transactions::DUST_LIMIT).as_btc()),
         )
     }

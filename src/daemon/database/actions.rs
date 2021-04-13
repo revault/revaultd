@@ -500,8 +500,12 @@ pub fn db_mark_securing_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), Da
     db_exec(db_path, |tx| {
         tx.execute(
             "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
-             WHERE vaults.id = (?2)",
-            params![VaultStatus::Securing as u32, vault_id],
+             WHERE vaults.id = (?2) AND vaults.status = (?3)",
+            params![
+                VaultStatus::Securing as u32,
+                vault_id,
+                VaultStatus::Funded as u32
+            ],
         )
         .map_err(|e| DatabaseError(format!("Updating vault to 'securing': {}", e.to_string())))?;
 
@@ -514,8 +518,12 @@ pub fn db_mark_activating_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), 
     db_exec(db_path, |tx| {
         tx.execute(
             "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
-             WHERE vaults.id = (?2)",
-            params![VaultStatus::Activating as u32, vault_id],
+             WHERE vaults.id = (?2) AND vaults.status = (?3)",
+            params![
+                VaultStatus::Activating as u32,
+                vault_id,
+                VaultStatus::Secured as u32
+            ],
         )
         .map_err(|e| DatabaseError(format!("Updating vault to 'securing': {}", e.to_string())))?;
 

@@ -40,6 +40,12 @@ class Coordinatord(TailableProc):
         # Use the directory fixture uid
         uid = os.path.basename(os.path.dirname(datadir))
         self.db_name = f"revault_coordinatord_{uid}"
+        # Cleanup a potential leftover from a crashed test
+        try:
+            self.postgres_exec(f"DROP DATABASE {self.db_name}")
+        except psycopg2.errors.InvalidCatalogName:
+            pass
+        # Now actually create it
         self.postgres_exec(f"CREATE DATABASE {self.db_name} OWNER {postgres_user}")
 
         noise_secret_file = os.path.join(datadir, "noise_secret")

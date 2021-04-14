@@ -1,13 +1,18 @@
 use crate::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use common::config::BitcoindConfig;
-use revault_tx::bitcoin::{
-    consensus::encode, Address, Amount, BlockHash, OutPoint, Transaction, TxOut, Txid,
+use revault_tx::{
+    bitcoin::{consensus::encode, Address, Amount, BlockHash, OutPoint, Transaction, TxOut, Txid},
+    transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},
 };
 
 use std::{collections::HashMap, fs, str::FromStr, time::Duration};
 
 use jsonrpc::{arg, client::Client, simple_http::SimpleHttpTransport};
 use serde_json::Value as Json;
+
+// The minimum deposit value according to revault_tx depends also on the unvault's
+// transaction fee. To have a one-value-fits-all, just take a 5% leeway.
+const MIN_DEPOSIT_VALUE: u64 = (DUST_LIMIT + UNVAULT_CPFP_VALUE) * 105 / 100;
 
 pub struct BitcoinD {
     node_client: Client,
@@ -544,7 +549,7 @@ impl BitcoinD {
             deposits_utxos,
             self.deposit_utxos_label(),
             min_conf,
-            Some(Amount::from_sat(revault_tx::transactions::DUST_LIMIT).as_btc()),
+            Some(Amount::from_sat(MIN_DEPOSIT_VALUE).as_btc()),
         )
     }
 

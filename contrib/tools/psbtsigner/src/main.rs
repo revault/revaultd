@@ -95,7 +95,7 @@ fn sign_psbt(key: PrivateKey, psbt: &mut Psbt, input_index: usize) {
     let mut signature = secp.sign(&sighash, &key.key).serialize_der().to_vec();
     signature.push(sighash_type.as_u32() as u8);
     let pubkey = key.public_key(&secp);
-    psbt.inputs[0].partial_sigs.insert(pubkey, signature);
+    psbt.inputs[input_index].partial_sigs.insert(pubkey, signature);
 }
 
 fn main() {

@@ -32,10 +32,17 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "trace")
 assert LOG_LEVEL in ["trace", "debug", "info", "warn", "error"]
 
 
-def wait_for(success, timeout=TIMEOUT):
+def wait_for(success, timeout=TIMEOUT, debug_fn=None):
+    """
+        Run success() either until it returns True, or until the timeout is reached.
+        debug_fn is logged at each call to success, it can be useful for debugging
+        when tests fail.
+    """
     start_time = time.time()
     interval = 0.25
     while not success() and time.time() < start_time + timeout:
+        if debug_fn is not None:
+            logging.info(debug_fn())
         time.sleep(interval)
         interval *= 2
         if interval > 5:

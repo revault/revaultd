@@ -33,18 +33,18 @@ class Revaultd(TailableProc):
 
         # The data is stored in a per-network directory. We need to create it
         # in order to write the Noise private key
-        datadir_with_network = os.path.join(datadir, "regtest")
-        os.makedirs(datadir_with_network, exist_ok=True)
+        self.datadir_with_network = os.path.join(datadir, "regtest")
+        os.makedirs(self.datadir_with_network, exist_ok=True)
 
         bin = os.path.join(
             os.path.dirname(__file__), "..", "..", "target/debug/revaultd"
         )
         self.conf_file = os.path.join(datadir, "config.toml")
         self.cmd_line = [bin, "--conf", f"{self.conf_file}"]
-        socket_path = os.path.join(datadir_with_network, "revaultd_rpc")
+        socket_path = os.path.join(self.datadir_with_network, "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
 
-        noise_secret_file = os.path.join(datadir_with_network, "noise_secret")
+        noise_secret_file = os.path.join(self.datadir_with_network, "noise_secret")
         with open(noise_secret_file, "wb") as f:
             f.write(noise_priv)
 

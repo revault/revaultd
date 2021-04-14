@@ -354,13 +354,13 @@ impl BitcoinD {
             "importdescriptors",
             &params!(Json::Array(vec![Json::Object(desc_map,)])),
         )?;
-        if res.get(0).map(|x| x.get("success")) == Some(Some(&Json::Bool(true))) {
+        if res.get(0).map(|x| x.get("success")).flatten() == Some(&Json::Bool(true)) {
             return Ok(());
         }
 
         Err(BitcoindError::Custom(format!(
-            "In import_fresh descriptor, error returned from 'importdescriptor': {:?}",
-            res.get("error")
+            "In import_fresh descriptor, no success returned from 'importdescriptor': {:?}",
+            res
         )))
     }
 

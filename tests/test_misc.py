@@ -563,7 +563,7 @@ def test_unvaulttx(revault_network):
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_revocation_sig_sharing(revault_network):
-    revault_network.deploy(5, 3)
+    revault_network.deploy(4, 2, n_stkmanagers=1)
     stks = revault_network.stks()
     mans = revault_network.mans()
 
@@ -618,7 +618,7 @@ def test_raw_broadcast_cancel(revault_network, bitcoind):
     Test broadcasting a dozen of pair of Unvault and Cancel for vaults with
     different derivation indexes.
     """
-    revault_network.deploy(3, 2)
+    revault_network.deploy(3, 2, n_stkmanagers=2)
     stks = revault_network.stks()
     mans = revault_network.mans()
 
@@ -1249,7 +1249,7 @@ def test_getspendtx(revault_network, bitcoind):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spendtx_management(revault_network, bitcoind):
     CSV = 12
-    revault_network.deploy(2, 1, csv=CSV)
+    revault_network.deploy(2, 1, n_stkmanagers=1, csv=CSV)
     man = revault_network.man(0)
     amount = 0.24
     vault = revault_network.fund(amount)
@@ -1268,7 +1268,10 @@ def test_spendtx_management(revault_network, bitcoind):
 
     # If we are not a manager, it'll fail
     with pytest.raises(RpcError, match="This is a manager command"):
-        revault_network.stk(0).rpc.updatespendtx(spend_tx)
+        revault_network.stk_wallets[0].rpc.updatespendtx(spend_tx)
+
+    # But it won't if we are a stakeholder-manager
+    revault_network.stkman_wallets[0].rpc.updatespendtx(spend_tx)
 
     # It will not accept a spend_tx which spends an unknown Unvault
     psbt = serializations.PSBT()
@@ -1793,7 +1796,7 @@ def test_revaulted_spend(revault_network, bitcoind, executor):
     circumstances.
     """
     CSV = 12
-    revault_network.deploy(2, 2, csv=CSV)
+    revault_network.deploy(2, 2, n_stkmanagers=1, csv=CSV)
     mans = revault_network.mans()
     stks = revault_network.stks()
 
@@ -2112,20 +2115,21 @@ def test_retrieve_vault_status(revault_network, bitcoind):
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_sigfetcher(revault_network, bitcoind, executor):
-    (stks, mans) = revault_network.deploy(7, 3)
+    rn = revault_network
+    rn.deploy(7, 3, n_stkmanagers=2)
     # First of all, activate a vault
     vault = revault_network.fund(0.05)
     revault_network.secure_vault(vault)
     revault_network.activate_vault(vault)
 
     # Stopping revaultd, deleting the database
-    for w in stks + mans:
+    for w in rn.participants():
         w.stop()
         datadir_db = os.path.join(w.datadir_with_network, "revaultd.sqlite3")
         os.remove(datadir_db)
 
     # Starting revaultd again
-    for w in stks + mans:
+    for w in rn.participants():
         # Manually starting it so that we can check that
         # the db is being created again
         TailableProc.start(w)
@@ -2139,13 +2143,13 @@ def test_sigfetcher(revault_network, bitcoind, executor):
             ]
         )
 
-    for w in stks + mans:
+    # They should all get back to the 'active' state, pulling sigs from the coordinator
+    for w in rn.participants():
         w.wait_for_log(
             "Got a new unconfirmed deposit"
         )
         wait_for(lambda: len(w.rpc.listvaults(["funded"], [])) == 1)
-
-    for w in stks:
+    for w in rn.stks():
         w.wait_for_logs(
             [
                 "Fetching Unvault Emergency signature",
@@ -2154,14 +2158,34 @@ def test_sigfetcher(revault_network, bitcoind, executor):
                 "Fetching Unvault signature",
             ]
         )
-
-    for w in mans:
+    for w in rn.man_wallets:
         w.wait_for_logs(
             [
                 "Fetching Cancel signature",
                 "Fetching Unvault signature",
             ]
         )
-
-    for w in stks + mans:
+    for w in rn.participants():
         wait_for(lambda: len(w.rpc.listvaults(["active"], [])) == 1)
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_stkman_only(revault_network, bitcoind):
+    """Test a setup with only stakehodlers-managers"""
+    rn = revault_network
+    rn.deploy(n_stakeholders=0, n_managers=0, n_stkmanagers=3, csv=5)
+
+    # They can spend
+    vaults = rn.fundmany([1, 2])
+    for v in vaults:
+        rn.secure_vault(v)
+        rn.activate_vault(v)
+    rn.spend_vaults_anyhow(vaults)
+
+    # They can revault
+    vaults = rn.fundmany([3, 4, 5])
+    for v in vaults:
+        rn.secure_vault(v)
+        rn.activate_vault(v)
+    rn.unvault_vaults_anyhow(vaults)
+    rn.cancel_vault(vaults[0])

@@ -230,6 +230,25 @@ impl BitcoinD {
         )))
     }
 
+    pub fn unloadwallet(&self, wallet_path: String) -> Result<(), BitcoindError> {
+        let res = self.make_node_request("unloadwallet", &params!(Json::String(wallet_path),))?;
+
+        let warning = res
+            .get("warning")
+            .map(|w| w.as_str())
+            .flatten()
+            .ok_or_else(|| {
+                BitcoindError::Custom(
+                    "No or invalid 'warning' in 'unloadwallet' result".to_string(),
+                )
+            })?;
+        if warning.len() > 0 {
+            Err(BitcoindError::Custom(warning.to_string()))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Constructs an `addr()` descriptor out of an address
     pub fn addr_descriptor(&self, address: &str) -> Result<String, BitcoindError> {
         let desc_wo_checksum = format!("addr({})", address);

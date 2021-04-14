@@ -180,6 +180,15 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
     // TODO: sanity check descriptors are imported when migrating to 0.22
 
     if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
+        // Remove any leftover. This can happen if we delete the watchonly wallet but don't restart
+        // bitcoind.
+        while bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
+            log::info!("Found a leftover watchonly wallet loaded on bitcoind. Removing it.");
+            if let Err(e) = bitcoind.unloadwallet(bitcoind_wallet_path.clone()) {
+                log::error!("Unloading wallet '{}': '{}'", &bitcoind_wallet_path, e);
+            }
+        }
+
         bitcoind.createwallet_startup(bitcoind_wallet_path)?;
         log::info!("Importing descriptors to bitcoind watchonly wallet.");
 
@@ -219,12 +228,29 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
         .watchonly_wallet_file()
         .expect("Wallet id is set at startup in setup_db()");
 
-    if !bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
-        log::info!("Loading our watchonly wallet '{}'.", bitcoind_wallet_path);
-        bitcoind.loadwallet_startup(bitcoind_wallet_path)?;
+    match bitcoind
+        .listwallets()?
+        .into_iter()
+        .filter(|path| path == &bitcoind_wallet_path)
+        .count()
+    {
+        0 => {
+            log::info!("Loading our watchonly wallet '{}'.", bitcoind_wallet_path);
+            bitcoind.loadwallet_startup(bitcoind_wallet_path)?;
+            Ok(())
+        }
+        1 => {
+            log::info!(
+                "Watchonly wallet '{}' already loaded.",
+                bitcoind_wallet_path
+            );
+            Ok(())
+        }
+        n => Err(BitcoindError::Custom(format!(
+            "{} watchonly wallet '{}' are loaded on bitcoind.",
+            n, bitcoind_wallet_path
+        ))),
     }
-
-    Ok(())
 }
 
 /// Connects to and sanity checks bitcoind.

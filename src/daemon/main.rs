@@ -22,7 +22,7 @@ use revault_net::sodiumoxide;
 use revault_tx::bitcoin::hashes::hex::ToHex;
 
 use std::{
-    env,
+    env, panic,
     path::PathBuf,
     process,
     sync::{mpsc, Arc, RwLock},
@@ -146,6 +146,28 @@ fn setup_logger(log_level: log::LevelFilter) -> Result<(), fern::InitError> {
     Ok(())
 }
 
+// A panic in any thread should stop the main thread, and print the panic.
+fn setup_panic_hook() {
+    panic::set_hook(Box::new(move |panic_info| {
+        let file = panic_info
+            .location()
+            .map(|l| l.file())
+            .unwrap_or_else(|| "'unknown'");
+        let line = panic_info
+            .location()
+            .map(|l| l.line().to_string())
+            .unwrap_or_else(|| "'unknown'".to_string());
+
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            log::error!("panic occurred at line {} of file {}: {:?}", line, file, s);
+        } else {
+            log::error!("panic occurred at line {} of file {}", line, file);
+        }
+
+        process::exit(1);
+    }));
+}
+
 fn main() {
     let args = env::args().collect();
     let conf_file = parse_args(args);
@@ -178,6 +200,8 @@ fn main() {
         "Coordinator static public key: '{}'",
         revaultd.coordinator_noisekey.0.to_hex()
     );
+
+    setup_panic_hook();
 
     if revaultd.daemon {
         let log_file = revaultd.log_file();

@@ -161,7 +161,17 @@ fn main() {
                     if raw {
                         print!("{}", response);
                     } else {
-                        print!("{:#}\n", response);
+                        if let Some(r) = response.get("result") {
+                            println!("{:#}", serde_json::json!({ "result": r }));
+                        } else if let Some(e) = response.get("error") {
+                            println!("{:#}", serde_json::json!({ "error": e }));
+                        } else {
+                            log::warn!(
+                                "revaultd response doesn't contain result or error: '{}'",
+                                response
+                            );
+                            println!("{:#}", response);
+                        }
                     }
                     return;
                 }

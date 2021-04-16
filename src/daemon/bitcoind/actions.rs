@@ -1497,24 +1497,40 @@ fn update_utxos(
                     &unvault_outpoint.txid,
                     e
                 );
+                log::debug!(
+                    "Spender txid: '{:?}'",
+                    bitcoind.get_spender_txid(&unvault_outpoint, &previous_tip.hash)?
+                );
             }
         }
 
         // TODO: handle bypass and emergency
-        if utxo.is_confirmed {
-            log::warn!(
+
+        // Only remove the deposit from the cache if it's not in mempool nor in block chain.
+        if let (_, Some(height), _) = bitcoind.get_wallet_transaction(&deposit_outpoint.txid)? {
+            log::error!(
+                "Deposit at '{}' is still confirmed at height '{}' but is not returned \
+        by listunspent and Unvault transaction isn't seen",
+                &deposit_outpoint,
+                height
+            );
+        } else if bitcoind.is_in_mempool(&deposit_outpoint.txid)? {
+            log::error!(
+                "Deposit at '{}' is in mempool but is not returned by listunspent and \
+        Unvault transaction isn't seen",
+                &deposit_outpoint,
+            );
+        } else {
+            log::error!(
                 "The deposit utxo created via '{}' just vanished",
                 &deposit_outpoint
             );
-        } else {
-            log::debug!(
-                "The unconfirmed deposit utxo created via '{}' just vanished",
-                &deposit_outpoint
-            );
+            deposits_cache
+                .remove(&deposit_outpoint)
+                .expect("It was in spent_deposits, it must still be here.");
+            // TODO: we should probably remove it from db too, but do some more reasearch about
+            // where it went first.
         }
-        deposits_cache
-            .remove(&deposit_outpoint)
-            .expect("It was in spent_deposits, it must still be here.");
     }
 
     Ok(())

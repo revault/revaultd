@@ -457,6 +457,8 @@ class TailableProc(object):
 
             with self.logs_cond:
                 if pos >= len(self.logs):
+                    if not self.running:
+                        raise ValueError("Process died while waiting for logs")
                     self.logs_cond.wait(1)
                     continue
 
@@ -469,9 +471,6 @@ class TailableProc(object):
                 if len(exs) == 0:
                     return self.logs[pos]
                 pos += 1
-
-            if not self.running:
-                raise ValueError("Process died while waiting for logs")
 
     def wait_for_log(self, regex, timeout=TIMEOUT):
         """Look for `regex` in the logs.

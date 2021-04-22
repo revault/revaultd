@@ -46,8 +46,8 @@ environment variables are passed, the framework will skip the tests that depends
 servers:
 
 ```
-# Adapt `-n`, `-v` and other environment variables to your needs
-pytest -vvv -n4
+# Adapt `-n`, `-v`, `timeout` and other environment variables to your needs
+pytest -vvv -n4 --timeout=1800
 ```
 
 #### With the servers
@@ -73,7 +73,7 @@ git submodule update --remote --recursive
 
 To run the server-requiring tests, pass the postgres credentials to the framework:
 ```
-POSTGRES_USER="test" POSTGRES_PASS="test" TEST_DEBUG=1 pytest -vvv -n8
+POSTGRES_USER="test" POSTGRES_PASS="test" TEST_DEBUG=1 pytest -vvv -n8 --timeout=1800
 ```
 
 

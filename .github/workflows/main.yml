@@ -10,6 +10,7 @@ jobs:
         toolchain:
           - stable
         os:
+          - macOS-latest
           - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
@@ -24,7 +25,7 @@ jobs:
       - name: Build on Rust ${{ matrix.toolchain }}
         run: cargo build --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }}
-        run: cargo test --verbose --color always
+        run: cargo test --verbose --color always -- --nocapture
       - name: Functional tests
         if: matrix.os == 'ubuntu-latest'
         run: ./contrib/ci-functional-tests.sh

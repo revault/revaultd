@@ -91,6 +91,7 @@ fn read_bytes_from_stream(stream: &mut dyn io::Read) -> Result<Option<Vec<u8>>, 
                     | io::ErrorKind::ConnectionReset
                     | io::ErrorKind::ConnectionAborted
                     | io::ErrorKind::BrokenPipe => {
+                        eprintln!("Got error '{:?}', continuing", err);
                         // Try again on interruption or disconnection. In the latter case we'll
                         // remove the stream anyways.
                         continue;
@@ -144,6 +145,7 @@ fn handle_single_request(
     resp_queue: Arc<RwLock<VecDeque<Vec<u8>>>>,
     message: MethodCall,
 ) {
+    eprintln!("\n\nHandling {:?}", &message);
     let res = assume_some!(
         jsonrpc_io
             .read()
@@ -155,6 +157,8 @@ fn handle_single_request(
     );
     let resp = Response::Single(res);
     let resp_bytes = serde_json::to_vec(&resp).expect("jsonrpc_core says: This should never fail.");
+
+    eprintln!("Done handling\n\n");
 
     resp_queue.write().unwrap().push_back(resp_bytes);
 }
@@ -176,9 +180,12 @@ fn read_handle_request(
     // We use an optional index if there is some left unparsed bytes, because borrow checker :)
     let mut leftover = None;
 
+    eprintln!("Before readèbytes");
     if let Some(new) = read_bytes_from_stream(stream)? {
+        eprintln!("Read '{}'", String::from_utf8_lossy(&new));
         cache.extend(new);
     } else {
+        eprintln!("Nothing new");
         // Nothing new? We can short-circuit.
         return Ok(());
     }
@@ -252,7 +259,7 @@ fn mio_loop(
     let mut read_cache_map: HashMap<Token, Vec<u8>> = HashMap::with_capacity(8);
     let jsonrpc_io = Arc::from(RwLock::from(jsonrpc_io));
     // Handle to thread currently handling commands we were sent.
-    let mut handler_threads = VecDeque::with_capacity(MAX_HANDLER_THREADS);
+    let mut handler_threads: VecDeque<std::thread::JoinHandle<_>> = VecDeque::with_capacity(MAX_HANDLER_THREADS);
 
     poller
         .registry()
@@ -262,6 +269,7 @@ fn mio_loop(
         poller.poll(&mut events, None)?;
 
         for event in &events {
+            eprintln!("Event {:?}", event);
             // A connection was established; loop to process all the messages
             if event.token() == JSONRPC_SERVER && event.is_readable() {
                 while !metadata.is_shutdown() {
@@ -308,6 +316,10 @@ fn mio_loop(
                     // If this was the last connection alive and we are shutting down,
                     // actually shut down.
                     if metadata.is_shutdown() && connections_map.is_empty() {
+                        eprintln!("Shutting down");
+                        while let Some(t) = handler_threads.pop_front() {
+                            t.join().unwrap();
+                        }
                         return Ok(());
                     }
 
@@ -327,7 +339,7 @@ fn mio_loop(
                 )?;
 
                 if event.is_readable() {
-                    log::trace!("Readable event for {:?}", event.token());
+                    eprintln!("Readable event for {:?}", event.token());
                     let read_cache = assume_some!(
                         read_cache_map.get_mut(&event.token()),
                         "Entry is always set when connection_map's entry is"
@@ -341,6 +353,7 @@ fn mio_loop(
                         &metadata,
                         &mut handler_threads,
                     )?;
+                    eprintln!("After read_handle");
                 }
 
                 if event.is_writable() {
@@ -686,7 +699,8 @@ mod tests {
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);
         sock.write(msg.as_bytes()).unwrap();
         sock.flush().unwrap();
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(5));
+        eprintln!("After sleep.");
         drop(sock);
         server_loop_thread.join().unwrap();
 

@@ -22,7 +22,9 @@ use revault_net::sodiumoxide;
 use revault_tx::bitcoin::hashes::hex::ToHex;
 
 use std::{
-    env, panic,
+    env,
+    io::{self, Write},
+    panic,
     path::PathBuf,
     process,
     sync::{mpsc, Arc, RwLock},
@@ -101,17 +103,35 @@ fn daemon_main(mut revaultd: RevaultD) {
     );
 
     // Handle RPC commands until we die.
+    let bitcoind_thread = Arc::new(RwLock::new(bitcoind_thread));
+    let sigfetcher_thread = Arc::new(RwLock::new(sigfetcher_thread));
     let rpc_utils = RpcUtils {
         revaultd,
         bitcoind_tx,
-        bitcoind_thread: Arc::new(RwLock::new(Some(bitcoind_thread))),
+        bitcoind_thread: bitcoind_thread.clone(),
         sigfetcher_tx,
-        sigfetcher_thread: Arc::new(RwLock::new(Some(sigfetcher_thread))),
+        sigfetcher_thread: sigfetcher_thread.clone(),
     };
     assume_ok!(
         rpcserver_loop(socket, user_role, rpc_utils),
         "Error in the main loop"
     );
+
+    // If the RPC server loop stops, we've been told to shutdown!
+    let bitcoind_thread = unsafe { Arc::into_raw(bitcoind_thread).read().into_inner() };
+    let sigfetcher_thread = unsafe { Arc::into_raw(sigfetcher_thread).read().into_inner() };
+    bitcoind_thread
+        .unwrap()
+        .join()
+        .expect("Joining bitcoind thread");
+    sigfetcher_thread
+        .unwrap()
+        .join()
+        .expect("Joining sigfetcher thread");
+
+    // We are always logging to stdout, should it be then piped to the log file (if daemon) or
+    // not. So just make sure that all messages were actually written.
+    assume_ok!(io::stdout().flush(), "Flushing stdout");
 }
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout

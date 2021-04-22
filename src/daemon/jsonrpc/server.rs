@@ -591,21 +591,21 @@ mod tests {
         let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
         let (sigfetcher_tx, sigfetcher_rx) = mpsc::channel();
 
-        let bitcoind_thread = Arc::from(RwLock::from(Some(thread::spawn(move || {
+        let bitcoind_thread = Arc::from(RwLock::from(thread::spawn(move || {
             for msg in bitcoind_rx {
                 match msg {
                     BitcoindMessageOut::Shutdown => return,
                     _ => unreachable!(),
                 }
             }
-        }))));
-        let sigfetcher_thread = Arc::from(RwLock::from(Some(thread::spawn(move || {
+        })));
+        let sigfetcher_thread = Arc::from(RwLock::from(thread::spawn(move || {
             for msg in sigfetcher_rx {
                 match msg {
                     SigFetcherMessageOut::Shutdown => return,
                 }
             }
-        }))));
+        })));
 
         RpcUtils {
             revaultd,

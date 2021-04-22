@@ -26,7 +26,7 @@ use crate::{
     revaultd::{BlockchainTip, VaultStatus},
     threadmessages::*,
 };
-use common::{assume_ok, VERSION};
+use common::VERSION;
 
 use revault_tx::{
     bitcoin::{util::bip32, Address, OutPoint, TxOut, Txid},
@@ -40,8 +40,6 @@ use revault_tx::{
 
 use std::{
     collections::BTreeMap,
-    io::{self, Write},
-    process,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -271,31 +269,6 @@ impl RpcApi for RpcImpl {
             .sigfetcher_tx
             .send(SigFetcherMessageOut::Shutdown)
             .map_err(|e| internal_error!(e))?;
-        assume_ok!(
-            meta.rpc_utils
-                .bitcoind_thread
-                .write()
-                .unwrap()
-                .take()
-                .unwrap()
-                .join(),
-            "Joining bitcoind thread"
-        );
-        assume_ok!(
-            meta.rpc_utils
-                .sigfetcher_thread
-                .write()
-                .unwrap()
-                .take()
-                .unwrap()
-                .join(),
-            "Joining sigfetcher thread"
-        );
-
-        // We are always logging to stdout, should it be then piped to the log file (if daemon) or
-        // not. So just make sure that all messages made it to the other end of the connection before
-        // terminating the process.
-        assume_ok!(io::stdout().flush(), "Flushing stdout");
         meta.shutdown();
 
         Ok(())

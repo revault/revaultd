@@ -682,7 +682,7 @@ pub fn announce_spend_transaction(
 pub struct RpcUtils {
     pub revaultd: Arc<RwLock<RevaultD>>,
     pub bitcoind_tx: Sender<BitcoindMessageOut>,
-    pub bitcoind_thread: Arc<RwLock<Option<JoinHandle<()>>>>,
+    pub bitcoind_thread: Arc<RwLock<JoinHandle<()>>>,
     pub sigfetcher_tx: Sender<SigFetcherMessageOut>,
-    pub sigfetcher_thread: Arc<RwLock<Option<JoinHandle<()>>>>,
+    pub sigfetcher_thread: Arc<RwLock<JoinHandle<()>>>,
 }

@@ -1308,12 +1308,19 @@ fn update_utxos(
     }
 
     for (outpoint, utxo) in conf_deposits {
-        let blockheight = bitcoind
-            .get_wallet_transaction(&outpoint.txid)?
-            .1
-            .ok_or_else(|| {
-                BitcoindError::Custom("Deposit transaction isn't confirmed!".to_string())
-            })?;
+        let blockheight =
+            if let (_, Some(height), _) = bitcoind.get_wallet_transaction(&outpoint.txid)? {
+                height
+            } else {
+                // This is theoretically possible if it gets unconfirmed in between the call to
+                // listunspent and this one. This was actually encountered by the reorg tests.
+                log::error!(
+                    "Deposit transaction for '{}' isn't confirmed but it's part of the \
+                         confirmed deposits returned by listunspent.",
+                    outpoint
+                );
+                continue;
+            };
 
         let txo_value = utxo.txo.value;
         // emer_tx and unemer_tx are None for managers

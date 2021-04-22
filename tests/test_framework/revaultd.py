@@ -147,7 +147,7 @@ class Revaultd(TailableProc):
             ]
         )
 
-    def stop(self):
+    def stop(self, timeout=10):
         try:
             self.rpc.stop()
             self.wait_for_logs(
@@ -157,10 +157,10 @@ class Revaultd(TailableProc):
                     "Signature fetcher thread received shutdown.",
                 ]
             )
-            return 0
+            self.proc.wait(timeout)
         except Exception as e:
             logging.error(f"{self.prefix} : error when calling stop: '{e}'")
-            return TailableProc.stop(self)
+        return TailableProc.stop(self)
 
     def cleanup(self):
         try:

@@ -384,8 +384,8 @@ class TailableProc(object):
 
         if rc is None:
             self.proc.kill()
+            self.proc.wait()
 
-        self.proc.wait()
         self.thread.join()
 
         return self.proc.returncode

@@ -87,13 +87,15 @@ fn read_bytes_from_stream(stream: &mut dyn io::Read) -> Result<Option<Vec<u8>>, 
                         }
                         return Ok(Some(trimmed(buf, total_read)));
                     }
-                    io::ErrorKind::Interrupted
-                    | io::ErrorKind::ConnectionReset
+                    io::ErrorKind::Interrupted => {
+                        // Interrupted? Let's try again
+                        continue;
+                    }
+                    io::ErrorKind::ConnectionReset
                     | io::ErrorKind::ConnectionAborted
                     | io::ErrorKind::BrokenPipe => {
-                        // Try again on interruption or disconnection. In the latter case we'll
-                        // remove the stream anyways.
-                        continue;
+                        // Something strange happened, but it's not fatal
+                        return Ok(None);
                     }
                     // Now that's actually bad
                     _ => return Err(err),

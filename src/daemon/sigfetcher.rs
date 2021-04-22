@@ -276,8 +276,10 @@ pub fn signature_fetcher_loop(
     // Make sure the coordinator has got all our signatures for current vaults.
     // FIXME: this is bulk, be smarter (may just be checking it has got it after sharing it in the
     // first place, or mark it as shared in DB).
-    if let Err(e) = share_all_signatures(&revaultd.read().unwrap()) {
-        log::error!("Error sharing all our signatures: '{}'", e);
+    if revaultd.read().unwrap().is_stakeholder() {
+        if let Err(e) = share_all_signatures(&revaultd.read().unwrap()) {
+            log::error!("Error sharing all our signatures: '{}'", e);
+        }
     }
 
     loop {

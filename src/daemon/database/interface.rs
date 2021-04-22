@@ -46,6 +46,7 @@ where
 {
     let mut conn = Connection::open(path)
         .map_err(|e| DatabaseError(format!("Opening database: {}", e.to_string())))?;
+    conn.busy_timeout(std::time::Duration::from_secs(60))?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| DatabaseError(format!("Creating transaction: {}", e.to_string())))?;

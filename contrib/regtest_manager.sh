@@ -145,14 +145,14 @@ stop_regtest () {
 # Start a single revault wallet daemon
 start_revaultd () {
     # FIXME: write the config to the PREFIX_DIR ourselves..
-    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="contrib/config_regtest.toml";fi
+    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="./config_regtest.toml";fi
     cargo run --bin revaultd -- --conf "$REVAULTD_CONFIG_PATH";
     alias re="cargo run --bin revault-cli -- --conf $REVAULTD_CONFIG_PATH";
 }
 
 # Fund a new vault, optionally takes an amount
 fund_vault () {
-    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="contrib/config_regtest.toml";fi
+    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="./config_regtest.toml";fi
     amount=10;
     if [ "$#" == "1" ];then
         amount=$1;

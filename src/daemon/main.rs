@@ -26,7 +26,7 @@ use std::{
     path::PathBuf,
     process,
     sync::{mpsc, Arc, RwLock},
-    thread,
+    thread, time,
 };
 
 use daemonize_simple::Daemonize;
@@ -132,8 +132,14 @@ fn setup_logger(log_level: log::LevelFilter) -> Result<(), fern::InitError> {
     let dispatcher = fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
-                "{}[{}][{}] {}",
-                chrono::Local::now().format("[%m-%d][%H:%M:%S]"),
+                "[{}][{}][{}] {}",
+                time::SystemTime::now()
+                    .duration_since(time::UNIX_EPOCH)
+                    .unwrap_or_else(|e| {
+                        println!("Can't get time since epoch: '{}'. Using a dummy value.", e);
+                        time::Duration::from_secs(0)
+                    })
+                    .as_secs(),
                 record.target(),
                 record.level(),
                 message

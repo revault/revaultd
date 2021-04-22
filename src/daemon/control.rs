@@ -706,9 +706,9 @@ pub fn handle_rpc_messages(
                 bitcoind_tx.send(BitcoindMessageOut::Shutdown)?;
                 sigfetcher_tx.send(SigFetcherMessageOut::Shutdown)?;
 
-                assume_ok!(jsonrpc_thread.join(), "Joining RPC server thread");
                 assume_ok!(bitcoind_thread.join(), "Joining bitcoind thread");
                 assume_ok!(sigfetcher_thread.join(), "Joining bitcoind thread");
+                assume_ok!(jsonrpc_thread.join(), "Joining RPC server thread");
 
                 process::exit(0);
             }

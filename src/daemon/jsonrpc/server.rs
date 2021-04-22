@@ -507,7 +507,7 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         let socket = rpcserver_setup(path.clone()).unwrap();
-        thread::spawn(move || {
+        let rpc_thread = thread::spawn(move || {
             rpcserver_loop(tx, socket, UserRole::Stakeholder).unwrap_or_else(|e| {
                 panic!("Error in JSONRPC server event loop: {}", e.to_string());
             })
@@ -570,6 +570,9 @@ mod tests {
             Ok(RpcMessageIn::Shutdown) => {}
             _ => panic!("Didn't receive shutdown"),
         }
+
+        drop(sock);
+        rpc_thread.join().unwrap();
     }
 
     #[test]

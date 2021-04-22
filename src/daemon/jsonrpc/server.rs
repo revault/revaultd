@@ -621,10 +621,20 @@ mod tests {
             })
         });
 
-        while !rpc_socket_path.as_path().exists() {
-            thread::sleep(Duration::from_millis(100));
+        fn bind_or_die(path: &std::path::PathBuf, starting_time: std::time::Instant) -> UnixStream {
+            match UnixStream::connect(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    if starting_time.elapsed() > Duration::from_secs(5) {
+                        panic!("Could not connect to the socket: '{:?}'", e);
+                    }
+                    bind_or_die(path, starting_time)
+                }
+            }
         }
-        let mut sock = UnixStream::connect(rpc_socket_path).unwrap();
+
+        let now = std::time::Instant::now();
+        let mut sock = bind_or_die(&rpc_socket_path, now);
 
         // Write a valid JSONRPC message (but invalid command)
         // For some reasons it takes '{}' as non-empty parameters ON UNIX BUT NOT WINDOWS WTF..

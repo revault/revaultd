@@ -1369,12 +1369,6 @@ def test_spendtx_management(revault_network, bitcoind):
             for v in man.rpc.listvaults([], spent_vaults)["vaults"]
         )
     )
-    man.wait_for_logs(
-        [
-            f"The deposit utxo created via '{deposit}' was unvaulted"
-            for deposit in spent_vaults
-        ]
-    )
     bitcoind.generate_block(1, wait_for_mempool=len(spent_vaults))
     wait_for(
         lambda: all(
@@ -1632,12 +1626,6 @@ def test_large_spends(revault_network, bitcoind, executor):
     wait_for(
         lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
         == len(deposits)
-    )
-    man.wait_for_logs(
-        [
-            f"The deposit utxo created via '{deposit}' was unvaulted"
-            for deposit in deposits
-        ]
     )
     # We need a single confirmation to consider the Unvault transaction confirmed
     bitcoind.generate_block(1, wait_for_mempool=len(deposits))

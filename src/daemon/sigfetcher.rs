@@ -1,5 +1,6 @@
 ///! Background thread that will poll the coordinator for signatures
 use crate::{
+    control::{check_signature, get_presigs, CommunicationError},
     database::{
         actions::db_update_presigned_tx,
         interface::db_transactions_sig_missing,
@@ -9,15 +10,8 @@ use crate::{
     revaultd::RevaultD,
     threadmessages::SigFetcherMessageOut,
 };
-use revault_net::{
-    message::{
-        coordinator::{GetSigs, Sigs},
-        ResponseResult,
-    },
-    transport::KKTransport,
-};
 use revault_tx::{
-    bitcoin::{secp256k1, PublicKey as BitcoinPubKey, SigHashType},
+    bitcoin::{PublicKey as BitcoinPubKey, SigHashType},
     transactions::RevaultTransaction,
 };
 
@@ -30,8 +24,7 @@ use std::{
 #[derive(Debug)]
 pub enum SignatureFetcherError {
     DbError(DatabaseError),
-    NetError(revault_net::Error),
-    UnexpectedMessage(ResponseResult),
+    Communication(CommunicationError),
     ChannelDisconnected,
 }
 
@@ -39,11 +32,8 @@ impl std::fmt::Display for SignatureFetcherError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::DbError(ref s) => write!(f, "Database error in sig fetcher thread: '{}'", s),
-            Self::NetError(ref s) => {
-                write!(f, "Communication error in sig fetcher thread: '{}'", s)
-            }
-            Self::UnexpectedMessage(ref m) => {
-                write!(f, "Got an unexpeted message from coordinator '{:?}'", m)
+            Self::Communication(ref e) => {
+                write!(f, "Communication error in sig fetcher thread: '{}'", e)
             }
             Self::ChannelDisconnected => {
                 write!(f, "Channel disconnected error in sig fetcher thread")
@@ -60,49 +50,16 @@ impl From<DatabaseError> for SignatureFetcherError {
     }
 }
 
-impl From<revault_net::Error> for SignatureFetcherError {
-    fn from(e: revault_net::Error) -> Self {
-        Self::NetError(e)
+impl From<CommunicationError> for SignatureFetcherError {
+    fn from(e: CommunicationError) -> Self {
+        Self::Communication(e)
     }
 }
 
-// TODO (module organization): with the upcoming move of JSONRPC commands to the jsonrpc module we
-// should move the send / get sig msg routines to control.
-
-
-/// The signature hash of a presigned transaction (ie Unvault, Cancel, Emergency, or
-/// UnvaultEmergency)
-pub fn presigned_tx_sighash(
-    tx: &impl RevaultTransaction,
-    hashtype: SigHashType,
-) -> secp256k1::Message {
-    // Presigned transactions only have one input when handled by revaultd.
-    // If we were passed a >1 input transaction, something went really bad and it's better to
-    // crash.
-    assert!(tx.inner_tx().global.unsigned_tx.input.len() == 1);
-    assert!(hashtype == SigHashType::All || hashtype == SigHashType::AllPlusAnyoneCanPay);
-
-    tx.signature_hash_internal_input(0, hashtype)
-        .map(|sighash| {
-            secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash")
-        })
-        .expect("Asserted above, input exists")
-}
-
-// Check a raw (without SIGHASH type) presigned tx (ie Unvault, Cancel, Emergency, or
-// UnvaultEmergency) signature
-pub fn check_signature(
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    tx: &impl RevaultTransaction,
-    pubkey: BitcoinPubKey,
-    sig: &secp256k1::Signature,
-    hashtype: SigHashType,
-) -> Result<(), secp256k1::Error> {
-    let sighash = presigned_tx_sighash(tx, hashtype);
-
-    secp.verify(&sighash, sig, &pubkey.key)?;
-
-    Ok(())
+impl From<revault_net::Error> for SignatureFetcherError {
+    fn from(e: revault_net::Error) -> Self {
+        Self::Communication(e.into())
+    }
 }
 
 // Send a `get_sigs` message to the Coordinator to fetch other stakeholders' signatures for this
@@ -124,36 +81,22 @@ fn get_sigs(
 ) -> Result<(), SignatureFetcherError> {
     let db_path = &revaultd.db_file();
     let secp_ctx = &revaultd.secp_ctx;
-    let id = tx.txid();
-    let getsigs_msg = GetSigs { id };
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
 
-    log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
-    let resp = transport.send_req(&getsigs_msg.into())?;
-    let Sigs { signatures } = match resp {
-        ResponseResult::Sigs(s) => s,
-        _ => return Err(SignatureFetcherError::UnexpectedMessage(resp)),
-    };
-    log::debug!("Got sigs {:?} from coordinator.", signatures);
-
+    let signatures = get_presigs(revaultd, tx.txid())?;
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {
             compressed: true,
             key,
         };
+        // FIXME: don't blindly assume 0 here..
         if tx.inner_tx().inputs[0].partial_sigs.contains_key(&pubkey) {
             continue;
         }
 
         log::debug!(
-            "Adding revocation signature '{:?}' for pubkey '{}' for tx '{}' ({:?})",
+            "Adding revocation signature '{:?}' for pubkey '{}' for ({:?})",
             sig,
             pubkey,
-            id,
             tx_type
         );
         let hashtype = match tx_type {
@@ -172,8 +115,9 @@ fn get_sigs(
             );
             continue;
         }
-        tx.add_signature(0, pubkey, (sig, hashtype))
-            .expect("Can not fail, as we are never passed a Spend transaction.");
+        if let Err(e) = tx.add_signature(0, pubkey, (sig, hashtype)) {
+            log::error!("Error while adding signature for presigned tx: '{}'", e);
+        }
         // This will atomically set the vault as 'Secured' if all revocations transactions
         // were signed, and as 'Active' if the Unvault transaction was.
         // NOTE: In theory, the deposit could have been reorged out and the presigned

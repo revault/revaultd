@@ -13,14 +13,13 @@ use crate::{
         DatabaseError,
     },
     revaultd::{RevaultD, VaultStatus},
-    sigfetcher::presigned_tx_sighash,
     threadmessages::*,
 };
 
 use common::assume_ok;
 use revault_net::{
     message::{
-        coordinator::{SetSpendResult, SetSpendTx, Sig, SigResult},
+        coordinator::{GetSigs, SetSpendResult, SetSpendTx, Sig, SigResult, Sigs},
         cosigner::{SignRequest, SignResult},
     },
     transport::KKTransport,
@@ -414,6 +413,9 @@ pub enum SigError {
     InvalidSighash,
     VerifError(secp256k1::Error),
     MissingSignature(BitcoinPubKey),
+    /// Transaction for which we check the sigs does not pass sanity checks
+    InsaneTransaction,
+    Tx(revault_tx::Error),
 }
 
 impl std::fmt::Display for SigError {
@@ -423,6 +425,8 @@ impl std::fmt::Display for SigError {
             Self::InvalidSighash => write!(f, "Invalid SIGHASH type"),
             Self::VerifError(e) => write!(f, "Signature verification error: '{}'", e),
             Self::MissingSignature(pk) => write!(f, "Missing signature for '{}'", pk),
+            Self::InsaneTransaction => write!(f, "Insane transaction"),
+            Self::Tx(e) => write!(f, "Error in transaction management: '{}'", e),
         }
     }
 }
@@ -435,18 +439,65 @@ impl From<secp256k1::Error> for SigError {
     }
 }
 
+/// The signature hash of a presigned transaction (ie Unvault, Cancel, Emergency, or
+/// UnvaultEmergency)
+///
+/// # Error
+/// - If the transaction does not have exactly 1 input
+/// - If the sighash is not either ALL of ALL|ACP
+pub fn presigned_tx_sighash(
+    tx: &impl RevaultTransaction,
+    hashtype: SigHashType,
+) -> Result<secp256k1::Message, SigError> {
+    // Presigned transactions only have one input when handled by revaultd.
+    if !tx.inner_tx().global.unsigned_tx.input.len() == 1 {
+        return Err(SigError::InsaneTransaction);
+    }
+
+    // We wouldn't check the signatures of an already valid transaction, would we?
+    if tx.is_finalized() {
+        return Err(SigError::InsaneTransaction);
+    }
+
+    if hashtype != SigHashType::All && hashtype != SigHashType::AllPlusAnyoneCanPay {
+        return Err(SigError::InvalidSighash);
+    }
+
+    let sighash = tx
+        .signature_hash_internal_input(0, hashtype)
+        .map_err(|e| SigError::Tx(e.into()))?;
+    Ok(secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash"))
+}
+
+/// Check a raw (with no SIGHASH type appended) presigned tx (ie Unvault, Cancel, Emergency, or
+/// UnvaultEmergency) signature.
+pub fn check_signature(
+    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    tx: &impl RevaultTransaction,
+    pubkey: BitcoinPubKey,
+    sig: &secp256k1::Signature,
+    hashtype: SigHashType,
+) -> Result<(), SigError> {
+    let sighash = presigned_tx_sighash(tx, hashtype)?;
+
+    secp.verify(&sighash, sig, &pubkey.key)?;
+
+    Ok(())
+}
+
 /// Check all complete signatures for revocation transactions (ie Cancel, Emergency,
 /// or UnvaultEmergency)
 pub fn check_revocation_signatures(
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     tx: &impl RevaultTransaction,
+    // FIXME: it should get the sigs from the tx, as per the Unvault routine
     sigs: &BTreeMap<BitcoinPubKey, Vec<u8>>,
 ) -> Result<(), SigError> {
     let sighash_type = SigHashType::AllPlusAnyoneCanPay;
-    let sighash = presigned_tx_sighash(tx, sighash_type);
+    let sighash = presigned_tx_sighash(tx, sighash_type)?;
 
     for (pubkey, sig) in sigs {
-        let (sighash_type, sig) = sig.split_last().unwrap();
+        let (sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
         if *sighash_type != SigHashType::AllPlusAnyoneCanPay as u8 {
             return Err(SigError::InvalidSighash);
         }
@@ -456,22 +507,22 @@ pub fn check_revocation_signatures(
     Ok(())
 }
 
-/// Check all complete signatures for unvault transactions
+/// Check all signatures of an Unvault transaction
 pub fn check_unvault_signatures(
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     tx: &UnvaultTransaction,
 ) -> Result<(), SigError> {
     let sighash_type = SigHashType::All;
-    let sighash = presigned_tx_sighash(tx, sighash_type);
+    let sighash = presigned_tx_sighash(tx, sighash_type)?;
     let sigs = &tx
         .inner_tx()
         .inputs
         .get(0)
-        .expect("Unvault always has 1 input")
+        .ok_or(SigError::InsaneTransaction)?
         .partial_sigs;
 
     for (pubkey, sig) in sigs.iter() {
-        let (sighash_type, sig) = sig.split_last().unwrap();
+        let (sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
         if *sighash_type != SigHashType::All as u8 {
             return Err(SigError::InvalidSighash);
         }
@@ -482,8 +533,9 @@ pub fn check_unvault_signatures(
 }
 
 /// Check that all the managers provided a valid signature for all the Spend transaction inputs.
-/// Will panic if db_vaults does not contain an entry for each input or if the Spend transaction is
-/// already finalized.
+///
+/// # Panic
+/// If `db_vaults` does not contain an entry for each input.
 pub fn check_spend_signatures(
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     psbt: &SpendTransaction,
@@ -493,10 +545,15 @@ pub fn check_spend_signatures(
     let sighash_type = SigHashType::All;
     let unsigned_tx = &psbt.inner_tx().global.unsigned_tx;
 
+    // We wouldn't check the signatures of an already valid transaction, would we?
+    if psbt.is_finalized() {
+        return Err(SigError::InsaneTransaction);
+    }
+
     for (i, psbtin) in psbt.inner_tx().inputs.iter().enumerate() {
         let sighash = psbt
             .signature_hash_internal_input(i, sighash_type)
-            .expect("In bounds, and no finalized PSBT in db");
+            .expect("In bounds, and we just checked it was not finalized");
         let sighash = secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash");
 
         // Fetch the appropriate derivation index used for this Unvault output
@@ -528,8 +585,8 @@ pub fn check_spend_signatures(
     Ok(())
 }
 
-#[derive(Debug)]
 /// An error that occured when talking to a server
+#[derive(Debug)]
 pub enum CommunicationError {
     /// An error internal to revault_net, generally a transport error
     Net(revault_net::Error),
@@ -728,6 +785,25 @@ pub fn announce_spend_transaction(
     }
 
     Ok(())
+}
+
+/// Get the signatures for this presigned transaction from the Coordinator.
+pub fn get_presigs(
+    revaultd: &RevaultD,
+    txid: Txid,
+) -> Result<BTreeMap<secp256k1::PublicKey, secp256k1::Signature>, CommunicationError> {
+    let getsigs_msg = GetSigs { id: txid };
+    let mut transport = KKTransport::connect(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+    )?;
+
+    log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
+    let resp: Sigs = transport.send_req(&getsigs_msg.into())?;
+    log::debug!("Got sigs {:?} from coordinator.", resp);
+
+    Ok(resp.signatures)
 }
 
 #[derive(Clone)]

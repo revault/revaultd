@@ -644,9 +644,13 @@ impl RpcApi for RpcImpl {
             .cpfp_descriptor
             .derive(vault.derivation_index, &revaultd.secp_ctx);
 
-        let unvault_tx =
-            UnvaultTransaction::new(deposit_txin, &unvault_descriptor, &cpfp_descriptor, 0)
-                .map_err(|e| internal_error!(e))?;
+        let unvault_tx = UnvaultTransaction::new(
+            deposit_txin,
+            &unvault_descriptor,
+            &cpfp_descriptor,
+            revaultd.lock_time,
+        )
+        .map_err(|e| internal_error!(e))?;
 
         Ok(json!({
             "unvault_tx": unvault_tx.as_psbt_string(),

@@ -27,8 +27,11 @@ use revault_net::{
 };
 use revault_tx::{
     bitcoin::{
+        consensus::encode,
         secp256k1::{self, Signature},
-        OutPoint, PublicKey as BitcoinPubKey, SigHashType, Txid,
+        util::bip32::ChildNumber,
+        Address, Amount, OutPoint, PublicKey as BitcoinPubKey, SigHashType,
+        Transaction as BitcoinTransaction, Txid,
     },
     miniscript::descriptor::DescriptorPublicKey,
     transactions::{
@@ -48,6 +51,80 @@ use std::{
     },
     thread::JoinHandle,
 };
+
+use serde::{Serialize, Serializer};
+
+/// A presigned transaction
+#[derive(Debug, Serialize)]
+pub struct VaultPresignedTransaction<T: RevaultTransaction> {
+    pub psbt: T,
+    #[serde(rename(serialize = "hex"), serialize_with = "serialize_option_tx_hex")]
+    pub transaction: Option<BitcoinTransaction>,
+}
+
+/// Contains the presigned transactions (Unvault, Cancel, Emergency, UnvaultEmergency)
+/// of a specific vault
+#[derive(Debug)]
+pub struct VaultPresignedTransactions {
+    pub outpoint: OutPoint,
+    pub unvault: VaultPresignedTransaction<UnvaultTransaction>,
+    pub cancel: VaultPresignedTransaction<CancelTransaction>,
+    // None if not stakeholder
+    pub emergency: Option<VaultPresignedTransaction<EmergencyTransaction>>,
+    pub unvault_emergency: Option<VaultPresignedTransaction<UnvaultEmergencyTransaction>>,
+}
+
+/// Contains the transactions that have been broadcasted for a specific vault
+#[derive(Debug)]
+pub struct VaultOnchainTransactions {
+    pub outpoint: OutPoint,
+    pub deposit: WalletTransaction,
+    pub unvault: Option<WalletTransaction>,
+    pub cancel: Option<WalletTransaction>,
+    // Always None if not stakeholder
+    pub emergency: Option<WalletTransaction>,
+    pub unvault_emergency: Option<WalletTransaction>,
+    pub spend: Option<WalletTransaction>,
+}
+
+/// Contains the spend transaction for a specific vault
+#[derive(Debug, Serialize)]
+pub struct ListSpendEntry {
+    pub deposit_outpoints: Vec<OutPoint>,
+    pub psbt: SpendTransaction,
+}
+
+/// Contains information regarding a specific vault
+#[derive(Debug)]
+pub struct ListVaultsEntry {
+    pub amount: Amount,
+    pub blockheight: u32,
+    pub status: VaultStatus,
+    pub deposit_outpoint: OutPoint,
+    pub derivation_index: ChildNumber,
+    pub address: Address,
+    pub received_at: u32,
+    pub updated_at: u32,
+}
+
+fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let tx_hex = encode::serialize_hex(&tx);
+    s.serialize_str(&tx_hex)
+}
+
+fn serialize_option_tx_hex<S>(tx: &Option<BitcoinTransaction>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if let Some(ref tx) = tx {
+        serialize_tx_hex(tx, s)
+    } else {
+        s.serialize_none()
+    }
+}
 
 /// Any error that could arise during the process of executing the user's will.
 /// Usually fatal.
@@ -105,6 +182,27 @@ impl From<revault_tx::Error> for ControlError {
 impl From<revault_tx::error::TransactionCreationError> for ControlError {
     fn from(e: revault_tx::error::TransactionCreationError) -> Self {
         Self::TransactionManagement(format!("Revault transaction creation error: {}", e))
+    }
+}
+
+/// Error while handling an RPC call
+#[derive(Debug)]
+pub enum RpcControlError {
+    // .0 is current status, .1 is required status
+    InvalidStatus(VaultStatus, VaultStatus),
+    UnknownOutPoint(OutPoint),
+}
+
+impl fmt::Display for RpcControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::UnknownOutPoint(ref o) => write!(f, "No vault at '{}'", o),
+            Self::InvalidStatus(current, required) => write!(
+                f,
+                "Invalid vault status: '{}'. Need '{}'",
+                current, required
+            ),
+        }
     }
 }
 
@@ -171,7 +269,7 @@ pub fn bitcoind_broadcast_cancel(
 
     bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
         transaction,
-        bitrep_tx.clone(),
+        bitrep_tx,
     ))?;
 
     bitrep_rx.recv()??;
@@ -234,15 +332,15 @@ pub fn presigned_txs_list_from_outpoints(
                 // If it's unconfirmed, the presigned transactions are not in db!
                 match vault.status {
                     VaultStatus::Unconfirmed => {
-                        return Ok(Err(RpcControlError::InvalidStatus((
+                        return Ok(Err(RpcControlError::InvalidStatus(
                             vault.status,
                             VaultStatus::Funded,
-                        ))))
+                        )));
                     }
                     _ => vaults.push(vault),
                 }
             } else {
-                return Ok(Err(RpcControlError::UnknownOutpoint(*outpoint)));
+                return Ok(Err(RpcControlError::UnknownOutPoint(*outpoint)));
             }
         }
         vaults
@@ -334,7 +432,7 @@ pub fn onchain_txs_list_from_outpoints(
                 // Note that we accept any status
                 vaults.push(vault);
             } else {
-                return Ok(Err(RpcControlError::UnknownOutpoint(*outpoint)));
+                return Ok(Err(RpcControlError::UnknownOutPoint(*outpoint)));
             }
         }
         vaults
@@ -505,7 +603,7 @@ pub fn check_spend_signatures(
             let sig = psbtin
                 .partial_sigs
                 .get(&pubkey)
-                .ok_or_else(|| SigError::MissingSignature(pubkey))?;
+                .ok_or(SigError::MissingSignature(pubkey))?;
 
             let (given_sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
             if *given_sighash_type != sighash_type as u8 {
@@ -570,7 +668,7 @@ pub fn share_rev_signatures(
     ),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // We would not spam the coordinator, would we?
-    assert!(cancel.1.len() > 0 && emer.1.len() > 0 && unvault_emer.1.len() > 0);
+    assert!(!cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty());
     let mut transport = KKTransport::connect(
         revaultd.coordinator_host,
         &revaultd.noise_secret,
@@ -637,11 +735,13 @@ pub fn fetch_cosigner_signatures(
 
         // FIXME: i abuse jsonrpc_core::Error here to avoid creating YA Error struct when we are
         // going to actually start throwing JSONRPC errors in this thread soon!
-        let res_tx = res_msg.tx.ok_or(jsonrpc_core::Error::invalid_params(
-            "One of the Cosigning Server already signed a Spend transaction spending \
+        let res_tx = res_msg.tx.ok_or_else(|| {
+            jsonrpc_core::Error::invalid_params(
+                "One of the Cosigning Server already signed a Spend transaction spending \
                 one of these vaults!"
-                .to_string(),
-        ))?;
+                    .to_string(),
+            )
+        })?;
 
         for (i, psbtin) in res_tx.into_psbt().inputs.into_iter().enumerate() {
             spend_tx

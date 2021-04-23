@@ -37,6 +37,7 @@ use revault_tx::{
     },
 };
 
+use jsonrpc_core::types::error::Error as JsonRpcError;
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
@@ -171,7 +172,7 @@ pub fn bitcoind_broadcast_cancel(
 
     bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
         transaction,
-        bitrep_tx.clone(),
+        bitrep_tx,
     ))?;
 
     bitrep_rx.recv()??;
@@ -222,7 +223,7 @@ pub fn listvaults_from_db(
 pub fn presigned_txs_list_from_outpoints(
     revaultd: &RevaultD,
     outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultPresignedTransactions>, RpcControlError>, ControlError> {
+) -> Result<Result<Vec<VaultPresignedTransactions>, JsonRpcError>, ControlError> {
     let db_path = &revaultd.db_file();
 
     // If they didn't provide us with a list of outpoints, catch'em all!
@@ -234,15 +235,19 @@ pub fn presigned_txs_list_from_outpoints(
                 // If it's unconfirmed, the presigned transactions are not in db!
                 match vault.status {
                     VaultStatus::Unconfirmed => {
-                        return Ok(Err(RpcControlError::InvalidStatus((
+                        return Ok(Err(JsonRpcError::invalid_params(format!(
+                            "Invalid vault status: '{}'. Need '{}'",
                             vault.status,
                             VaultStatus::Funded,
-                        ))))
+                        ))));
                     }
                     _ => vaults.push(vault),
                 }
             } else {
-                return Ok(Err(RpcControlError::UnknownOutpoint(*outpoint)));
+                return Ok(Err(JsonRpcError::invalid_params(format!(
+                    "No vault at '{}'",
+                    outpoint
+                ))));
             }
         }
         vaults
@@ -322,7 +327,7 @@ pub fn onchain_txs_list_from_outpoints(
     revaultd: &RevaultD,
     bitcoind_tx: &Sender<BitcoindMessageOut>,
     outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultOnchainTransactions>, RpcControlError>, ControlError> {
+) -> Result<Result<Vec<VaultOnchainTransactions>, JsonRpcError>, ControlError> {
     let db_path = &revaultd.db_file();
 
     // If they didn't provide us with a list of outpoints, catch'em all!
@@ -334,7 +339,10 @@ pub fn onchain_txs_list_from_outpoints(
                 // Note that we accept any status
                 vaults.push(vault);
             } else {
-                return Ok(Err(RpcControlError::UnknownOutpoint(*outpoint)));
+                return Ok(Err(JsonRpcError::invalid_params(format!(
+                    "No vault at '{}'",
+                    outpoint
+                ))));
             }
         }
         vaults
@@ -505,7 +513,7 @@ pub fn check_spend_signatures(
             let sig = psbtin
                 .partial_sigs
                 .get(&pubkey)
-                .ok_or_else(|| SigError::MissingSignature(pubkey))?;
+                .ok_or(SigError::MissingSignature(pubkey))?;
 
             let (given_sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
             if *given_sighash_type != sighash_type as u8 {
@@ -570,7 +578,7 @@ pub fn share_rev_signatures(
     ),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // We would not spam the coordinator, would we?
-    assert!(cancel.1.len() > 0 && emer.1.len() > 0 && unvault_emer.1.len() > 0);
+    assert!(!cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty());
     let mut transport = KKTransport::connect(
         revaultd.coordinator_host,
         &revaultd.noise_secret,
@@ -637,11 +645,13 @@ pub fn fetch_cosigner_signatures(
 
         // FIXME: i abuse jsonrpc_core::Error here to avoid creating YA Error struct when we are
         // going to actually start throwing JSONRPC errors in this thread soon!
-        let res_tx = res_msg.tx.ok_or(jsonrpc_core::Error::invalid_params(
-            "One of the Cosigning Server already signed a Spend transaction spending \
+        let res_tx = res_msg.tx.ok_or_else(|| {
+            jsonrpc_core::Error::invalid_params(
+                "One of the Cosigning Server already signed a Spend transaction spending \
                 one of these vaults!"
-                .to_string(),
-        ))?;
+                    .to_string(),
+            )
+        })?;
 
         for (i, psbtin) in res_tx.into_psbt().inputs.into_iter().enumerate() {
             spend_tx

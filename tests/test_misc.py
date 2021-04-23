@@ -362,7 +362,7 @@ def test_revocationtxs(revault_network):
 
     # We can't send it for an unknown vault
     with pytest.raises(
-        RpcError, match="Outpoint does not correspond to an " "existing vault"
+        RpcError, match="No vault at"
     ):
         stks[0].rpc.revocationtxs(
             deposit[:-1] + "18",

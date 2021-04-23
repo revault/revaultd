@@ -1357,7 +1357,7 @@ def test_spendtx_management(revault_network, bitcoind):
     # Of course, Cosigning Servers will cringe if we poll them twice.
     with pytest.raises(
         RpcError,
-        match="One of the Cosigning Server already signed a Spend transaction spending one of these vaults",
+        match="one Cosigning Server already signed a Spend transaction spending one of these vaults",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
@@ -1552,7 +1552,7 @@ def test_spends_conflicting(revault_network, bitcoind):
     spend_psbt.tx.calc_sha256()
     with pytest.raises(
         RpcError,
-        match="One of the Cosigning Server already signed a Spend transaction spending one of these vaults",
+        match="one Cosigning Server already signed a Spend transaction spending one of these vaults",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 

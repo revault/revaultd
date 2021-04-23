@@ -11,7 +11,10 @@ use crate::{
     threadmessages::SigFetcherMessageOut,
 };
 use revault_net::{
-    message::server::{GetSigs, Sigs},
+    message::{
+        coordinator::{GetSigs, Sigs},
+        ResponseResult,
+    },
     transport::KKTransport,
 };
 use revault_tx::{
@@ -29,8 +32,7 @@ use std::{
 pub enum SignatureFetcherError {
     DbError(DatabaseError),
     NetError(revault_net::Error),
-    // FIXME: we should probably upstream this to revault_net ?
-    SerializationError(serde_json::Error),
+    UnexpectedMessage(ResponseResult),
     ChannelDisconnected,
 }
 
@@ -41,8 +43,8 @@ impl std::fmt::Display for SignatureFetcherError {
             Self::NetError(ref s) => {
                 write!(f, "Communication error in sig fetcher thread: '{}'", s)
             }
-            Self::SerializationError(ref s) => {
-                write!(f, "Encoding error in sig fetcher thread: '{}'", s)
+            Self::UnexpectedMessage(ref m) => {
+                write!(f, "Got an unexpeted message from coordinator '{:?}'", m)
             }
             Self::ChannelDisconnected => {
                 write!(f, "Channel disconnected error in sig fetcher thread")
@@ -62,12 +64,6 @@ impl From<DatabaseError> for SignatureFetcherError {
 impl From<revault_net::Error> for SignatureFetcherError {
     fn from(e: revault_net::Error) -> Self {
         Self::NetError(e)
-    }
-}
-
-impl From<serde_json::Error> for SignatureFetcherError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::SerializationError(e)
     }
 }
 
@@ -166,17 +162,13 @@ fn get_sigs(
         &revaultd.coordinator_noisekey,
     )?;
 
-    log::debug!(
-        "Sending to sync server: '{}'",
-        serde_json::to_string(&getsigs_msg)?,
-    );
-    transport.write(&serde_json::to_vec(&getsigs_msg)?)?;
-    let recvd_raw = transport.read()?;
-    log::debug!(
-        "Received from sync server: '{}'",
-        &String::from_utf8_lossy(&recvd_raw)
-    );
-    let Sigs { signatures } = serde_json::from_slice(&recvd_raw)?;
+    log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
+    let resp = transport.send_req(&getsigs_msg.into())?;
+    let Sigs { signatures } = match resp {
+        ResponseResult::Sigs(s) => s,
+        _ => return Err(SignatureFetcherError::UnexpectedMessage(resp)),
+    };
+    log::debug!("Got sigs {:?} from coordinator.", signatures);
 
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {

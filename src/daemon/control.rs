@@ -20,13 +20,14 @@ use crate::{
 use common::assume_ok;
 use revault_net::{
     message::{
-        cosigner::{SignRequest, SignResponse},
-        server::{SetSpendTx, Sig},
+        coordinator::{SetSpendResult, SetSpendTx, Sig, SigResult},
+        cosigner::{SignRequest, SignResult},
     },
     transport::KKTransport,
 };
 use revault_tx::{
     bitcoin::{
+        hashes::hex::ToHex,
         secp256k1::{self, Signature},
         OutPoint, PublicKey as BitcoinPubKey, SigHashType, Txid,
     },
@@ -527,6 +528,47 @@ pub fn check_spend_signatures(
     Ok(())
 }
 
+#[derive(Debug)]
+/// An error that occured when talking to a server
+pub enum CommunicationError {
+    /// An error internal to revault_net, generally a transport error
+    Net(revault_net::Error),
+    /// The Coordinator told us they could not store our signature
+    SignatureStorage,
+    /// The Coordinator told us they could not store our Spend transaction
+    SpendTxStorage,
+    /// The Cosigning Server returned null to our request!
+    CosigAlreadySigned,
+}
+
+impl fmt::Display for CommunicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Net(e) => write!(f, "Network error: '{}'", e),
+            Self::SignatureStorage => {
+                write!(f, "Coordinator error: it failed to store the signature")
+            }
+            Self::SpendTxStorage => write!(
+                f,
+                "Coordinator error: it failed to store the Spending transaction"
+            ),
+            Self::CosigAlreadySigned => write!(
+                f,
+                "Cosigning server error: one Cosigning Server already \
+                    signed a Spend transaction spending one of these vaults."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommunicationError {}
+
+impl From<revault_net::Error> for CommunicationError {
+    fn from(e: revault_net::Error) -> Self {
+        Self::Net(e)
+    }
+}
+
 /// Send a `sig` (https://github.com/revault/practical-revault/blob/master/messages.md#sig-1)
 /// message to the server for all the sigs of this mapping.
 /// Note that we are looping, but most (if not all) will only have a single signature
@@ -538,7 +580,7 @@ pub fn send_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CommunicationError> {
     for (pubkey, sig) in sigs {
         let pubkey = pubkey.key;
         let (sigtype, sig) = sig
@@ -555,13 +597,12 @@ pub fn send_sig_msg(
             signature,
             id,
         };
-        log::debug!(
-            "Sending sig '{:?}' to sync server: '{}'",
-            sig_msg,
-            serde_json::to_string(&sig_msg)?,
-        );
-        // This will retry 5 times
-        transport.write(&serde_json::to_vec(&sig_msg)?)?;
+        log::debug!("Sending sig '{:?}' to sync server", sig_msg,);
+        let sig_result: SigResult = transport.send_req(&sig_msg.into())?;
+        log::debug!("Got from coordinator: '{:?}'", sig_result);
+        if !sig_result.ack {
+            return Err(CommunicationError::SignatureStorage);
+        }
     }
 
     Ok(())
@@ -599,7 +640,7 @@ pub fn share_rev_signatures(
 pub fn share_unvault_signatures(
     revaultd: &RevaultD,
     unvault_tx: &UnvaultTransaction,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CommunicationError> {
     let mut transport = KKTransport::connect(
         revaultd.coordinator_host,
         &revaultd.noise_secret,
@@ -617,12 +658,14 @@ pub fn share_unvault_signatures(
     send_sig_msg(&mut transport, txid, sigs.clone())
 }
 
-/// Fetch the Spend signatures from the cosigners
-/// Will panic if not called by a manager
-pub fn fetch_cosigner_signatures(
+/// Make the cosigning servers sign this Spend transaction.
+///
+/// # Panic
+/// - if not called by a manager
+pub fn fetch_cosigs_signatures(
     revaultd: &RevaultD,
     spend_tx: &mut SpendTransaction,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CommunicationError> {
     for (host, noise_key) in revaultd.cosigs.as_ref().expect("We are manager").iter() {
         // FIXME: connect should take a reference... This copy is useless
         let mut transport = KKTransport::connect(*host, &revaultd.noise_secret, &noise_key)?;
@@ -630,30 +673,25 @@ pub fn fetch_cosigner_signatures(
             tx: spend_tx.clone(),
         };
         log::debug!(
-            "Sending '{}' to cosigning server at '{}' (key: '{:?}')",
-            &serde_json::to_string(&msg)?,
+            "Sending '{:?}' to cosigning server at '{}' (key: '{}')",
+            msg,
             host,
-            noise_key
+            noise_key.0.to_hex()
         );
-        transport.write(&serde_json::to_vec(&msg)?)?;
 
-        let res_msg: SignResponse = serde_json::from_slice(&transport.read()?)?;
+        let sign_res: SignResult = transport.send_req(&msg.into())?;
+        let signed_tx = if let Some(tx) = sign_res.tx {
+            tx
+        } else {
+            return Err(CommunicationError::CosigAlreadySigned);
+        };
+
         log::debug!(
-            "Receiving '{}' from cosigning server",
-            &serde_json::to_string(&res_msg)?,
+            "Cosigning server returned: '{}'",
+            &signed_tx.as_psbt_string(),
         );
 
-        // FIXME: i abuse jsonrpc_core::Error here to avoid creating YA Error struct when we are
-        // going to actually start throwing JSONRPC errors in this thread soon!
-        let res_tx = res_msg.tx.ok_or_else(|| {
-            jsonrpc_core::Error::invalid_params(
-                "One of the Cosigning Server already signed a Spend transaction spending \
-                one of these vaults!"
-                    .to_string(),
-            )
-        })?;
-
-        for (i, psbtin) in res_tx.into_psbt().inputs.into_iter().enumerate() {
+        for (i, psbtin) in signed_tx.into_psbt().inputs.into_iter().enumerate() {
             spend_tx
                 .inner_tx_mut()
                 .inputs
@@ -674,7 +712,7 @@ pub fn announce_spend_transaction(
     revaultd: &RevaultD,
     spend_tx: SpendTransaction,
     deposit_outpoints: Vec<OutPoint>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CommunicationError> {
     let mut transport = KKTransport::connect(
         revaultd.coordinator_host,
         &revaultd.noise_secret,
@@ -682,8 +720,12 @@ pub fn announce_spend_transaction(
     )?;
 
     let msg = SetSpendTx::from_spend_tx(deposit_outpoints, spend_tx);
-    transport.write(&serde_json::to_vec(&msg)?)?;
-    //TODO: we should have an explicit response
+    log::debug!("Sending Spend tx to Coordinator: '{:?}'", msg);
+    let resp: SetSpendResult = transport.send_req(&msg.into())?;
+    log::debug!("Got from Coordinator: '{:?}'", resp);
+    if !resp.ack {
+        return Err(CommunicationError::SpendTxStorage);
+    }
 
     Ok(())
 }

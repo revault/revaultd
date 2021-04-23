@@ -1635,7 +1635,11 @@ def test_large_spends(revault_network, bitcoind, executor):
     )
 
     # We'll broadcast the Spend transaction as soon as it's valid
-    bitcoind.generate_block(CSV - 1)
+    # Note that bitcoind's RPC socket may timeout if it needs to generate too many
+    # blocks at once. So, spread them a bit.
+    for _ in range(10):
+        bitcoind.generate_block(CSV // 10)
+    bitcoind.generate_block(CSV % 10 - 1)
     man.wait_for_log(
         f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
     )

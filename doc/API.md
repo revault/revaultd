@@ -16,10 +16,11 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`listvaults`](#listvaults)                                 | Display a paginated list of vaults                   |
 | [`revocationtxs`](#revocationtxs)                           | Give back the revocation transactions signed         |
 | [`unvaulttx`](#unvaulttx)                                   | Give back the unvault transaction signed             |
-| [`updatespendtx`](#updatespendtx)                            | Store or update the stored Spend transaction         |
+| [`updatespendtx`](#updatespendtx)                           | Store or update the stored Spend transaction         |
 | [`delspendtx`](#delspendtx)                                 | Delete a stored Spend transaction                    |
 | [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
 | [`listspendtxs`](#listspendtxs)                             | List all stored Spend transactions                   |
+| [`gethistory`](#gethistory)                                 | Retrieve history of funds                            |
 
 
 
@@ -380,6 +381,35 @@ You'll have to manually fetch the vaults statuses if you want to know, for examp
 None; the `result` field will be set to the empty object `{}`. Any value should be
 disregarded for forward compatibility.
 
+### `gethistory`
+
+`gethistory` retrieves a paginated list of accounting events.
+
+Aiming at giving an accounting point of view, the amounts returned by this call are the total
+of inflows and outflows net of any change amount (that is technically a transaction output, but not a cash outflow).
+
+#### Request
+
+| Field    | Type         | Description                                                          |
+| -------- | ------------ | -------------------------------------------------------------------- |
+| `cursor` | int          | Timestamp of the date to retrieve events after                       |
+| `limit`  | int          | Number of events to retrieve                                         |
+| `kind`   | string array | Type of the events to retrieve, can be `deposit`, `cancel`, `spend`  |
+
+#### Response
+
+| Field          | Type   | Description                                |
+| -------------- | ------ | ------------------------------------------ |
+| `events`       | array  | Array of [Event resource](#event-resource) |
+
+##### Event Resource
+
+| Field    | Type   | Description                                                                              |
+| -------- | ------ | ---------------------------------------------------------------------------------------- |
+| `kind`   | string | Type of the event, can be `deposit`, `cancel`, `spend`                                   |
+| `date`   | int    | Timestamp of the event                                                                   |
+| `amount` | int    | Absolute amount in satoshis that is entering or exiting the wallet                       |
+| `fee`    | int    | Fee of the event transaction                                                             |
 
 ## User flows
 

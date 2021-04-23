@@ -6,7 +6,7 @@ use crate::{
     control::{
         announce_spend_transaction, bitcoind_broadcast_cancel, bitcoind_broadcast_unvaults,
         check_revocation_signatures, check_spend_signatures, check_unvault_signatures,
-        fetch_cosigner_signatures, listvaults_from_db, onchain_txs_list_from_outpoints,
+        fetch_cosigs_signatures, listvaults_from_db, onchain_txs_list_from_outpoints,
         presigned_txs_list_from_outpoints, share_rev_signatures, share_unvault_signatures,
         ListSpendEntry, RpcUtils,
     },
@@ -1085,10 +1085,10 @@ impl RpcApi for RpcImpl {
 
         // Now we can ask all the cosigning servers for their signatures
         log::debug!("Fetching signatures from Cosigning servers");
-        fetch_cosigner_signatures(&revaultd, &mut spend_tx.psbt).map_err(|e| {
+        fetch_cosigs_signatures(&revaultd, &mut spend_tx.psbt).map_err(|e| {
             JsonRpcError::invalid_params(format!(
                 "Communication error while fetching cosigner signatures: {}",
-                e
+                e,
             ))
         })?;
         let mut finalized_spend = spend_tx.psbt.clone();

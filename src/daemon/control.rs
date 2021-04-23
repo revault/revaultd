@@ -659,14 +659,14 @@ impl From<revault_net::Error> for CommunicationError {
     }
 }
 
-/// Send a `sig` (https://github.com/revault/practical-revault/blob/master/messages.md#sig-1)
-/// message to the server for all the sigs of this mapping.
-/// Note that we are looping, but most (if not all) will only have a single signature
-/// attached. We are called by the `revocationtxs` RPC, sent after a `getrevocationtxs`
-/// which generates fresh unsigned transactions.
-///
-/// `sigs` MUST contain valid signatures (including the attached sighash type)
-pub fn send_sig_msg(
+// Send a `sig` (https://github.com/revault/practical-revault/blob/master/messages.md#sig-1)
+// message to the server for all the sigs of this mapping.
+// Note that we are looping, but most (if not all) will only have a single signature
+// attached. We are called by the `revocationtxs` RPC, sent after a `getrevocationtxs`
+// which generates fresh unsigned transactions.
+//
+// `sigs` MUST contain valid signatures (including the attached sighash type)
+fn send_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,

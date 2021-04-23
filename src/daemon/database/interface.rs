@@ -593,30 +593,6 @@ pub fn db_vault_by_unvault_txid(
     .pop())
 }
 
-/// Get all the presigned transactions from the database for vaults that are not Spent, Canceled,
-/// Emergencied.
-pub fn db_transactions_current_vaults(
-    db_path: &PathBuf,
-) -> Result<Vec<DbTransaction>, DatabaseError> {
-    db_query(
-        db_path,
-        "SELECT * FROM presigned_transactions WHERE vault_id in ( \
-            SELECT id FROM vaults WHERE status NOT IN ((?1), (?2), (?3), (?4), (?5), (?6), (?7), (?8)) \
-        )",
-        params![
-            VaultStatus::Spending as u32,
-            VaultStatus::Spent as u32,
-            VaultStatus::Canceling as u32,
-            VaultStatus::Canceled as u32,
-            VaultStatus::EmergencyVaulting as u32,
-            VaultStatus::EmergencyVaulted as u32,
-            VaultStatus::UnvaultEmergencyVaulting as u32,
-            VaultStatus::UnvaultEmergencyVaulted as u32,
-        ],
-        |row| row.try_into(),
-    )
-}
-
 /// Get all the presigned transactions for which we don't have all the sigs yet.
 /// Note that it will return the emergency transactions (if unsigned) only if we
 /// are a stakeholder.

@@ -1,9 +1,8 @@
 ///! Background thread that will poll the coordinator for signatures
 use crate::{
-    control::send_sig_msg,
     database::{
         actions::db_update_presigned_tx,
-        interface::{db_transactions_current_vaults, db_transactions_sig_missing},
+        interface::db_transactions_sig_missing,
         schema::{DbTransaction, RevaultTx, TransactionType},
         DatabaseError,
     },
@@ -70,35 +69,6 @@ impl From<revault_net::Error> for SignatureFetcherError {
 // TODO (module organization): with the upcoming move of JSONRPC commands to the jsonrpc module we
 // should move the send / get sig msg routines to control.
 
-fn send_sig(transport: &mut KKTransport, tx: &impl RevaultTransaction) {
-    let txid = tx.txid();
-
-    for input in tx.inner_tx().inputs.iter() {
-        if let Err(e) = send_sig_msg(transport, txid, input.partial_sigs.clone()) {
-            log::error!("Error sharing signatures for '{}': '{}'", txid, e);
-        }
-    }
-}
-
-fn share_all_signatures(revaultd: &RevaultD) -> Result<(), SignatureFetcherError> {
-    let db_path = revaultd.db_file();
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
-
-    for db_tx in db_transactions_current_vaults(&db_path)? {
-        match db_tx.psbt {
-            RevaultTx::Unvault(tx) => send_sig(&mut transport, &tx),
-            RevaultTx::Cancel(tx) => send_sig(&mut transport, &tx),
-            RevaultTx::Emergency(tx) => send_sig(&mut transport, &tx),
-            RevaultTx::UnvaultEmergency(tx) => send_sig(&mut transport, &tx),
-        };
-    }
-
-    Ok(())
-}
 
 /// The signature hash of a presigned transaction (ie Unvault, Cancel, Emergency, or
 /// UnvaultEmergency)
@@ -264,15 +234,6 @@ pub fn signature_fetcher_loop(
     let poll_interval = revaultd.read().unwrap().coordinator_poll_interval;
 
     log::info!("Signature fetcher thread started.");
-
-    // Make sure the coordinator has got all our signatures for current vaults.
-    // FIXME: this is bulk, be smarter (may just be checking it has got it after sharing it in the
-    // first place, or mark it as shared in DB).
-    if revaultd.read().unwrap().is_stakeholder() {
-        if let Err(e) = share_all_signatures(&revaultd.read().unwrap()) {
-            log::error!("Error sharing all our signatures: '{}'", e);
-        }
-    }
 
     loop {
         // Process any message from master first

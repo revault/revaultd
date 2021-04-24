@@ -28,7 +28,7 @@ revault_tx = { version = "0.2", features = ["use-serde"] }
 revault_net = { git = "https://github.com/revault/revault_net" }
 
 # Don't reinvent the wheel
-dirs = "3.0.1"
+dirs = "3.0"
 
 # It's concise, does the Right Thing, and even supports Windows !
 daemonize-simple = "0.1"

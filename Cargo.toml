@@ -58,6 +58,6 @@ libc = "0.2.80"
 jsonrpc-core = "15.1"
 jsonrpc-derive = "15.1"
 [target.'cfg(not(windows))'.dependencies]
-mio = { version = "0.7.5", features = ["default", "os-poll", "os-util", "uds"] }
+mio = { version = "0.7", features = ["default", "os-poll", "os-util", "uds"] }
 [target.'cfg(windows)'.dependencies]
-uds_windows = "0.1.5"
+uds_windows = "1.0"

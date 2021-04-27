@@ -1613,25 +1613,25 @@ def test_spends_conflicting(revault_network, bitcoind):
     )
 
 
-# FIXME: exchange of signatures with the cosigning server gets too large too quickly
-# See https://github.com/revault/practical-revault/issues/81
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_large_spends(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
-    revault_network.deploy(9, 4, csv=CSV)
+    # FIXME: the bottleneck here on the number of participants is the announcement
+    # to the Coordinator
+    revault_network.deploy(17, 8, csv=CSV)
     man = revault_network.man(0)
 
+    vaults = []
     deposits = []
     deriv_indexes = []
     total_amount = 0
-    for _ in range(15):
+    for i in range(10):
         amount = random.randint(5, 5000) / 100
-        vault = revault_network.fund(amount)
-        revault_network.secure_vault(vault)
-        revault_network.activate_vault(vault)
-        deposits.append(f"{vault['txid']}:{vault['vout']}")
-        deriv_indexes.append(vault["derivation_index"])
-        total_amount += vault["amount"]
+        vaults.append(revault_network.fund(amount))
+        deposits.append(f"{vaults[i]['txid']}:{vaults[i]['vout']}")
+        deriv_indexes.append(vaults[i]["derivation_index"])
+        total_amount += vaults[i]["amount"]
+    revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
     n_outputs = random.randint(1, 5)

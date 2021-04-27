@@ -813,11 +813,18 @@ pub fn fetch_cosigs_signatures(
     revaultd: &RevaultD,
     spend_tx: &mut SpendTransaction,
 ) -> Result<(), CommunicationError> {
+    // Strip the signatures before polling the Cosigning Server. It does not check them
+    // anyways, and it makes us hit the Noise message size limit fairly quickly.
+    let mut stripped_tx = spend_tx.clone();
+    for psbtin in stripped_tx.inner_tx_mut().inputs.iter_mut() {
+        psbtin.partial_sigs.clear();
+    }
+
     for (host, noise_key) in revaultd.cosigs.as_ref().expect("We are manager").iter() {
         // FIXME: connect should take a reference... This copy is useless
         let mut transport = KKTransport::connect(*host, &revaultd.noise_secret, &noise_key)?;
         let msg = SignRequest {
-            tx: spend_tx.clone(),
+            tx: stripped_tx.clone(),
         };
         log::debug!(
             "Sending '{:?}' to cosigning server at '{}' (key: '{}')",

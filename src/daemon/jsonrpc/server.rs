@@ -341,12 +341,6 @@ fn mio_loop(
                 }
 
                 if event.is_writable() {
-                    log::trace!(
-                        "Writable event for {:?}, len of write queue: '{}'",
-                        event.token(),
-                        resp_queue.read().unwrap().len()
-                    );
-
                     // FIFO
                     loop {
                         // We can't use while let Some(resp) because deadlock

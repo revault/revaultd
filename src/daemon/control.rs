@@ -828,7 +828,6 @@ pub fn fetch_cosigs_signatures(
 
         let sign_res: SignResult = transport.send_req(&msg.into())?;
         let signed_tx = sign_res.tx.ok_or(CommunicationError::CosigAlreadySigned)?;
-
         log::debug!(
             "Cosigning server returned: '{}'",
             &signed_tx.as_psbt_string(),

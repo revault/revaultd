@@ -1,3 +1,4 @@
+import bip32
 import logging
 import os
 import random
@@ -8,7 +9,13 @@ from test_framework import serializations
 from test_framework.coordinatord import Coordinatord
 from test_framework.cosignerd import Cosignerd
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd, StkManRevaultd
-from test_framework.utils import get_participants, wait_for, RpcError, TIMEOUT
+from test_framework.utils import (
+    get_descriptors,
+    get_participants,
+    wait_for,
+    RpcError,
+    TIMEOUT,
+)
 
 
 class RevaultNetwork:
@@ -64,6 +71,18 @@ class RevaultNetwork:
             # Not more than 6 months
             csv = random.randint(1, 26784)
         self.csv = csv
+
+        # TODO: implement CPFP
+        cpfp_xpubs = [
+            bip32.BIP32.from_seed(os.urandom(32)).get_master_xpub()
+            for _ in range(len(mans_keychains))
+        ]
+        stks_xpubs = [stk.get_xpub() for stk in stks_keychains]
+        cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs_keychains]
+        mans_xpubs = [man.get_xpub() for man in mans_keychains]
+        (deposit_desc, unvault_desc, cpfp_desc) = get_descriptors(
+            stks_xpubs, cosigs_keys, mans_xpubs, len(mans_xpubs), cpfp_xpubs, csv
+        )
 
         # FIXME: this is getting dirty.. We should re-centralize information
         # about each participant in specified data structures
@@ -178,10 +197,9 @@ class RevaultNetwork:
 
             revaultd = StakeholderRevaultd(
                 datadir,
-                stks_keychains,
-                cosigs_keychains,
-                mans_keychains,
-                csv,
+                deposit_desc,
+                unvault_desc,
+                cpfp_desc,
                 stkonly_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
@@ -226,10 +244,9 @@ class RevaultNetwork:
 
             revaultd = StkManRevaultd(
                 datadir,
-                stks_keychains,
-                cosigs_keychains,
-                mans_keychains,
-                csv,
+                deposit_desc,
+                unvault_desc,
+                cpfp_desc,
                 stkman_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
@@ -261,10 +278,9 @@ class RevaultNetwork:
             man_config = {"keychain": man, "cosigners": cosigners_info}
             daemon = ManagerRevaultd(
                 datadir,
-                stks_keychains,
-                cosigs_keychains,
-                mans_keychains,
-                csv,
+                deposit_desc,
+                unvault_desc,
+                cpfp_desc,
                 man_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,

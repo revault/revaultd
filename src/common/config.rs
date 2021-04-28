@@ -2,40 +2,22 @@ use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration, vec::Vec
 
 use revault_net::noise::PublicKey as NoisePubkey;
 use revault_tx::{
-    bitcoin::{hashes::hex::FromHex, util::bip32, Network, PublicKey as BitcoinPubkey},
-    miniscript::descriptor::{DescriptorPublicKey, DescriptorSinglePub, DescriptorXKey, Wildcard},
-    scripts::EmergencyAddress,
+    bitcoin::{hashes::hex::FromHex, util::bip32, Network},
+    miniscript::descriptor::{DescriptorPublicKey, DescriptorXKey, Wildcard},
+    scripts::{CpfpDescriptor, DepositDescriptor, EmergencyAddress, UnvaultDescriptor},
 };
 
 use serde::{de, Deserialize, Deserializer};
 
-fn xpub_to_desc_xpub(xkey: bip32::ExtendedPubKey) -> DescriptorPublicKey {
-    DescriptorPublicKey::XPub(DescriptorXKey {
-        origin: None,
-        xkey,
-        derivation_path: bip32::DerivationPath::from(vec![]),
-        wildcard: Wildcard::Unhardened,
-    })
-}
-
-fn deserialize_xpubs<'de, D>(deserializer: D) -> Result<Vec<DescriptorPublicKey>, D::Error>
+fn deserialize_fromstr<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
+    T: FromStr,
+    <T as FromStr>::Err: std::fmt::Display,
 {
-    let xpubs = Vec::<bip32::ExtendedPubKey>::deserialize(deserializer)?;
-    Ok(xpubs.into_iter().map(xpub_to_desc_xpub).collect())
-}
-
-fn key_to_desc_key(key: BitcoinPubkey) -> DescriptorPublicKey {
-    DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key })
-}
-
-fn deserialize_single_keys<'de, D>(deserializer: D) -> Result<Vec<DescriptorPublicKey>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let xpubs = Vec::<BitcoinPubkey>::deserialize(deserializer)?;
-    Ok(xpubs.into_iter().map(key_to_desc_key).collect())
+    let string = String::deserialize(deserializer)?;
+    T::from_str(&string)
+        .map_err(|e| de::Error::custom(format!("Error parsing descriptor '{}': '{}'", string, e)))
 }
 
 fn deserialize_noisepubkey<'de, D>(deserializer: D) -> Result<NoisePubkey, D::Error>
@@ -97,6 +79,16 @@ pub struct BitcoindConfig {
     pub poll_interval_secs: Duration,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ScriptsConfig {
+    #[serde(deserialize_with = "deserialize_fromstr")]
+    pub deposit_descriptor: DepositDescriptor,
+    #[serde(deserialize_with = "deserialize_fromstr")]
+    pub unvault_descriptor: UnvaultDescriptor,
+    #[serde(deserialize_with = "deserialize_fromstr")]
+    pub cpfp_descriptor: CpfpDescriptor,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct WatchtowerConfig {
     pub host: String,
@@ -132,22 +124,11 @@ pub struct ManagerConfig {
 pub struct Config {
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
+    pub scripts_config: ScriptsConfig,
     /// Some() if we are a stakeholder
     pub stakeholder_config: Option<StakeholderConfig>,
     /// Some() if we are a manager
     pub manager_config: Option<ManagerConfig>,
-    /// The stakeholders' xpubs
-    #[serde(deserialize_with = "deserialize_xpubs")]
-    pub stakeholders_xpubs: Vec<DescriptorPublicKey>,
-    /// The cosigners' static public keys (must be as many as stakeholders'
-    /// xpubs)
-    #[serde(deserialize_with = "deserialize_single_keys")]
-    pub cosigners_keys: Vec<DescriptorPublicKey>,
-    /// The managers' xpubs
-    #[serde(deserialize_with = "deserialize_xpubs")]
-    pub managers_xpubs: Vec<DescriptorPublicKey>,
-    /// The unvault output scripts relative timelock
-    pub unvault_csv: u32,
     /// The host of the sync server (may be an IP or a hidden service)
     pub coordinator_host: String,
     /// The Noise static public key of the sync server
@@ -237,20 +218,7 @@ impl Config {
                 toml::from_slice::<Config>(&file_content)
                     .map_err(|e| ConfigError(format!("Parsing configuration file: {}", e)))
             })?;
-
-        if config.stakeholder_config.is_none() && config.manager_config.is_none() {
-            return Err(ConfigError(format!(
-                r#"At least one "stakeholder_config" or "manager_config" must be present"#
-            )));
-        }
-
-        if config.stakeholders_xpubs.len() != config.cosigners_keys.len() {
-            return Err(ConfigError(format!(
-                r#"Not as much "stakeholders_xpubs" ({}) as "cosigners_keys" ({})"#,
-                config.stakeholders_xpubs.len(),
-                config.cosigners_keys.len()
-            )));
-        }
+        let stk_xpubs = config.scripts_config.deposit_descriptor.xpubs();
 
         if let Some(ref stk_config) = config.stakeholder_config {
             let our_desc_xpub = DescriptorPublicKey::XPub(DescriptorXKey {
@@ -260,11 +228,7 @@ impl Config {
                 wildcard: Wildcard::Unhardened,
             });
 
-            if !config
-                .stakeholders_xpubs
-                .iter()
-                .any(|x| x == &our_desc_xpub)
-            {
+            if !stk_xpubs.iter().any(|x| x == &our_desc_xpub) {
                 return Err(ConfigError(format!(
                     r#"Our "stakeholder_config" xpub is not part of the given stakeholders' xpubs: {}"#,
                     stk_config.xpub
@@ -288,8 +252,26 @@ impl Config {
                 derivation_path: bip32::DerivationPath::from(vec![]),
                 wildcard: Wildcard::Unhardened,
             });
+            let man_xpubs: Vec<DescriptorPublicKey> = config
+                .scripts_config
+                .unvault_descriptor
+                .xpubs()
+                .into_iter()
+                .filter_map(|xpub| {
+                    match xpub {
+                        DescriptorPublicKey::SinglePub(_) => None, // Cosig
+                        DescriptorPublicKey::XPub(_) => {
+                            if stk_xpubs.contains(&xpub) {
+                                None // Stakeholder
+                            } else {
+                                Some(xpub) // Manager
+                            }
+                        }
+                    }
+                })
+                .collect();
 
-            if !config.managers_xpubs.iter().any(|x| x == &our_desc_xpub) {
+            if !man_xpubs.iter().any(|x| x == &our_desc_xpub) {
                 return Err(ConfigError(format!(
                     r#"Our "manager_config" xpub is not part of the given managers' xpubs: {}"#,
                     man_config.xpub
@@ -317,23 +299,10 @@ mod tests {
             coordinator_host = "127.0.0.1:1"
             coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
 
-            stakeholders_xpubs = [
-                    "xpub6BHATNyFVsBD8MRygTsv2q9WFTJzEB3o6CgJK7sjopcB286bmWFkNYm6kK5fzVe2gk4mJrSK5isFSFommNDST3RYJWSzrAe9V4bEzboHqnA",
-                    "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay",
-                    "xpub6AUkrYoAoySUXnEbspdqL7dJ5qE4n5wTDAXb22tzNaU9cKqpeE6Tjvh5gkXECrX8bGM2Ndgk3HYYVmD7m3NyHxS74NRi1cuq9ddxmhG8RxP",
-                    "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
-            ]
-            cosigners_keys = [
-                    "02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
-                    "03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
-                    "026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
-                    "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
-            ]
-            managers_xpubs = [
-                    "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4",
-                    "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
-            ]
-            unvault_csv = 42
+            [scripts_config]
+            cpfp_descriptor = "wsh(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)))#cwycq5xu"
+            deposit_descriptor = "wsh(multi(2,xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*,xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))#n3cj9mhy"
+            unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)),and_v(v:multi(2,03b506a1dbe57b4bf48c95e0c7d417b87dd3b4349d290d2e7e9ba72c912652d80a,0295e7f5d12a2061f1fd2286cefec592dff656a19f55f4f01305d6aa56630880ce),older(4)),thresh(2,pkh(xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*),a:pkh(xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))))#532k8uvf"
 
             [bitcoind_config]
             network = "bitcoin"
@@ -358,23 +327,10 @@ mod tests {
             coordinator_host = "127.0.0.1:1"
             coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
 
-            stakeholders_xpubs = [
-                    "xpub6BHATNyFVsBD8MRygTsv2q9WFTJzEB3o6CgJK7sjopcB286bmWFkNYm6kK5fzVe2gk4mJrSK5isFSFommNDST3RYJWSzrAe9V4bEzboHqnA",
-                    "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay",
-                    "xpub6AUkrYoAoySUXnEbspdqL7dJ5qE4n5wTDAXb22tzNaU9cKqpeE6Tjvh5gkXECrX8bGM2Ndgk3HYYVmD7m3NyHxS74NRi1cuq9ddxmhG8RxP",
-                    "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
-            ]
-            cosigners_keys = [
-                    "02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
-                    "03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
-                    "026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
-                    "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
-            ]
-            managers_xpubs = [
-                    "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4",
-                    "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
-            ]
-            unvault_csv = 42
+            [scripts_config]
+            cpfp_descriptor = "wsh(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)))#cwycq5xu"
+            deposit_descriptor = "wsh(multi(2,xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*,xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))#n3cj9mhy"
+            unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)),and_v(v:multi(2,03b506a1dbe57b4bf48c95e0c7d417b87dd3b4349d290d2e7e9ba72c912652d80a,0295e7f5d12a2061f1fd2286cefec592dff656a19f55f4f01305d6aa56630880ce),older(4)),thresh(2,pkh(xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*),a:pkh(xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))))#532k8uvf"
 
             [bitcoind_config]
             network = "bitcoin"
@@ -398,23 +354,10 @@ mod tests {
             coordinator_host = "127.0.0.1:1"
             coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
 
-            stakeholders_xpubs = [
-                    "xpub6BHATNyFVsBD8MRygTsv2q9WFTJzEB3o6CgJK7sjopcB286bmWFkNYm6kK5fzVe2gk4mJrSK5isFSFommNDST3RYJWSzrAe9V4bEzboHqnA",
-                    "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay",
-                    "xpub6AUkrYoAoySUXnEbspdqL7dJ5qE4n5wTDAXb22tzNaU9cKqpeE6Tjvh5gkXECrX8bGM2Ndgk3HYYVmD7m3NyHxS74NRi1cuq9ddxmhG8RxP",
-                    "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
-            ]
-            cosigners_keys = [
-                    "02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
-                    "03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
-                    "026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
-                    "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
-            ]
-            managers_xpubs = [
-                    "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4",
-                    "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
-            ]
-            unvault_csv = 42
+            [scripts_config]
+            cpfp_descriptor = "wsh(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)))#cwycq5xu"
+            deposit_descriptor = "wsh(multi(2,xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*,xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))#n3cj9mhy"
+            unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)),and_v(v:multi(2,03b506a1dbe57b4bf48c95e0c7d417b87dd3b4349d290d2e7e9ba72c912652d80a,0295e7f5d12a2061f1fd2286cefec592dff656a19f55f4f01305d6aa56630880ce),older(4)),thresh(2,pkh(xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*),a:pkh(xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))))#532k8uvf"
 
             [bitcoind_config]
             network = "bitcoin"
@@ -433,6 +376,36 @@ mod tests {
             emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
         "#;
         toml::from_str::<Config>(toml_str).expect("Deserializing stakeholder-manager toml_str");
+
+
+        // Invalid descriptors checksum
+        let toml_str = r#"
+            daemon = false
+            log_level = "trace"
+            data_dir = "/home/wizardsardine/custom/folder/"
+
+            coordinator_host = "127.0.0.1:1"
+            coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
+
+            [scripts_config]
+            cpfp_descriptor = "wsh(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)))#cwycq5xu"
+            deposit_descriptor = "wsh(multi(2,xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*,xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))#n3cj9mhy"
+            # The checksum is for older(4) but it was replaced by older(42)
+            unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)),and_v(v:multi(2,03b506a1dbe57b4bf48c95e0c7d417b87dd3b4349d290d2e7e9ba72c912652d80a,0295e7f5d12a2061f1fd2286cefec592dff656a19f55f4f01305d6aa56630880ce),older(42)),thresh(2,pkh(xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*),a:pkh(xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))))#532k8uvf"
+
+            [bitcoind_config]
+            network = "bitcoin"
+            cookie_path = "/home/user/.bitcoin/.cookie"
+            addr = "127.0.0.1:8332"
+            poll_interval_secs = 4
+
+            # We are one of the above managers
+            [manager_config]
+            xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"
+            cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]
+        "#;
+        let config_res: Result<Config, toml::de::Error> = toml::from_str(toml_str);
+        config_res.expect_err("Deserializing an invalid toml_str");
 
         // Not enough parameters
         let toml_str = r#"

@@ -543,23 +543,11 @@ mod tests {
             coordinator_host = "127.0.0.1:1"
             coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
 
-            stakeholders_xpubs = [
-                    "xpub6BHATNyFVsBD8MRygTsv2q9WFTJzEB3o6CgJK7sjopcB286bmWFkNYm6kK5fzVe2gk4mJrSK5isFSFommNDST3RYJWSzrAe9V4bEzboHqnA",
-                    "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay",
-                    "xpub6AUkrYoAoySUXnEbspdqL7dJ5qE4n5wTDAXb22tzNaU9cKqpeE6Tjvh5gkXECrX8bGM2Ndgk3HYYVmD7m3NyHxS74NRi1cuq9ddxmhG8RxP",
-                    "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
-            ]
-            cosigners_keys = [
-                    "02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
-                    "03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
-                    "026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
-                    "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
-            ]
-            managers_xpubs = [
-                    "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4",
-                    "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
-            ]
-            unvault_csv = 42
+            [scripts_config]
+cpfp_descriptor = "wsh(thresh(1,pk(xpub6BhQvtXJmw6hi2ALFeWMi9m7G8rGterJnMTNRqUm29uvB6dVTELvnEs7hfxyN3JM48FR2oh4t8chsvw7bRRRukkyhqp9WZD4oB9UvxAMpqC/*)))#c6th4le3"
+deposit_descriptor = "wsh(multi(2,xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ/*,xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa/*))#wu049esu"
+unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6De9kLSb2vvujzLqBbQvcnfaNfCGv8vBKNikWsvu3yDL6CpdNEE5CKH9J6TpT6ARFsiAdTpH7iJdA8tgAwNeo46FH9CSTv6CURBJSCPAeUu/*)),and_v(v:multi(2,0332e5c86d0938a83ed80d13c5644ec92fd16b9d7184bb35d6ead8227b4ad47803,02807e5c4f7b228aa9f1aef77effde768356480f5268376644464e714d0205eb1c),older(6)),thresh(2,pkh(xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ/*),a:pkh(xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa/*))))#ef5vfw3p"
+
 
             [bitcoind_config]
             network = "bitcoin"
@@ -569,11 +557,11 @@ mod tests {
 
             # We are one of the above managers
             [manager_config]
-            xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"
+            xpub = "xpub6De9kLSb2vvujzLqBbQvcnfaNfCGv8vBKNikWsvu3yDL6CpdNEE5CKH9J6TpT6ARFsiAdTpH7iJdA8tgAwNeo46FH9CSTv6CURBJSCPAeUu"
             cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]
             # We are one of the above stakeholders
             [stakeholder_config]
-            xpub = "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay"
+            xpub = "xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ"
             watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
             emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
         "#;

@@ -34,9 +34,9 @@ assert LOG_LEVEL in ["trace", "debug", "info", "warn", "error"]
 
 def wait_for(success, timeout=TIMEOUT, debug_fn=None):
     """
-        Run success() either until it returns True, or until the timeout is reached.
-        debug_fn is logged at each call to success, it can be useful for debugging
-        when tests fail.
+    Run success() either until it returns True, or until the timeout is reached.
+    debug_fn is logged at each call to success, it can be useful for debugging
+    when tests fail.
     """
     start_time = time.time()
     interval = 0.25
@@ -173,6 +173,50 @@ def get_participants(n_stk, n_man, n_stkman=0):
         stkman_stk,
         stkman_cosig,
         stkman_man,
+    )
+
+
+def get_descriptors(stks_xpubs, cosigs_keys, mans_xpubs, mans_thresh, cpfp_xpubs, csv):
+    # tests/test_framework/../../contrib/tools/mscompiler/target/debug/mscompiler
+    mscompiler_dir = os.path.abspath(
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "contrib",
+            "tools",
+            "mscompiler",
+        )
+    )
+    cwd = os.getcwd()
+    os.chdir(mscompiler_dir)
+    try:
+        subprocess.check_call(["cargo", "build"])
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error compiling mscompiler: {str(e)}")
+        raise e
+    finally:
+        os.chdir(cwd)
+
+    mscompiler_bin = os.path.join(mscompiler_dir, "target", "debug", "mscompiler")
+    cmd = [
+        mscompiler_bin,
+        f"{json.dumps(stks_xpubs)}",
+        f"{json.dumps(cosigs_keys)}",
+        f"{json.dumps(mans_xpubs)}",
+        str(mans_thresh),
+        f"{json.dumps(cpfp_xpubs)}",
+        str(csv),
+    ]
+    try:
+        descs_json = subprocess.check_output(cmd)
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error running mscompiler with command '{' '.join(cmd)}'")
+        raise e
+
+    descs = json.loads(descs_json)
+    return (
+        descs["deposit_descriptor"],
+        descs["unvault_descriptor"],
+        descs["cpfp_descriptor"],
     )
 
 

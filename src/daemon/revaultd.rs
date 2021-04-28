@@ -315,19 +315,9 @@ impl RevaultD {
         // Config should have checked that!
         assert!(our_man_xpub.is_some() || our_stk_xpub.is_some());
 
-        let managers_pubkeys = config.managers_xpubs;
-        let stakeholders_pubkeys = config.stakeholders_xpubs;
-        let cosigners_pubkeys = config.cosigners_keys;
-
-        let deposit_descriptor = DepositDescriptor::new(stakeholders_pubkeys.clone())?;
-        let unvault_descriptor = UnvaultDescriptor::new(
-            stakeholders_pubkeys,
-            managers_pubkeys.clone(),
-            managers_pubkeys.len(),
-            cosigners_pubkeys,
-            config.unvault_csv,
-        )?;
-        let cpfp_descriptor = CpfpDescriptor::new(managers_pubkeys.clone())?;
+        let deposit_descriptor = config.scripts_config.deposit_descriptor;
+        let unvault_descriptor = config.scripts_config.unvault_descriptor;
+        let cpfp_descriptor = config.scripts_config.cpfp_descriptor;
         let emergency_address = config.stakeholder_config.map(|x| x.emergency_address);
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);

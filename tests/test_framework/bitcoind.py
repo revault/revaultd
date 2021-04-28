@@ -74,7 +74,7 @@ class BitcoinD(TailableProc):
             "-printtoconsole",
             "-server",
             "-logtimestamps",
-            "-rpcthreads=64",
+            "-rpcthreads=16",
         ]
         bitcoind_conf = {
             "port": self.p2pport,

@@ -686,6 +686,8 @@ pub enum CommunicationError {
     SpendTxStorage,
     /// The Cosigning Server returned null to our request!
     CosigAlreadySigned,
+    /// The Cosigning Server tried to fool us!
+    CosigInsanePsbt,
 }
 
 impl fmt::Display for CommunicationError {
@@ -704,6 +706,7 @@ impl fmt::Display for CommunicationError {
                 "Cosigning server error: one Cosigning Server already \
                     signed a Spend transaction spending one of these vaults."
             ),
+            Self::CosigInsanePsbt => write!(f, "Cosigning server error: they sent an insane PSBT"),
         }
     }
 }
@@ -845,9 +848,7 @@ pub fn fetch_cosigs_signatures(
                 .inner_tx_mut()
                 .inputs
                 .get_mut(i)
-                .expect(
-                    "A SpendTransaction cannot have a different number of txins and PSBT inputs",
-                )
+                .ok_or(CommunicationError::CosigInsanePsbt)?
                 .partial_sigs
                 .extend(psbtin.partial_sigs);
         }

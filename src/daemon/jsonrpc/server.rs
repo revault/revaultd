@@ -2,11 +2,11 @@
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
 use crate::{
+    control::RpcUtils,
     jsonrpc::{
         api::{JsonRpcMetaData, RpcApi, RpcImpl},
         UserRole,
     },
-    threadmessages::RpcMessageIn,
 };
 use common::assume_some;
 
@@ -15,7 +15,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process,
-    sync::{mpsc::Sender, Arc, RwLock},
+    sync::{Arc, RwLock},
     thread,
 };
 
@@ -87,13 +87,15 @@ fn read_bytes_from_stream(stream: &mut dyn io::Read) -> Result<Option<Vec<u8>>, 
                         }
                         return Ok(Some(trimmed(buf, total_read)));
                     }
-                    io::ErrorKind::Interrupted
-                    | io::ErrorKind::ConnectionReset
+                    io::ErrorKind::Interrupted => {
+                        // Interrupted? Let's try again
+                        continue;
+                    }
+                    io::ErrorKind::ConnectionReset
                     | io::ErrorKind::ConnectionAborted
                     | io::ErrorKind::BrokenPipe => {
-                        // Try again on interruption or disconnection. In the latter case we'll
-                        // remove the stream anyways.
-                        continue;
+                        // They're not there anymore, but it's fine.
+                        return Ok(None);
                     }
                     // Now that's actually bad
                     _ => return Err(err),
@@ -187,6 +189,7 @@ fn read_handle_request(
 
     while let Some(method_call) = de.next() {
         log::trace!("Got JSONRPC request '{:#?}", method_call);
+
         match method_call {
             // Get a response and append it to the response queue
             Ok(m) => {
@@ -194,19 +197,27 @@ fn read_handle_request(
                 let t_meta = metadata.clone();
                 let t_queue = resp_queue.clone();
 
-                // If there are too many threads spawned, wait for the oldest one to complete.
-                // FIXME: we can be smarter than that..
-                if handler_threads.len() >= MAX_HANDLER_THREADS {
-                    handler_threads
-                        .pop_front()
-                        .expect("Just checked the length")
-                        .join()
-                        .unwrap();
-                }
+                // We special case the 'stop' command to treat it synchronously, as we could miss
+                // the "read closed" event in the main loop and hang up forever otherwise.
+                // FIXME: We could not have a handler for it, and just write the raw response by
+                // hand.
+                if m.method.as_str() == "stop" {
+                    handle_single_request(t_io_handler, t_meta, t_queue, m);
+                } else {
+                    // If there are too many threads spawned, wait for the oldest one to complete.
+                    // FIXME: we can be smarter than that..
+                    if handler_threads.len() >= MAX_HANDLER_THREADS {
+                        handler_threads
+                            .pop_front()
+                            .expect("Just checked the length")
+                            .join()
+                            .unwrap();
+                    }
 
-                handler_threads.push_back(thread::spawn(move || {
-                    handle_single_request(t_io_handler, t_meta, t_queue, m)
-                }));
+                    handler_threads.push_back(thread::spawn(move || {
+                        handle_single_request(t_io_handler, t_meta, t_queue, m)
+                    }));
+                }
             }
             // Parsing error? Assume it's a message we'll be able to read later.
             Err(e) => {
@@ -251,7 +262,8 @@ fn mio_loop(
     let mut read_cache_map: HashMap<Token, Vec<u8>> = HashMap::with_capacity(8);
     let jsonrpc_io = Arc::from(RwLock::from(jsonrpc_io));
     // Handle to thread currently handling commands we were sent.
-    let mut handler_threads = VecDeque::with_capacity(MAX_HANDLER_THREADS);
+    let mut handler_threads: VecDeque<std::thread::JoinHandle<_>> =
+        VecDeque::with_capacity(MAX_HANDLER_THREADS);
 
     poller
         .registry()
@@ -299,20 +311,6 @@ fn mio_loop(
                     }
                 }
             } else if connections_map.contains_key(&event.token()) {
-                // TODO: determine if it shoudl include event.is_write_closed()
-                if event.is_read_closed() || event.is_error() {
-                    log::trace!("Dropping connection for {:?}", event.token());
-                    connections_map.remove(&event.token());
-
-                    // If this was the last connection alive and we are shutting down,
-                    // actually shut down.
-                    if metadata.is_shutdown() && connections_map.is_empty() {
-                        return Ok(());
-                    }
-
-                    continue;
-                }
-
                 // Under normal circumstances we are always interested in both
                 // Writable (do we got something for them from the resp_queue?)
                 // and Readable (do they have something for us?) events
@@ -371,6 +369,20 @@ fn mio_loop(
                                 log::error!("Error writing resp for {:?}: '{}'", event.token(), e)
                             }
                         }
+                    }
+                }
+
+                if event.is_read_closed() || event.is_error() {
+                    log::trace!("Dropping connection for {:?}", event.token());
+                    connections_map.remove(&event.token());
+
+                    // If this was the last connection alive and we are shutting down,
+                    // actually shut down.
+                    if metadata.is_shutdown() && connections_map.is_empty() {
+                        while let Some(t) = handler_threads.pop_front() {
+                            t.join().unwrap();
+                        }
+                        return Ok(());
                     }
                 }
             }
@@ -465,13 +477,13 @@ pub fn rpcserver_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error> 
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
 pub fn rpcserver_loop(
-    tx: Sender<RpcMessageIn>,
     listener: UnixListener,
     user_role: UserRole,
+    rpc_utils: RpcUtils,
 ) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
-    let metadata = JsonRpcMetaData::new(tx, user_role);
+    let metadata = JsonRpcMetaData::new(user_role, rpc_utils);
 
     log::info!("JSONRPC server started.");
     #[cfg(not(windows))]
@@ -482,13 +494,20 @@ pub fn rpcserver_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, UserRole};
-    use crate::threadmessages::RpcMessageIn;
+    use super::{
+        read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, RpcUtils, UserRole,
+    };
+    use crate::{
+        revaultd::RevaultD,
+        threadmessages::{BitcoindMessageOut, SigFetcherMessageOut},
+    };
+    use common::config::Config;
 
     use std::{
+        fs,
         io::{Cursor, Read, Write},
         path::PathBuf,
-        sync::mpsc,
+        sync::{mpsc, Arc, RwLock},
         thread,
         time::Duration,
     };
@@ -498,24 +517,135 @@ mod tests {
     #[cfg(windows)]
     use uds_windows::UnixStream;
 
+    // Get a dummy handle for the RPC calls. We don't actually test RPC calls requiring it here but
+    // we need to because types.
+    // FIXME: we could do something cleaner at some point
+    fn dummy_rpcutil() -> RpcUtils {
+        let repo_root = PathBuf::from(file!())
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let datadir_path: PathBuf = [
+            repo_root.to_str().unwrap(),
+            "test_data",
+            "scratch_datadir_jsonrpc",
+        ]
+        .iter()
+        .collect();
+
+        fs::remove_dir_all(&datadir_path).unwrap_or_else(|_| ());
+
+        let toml_str = r#"
+            daemon = false
+            log_level = "trace"
+            data_dir = "/home/wizardsardine/dummy/folder/"
+
+            coordinator_host = "127.0.0.1:1"
+            coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
+
+            stakeholders_xpubs = [
+                    "xpub6BHATNyFVsBD8MRygTsv2q9WFTJzEB3o6CgJK7sjopcB286bmWFkNYm6kK5fzVe2gk4mJrSK5isFSFommNDST3RYJWSzrAe9V4bEzboHqnA",
+                    "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay",
+                    "xpub6AUkrYoAoySUXnEbspdqL7dJ5qE4n5wTDAXb22tzNaU9cKqpeE6Tjvh5gkXECrX8bGM2Ndgk3HYYVmD7m3NyHxS74NRi1cuq9ddxmhG8RxP",
+                    "xpub6AL6oiHLkP5bDMry27vH7uethb1g8iTysk5MZJvNe1yBv5fedvqqgiaPS2riWCiu4o3H8xinEVdQ5zz8pZKH1RtjTbdQyxHsMMCBrp2PP8S"
+            ]
+            cosigners_keys = [
+                    "02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
+                    "03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
+                    "026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
+                    "030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"
+            ]
+            managers_xpubs = [
+                    "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4",
+                    "xpub6AMXQWzNN9GSrWk5SeKdEUK6Ntha87BBtprp95EGSsLiMkUedYcHh53P3J1frsnMqRSssARq6EdRnAJmizJMaBqxCrA3MVGjV7d9wNQAEtm"
+            ]
+            unvault_csv = 42
+
+            [bitcoind_config]
+            network = "bitcoin"
+            cookie_path = "/home/user/.bitcoin/.cookie"
+            addr = "127.0.0.1:8332"
+            poll_interval_secs = 12
+
+            # We are one of the above managers
+            [manager_config]
+            xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"
+            cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]
+            # We are one of the above stakeholders
+            [stakeholder_config]
+            xpub = "xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay"
+            watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
+            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
+        "#;
+        let mut config: Config =
+            toml::from_str(toml_str).expect("Valid from common/config unit test");
+        config.data_dir = Some(datadir_path);
+        let revaultd = Arc::from(RwLock::from(RevaultD::from_config(config).unwrap()));
+
+        let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
+        let (sigfetcher_tx, sigfetcher_rx) = mpsc::channel();
+
+        let bitcoind_thread = Arc::from(RwLock::from(thread::spawn(move || {
+            for msg in bitcoind_rx {
+                match msg {
+                    BitcoindMessageOut::Shutdown => return,
+                    _ => unreachable!(),
+                }
+            }
+        })));
+        let sigfetcher_thread = Arc::from(RwLock::from(thread::spawn(move || {
+            for msg in sigfetcher_rx {
+                match msg {
+                    SigFetcherMessageOut::Shutdown => return,
+                }
+            }
+        })));
+
+        RpcUtils {
+            revaultd,
+            bitcoind_tx,
+            bitcoind_thread,
+            sigfetcher_tx,
+            sigfetcher_thread,
+        }
+    }
+
     // Redundant with functional tests but useful for testing the Windows loop
     // until the functional tests suite can run on it.
     #[test]
     fn simple_write_recv() {
-        let mut path = PathBuf::from(file!()).parent().unwrap().to_path_buf();
-        path.push("../../../test_data/revaultd_rpc");
+        let rpcutils = dummy_rpcutil();
+        let revaultd_datadir = rpcutils.revaultd.read().unwrap().data_dir.clone();
+        let mut rpc_socket_path = revaultd_datadir.clone();
+        rpc_socket_path.push("revaultd_rpc");
 
-        let (tx, rx) = mpsc::channel();
-        let socket = rpcserver_setup(path.clone()).unwrap();
-        thread::spawn(move || {
-            rpcserver_loop(tx, socket, UserRole::Stakeholder).unwrap_or_else(|e| {
+        let socket = rpcserver_setup(rpc_socket_path.clone()).unwrap();
+        let server_loop_thread = thread::spawn(move || {
+            rpcserver_loop(socket, UserRole::Stakeholder, rpcutils).unwrap_or_else(|e| {
                 panic!("Error in JSONRPC server event loop: {}", e.to_string());
             })
         });
 
-        // Take some beathing room
-        thread::sleep(Duration::from_secs(2));
-        let mut sock = UnixStream::connect(path).unwrap();
+        fn bind_or_die(path: &std::path::PathBuf, starting_time: std::time::Instant) -> UnixStream {
+            match UnixStream::connect(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    if starting_time.elapsed() > Duration::from_secs(5) {
+                        panic!("Could not connect to the socket: '{:?}'", e);
+                    }
+                    bind_or_die(path, starting_time)
+                }
+            }
+        }
+
+        let now = std::time::Instant::now();
+        let mut sock = bind_or_die(&rpc_socket_path, now);
 
         // Write a valid JSONRPC message (but invalid command)
         // For some reasons it takes '{}' as non-empty parameters ON UNIX BUT NOT WINDOWS WTF..
@@ -566,10 +696,11 @@ mod tests {
         // Tell it to stop, should send us a Shutdown message
         let msg = String::from(r#"{"jsonrpc": "2.0", "id": 0, "method": "stop", "params": []}"#);
         sock.write(msg.as_bytes()).unwrap();
-        match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(RpcMessageIn::Shutdown) => {}
-            _ => panic!("Didn't receive shutdown"),
-        }
+        sock.flush().unwrap();
+        drop(sock);
+        server_loop_thread.join().unwrap();
+
+        fs::remove_dir_all(&revaultd_datadir).unwrap();
     }
 
     #[test]

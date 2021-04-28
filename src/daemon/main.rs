@@ -8,7 +8,7 @@ mod threadmessages;
 
 use crate::{
     bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
-    control::handle_rpc_messages,
+    control::RpcUtils,
     database::actions::setup_db,
     jsonrpc::{
         server::{rpcserver_loop, rpcserver_setup},
@@ -22,7 +22,9 @@ use revault_net::sodiumoxide;
 use revault_tx::bitcoin::hashes::hex::ToHex;
 
 use std::{
-    env, panic,
+    env,
+    io::{self, Write},
+    panic,
     path::PathBuf,
     process,
     sync::{mpsc, Arc, RwLock},
@@ -46,7 +48,6 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
 }
 
 fn daemon_main(mut revaultd: RevaultD) {
-    let (db_path, network) = (revaultd.db_file(), revaultd.bitcoind_config.network);
     let user_role = match (revaultd.is_stakeholder(), revaultd.is_manager()) {
         (true, false) => UserRole::Stakeholder,
         (false, true) => UserRole::Manager,
@@ -67,26 +68,17 @@ fn daemon_main(mut revaultd: RevaultD) {
         "Setting up JSONRPC server"
     );
 
-    // We start three threads, the JSONRPC one in order to be controlled externally,
-    // the bitcoind one to poll bitcoind for chain updates, and the sigfetcher one to
-    // poll the coordinator for missing signatures for pre-signed transactions.
-    // We may get requests from the RPC one, and send requests to the two others.
-
-    // The communication from them to us
-    let (rpc_tx, rpc_rx) = mpsc::channel();
+    // We start two threads, the bitcoind one to poll bitcoind for chain updates,
+    // and the sigfetcher one to poll the coordinator for missing signatures
+    // for pre-signed transactions.
+    // The RPC requests are handled in the main thread, which may send requests
+    // to the others.
 
     // The communication from us to the bitcoind thread
     let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
 
     // The communication from us to the signature poller
     let (sigfetcher_tx, sigfetcher_rx) = mpsc::channel();
-
-    let rpc_thread = thread::spawn(move || {
-        assume_ok!(
-            rpcserver_loop(rpc_tx, socket, user_role),
-            "Error in JSONRPC server event loop"
-        );
-    });
 
     let revaultd = Arc::new(RwLock::new(revaultd));
     let bit_revaultd = revaultd.clone();
@@ -109,21 +101,37 @@ fn daemon_main(mut revaultd: RevaultD) {
         "revaultd started on network {}",
         revaultd.read().unwrap().bitcoind_config.network
     );
+
     // Handle RPC commands until we die.
+    let bitcoind_thread = Arc::new(RwLock::new(bitcoind_thread));
+    let sigfetcher_thread = Arc::new(RwLock::new(sigfetcher_thread));
+    let rpc_utils = RpcUtils {
+        revaultd,
+        bitcoind_tx,
+        bitcoind_thread: bitcoind_thread.clone(),
+        sigfetcher_tx,
+        sigfetcher_thread: sigfetcher_thread.clone(),
+    };
     assume_ok!(
-        handle_rpc_messages(
-            revaultd,
-            db_path,
-            network,
-            rpc_rx,
-            rpc_thread,
-            bitcoind_tx,
-            bitcoind_thread,
-            sigfetcher_tx,
-            sigfetcher_thread
-        ),
-        "Error in main loop"
+        rpcserver_loop(socket, user_role, rpc_utils),
+        "Error in the main loop"
     );
+
+    // If the RPC server loop stops, we've been told to shutdown!
+    let bitcoind_thread = unsafe { Arc::into_raw(bitcoind_thread).read().into_inner() };
+    let sigfetcher_thread = unsafe { Arc::into_raw(sigfetcher_thread).read().into_inner() };
+    bitcoind_thread
+        .unwrap()
+        .join()
+        .expect("Joining bitcoind thread");
+    sigfetcher_thread
+        .unwrap()
+        .join()
+        .expect("Joining sigfetcher thread");
+
+    // We are always logging to stdout, should it be then piped to the log file (if daemon) or
+    // not. So just make sure that all messages were actually written.
+    assume_ok!(io::stdout().flush(), "Flushing stdout");
 }
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout

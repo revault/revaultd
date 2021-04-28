@@ -1073,7 +1073,7 @@ impl RpcApi for RpcImpl {
         check_spend_signatures(
             &revaultd.secp_ctx,
             &spend_tx.psbt,
-            revaultd.managers_pubkeys.clone(),
+            revaultd.managers_xpubs(),
             &spent_vaults,
         )
         .map_err(|e| {

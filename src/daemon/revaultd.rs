@@ -260,10 +260,6 @@ pub struct RevaultD {
     pub secp_ctx: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     /// The locktime to use on all created transaction. Always 0 for now.
     pub lock_time: u32,
-    // FIXME: this is a hack as we'll move out of specifying xpubs in the config. We should
-    // have a way to get the managers / stakeholders keys out of a descriptor in revault_tx
-    /// All the managers public keys
-    pub managers_pubkeys: Vec<DescriptorPublicKey>,
 
     // Network stuff
     /// The static private key we use to establish connections to servers. We reuse it, but Trevor
@@ -375,7 +371,6 @@ impl RevaultD {
             our_man_xpub,
             deposit_descriptor,
             unvault_descriptor,
-            managers_pubkeys,
             cpfp_descriptor,
             secp_ctx,
             data_dir,
@@ -522,6 +517,32 @@ impl RevaultD {
 
     pub fn derived_cpfp_descriptor(&self, index: ChildNumber) -> DerivedCpfpDescriptor {
         self.cpfp_descriptor.derive(index, &self.secp_ctx)
+    }
+
+    pub fn stakeholders_xpubs(&self) -> Vec<DescriptorPublicKey> {
+        self.deposit_descriptor.xpubs()
+    }
+
+    pub fn managers_xpubs(&self) -> Vec<DescriptorPublicKey> {
+        // The managers' xpubs are all the xpubs from the Unvault descriptor except the
+        // Stakehodlers' ones and the Cosigning Servers' ones.
+        let stk_xpubs = self.stakeholders_xpubs();
+        self.unvault_descriptor
+            .xpubs()
+            .into_iter()
+            .filter_map(|xpub| {
+                match xpub {
+                    DescriptorPublicKey::SinglePub(_) => None, // Cosig
+                    DescriptorPublicKey::XPub(_) => {
+                        if stk_xpubs.contains(&xpub) {
+                            None // Stakeholder
+                        } else {
+                            Some(xpub) // Manager
+                        }
+                    }
+                }
+            })
+            .collect()
     }
 }
 

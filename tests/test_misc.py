@@ -1357,7 +1357,7 @@ def test_spendtx_management(revault_network, bitcoind):
     # Of course, Cosigning Servers will cringe if we poll them twice.
     with pytest.raises(
         RpcError,
-        match="One of the Cosigning Server already signed a Spend transaction spending one of these vaults",
+        match="one Cosigning Server already signed a Spend transaction spending one of these vaults",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
@@ -1368,12 +1368,6 @@ def test_spendtx_management(revault_network, bitcoind):
             v["status"] == "unvaulting"
             for v in man.rpc.listvaults([], spent_vaults)["vaults"]
         )
-    )
-    man.wait_for_logs(
-        [
-            f"The deposit utxo created via '{deposit}' was unvaulted"
-            for deposit in spent_vaults
-        ]
     )
     bitcoind.generate_block(1, wait_for_mempool=len(spent_vaults))
     wait_for(
@@ -1552,7 +1546,7 @@ def test_spends_conflicting(revault_network, bitcoind):
     spend_psbt.tx.calc_sha256()
     with pytest.raises(
         RpcError,
-        match="One of the Cosigning Server already signed a Spend transaction spending one of these vaults",
+        match="one Cosigning Server already signed a Spend transaction spending one of these vaults",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
@@ -1633,12 +1627,6 @@ def test_large_spends(revault_network, bitcoind, executor):
         lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
         == len(deposits)
     )
-    man.wait_for_logs(
-        [
-            f"The deposit utxo created via '{deposit}' was unvaulted"
-            for deposit in deposits
-        ]
-    )
     # We need a single confirmation to consider the Unvault transaction confirmed
     bitcoind.generate_block(1, wait_for_mempool=len(deposits))
     wait_for(
@@ -1647,7 +1635,11 @@ def test_large_spends(revault_network, bitcoind, executor):
     )
 
     # We'll broadcast the Spend transaction as soon as it's valid
-    bitcoind.generate_block(CSV - 1)
+    # Note that bitcoind's RPC socket may timeout if it needs to generate too many
+    # blocks at once. So, spread them a bit.
+    for _ in range(10):
+        bitcoind.generate_block(CSV // 10)
+    bitcoind.generate_block(CSV % 10 - 1)
     man.wait_for_log(
         f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
     )

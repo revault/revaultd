@@ -456,11 +456,13 @@ dependencies = [
 [[package]]
 name = "revault_net"
 version = "0.0.1"
-source = "git+https://github.com/revault/revault_net#ce585011bd38b8f51806469332a1a3f953bf7ad9"
+source = "git+https://github.com/revault/revault_net#0e16d97bccc9a557e4d8006a7bb4f088f63ea7a1"
 dependencies = [
  "bitcoin",
+ "log",
  "revault_tx",
  "serde",
+ "serde_json",
  "snow",
  "sodiumoxide",
 ]
@@ -645,9 +647,9 @@ checksum = "1e81da0851ada1f3e9d4312c704aa4f8806f0f9d69faaf8df2f3464b4a9437c2"
 
 [[package]]
 name = "syn"
-version = "1.0.69"
+version = "1.0.70"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48fe99c6bd8b1cc636890bcc071842de909d902c81ac7dab53ba33c421ab8ffb"
+checksum = "b9505f307c872bab8eb46f77ae357c8eba1fdacead58ee5a850116b1d7f82883"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -691,9 +693,9 @@ checksum = "f7fe0bb3479651439c9112f72b6c505038574c9fbb575ed1bf3b797fa39dd564"
 
 [[package]]
 name = "vcpkg"
-version = "0.2.11"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b00bca6106a5e23f3eee943593759b7fcddb00554332e856d990c893966879fb"
+checksum = "cbdbff6266a24120518560b5dc983096efb98462e51d0d68169895b237be3e5d"
 
 [[package]]
 name = "wasi"

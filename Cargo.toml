@@ -28,7 +28,7 @@ revault_tx = { version = "0.2", features = ["use-serde"] }
 revault_net = { git = "https://github.com/revault/revault_net" }
 
 # Don't reinvent the wheel
-dirs = "3.0.1"
+dirs = "3.0"
 
 # It's concise, does the Right Thing, and even supports Windows !
 daemonize-simple = "0.1"
@@ -58,6 +58,6 @@ libc = "0.2.80"
 jsonrpc-core = "15.1"
 jsonrpc-derive = "15.1"
 [target.'cfg(not(windows))'.dependencies]
-mio = { version = "0.7.5", features = ["default", "os-poll", "os-util", "uds"] }
+mio = { version = "0.7", features = ["default", "os-poll", "os-util", "uds"] }
 [target.'cfg(windows)'.dependencies]
-uds_windows = "0.1.5"
+uds_windows = "1.0"

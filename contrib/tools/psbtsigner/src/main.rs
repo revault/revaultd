@@ -10,31 +10,46 @@ use revault_tx::{
     miniscript::descriptor::DescriptorSecretKey,
 };
 
-fn parse_args(args: Vec<String>) -> (PrivateKey, Psbt, usize) {
+fn parse_args(args: Vec<String>) -> (Vec<PrivateKey>, Psbt, usize) {
     if args.len() < 3 {
         eprintln!(
-            "Usage: '{} <xpriv/derivation/path OR wif_privkey> <psbt> [input index]'",
+            "Usage: '{} <xpriv/derivation/path OR wif_privkey> [<xpriv/derivation/path OR wif_privkey>, ...] <psbt> [input index]'",
             args[0]
         );
         process::exit(1);
     }
 
-    let key = DescriptorSecretKey::from_str(&args[1]).unwrap_or_else(|e| {
-        eprintln!("Error parsing private key: '{}'", e);
+    let mut keys = vec![];
+    // Parsing keys until we find something else...
+    for arg in &args[1..] {
+        let key = match DescriptorSecretKey::from_str(arg) {
+            Ok(DescriptorSecretKey::SinglePriv(single_priv)) => single_priv.key,
+            Ok(DescriptorSecretKey::XPrv(xpriv)) => {
+                let secp = secp256k1::Secp256k1::signing_only();
+                xpriv
+                    .xkey
+                    .derive_priv(&secp, &xpriv.derivation_path)
+                    .unwrap()
+                    .private_key
+            }
+            Err(_) => {
+                // This is not a key, let's go on
+                break;
+            }
+        };
+        keys.push(key);
+    }
+
+    let psbt = base64::decode(&args.get(keys.len() + 1).unwrap_or_else(|| {
+        eprintln!(
+            "Error: Missing PSBT"
+        );
+        eprintln!(
+            "Usage: '{} <xpriv/derivation/path OR wif_privkey> [<xpriv/derivation/path OR wif_privkey>, ...] <psbt> [input index]'",
+            args[0]
+        );
         process::exit(1);
-    });
-    let key = match key {
-        DescriptorSecretKey::SinglePriv(single_priv) => single_priv.key,
-        DescriptorSecretKey::XPrv(xpriv) => {
-            let secp = secp256k1::Secp256k1::signing_only();
-            xpriv
-                .xkey
-                .derive_priv(&secp, &xpriv.derivation_path)
-                .unwrap()
-                .private_key
-        }
-    };
-    let psbt = base64::decode(&args[2]).unwrap_or_else(|e| {
+    })).unwrap_or_else(|e| {
         eprintln!("PSBT is invalid base64: '{}'", e);
         process::exit(1);
     });
@@ -43,7 +58,7 @@ fn parse_args(args: Vec<String>) -> (PrivateKey, Psbt, usize) {
         process::exit(1);
     });
     let input_index = args
-        .get(3)
+        .get(keys.len() + 2)
         .map(|i| {
             i.parse::<usize>().unwrap_or_else(|e| {
                 eprintln!("Parsing input index: '{}'", e);
@@ -55,7 +70,7 @@ fn parse_args(args: Vec<String>) -> (PrivateKey, Psbt, usize) {
             0
         });
 
-    (key, psbt, input_index)
+    (keys, psbt, input_index)
 }
 
 fn sighash(psbt: &Psbt, input_index: usize) -> (SigHash, SigHashType) {
@@ -99,8 +114,10 @@ fn sign_psbt(key: PrivateKey, psbt: &mut Psbt, input_index: usize) {
 }
 
 fn main() {
-    let (privkey, mut psbt, index) = parse_args(env::args().collect());
-    sign_psbt(privkey, &mut psbt, index);
+    let (privkeys, mut psbt, index) = parse_args(env::args().collect());
+    for privkey in privkeys {
+        sign_psbt(privkey, &mut psbt, index);
+    }
 
     let raw_psbt = serialize(&psbt);
     println!("Signed PSBT:\n{}", base64::encode(raw_psbt));

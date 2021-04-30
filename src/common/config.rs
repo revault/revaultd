@@ -377,7 +377,6 @@ mod tests {
         "#;
         toml::from_str::<Config>(toml_str).expect("Deserializing stakeholder-manager toml_str");
 
-
         // Invalid descriptors checksum
         let toml_str = r#"
             daemon = false

@@ -7,48 +7,31 @@ data_dir = "/path/to/your/datadir/revault"
 coordinator_host = "127.0.0.1:8383"
 coordinator_noise_key = "f35b02f12ff3d64f3c7982b88ffb66fec37bce5796374a7be9e8e2dd9abbb558"
 
-# The xpubs of all the stakeholders.
-# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
-# - /path/to/your/data_dir/revaultd.sqlite3
-# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
-stakeholders_xpubs = [
-	# xprv9yFvjFWhx6hEJ3srPPCMAhQyrUhwJ9joByaQcJJAC37HsavncgLzq5ppWeb6QmkYEaYDkiJf424zHzmcjXx3Fn6DZqKx9EKpiv94suYjZ6e
-	"xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp",
-	# xprvA2FDaCn51aLpnGmNPEzVE8kschAqgG3vhrZtmfx8XAh5EAJ1n8tpMe6foYEhAMfyrb7o4efG1w9rYSX6AS3fuRGK3QzkPn3YueunqN1iSJb
-	"xpub6FEZyiJxqwu7zkqqVGXVbGhcAj1L5imn55VVa4Mk5WE46xdAKgD4uSR9ems9EehAApZPVXFrxcLQ7zPqYywu1z4Cjhesyp7HeRSgSdUq1BB",
-	# xprv9yFvjFWhx6hEMcPi2JASzKSVS1mszhDKWBE4TxfQxDUkJrTFM7h1gQnBTXEqEUP2fB98hwU6fYoA6UUmkP2PAeHMUEe94uHr9SD5T72LdYe
-	"xpub6CFH8m3bnUFXa6UB8KhTMTPDz3cNQ9wAsQ9fGM52WZ1jBenPtf1GED6fJoDmpEYQQkk3VUHFN5ZRDLV7SRgX4M8KMTpRTH9zGRzg5udqwwo",
-	# xprvA1UEBJLZFm1oZUKLubtgeqhYBKjKPQqWaw5qMkg7GyyEjc9PQs5HiBVR3CpEAAawkF9jhd9LyV6arxBCYat8DAF5ChDDDKYB4GCVwUGz87C
-	"xpub6ETaaosT68a6mxPp1dRh1yeGjMZonsZMxA1SA95iqKWDcQUXxQPYFyottUR58E8qjjnAwPcEtYS9iejkERbnGuNqfF2wgToLcxzf97FHevs"
-]
+# The specifications of the Bitcoin Script that we are going to be tracking onchain, put here your own that you can
+# generate with the `mscompiler` tool (in `contrib/tools`).
+# These MUST NOT be changed after running revaultd for the first time, or you'll have to re-generate the database.
+# If you have to change it, be sure to remove the previous db at `/path/to/your/data_dir/network/revaultd.sqlite3`.
+[scripts_config]
+deposit_descriptor = "wsh(multi(4,xpub6DEzq5DNPx2rPiZJ7wvFhxRKUKDoV1GwjFmFdaxFfbsw9HsHyxc9usoRUMxqJaMrwoXh4apahsGEnjAS4cVCBDgqsx5Groww22AdHbgxVDg/*,xpub6F7Ltmsut73cbUNAzh44DkxncMeQfPtRzx7aoXjFbUdd7yofR2intU4b6QcsXot1jgmVjHB3iMybCLhtqvhAx3L4VPbGUz5fwuyNeTkypUP/*,xpub6CutNDrGhiD8GbjgKQWoTfzdRmoHJT8AcBxaV4NvWmo4dE5KKwpg2ukvgiCRwgZuJRXxKRsgRrrZiDZFJw1rLyAvY7X52WNEuaJXcVKLVFG/*,xpub6EN35Df8V826n4HuW4QZEhFyyMq4jmou3AFnVqRpoFw8YS68ojkVNzVGWhnkCyGwZjVVUEoeBWhTfJ38C3Fvsc3ibvYFi5BvmQwAMZkqEqH/*))#yd2wgsza"
+unvault_descriptor = "wsh(andor(multi(1,xpub6CZFHPW1GiB8YgV7zGpeQDB6mMHZYPQyUaHrM1nMvKMgLxwok4xCtnzjuxQ3p1LHJUkz5i1Y7bRy5fmGrdg8UBVb39XdXNtWWd2wTsNd7T9/*,xpub6Doj75MBvKp7bgHxF1KeDGxm36rd4wonZWv8sfzTeNoNVX2QZaQdrEcs7NDXvs4Cbsy9TPMx5VDcMK6JjSKepBbYDPiJ9bLBR4bqfdHmxZx/*),and_v(v:multi(4,02f6648be7b9a8221a221a89a3c39d4f2c38274a67e48d2d1fcf6c712532283d34,021314ed5ce49cd4111902cefe4c943b1430545895e9754540806ca5ffa9b43968,02e16f281dfe4b5bef4ab2fbb8bd53dc07caf0dd1f3de56cf7faa9c43904ba0253,0236ba84414c422f46f74b2c858b411e071ddae314cb950891650f96b507053787),older(2)),thresh(4,pkh(xpub6DEzq5DNPx2rPiZJ7wvFhxRKUKDoV1GwjFmFdaxFfbsw9HsHyxc9usoRUMxqJaMrwoXh4apahsGEnjAS4cVCBDgqsx5Groww22AdHbgxVDg/*),a:pkh(xpub6F7Ltmsut73cbUNAzh44DkxncMeQfPtRzx7aoXjFbUdd7yofR2intU4b6QcsXot1jgmVjHB3iMybCLhtqvhAx3L4VPbGUz5fwuyNeTkypUP/*),a:pkh(xpub6CutNDrGhiD8GbjgKQWoTfzdRmoHJT8AcBxaV4NvWmo4dE5KKwpg2ukvgiCRwgZuJRXxKRsgRrrZiDZFJw1rLyAvY7X52WNEuaJXcVKLVFG/*),a:pkh(xpub6EN35Df8V826n4HuW4QZEhFyyMq4jmou3AFnVqRpoFw8YS68ojkVNzVGWhnkCyGwZjVVUEoeBWhTfJ38C3Fvsc3ibvYFi5BvmQwAMZkqEqH/*))))#4tpz62t7"
+cpfp_descriptor = "wsh(thresh(1,pk(xpub6DoAecs8NFwcTQtUR9vGACodaa3245VuDQi3ubtE8TWV7swH7ZDWCYcuVNDRMpZjFekyU1uFPpMcZe8vgJ23h7FrZEnEtmNeFNCTgpPzJ79/*)))#4cxyfeck"
 
-# The keys of all the cosigners
-# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
-# - /path/to/your/data_dir/revaultd.sqlite3
-# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
-cosigners_keys = [
-	"02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2",
-	"03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c",
-	"026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779",
-	"030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3",
-]
-
-# The xpubs of all the managers
-# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
-# - /path/to/your/data_dir/revaultd.sqlite3
-# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
-managers_xpubs = [
-	# xprv9yFvjFWhx6hEhx2fRYSC31pU3nH3Mrok4sBwUt4pV3RJZYN1oex2imuuxUt3eyhbZ2mKdBAWQaVyhg3WXuzrnRhRZbicr2X5hmNuhTxHGEn
-	"xpub6CFH8m3bnUFXvS78XZyCQ9mCbp7XmKXbS67YHGUS3NxHSLhAMCGHGaEPojcoYt5PYnocyuScAM5xuDzf4BqFQt3fhmKEaRgmVzDcAR46Byh",
-	# xprvA1DDS2qX9vCdRxSJmFA6AJPQPKS32S5hiUpzi9Xot9hzN4z1g6ip5oKJWXUeQDn2W48vaSWYVLaypC1JztUcrx23kucEtFzyU8t5Ay7NrDD
-        "xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"
-]
-
-# The CSV for the spend transaction
-# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
-# - /path/to/your/data_dir/revaultd.sqlite3
-# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
-unvault_csv = 18
+# The private version of the above keys:
+# Stakeholders:
+# xprv9zFeRZgUZaUZBEUq1vPFLpUavHPK5YZ6N2qeqCYe7GLxGVY9SRHuN5Uwd5YN56tMUKe2qPhmvP8fC1GBEAFRAwbJQi86swWvvGM5tXBpJt6
+# xprvA27zVGM23jVKNzHhtfX3rd244KovFwAadjBz19Ke396eFBUWsVQYLfk7FAK6dENumsrtd8mJCSFxnm9BkyaWXuBVSd5tZ2c9r5tjPNkz7A9
+# xprv9yvXxiKNsLeq47fDDNyo6Y3tsjxntzQKEy2ygfyJxSG5kRkAnQWRV7SSqRQUknV981KKmXH2Ya1q2MPaTVPeMtaRVfuSGcDU628eKeBU262
+# xprvA1Ngfi8EekToZaDSQ2sYsZKFRKzaLK63fwLBhT2DEvQ9fdkzGCSEqCAnfTPbX5y4DbC6qefdCRXypdsndGWMpGF4afJPQqHz6p7wah4q2uG
+# Cosigning servers:
+# L1FCG4qYtGDLYSFbcXv9UGa9Dho6KMJAC7pCEhoj2UN3b3Lx5svM
+# KzS42WhDdT5jXgYsN9j6ptLdmntaYWmtjWyx8Eg7SRtG2aDF6xXq
+# L2Q6yQgRNDPeS29eiA1CYPqfQYza91TVeUTz5CZCZUeW2n1xjcZg
+# KxDuy9Z8rg8A9dwRFB6k25PzntJt64P1wGenCja3FmKrrKbA5vwd
+# Managers:
+# xprv9yZtssy7SLcqLCQetFHe35ENDKT58vh87MNFYdNkMyphUAcfCXdxLzgG4enc7ZT8NXjBtivtLrtpjZAJzyiTEAKM6NKUeFerP97DZdctJPr
+# xprv9zpNhZpJ5xFpPCDV8yndr922V528fV5wCHzY5Har63GPcihG236PJSJPG8KZQbdrm4GUcAdgLwgT3BJnNfQ7hPxFQCMhWtXpaM4py7XXtpb
+# CPFP:
+# xprv9zopF7LEXtPKEvp1K8PFo4ru2YCXecn3rBnT7DUca7yWF5c8a1uFekJRe68Dt3tSJAEifz4Bm28BYm4zuRintyhrJT2fC29pDwxf6DBiViY
 
 [bitcoind_config]
 network = "regtest"
@@ -56,22 +39,18 @@ cookie_path = "/path/to/your/cookie/path/.cookie"
 addr = "127.0.0.1:9001"
 poll_interval_secs = 3
 
-# This section must be copied only if you're a stakeholder. Put here your xpub, watchtower configuration and emergency address
+# This section must be copied only if you're a stakeholder. Put here your xpub, watchtower configuration and Emergency address.
 [stakeholder_config]
-# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
-# - /path/to/your/data_dir/revaultd.sqlite3
-# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
-# xprv9yFvjFWhx6hEJ3srPPCMAhQyrUhwJ9joByaQcJJAC37HsavncgLzq5ppWeb6QmkYEaYDkiJf424zHzmcjXx3Fn6DZqKx9EKpiv94suYjZ6e
-xpub = "xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp"
+# This MUST NOT be changed after running revaultd for the first time, or you'll have to re-generate the database.
+# If you have to change it, be sure to remove the previous db at `/path/to/your/data_dir/network/revaultd.sqlite3`.
+xpub = "xpub6DEzq5DNPx2rPiZJ7wvFhxRKUKDoV1GwjFmFdaxFfbsw9HsHyxc9usoRUMxqJaMrwoXh4apahsGEnjAS4cVCBDgqsx5Groww22AdHbgxVDg"
 # At the moment this is unused
 watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
 emergency_address = "bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq"
 
-# This section must be copied only if you're a manager. Put here your xpub and cosigner configuration
+# This section must be copied only if you're a manager. Put here your xpub and cosigning servers configuration.
 [manager_config]
-# This option MUST NOT be changed after running revaultd for the first time. If you want to change it, please remove the following files:
-# - /path/to/your/data_dir/revaultd.sqlite3
-# - /path/to/your/data_dir/revaultd-watchonly-wallet-1
-# xprvA1DDS2qX9vCdRxSJmFA6AJPQPKS32S5hiUpzi9Xot9hzN4z1g6ip5oKJWXUeQDn2W48vaSWYVLaypC1JztUcrx23kucEtFzyU8t5Ay7NrDD
-xpub = "xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"
+# This MUST NOT be changed after running revaultd for the first time, or you'll have to re-generate the database.
+# If you have to change it, be sure to remove the previous db at `/path/to/your/data_dir/network/revaultd.sqlite3`.
+xpub = "xpub6CZFHPW1GiB8YgV7zGpeQDB6mMHZYPQyUaHrM1nMvKMgLxwok4xCtnzjuxQ3p1LHJUkz5i1Y7bRy5fmGrdg8UBVb39XdXNtWWd2wTsNd7T9"
 cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]

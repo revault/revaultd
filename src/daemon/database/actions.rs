@@ -11,7 +11,6 @@ use revault_tx::{
         secp256k1, util::bip32::ChildNumber, Amount, OutPoint, PublicKey as BitcoinPubKey, Txid,
     },
     miniscript::descriptor::DescriptorTrait,
-    scripts::{DepositDescriptor, UnvaultDescriptor},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -23,7 +22,6 @@ use std::{
     convert::TryInto,
     fs,
     path::PathBuf,
-    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -78,6 +76,7 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Computing time since epoch: {}", e.to_string())))?;
     let deposit_descriptor = revaultd.deposit_descriptor.to_string();
     let unvault_descriptor = revaultd.unvault_descriptor.to_string();
+    let cpfp_descriptor = revaultd.cpfp_descriptor.to_string();
     let our_man_xpub_str = revaultd.our_man_xpub.as_ref().map(|xpub| xpub.to_string());
     let our_stk_xpub_str = revaultd.our_stk_xpub.as_ref().map(|xpub| xpub.to_string());
     let raw_unused_index: u32 = revaultd.current_unused_index.into();
@@ -105,12 +104,13 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
         tx.execute(
             "INSERT INTO wallets (timestamp, deposit_descriptor, unvault_descriptor,\
-            our_manager_xpub, our_stakeholder_xpub, deposit_derivation_index) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            cpfp_descriptor, our_manager_xpub, our_stakeholder_xpub, deposit_derivation_index) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 timestamp,
                 deposit_descriptor,
                 unvault_descriptor,
+                cpfp_descriptor,
                 our_man_xpub_str,
                 our_stk_xpub_str,
                 raw_unused_index,
@@ -137,6 +137,7 @@ fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         )));
     }
 
+    // Then that we are on the right network..
     let db_net = db_network(&db_path)?;
     if db_net != revaultd.bitcoind_config.network {
         return Err(DatabaseError(format!(
@@ -145,33 +146,25 @@ fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         )));
     }
 
-    let db_deposit_desc = DepositDescriptor::from_str(&wallet.deposit_descriptor).map_err(|e| {
-        DatabaseError(format!(
-            "Interpreting database vault descriptor '{}': {}",
-            wallet.deposit_descriptor,
-            e.to_string()
-        ))
-    })?;
-    if revaultd.deposit_descriptor != db_deposit_desc {
+    // .. And managing the same Scripts!
+    if revaultd.deposit_descriptor != wallet.deposit_descriptor {
         return Err(DatabaseError(format!(
             "Database Deposit descriptor mismatch: '{}' (config) vs '{}' (database)",
-            revaultd.deposit_descriptor, db_deposit_desc
+            revaultd.deposit_descriptor, wallet.deposit_descriptor
         )));
     }
-    let db_unvault_desc = UnvaultDescriptor::from_str(&wallet.unvault_descriptor).map_err(|e| {
-        DatabaseError(format!(
-            "Interpreting database unvault descriptor '{}': {}",
-            wallet.unvault_descriptor,
-            e.to_string()
-        ))
-    })?;
-    if revaultd.unvault_descriptor != db_unvault_desc {
+    if revaultd.unvault_descriptor != wallet.unvault_descriptor {
         return Err(DatabaseError(format!(
             "Database Unvault descriptor mismatch: '{}' (config) vs '{}' (database)",
-            revaultd.unvault_descriptor, db_unvault_desc
+            revaultd.unvault_descriptor, wallet.unvault_descriptor
         )));
     }
-    // TODO: cpfp_desc !!
+    if revaultd.cpfp_descriptor != wallet.cpfp_descriptor {
+        return Err(DatabaseError(format!(
+            "Database Cpfp descriptor mismatch: '{}' (config) vs '{}' (database)",
+            revaultd.cpfp_descriptor, wallet.cpfp_descriptor
+        )));
+    }
 
     Ok(())
 }

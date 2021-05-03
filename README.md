@@ -20,11 +20,11 @@ the coins stored and may or may not own them) logic is part of this daemon.
 
 Please see [`doc/DEMO.md`](doc/DEMO.md) if you want a tutorial on how to do a deployment
 in regtest on Linux of revaultd.
-You can find more RPC commands at [`doc/API.md`](doc/API.md) but all aren't implemented
-yet!
+
+You can find a reference of available RPC commands at [`doc/API.md`](doc/API.md).
 
 See also the [functional tests](tests/) for a more complete integration (especially with
-the coordinator).
+the Coordinator and Cosigning Servers).
 
 # Contributing
 

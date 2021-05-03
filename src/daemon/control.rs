@@ -135,66 +135,6 @@ pub enum ListSpendStatus {
     Broadcasted,
 }
 
-// FIXME: Remove this in favour of the more precise error types!!
-/// Any error that could arise during the process of executing the user's will.
-/// Usually fatal.
-#[derive(Debug)]
-pub enum ControlError {
-    ChannelCommunication(String),
-    Database(String),
-    Bitcoind(String),
-    TransactionManagement(String),
-}
-
-impl fmt::Display for ControlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::ChannelCommunication(s) => write!(f, "Channel communication error: '{}'", s),
-            Self::Database(s) => write!(f, "Database error: '{}'", s),
-            Self::Bitcoind(s) => write!(f, "Bitcoind error: '{}'", s),
-            Self::TransactionManagement(s) => write!(f, "Transaction management error: '{}'", s),
-        }
-    }
-}
-
-impl std::error::Error for ControlError {}
-
-impl<T> From<SendError<T>> for ControlError {
-    fn from(e: SendError<T>) -> Self {
-        Self::ChannelCommunication(format!("Sending to channel: '{}'", e))
-    }
-}
-
-impl From<RecvError> for ControlError {
-    fn from(e: RecvError) -> Self {
-        Self::ChannelCommunication(format!("Receiving from channel: '{}'", e))
-    }
-}
-
-impl From<DatabaseError> for ControlError {
-    fn from(e: DatabaseError) -> Self {
-        Self::Database(format!("Database error: {}", e))
-    }
-}
-
-impl From<BitcoindError> for ControlError {
-    fn from(e: BitcoindError) -> Self {
-        Self::Bitcoind(format!("Bitcoind error: {}", e))
-    }
-}
-
-impl From<revault_tx::Error> for ControlError {
-    fn from(e: revault_tx::Error) -> Self {
-        Self::TransactionManagement(format!("Revault transaction error: {}", e))
-    }
-}
-
-impl From<revault_tx::error::TransactionCreationError> for ControlError {
-    fn from(e: revault_tx::error::TransactionCreationError) -> Self {
-        Self::TransactionManagement(format!("Revault transaction creation error: {}", e))
-    }
-}
-
 /// Error specific to calls that originated from the RPC server.
 #[derive(Debug)]
 pub enum RpcControlError {
@@ -258,7 +198,7 @@ impl fmt::Display for RpcControlError {
 fn bitcoind_wallet_tx(
     bitcoind_tx: &Sender<BitcoindMessageOut>,
     txid: Txid,
-) -> Result<Option<WalletTransaction>, ControlError> {
+) -> Result<Option<WalletTransaction>, RpcControlError> {
     log::trace!("Sending WalletTx to bitcoind thread for {}", txid);
 
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
@@ -273,7 +213,7 @@ pub fn bitcoind_broadcast_unvaults(
     db_path: &PathBuf,
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     db_vaults: &HashMap<Txid, DbVault>,
-) -> Result<(), ControlError> {
+) -> Result<(), RpcControlError> {
     log::debug!(
         "Broadcasting Unvault transactions with ids '{:?}'",
         db_vaults.keys()
@@ -302,7 +242,7 @@ pub fn bitcoind_broadcast_cancel(
     db_path: &PathBuf,
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     vault: DbVault,
-) -> Result<(), ControlError> {
+) -> Result<(), RpcControlError> {
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
     // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
     let (_, mut cancel_tx) =
@@ -387,7 +327,7 @@ pub fn listvaults_from_db(
 pub fn presigned_txs_list_from_outpoints(
     revaultd: &RevaultD,
     outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultPresignedTransactions>, RpcControlError>, ControlError> {
+) -> Result<Result<Vec<VaultPresignedTransactions>, RpcControlError>, RpcControlError> {
     let db_path = &revaultd.db_file();
 
     // If they didn't provide us with a list of outpoints, catch'em all!
@@ -487,7 +427,7 @@ pub fn onchain_txs_list_from_outpoints(
     revaultd: &RevaultD,
     bitcoind_tx: &Sender<BitcoindMessageOut>,
     outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultOnchainTransactions>, RpcControlError>, ControlError> {
+) -> Result<Result<Vec<VaultOnchainTransactions>, RpcControlError>, RpcControlError> {
     let db_path = &revaultd.db_file();
 
     // If they didn't provide us with a list of outpoints, catch'em all!

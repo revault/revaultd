@@ -1149,7 +1149,7 @@ impl RpcApi for RpcImpl {
             &spent_vaults,
         )
         .map_err(|e| {
-            JsonRpcError::invalid_params(format!("Broadcasting Unvault transaction(s): '{}'", e))
+            internal_error!(format!("Broadcasting Unvault transaction(s): '{}'", e))
         })?;
         db_mark_broadcastable_spend(&db_path, &spend_txid).map_err(|e| internal_error!(e))?;
 
@@ -1184,7 +1184,7 @@ impl RpcApi for RpcImpl {
             vault,
         )
         .map_err(|e| {
-            JsonRpcError::invalid_params(format!("Broadcasting Cancel transaction: '{}'", e))
+            internal_error!(format!("Broadcasting Cancel transaction: '{}'", e))
         })?;
 
         Ok(json!({}))

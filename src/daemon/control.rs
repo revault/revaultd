@@ -1,13 +1,14 @@
-//! Any process is at first initiated by a manual interaction. This interaction is possible using the
-//! JSONRPC api, which events are handled in the main thread.
-//! This module contains useful functions for handling RPC requests.
+//! This module contains routines for controlling our actions (checking signatures, communicating
+//! with servers, with bitcoind, ..). Requests may originate from the RPC server or the signature
+//! fetcher thread.
 
 use crate::{
     bitcoind::BitcoindError,
     database::{
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_unvault_emer_transaction,
-            db_unvault_transaction, db_vault_by_deposit, db_vaults, db_vaults_min_status,
+            db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
+            db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
+            db_vaults_min_status,
         },
         schema::DbVault,
         DatabaseError,
@@ -134,6 +135,7 @@ pub enum ListSpendStatus {
     Broadcasted,
 }
 
+// FIXME: Remove this in favour of the more precise error types!!
 /// Any error that could arise during the process of executing the user's will.
 /// Usually fatal.
 #[derive(Debug)]
@@ -193,12 +195,46 @@ impl From<revault_tx::error::TransactionCreationError> for ControlError {
     }
 }
 
-/// Error while handling an RPC call
+/// Error specific to calls that originated from the RPC server.
 #[derive(Debug)]
 pub enum RpcControlError {
     // .0 is current status, .1 is required status
     InvalidStatus(VaultStatus, VaultStatus),
     UnknownOutPoint(OutPoint),
+    Database(DatabaseError),
+    Tx(revault_tx::Error),
+    Bitcoind(BitcoindError),
+    ThreadCommunication(String),
+}
+
+impl From<DatabaseError> for RpcControlError {
+    fn from(e: DatabaseError) -> Self {
+        Self::Database(e)
+    }
+}
+
+impl From<revault_tx::Error> for RpcControlError {
+    fn from(e: revault_tx::Error) -> Self {
+        Self::Tx(e)
+    }
+}
+
+impl From<BitcoindError> for RpcControlError {
+    fn from(e: BitcoindError) -> Self {
+        Self::Bitcoind(e)
+    }
+}
+
+impl<T> From<SendError<T>> for RpcControlError {
+    fn from(e: SendError<T>) -> Self {
+        Self::ThreadCommunication(format!("Sending to thread: '{}'", e))
+    }
+}
+
+impl From<RecvError> for RpcControlError {
+    fn from(e: RecvError) -> Self {
+        Self::ThreadCommunication(format!("Receiving from thread: '{}'", e))
+    }
 }
 
 impl fmt::Display for RpcControlError {
@@ -210,6 +246,10 @@ impl fmt::Display for RpcControlError {
                 "Invalid vault status: '{}'. Need '{}'",
                 current, required
             ),
+            Self::Database(ref e) => write!(f, "Database error: '{}'", e),
+            Self::Tx(ref e) => write!(f, "Transaction handling error: '{}'", e),
+            Self::Bitcoind(ref e) => write!(f, "Bitcoind error: '{}'", e),
+            Self::ThreadCommunication(ref e) => write!(f, "Thread communication error: '{}'", e),
         }
     }
 }
@@ -281,6 +321,25 @@ pub fn bitcoind_broadcast_cancel(
     ))?;
 
     bitrep_rx.recv()??;
+
+    Ok(())
+}
+
+/// Have bitcoind broadcast all these transactions
+pub fn bitcoind_broadcast(
+    bitcoind_tx: &Sender<BitcoindMessageOut>,
+    transactions: Vec<BitcoinTransaction>,
+) -> Result<(), RpcControlError> {
+    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
+
+    // TODO: BroadcastTransaction should take a list and batch the sendrawtransaction calls to
+    // bitcoind
+    for bitcoin_tx in transactions {
+        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
+            bitcoin_tx, bitrep_tx.clone(),
+        ))?;
+        bitrep_rx.recv()??;
+    }
 
     Ok(())
 }
@@ -502,6 +561,26 @@ pub fn onchain_txs_list_from_outpoints(
     }
 
     Ok(Ok(tx_list))
+}
+
+/// Get all the finalized Emergency transactions for each vault, depending on wether the Unvault
+/// was already broadcast or not (ie get the one spending from the deposit or the Unvault tx).
+pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>, RpcControlError> {
+    let db_path = revaultd.db_file();
+
+    let emer_iter = db_signed_emer_txs(&db_path)?.into_iter().map(|mut tx| {
+        tx.finalize(&revaultd.secp_ctx)?;
+        Ok(tx.into_psbt().extract_tx())
+    });
+    let unemer_iter = db_signed_unemer_txs(&db_path)?.into_iter().map(|mut tx| {
+        tx.finalize(&revaultd.secp_ctx)?;
+        Ok(tx.into_psbt().extract_tx())
+    });
+
+    emer_iter
+        .chain(unemer_iter)
+        .collect::<Result<Vec<BitcoinTransaction>, revault_tx::Error>>()
+        .map_err(|e| e.into())
 }
 
 /// An error thrown when the verification of a signature fails

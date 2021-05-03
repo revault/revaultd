@@ -8,7 +8,7 @@ use crate::{
         check_revocation_signatures, check_spend_signatures, check_unvault_signatures,
         fetch_cosigs_signatures, listvaults_from_db, onchain_txs_list_from_outpoints,
         presigned_txs_list_from_outpoints, share_rev_signatures, share_unvault_signatures,
-        ListSpendEntry, ListSpendStatus, RpcUtils,
+        ListSpendEntry, ListSpendStatus, RpcUtils, finalized_emer_txs, bitcoind_broadcast
     },
     database::{
         actions::{
@@ -206,6 +206,9 @@ pub trait RpcApi {
         meta: Self::Metadata,
         deposit_outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "emergency")]
+    fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 // TODO: we should probably make these proc macros and apply them above?
@@ -1183,6 +1186,21 @@ impl RpcApi for RpcImpl {
         .map_err(|e| {
             JsonRpcError::invalid_params(format!("Broadcasting Cancel transaction: '{}'", e))
         })?;
+
+        Ok(json!({}))
+    }
+
+    fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        stakeholder_only!(meta);
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let bitcoind_tx = &meta.rpc_utils.bitcoind_tx;
+
+        // FIXME: there is a ton of edge cases not covered here. We should additionally opt for a
+        // bulk method, like broadcasting all Emergency transactions in a thread forever without
+        // trying to be smart by differentiating between Emer and UnvaultEmer until we die or all
+        // vaults are confirmed in the EDV.
+        let emers = finalized_emer_txs(&revaultd).map_err(|e| internal_error!(e))?;
+        bitcoind_broadcast(bitcoind_tx, emers).map_err(|e| internal_error!(e))?;
 
         Ok(json!({}))
     }

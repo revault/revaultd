@@ -9,7 +9,10 @@ pub enum BitcoindMessageOut {
     Shutdown,
     SyncProgress(SyncSender<f64>),
     WalletTransaction(Txid, SyncSender<Option<WalletTransaction>>),
-    BroadcastTransaction(BitcoinTransaction, SyncSender<Result<(), BitcoindError>>),
+    BroadcastTransactions(
+        Vec<BitcoinTransaction>,
+        SyncSender<Result<(), BitcoindError>>,
+    ),
 }
 
 /// Outgoing to the signature fetcher thread

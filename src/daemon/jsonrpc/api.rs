@@ -4,11 +4,11 @@
 
 use crate::{
     control::{
-        announce_spend_transaction, bitcoind_broadcast_cancel, bitcoind_broadcast_unvaults,
-        check_revocation_signatures, check_spend_signatures, check_unvault_signatures,
-        fetch_cosigs_signatures, listvaults_from_db, onchain_txs_list_from_outpoints,
+        announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
+        check_spend_signatures, check_unvault_signatures, fetch_cosigs_signatures,
+        finalized_emer_txs, listvaults_from_db, onchain_txs_list_from_outpoints,
         presigned_txs_list_from_outpoints, share_rev_signatures, share_unvault_signatures,
-        ListSpendEntry, ListSpendStatus, RpcUtils, finalized_emer_txs, bitcoind_broadcast
+        ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -29,7 +29,7 @@ use crate::{
 use common::VERSION;
 
 use revault_tx::{
-    bitcoin::{util::bip32, Address, OutPoint, TxOut, Txid},
+    bitcoin::{util::bip32, Address, OutPoint, Transaction as BitcoinTransaction, TxOut, Txid},
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
         RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -1142,13 +1142,23 @@ impl RpcApi for RpcImpl {
 
         // Finally we can broadcast the Unvault(s) transaction(s) and store the Spend
         // transaction for later broadcast
-        bitcoind_broadcast_unvaults(
-            &meta.rpc_utils.bitcoind_tx,
-            &meta.rpc_utils.revaultd.read().unwrap().db_file(),
-            &revaultd.secp_ctx,
-            &spent_vaults,
-        )
-        .map_err(|e| {
+        log::debug!(
+            "Broadcasting Unvault transactions with ids '{:?}'",
+            spent_vaults.keys()
+        );
+        let bitcoin_txs = spent_vaults
+            .values()
+            .into_iter()
+            .map(|db_vault| {
+                let (_, mut unvault_tx) = db_unvault_transaction(&db_path, db_vault.id)
+                    .map_err(|e| internal_error!(e))?;
+                unvault_tx
+                    .finalize(&revaultd.secp_ctx)
+                    .map_err(|e| internal_error!(e))?;
+                Ok(unvault_tx.into_psbt().extract_tx())
+            })
+            .collect::<Result<Vec<BitcoinTransaction>, JsonRpcError>>()?;
+        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, bitcoin_txs).map_err(|e| {
             internal_error!(format!("Broadcasting Unvault transaction(s): '{}'", e))
         })?;
         db_mark_broadcastable_spend(&db_path, &spend_txid).map_err(|e| internal_error!(e))?;
@@ -1177,15 +1187,20 @@ impl RpcApi for RpcImpl {
             return Err(invalid_status!(vault.status, VaultStatus::Unvaulting));
         }
 
-        bitcoind_broadcast_cancel(
-            &meta.rpc_utils.bitcoind_tx,
-            &db_path,
-            &revaultd.secp_ctx,
-            vault,
-        )
-        .map_err(|e| {
-            internal_error!(format!("Broadcasting Cancel transaction: '{}'", e))
-        })?;
+        let (_, mut cancel_tx) = db_cancel_transaction(&db_path, vault.id)
+            .map_err(|e| internal_error!(e))?
+            .expect("Must be in DB post 'Secured' status");
+
+        cancel_tx
+            .finalize(&revaultd.secp_ctx)
+            .map_err(|e| internal_error!(e))?;
+        let transaction = cancel_tx.into_psbt().extract_tx();
+        log::debug!(
+            "Broadcasting Cancel transactions with id '{:?}'",
+            transaction.txid()
+        );
+        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, vec![transaction])
+            .map_err(|e| internal_error!(format!("Broadcasting Cancel transaction: '{}'", e)))?;
 
         Ok(json!({}))
     }

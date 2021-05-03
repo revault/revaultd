@@ -43,9 +43,7 @@ use revault_tx::{
 
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt,
-    path::PathBuf,
-    process,
+    fmt, process,
     sync::{
         mpsc::{self, RecvError, SendError, Sender},
         Arc, RwLock,
@@ -206,65 +204,6 @@ fn bitcoind_wallet_tx(
     bitrep_rx.recv().map_err(|e| e.into())
 }
 
-/// Tell bitcoind to broadcast the Unvault transactions of all these vaults.
-/// The vaults must be active for the Unvault to be finalizable.
-pub fn bitcoind_broadcast_unvaults(
-    bitcoind_tx: &Sender<BitcoindMessageOut>,
-    db_path: &PathBuf,
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    db_vaults: &HashMap<Txid, DbVault>,
-) -> Result<(), RpcControlError> {
-    log::debug!(
-        "Broadcasting Unvault transactions with ids '{:?}'",
-        db_vaults.keys()
-    );
-
-    // For each vault, get the Unvault transaction, finalize it, and tell bitcoind to broadcast it
-    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-    for db_vault in db_vaults.values() {
-        let (_, mut unvault_tx) = db_unvault_transaction(db_path, db_vault.id)?;
-        unvault_tx.finalize(secp)?;
-        let transaction = unvault_tx.into_psbt().extract_tx();
-
-        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
-            transaction,
-            bitrep_tx.clone(),
-        ))?;
-        bitrep_rx.recv()??;
-    }
-
-    Ok(())
-}
-
-/// Tell bitcoind to broadcast the Cancel transactions of this vault.
-pub fn bitcoind_broadcast_cancel(
-    bitcoind_tx: &Sender<BitcoindMessageOut>,
-    db_path: &PathBuf,
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    vault: DbVault,
-) -> Result<(), RpcControlError> {
-    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-    // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-    let (_, mut cancel_tx) =
-        db_cancel_transaction(&db_path, vault.id)?.expect("Must be in DB post 'Secured' status");
-
-    cancel_tx.finalize(secp)?;
-    let transaction = cancel_tx.into_psbt().extract_tx();
-    log::debug!(
-        "Broadcasting Cancel transactions with id '{:?}'",
-        transaction.txid()
-    );
-
-    bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
-        transaction,
-        bitrep_tx,
-    ))?;
-
-    bitrep_rx.recv()??;
-
-    Ok(())
-}
-
 /// Have bitcoind broadcast all these transactions
 pub fn bitcoind_broadcast(
     bitcoind_tx: &Sender<BitcoindMessageOut>,
@@ -272,11 +211,12 @@ pub fn bitcoind_broadcast(
 ) -> Result<(), RpcControlError> {
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
 
-    // TODO: BroadcastTransaction should take a list and batch the sendrawtransaction calls to
-    // bitcoind
-    for bitcoin_tx in transactions {
-        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
-            bitcoin_tx, bitrep_tx.clone(),
+    if !transactions.is_empty() {
+        // Note: this is a batched call to bitcoind's RPC, any failure will
+        // override all the results.
+        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransactions(
+            transactions,
+            bitrep_tx.clone(),
         ))?;
         bitrep_rx.recv()??;
     }

@@ -704,6 +704,15 @@ impl BitcoinD {
             .map(|_| ())
     }
 
+    /// Broadcast a batch of transactions with 'sendrawtransaction'
+    pub fn broadcast_transactions(&self, txs: &[Transaction]) -> Result<(), BitcoindError> {
+        for tx in txs {
+            self.broadcast_transaction(&tx)?;
+        }
+
+        Ok(())
+    }
+
     /// Broadcast a transaction that is already part of the wallet
     pub fn rebroadcast_wallet_tx(&self, txid: &Txid) -> Result<(), BitcoindError> {
         let (hex, _, _) = self.get_wallet_transaction(txid)?;

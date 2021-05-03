@@ -1696,13 +1696,13 @@ pub fn bitcoind_main_loop(
                         ))
                     })?;
             }
-            BitcoindMessageOut::BroadcastTransaction(tx, resp_tx) => {
-                log::trace!("Received 'broadcastransaction' from main thread");
+            BitcoindMessageOut::BroadcastTransactions(txs, resp_tx) => {
+                log::trace!("Received 'broadcastransactions' from main thread");
                 resp_tx
-                    .send(bitcoind.read().unwrap().broadcast_transaction(&tx))
+                    .send(bitcoind.read().unwrap().broadcast_transactions(&txs))
                     .map_err(|e| {
                         BitcoindError::Custom(format!(
-                            "Sending wallet transaction to main thread: {}",
+                            "Sending transactions broadcast result to main thread: {}",
                             e
                         ))
                     })?;

@@ -361,9 +361,7 @@ def test_revocationtxs(revault_network):
         stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"], psbts["emergency_tx"])
 
     # We can't send it for an unknown vault
-    with pytest.raises(
-        RpcError, match="No vault at"
-    ):
+    with pytest.raises(RpcError, match="No vault at"):
         stks[0].rpc.revocationtxs(
             deposit[:-1] + "18",
             psbts["cancel_tx"],
@@ -1145,9 +1143,7 @@ def test_getspendtx(revault_network, bitcoind):
 
     # If we are not a manager, it'll fail
     with pytest.raises(RpcError, match="This is a manager command"):
-        revault_network.stk(0).rpc.getspendtx(
-            spent_vaults, destination, feerate
-        )
+        revault_network.stk(0).rpc.getspendtx(spent_vaults, destination, feerate)
 
     # The amount was not enough to afford a change output, everything went to
     # fees.
@@ -1343,10 +1339,33 @@ def test_spendtx_management(revault_network, bitcoind):
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
+    # Now, sign the Spend we are going to broadcast
     deriv_indexes = [vault["derivation_index"], vault_b["derivation_index"]]
     for man in revault_network.mans():
         spend_tx_b = man.man_keychain.sign_spend_psbt(spend_tx_b, deriv_indexes)
 
+    # Just before broadcasting it, prepare a competing one to later try to make Cosigning Servers
+    # sign twice
+    vault_c = revault_network.fund(amount / 2)
+    deposit_c = f"{vault_c['txid']}:{vault_c['vout']}"
+    rogue_spent_vaults = [deposit, deposit_b, deposit_c]
+    feerate = 50
+    fees = revault_network.compute_spendtx_fees(feerate, len(rogue_spent_vaults), 2)
+    destination = {
+        addr: (vault_b["amount"] - fees) // 2,
+        addr_b: (vault_b["amount"] - fees) // 2,
+    }
+    revault_network.secure_vault(vault_c)
+    revault_network.activate_vault(vault_c)
+    rogue_spend_tx = man.rpc.getspendtx(rogue_spent_vaults, destination, feerate)[
+        "spend_tx"
+    ]
+    deriv_indexes = deriv_indexes + [vault_c["derivation_index"]]
+    for man in revault_network.mans():
+        rogue_spend_tx = man.man_keychain.sign_spend_psbt(rogue_spend_tx, deriv_indexes)
+    man.rpc.updatespendtx(rogue_spend_tx)
+
+    # Then broadcast the actual Spend
     spend_psbt = serializations.PSBT()
     spend_psbt.deserialize(spend_tx_b)
     spend_psbt.tx.calc_sha256()
@@ -1354,38 +1373,42 @@ def test_spendtx_management(revault_network, bitcoind):
     man.rpc.updatespendtx(spend_tx_b)
     man.rpc.setspendtx(spend_psbt.tx.hash)
 
-    # Of course, Cosigning Servers will cringe if we poll them twice.
+    # If we show good faith (ask again for the same set of outpoints), Cosigning Servers will
+    # try to be helpful.
+    man.rpc.setspendtx(spend_psbt.tx.hash)
+
+    # However, they won't let us trying to sneak in another outpoint
+    rogue_spend_psbt = serializations.PSBT()
+    rogue_spend_psbt.deserialize(rogue_spend_tx)
+    rogue_spend_psbt.tx.calc_sha256()
     with pytest.raises(
         RpcError,
         match="one Cosigning Server already signed a Spend transaction spending one of these vaults",
     ):
-        man.rpc.setspendtx(spend_psbt.tx.hash)
+        man.rpc.setspendtx(rogue_spend_psbt.tx.hash)
 
     # It gets marked as in the process of being unvaulted immediately (next bitcoind
     # poll), and will get marked as succesfully unvaulted after a single confirmation.
     wait_for(
-        lambda: all(
-            v["status"] == "unvaulting"
-            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
-        )
+        lambda: len(man.rpc.listvaults(["unvaulting"], spent_vaults)["vaults"])
+        == len(spent_vaults)
     )
     bitcoind.generate_block(1, wait_for_mempool=len(spent_vaults))
     wait_for(
-        lambda: all(
-            v["status"] == "unvaulted"
-            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
-        )
+        lambda: len(man.rpc.listvaults(["unvaulted"], spent_vaults)["vaults"])
+        == len(spent_vaults)
     )
 
     # We'll broadcast the Spend transaction as soon as it's valid
     bitcoind.generate_block(CSV - 1)
     man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'")
     wait_for(
-        lambda: all(
-            v["status"] == "spending"
-            for v in man.rpc.listvaults([], spent_vaults)["vaults"]
-        )
+        lambda: len(man.rpc.listvaults(["spending"], spent_vaults)["vaults"])
+        == len(spent_vaults)
     )
+
+    # And the vault we tried to sneak in wasn't even unvaulted
+    assert len(man.rpc.listvaults(["active"], [deposit_c])["vaults"]) == 1
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -1541,6 +1564,11 @@ def test_spends_conflicting(revault_network, bitcoind):
     spend_txid_a = spend_psbt.tx.hash
     man.rpc.setspendtx(spend_txid_a)
 
+    # We can ask the Cosigning Servers their signature again for the very same Spend
+    man.rpc.setspendtx(spend_txid_a)
+
+    # The two Spend have conflicting inputs, therefore the Cosigning Server won't
+    # accept to sign the second one.
     spend_psbt = serializations.PSBT()
     spend_psbt.deserialize(spend_tx_b)
     spend_psbt.tx.calc_sha256()
@@ -1585,25 +1613,25 @@ def test_spends_conflicting(revault_network, bitcoind):
     )
 
 
-# FIXME: exchange of signatures with the cosigning server gets too large too quickly
-# See https://github.com/revault/practical-revault/issues/81
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_large_spends(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
-    revault_network.deploy(9, 4, csv=CSV)
+    # FIXME: the bottleneck here on the number of participants is the announcement
+    # to the Coordinator
+    revault_network.deploy(17, 8, csv=CSV)
     man = revault_network.man(0)
 
+    vaults = []
     deposits = []
     deriv_indexes = []
     total_amount = 0
-    for _ in range(15):
+    for i in range(10):
         amount = random.randint(5, 5000) / 100
-        vault = revault_network.fund(amount)
-        revault_network.secure_vault(vault)
-        revault_network.activate_vault(vault)
-        deposits.append(f"{vault['txid']}:{vault['vout']}")
-        deriv_indexes.append(vault["derivation_index"])
-        total_amount += vault["amount"]
+        vaults.append(revault_network.fund(amount))
+        deposits.append(f"{vaults[i]['txid']}:{vaults[i]['vout']}")
+        deriv_indexes.append(vaults[i]["derivation_index"])
+        total_amount += vaults[i]["amount"]
+    revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
     n_outputs = random.randint(1, 5)
@@ -2105,6 +2133,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
 
     # TODO: same dance with all emergency statuses
 
+
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_sigfetcher(revault_network, bitcoind, executor):
     rn = revault_network
@@ -2137,9 +2166,7 @@ def test_sigfetcher(revault_network, bitcoind, executor):
 
     # They should all get back to the 'active' state, pulling sigs from the coordinator
     for w in rn.participants():
-        w.wait_for_log(
-            "Got a new unconfirmed deposit"
-        )
+        w.wait_for_log("Got a new unconfirmed deposit")
         wait_for(lambda: len(w.rpc.listvaults(["funded"], [])) == 1)
     for w in rn.stks():
         w.wait_for_logs(

@@ -8,7 +8,7 @@ from test_framework import serializations
 from test_framework.coordinatord import Coordinatord
 from test_framework.cosignerd import Cosignerd
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd, StkManRevaultd
-from test_framework.utils import get_participants, wait_for, RpcError
+from test_framework.utils import get_participants, wait_for, RpcError, TIMEOUT
 
 
 class RevaultNetwork:
@@ -18,6 +18,7 @@ class RevaultNetwork:
         self,
         root_dir,
         bitcoind,
+        executor,
         postgres_user,
         postgres_pass,
         postgres_host="localhost",
@@ -25,6 +26,8 @@ class RevaultNetwork:
         self.root_dir = root_dir
         self.bitcoind = bitcoind
         self.daemons = []
+
+        self.executor = executor
 
         self.postgres_user = postgres_user
         self.postgres_pass = postgres_pass
@@ -142,16 +145,20 @@ class RevaultNetwork:
         cosigners_info = []
         for (i, noisepub) in enumerate(stkonly_cosig_noisepubs):
             stkonly_cosigners_ports.append(reserve())
-            cosigners_info.append({
-                "host": f"127.0.0.1:{stkonly_cosigners_ports[i]}",
-                "noise_key": noisepub,
-            })
+            cosigners_info.append(
+                {
+                    "host": f"127.0.0.1:{stkonly_cosigners_ports[i]}",
+                    "noise_key": noisepub,
+                }
+            )
         for (i, noisepub) in enumerate(stkman_cosig_noisepubs):
             stkman_cosigners_ports.append(reserve())
-            cosigners_info.append({
-                "host": f"127.0.0.1:{stkman_cosigners_ports[i]}",
-                "noise_key": noisepub,
-            })
+            cosigners_info.append(
+                {
+                    "host": f"127.0.0.1:{stkman_cosigners_ports[i]}",
+                    "noise_key": noisepub,
+                }
+            )
 
         # Spin up the stakeholders wallets and their cosigning servers
         for i, stk in enumerate(stkonly_keychains):
@@ -391,6 +398,22 @@ class RevaultNetwork:
             stk.rpc.unvaulttx(deposit, unvault_psbt)
         for w in self.participants():
             w.wait_for_active_vaults([deposit])
+
+    def activate_fresh_vaults(self, vaults):
+        """Secure then activate all these vaults, concurrently."""
+        # TODO: i'm sure we don't even need to wait for all sec jobs to be complete
+        # before starting the activate_vault futures, given a high enough TIMEOUT.
+        sec_jobs = []
+        for v in vaults:
+            sec_jobs.append(self.executor.submit(self.secure_vault, v))
+        for j in sec_jobs:
+            j.result(TIMEOUT)
+
+        act_jobs = []
+        for v in vaults:
+            act_jobs.append(self.executor.submit(self.activate_vault, v))
+        for j in act_jobs:
+            j.result(TIMEOUT)
 
     def unvault_vaults(self, vaults, destinations, feerate):
         """

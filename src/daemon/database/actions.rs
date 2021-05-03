@@ -934,6 +934,10 @@ mod test {
 
         setup_db(&mut revaultd).unwrap();
 
+        // There is no fully signed Emergency transaction at this point.
+        assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
+        assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
+
         // Let's insert a deposit
         let wallet_id = 1;
         let outpoint = OutPoint::from_str(
@@ -971,6 +975,10 @@ mod test {
             Some(&fresh_unemer_tx),
         )
         .unwrap();
+
+        // There is still no *fully signed* Emergency transaction at this point!
+        assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
+        assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
 
         // Sanity check we can add sigs to them now
         let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
@@ -1096,6 +1104,32 @@ mod test {
             Some(&fresh_unemer_tx),
         )
         .unwrap_err();
+
+        // If we mark the Emergency transaction as fully signed, it'll get returned by the
+        // fetcher.
+        db_exec(&db_path, |tx| {
+            tx.execute(
+                "UPDATE presigned_transactions SET fullysigned = 1 WHERE txid = (?1)",
+                params![fresh_emer_tx.txid().to_vec()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db_signed_emer_txs(&db_path).unwrap().len(), 1);
+        assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
+        // If we mark the UnvaultEmergency transaction as fully signed and the vault as
+        // Unvaulting, it'll get returned by the unemer fetcher instead.
+        db_unvault_deposit(&db_path, &fresh_unvault_tx.txid()).unwrap();
+        db_exec(&db_path, |tx| {
+            tx.execute(
+                "UPDATE presigned_transactions SET fullysigned = 1 WHERE txid = (?1)",
+                params![fresh_unemer_tx.txid().to_vec()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
+        assert_eq!(db_signed_unemer_txs(&db_path).unwrap().len(), 1);
 
         fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
     }

@@ -635,6 +635,50 @@ pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransactio
     )
 }
 
+/// Get all the Emergency transactions of the "secured" (Emergency signed) vaults that were not yet
+/// Unvaulted.
+pub fn db_signed_emer_txs(db_path: &PathBuf) -> Result<Vec<EmergencyTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT ptx.* FROM presigned_transactions as ptx INNER JOIN vaults as v ON ptx.vault_id = v.id \
+         WHERE ptx.fullysigned = 1 AND ptx.type = (?1) AND v.status < (?2)",
+        params![
+            TransactionType::Emergency as u32,
+            VaultStatus::Unvaulting as u32,
+        ],
+        |row| {
+            let db_tx: DbTransaction = row.try_into()?;
+            Ok(match db_tx.psbt {
+                RevaultTx::Emergency(tx) => tx,
+                _ => unreachable!("Inconsistency between TransactionType and RevaultTx variant?"),
+            })
+        },
+    )
+}
+
+/// Get all the UnvaultEmergency transactions of the Unvaulted vaults that were not yet Spent
+pub fn db_signed_unemer_txs(db_path: &PathBuf) -> Result<Vec<UnvaultEmergencyTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT ptx.* FROM presigned_transactions as ptx INNER JOIN vaults as v on ptx.vault_id = v.id \
+         WHERE ptx.fullysigned = 1 AND ptx.type = (?1) AND v.status IN ((?2), (?3), (?4), (?5))",
+        params![
+            TransactionType::UnvaultEmergency as u32,
+            VaultStatus::Unvaulting as u32,
+            VaultStatus::Unvaulted as u32,
+            VaultStatus::Spending as u32,
+            VaultStatus::Canceling as u32,
+        ],
+        |row| {
+            let db_tx: DbTransaction = row.try_into()?;
+            Ok(match db_tx.psbt {
+                RevaultTx::UnvaultEmergency(tx) => tx,
+                _ => unreachable!("Inconsistency between TransactionType and RevaultTx variant?"),
+            })
+        },
+    )
+}
+
 impl TryFrom<&Row<'_>> for DbSpendTransaction {
     type Error = rusqlite::Error;
 

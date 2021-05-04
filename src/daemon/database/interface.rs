@@ -294,17 +294,17 @@ pub fn db_unvaulted_vaults(
         db_path,
         "SELECT vaults.*, ptx.psbt FROM vaults INNER JOIN presigned_transactions as ptx \
          ON ptx.vault_id = vaults.id \
-         WHERE vaults.status = (?1) OR vaults.status = (?2) AND ptx.type = (?3)",
+         WHERE ptx.type = (?1) AND vaults.status IN ((?2), (?3))",
         &[
-            VaultStatus::Unvaulting as u32,
-            VaultStatus::Unvaulted as u32,
             TransactionType::Unvault as u32,
+            VaultStatus::Unvaulted as u32,
+            VaultStatus::Unvaulting as u32,
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
             let unvault_tx: Vec<u8> = row.get(11)?;
             let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
-                .expect("We store it with to_psbt_serialized");
+                .expect("We store it with as_psbt_serialized");
 
             Ok((db_vault, unvault_tx))
         },
@@ -328,7 +328,7 @@ pub fn db_spending_vaults(
             let db_vault: DbVault = row.try_into()?;
             let unvault_tx: Vec<u8> = row.get(11)?;
             let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
-                .expect("We store it with to_psbt_serialized");
+                .expect("We store it with as_psbt_serialized");
 
             Ok((db_vault, unvault_tx))
         },
@@ -353,7 +353,7 @@ pub fn db_canceling_vaults(
             let db_vault: DbVault = row.try_into()?;
             let cancel_tx: Vec<u8> = row.get(11)?;
             let cancel_tx = CancelTransaction::from_psbt_serialized(&cancel_tx)
-                .expect("We store it with to_psbt_serialized");
+                .expect("We store it with as_psbt_serialized");
 
             Ok((db_vault, cancel_tx))
         },
@@ -614,7 +614,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
         let broadcasted: Option<bool> = row.get(3)?; // 2 is 'txid'
 
         let psbt = SpendTransaction::from_psbt_serialized(&psbt)
-            .expect("We set it using as_psbt_serialized()");
+            .expect("We store it with as_psbt_serialized");
 
         debug_assert_eq!(
             psbt.inner_tx().global.unsigned_tx.txid().to_vec(),

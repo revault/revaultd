@@ -208,6 +208,7 @@ pub fn bitcoind_main_loop(
             }
             BitcoindMessageOut::WalletTransaction(txid, resp_tx) => {
                 log::trace!("Received 'wallettransaction' from main thread");
+                // FIXME: what if bitcoind isn't synced?
                 resp_tx
                     .send(wallet_transaction(&bitcoind.read().unwrap(), txid))
                     .map_err(|e| {

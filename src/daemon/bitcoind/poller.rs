@@ -1840,6 +1840,51 @@ fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), Bit
     }
 }
 
+// Update the progress made by bitcoind toward the tip.
+fn update_sync_status(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &Arc<RwLock<BitcoinD>>,
+    sync_progress: &Arc<RwLock<f64>>,
+    now: Instant,
+    last_poll: &mut Option<Instant>,
+    sync_waittime: &mut Option<Duration>,
+) -> Result<(), BitcoindError> {
+    // While waiting for bitcoind to be synced, guesstimate how much time of block
+    // connection we have left to not harass it with `getblockchaininfo`.
+    if let Some(last) = last_poll {
+        if let Some(waittime) = sync_waittime {
+            if now.duration_since(*last) < *waittime {
+                return Ok(());
+            }
+        }
+    }
+
+    bitcoind_sync_status(
+        &bitcoind.read().unwrap(),
+        &revaultd.read().unwrap().bitcoind_config,
+        sync_waittime,
+        &mut sync_progress.write().unwrap(),
+    )?;
+
+    // Ok. Sync, done. Now just be sure the watchonly wallet is properly loaded, and
+    // to create it if it's first run.
+    if *sync_progress.read().unwrap() as u32 >= 1 {
+        let mut revaultd = revaultd.write().unwrap();
+        let bitcoind = bitcoind.read().unwrap();
+        maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
+            BitcoindError::Custom(format!("Error while creating wallet: {}", e.to_string()))
+        })?;
+        maybe_load_wallet(&revaultd, &bitcoind).map_err(|e| {
+            BitcoindError::Custom(format!("Error while loading wallet: {}", e.to_string()))
+        })?;
+
+        log::info!("bitcoind now synced.");
+    }
+
+    *last_poll = Some(now);
+    Ok(())
+}
+
 pub fn poller_main(
     mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: Arc<RwLock<BitcoinD>>,
@@ -1859,39 +1904,14 @@ pub fn poller_main(
         let now = Instant::now();
 
         if (*sync_progress.read().unwrap() as u32) < 1 {
-            // While waiting for bitcoind to be synced, guesstimate how much time of block
-            // connection we have left to not harass it with `getblockchaininfo`.
-            if let Some(last) = last_poll {
-                if let Some(waittime) = sync_waittime {
-                    if now.duration_since(last) < waittime {
-                        continue;
-                    }
-                }
-            }
-
-            bitcoind_sync_status(
-                &bitcoind.read().unwrap(),
-                &revaultd.read().unwrap().bitcoind_config,
+            update_sync_status(
+                &revaultd,
+                &bitcoind,
+                &sync_progress,
+                now,
+                &mut last_poll,
                 &mut sync_waittime,
-                &mut sync_progress.write().unwrap(),
             )?;
-
-            // Ok. Sync, done. Now just be sure the watchonly wallet is properly loaded, and
-            // to create it if it's first run.
-            if *sync_progress.read().unwrap() as u32 >= 1 {
-                let mut revaultd = revaultd.write().unwrap();
-                let bitcoind = bitcoind.read().unwrap();
-                maybe_create_wallet(&mut revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError::Custom(format!("Error while creating wallet: {}", e.to_string()))
-                })?;
-                maybe_load_wallet(&revaultd, &bitcoind).map_err(|e| {
-                    BitcoindError::Custom(format!("Error while loading wallet: {}", e.to_string()))
-                })?;
-
-                log::info!("bitcoind now synced.");
-            }
-
-            last_poll = Some(now);
             continue;
         }
 

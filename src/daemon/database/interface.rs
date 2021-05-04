@@ -390,6 +390,56 @@ pub fn db_canceling_vaults(
     )
 }
 
+/// Get the vaults that are in the process of being Emergency Vaulted, along with the respective
+/// Emergency transaction.
+pub fn db_emering_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, EmergencyTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults \
+         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) AND ptx.type = (?2)",
+        &[
+            VaultStatus::EmergencyVaulting as u32,
+            TransactionType::Emergency as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let emer_tx: Vec<u8> = row.get(11)?;
+            let emer_tx = EmergencyTransaction::from_psbt_serialized(&emer_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, emer_tx))
+        },
+    )
+}
+
+/// Get the Unvaulted vaults that are in the process of being Emergency Vaulted, along with the
+/// respective UnvaultEmergency transaction.
+pub fn db_unemering_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, UnvaultEmergencyTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults \
+         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) AND ptx.type = (?2)",
+        &[
+            VaultStatus::UnvaultEmergencyVaulting as u32,
+            TransactionType::UnvaultEmergency as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let unemer_tx: Vec<u8> = row.get(11)?;
+            let unemer_tx = UnvaultEmergencyTransaction::from_psbt_serialized(&unemer_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, unemer_tx))
+        },
+    )
+}
+
 impl TryFrom<&Row<'_>> for DbTransaction {
     type Error = rusqlite::Error;
 

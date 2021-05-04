@@ -423,6 +423,22 @@ pub fn db_unconfirm_cancel_dbtx(
     dbtx_downgrade(db_tx, vault_id, VaultStatus::Canceling)
 }
 
+/// Downgrade a vault from 'emergencied' to 'emergencying'
+pub fn db_unconfirm_emer_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::EmergencyVaulting)
+}
+
+/// Downgrade a vault from 'unvaultemergencied' to 'unvaultemergencying'
+pub fn db_unconfirm_unemer_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::UnvaultEmergencyVaulting)
+}
+
 fn db_status_from_unvault_txid(
     db_path: &PathBuf,
     unvault_txid: &Txid,
@@ -450,6 +466,7 @@ pub fn db_confirm_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), 
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
 }
 
+/// Mark a vault as being in the 'canceling' state, out of the Unvault txid
 pub fn db_cancel_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Canceling)
 }
@@ -472,6 +489,11 @@ pub fn db_spend_unvault(
     })
 }
 
+/// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid
+pub fn db_emer_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
+}
+
 fn db_mark_vault_as(
     db_path: &PathBuf,
     vault_id: u32,
@@ -488,12 +510,25 @@ fn db_mark_vault_as(
         Ok(())
     })
 }
+
 pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::Spent)
 }
 
 pub fn db_mark_canceled_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::Canceled)
+}
+
+pub fn db_mark_emergencied_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::UnvaultEmergencyVaulted)
+}
+
+pub fn db_mark_emergencying_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulting)
+}
+
+pub fn db_mark_emergencied_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulted)
 }
 
 /// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.

@@ -7,7 +7,7 @@ mod sigfetcher;
 mod threadmessages;
 
 use crate::{
-    bitcoind::actions::{bitcoind_main_loop, start_bitcoind},
+    bitcoind::{bitcoind_main_loop, start_bitcoind},
     control::RpcUtils,
     database::actions::setup_db,
     jsonrpc::{

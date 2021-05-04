@@ -24,11 +24,10 @@ use crate::{
         schema::DbVault,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
-    threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
-use common::{assume_ok, config::BitcoindConfig};
+use common::config::BitcoindConfig;
 use revault_tx::{
-    bitcoin::{Amount, Network, OutPoint, TxOut, Txid},
+    bitcoin::{Amount, OutPoint, TxOut, Txid},
     miniscript::DescriptorTrait,
     transactions::{
         transaction_chain, transaction_chain_manager, CancelTransaction, EmergencyTransaction,
@@ -41,244 +40,13 @@ use revault_tx::{
 use std::{
     collections::HashMap,
     path::PathBuf,
-    process,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::Receiver,
         Arc, RwLock,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-
-fn check_bitcoind_network(
-    bitcoind: &BitcoinD,
-    config_network: &Network,
-) -> Result<(), BitcoindError> {
-    let chaininfo = bitcoind.getblockchaininfo()?;
-    let chain = chaininfo
-        .get("chain")
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| {
-            BitcoindError::Custom("No valid 'chain' in getblockchaininfo response?".to_owned())
-        })?;
-    let bip70_net = match config_network {
-        Network::Bitcoin => "main",
-        Network::Testnet => "test",
-        Network::Regtest => "regtest",
-        Network::Signet => "signet",
-    };
-
-    if !bip70_net.eq(chain) {
-        return Err(BitcoindError::Custom(format!(
-            "Wrong network, bitcoind is on '{}' but our config says '{}' ({})",
-            chain, bip70_net, config_network
-        )));
-    }
-
-    Ok(())
-}
-
-/// Some sanity checks to be done at startup to make sure our bitcoind isn't going to fail under
-/// our feet for a legitimate reason.
-fn bitcoind_sanity_checks(
-    bitcoind: &BitcoinD,
-    bitcoind_config: &BitcoindConfig,
-) -> Result<(), BitcoindError> {
-    check_bitcoind_network(&bitcoind, &bitcoind_config.network)
-}
-
-/// Bitcoind uses a guess for the value of verificationprogress. It will eventually get to
-/// be 1, but can take some time; when it's > 0.99999 we are synced anyways so use that.
-fn roundup_progress(progress: f64) -> f64 {
-    let precision = 10u64.pow(5);
-    ((progress * precision as f64 + 1.0) as u64 / precision) as f64
-}
-
-/// Polls bitcoind to check if we are synced yet.
-/// Tries to be smart with getblockchaininfo calls by adjsuting the sleep duration
-/// between calls.
-/// If sync_progress == 1.0, we are done.
-fn bitcoind_sync_status(
-    bitcoind: &BitcoinD,
-    bitcoind_config: &BitcoindConfig,
-    sleep_duration: &mut Option<Duration>,
-    sync_progress: &mut f64,
-) -> Result<(), BitcoindError> {
-    let first_poll = sleep_duration.is_none();
-
-    let SyncInfo {
-        headers,
-        blocks,
-        ibd,
-        progress,
-    } = bitcoind.synchronization_info()?;
-    *sync_progress = roundup_progress(progress);
-
-    if first_poll {
-        if ibd {
-            log::info!(
-                "Bitcoind is currently performing IBD, this is going to \
-                        take some time."
-            );
-
-            // If it may not have received all headers, be conservative and wait
-            // for that first. Let's assume it won't take longer than 5min from now
-            // for mainnet.
-            if progress < 0.01 {
-                log::info!("Waiting for bitcoind to gather enough headers..");
-
-                *sleep_duration = if bitcoind_config.network.to_string().eq("regtest") {
-                    Some(Duration::from_secs(3))
-                } else {
-                    Some(Duration::from_secs(5 * 60))
-                };
-
-                return Ok(());
-            }
-        }
-
-        if progress < 0.7 {
-            log::info!(
-                "Bitcoind is far behind network tip, this is going to \
-                        take some time."
-            );
-        }
-    }
-
-    // Sleeping a second per 20 blocks seems a good upper bound estimation
-    // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
-    // conservative. Eg if 10_000 are left to be downloaded we'll check back
-    // in ~4min.
-    let delta = if headers > blocks {
-        headers - blocks
-    } else {
-        0
-    };
-    *sleep_duration = Some(std::cmp::max(
-        Duration::from_secs(delta / 20 / 2),
-        Duration::from_secs(5),
-    ));
-
-    log::info!("We'll poll bitcoind again in {:?} seconds", sleep_duration);
-
-    Ok(())
-}
-
-// This creates the actual wallet file, and imports the descriptors
-fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    let wallet = db_wallet(&revaultd.db_file())?;
-    let bitcoind_wallet_path = revaultd
-        .watchonly_wallet_file()
-        .expect("Wallet id is set at startup in setup_db()");
-    // Did we just create the wallet ?
-    let curr_timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|dur| dur.as_secs())
-        .map_err(|e| {
-            BitcoindError::Custom(format!("Computing time since epoch: {}", e.to_string()))
-        })?;
-    let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
-
-    // TODO: sanity check descriptors are imported when migrating to 0.22
-
-    if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
-        // Remove any leftover. This can happen if we delete the watchonly wallet but don't restart
-        // bitcoind.
-        while bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
-            log::info!("Found a leftover watchonly wallet loaded on bitcoind. Removing it.");
-            if let Err(e) = bitcoind.unloadwallet(bitcoind_wallet_path.clone()) {
-                log::error!("Unloading wallet '{}': '{}'", &bitcoind_wallet_path, e);
-            }
-        }
-
-        bitcoind.createwallet_startup(bitcoind_wallet_path)?;
-        log::info!("Importing descriptors to bitcoind watchonly wallet.");
-
-        // Now, import descriptors.
-        // In theory, we could just import the vault (deposit) descriptor expressed using xpubs, give a
-        // range to bitcoind as the gap limit, and be fine.
-        // Unfortunately we cannot just import descriptors as is, since bitcoind does not support
-        // Miniscript ones yet. Worse, we actually need to derive them to pass them to bitcoind since
-        // the vault one (which we are interested about) won't be expressed with a `multi()` statement (
-        // currently supported by bitcoind) if there are more than 15 stakeholders.
-        // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
-        // the derivation index mess ourselves :'(
-        let mut addresses = revaultd.all_deposit_addresses();
-        for i in 0..addresses.len() {
-            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
-        }
-        log::trace!("Importing deposit descriptors '{:?}'", &addresses);
-        bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
-
-        // As a consequence, we don't have enough information to opportunistically import a
-        // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
-        // deposit and unvault descriptors..
-        // FIXME: maybe we actually have, with the derivation_index_map ?
-        let mut addresses = revaultd.all_unvault_addresses();
-        for i in 0..addresses.len() {
-            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
-        }
-        log::trace!("Importing unvault descriptors '{:?}'", &addresses);
-        bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
-    }
-
-    Ok(())
-}
-
-fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
-    let bitcoind_wallet_path = revaultd
-        .watchonly_wallet_file()
-        .expect("Wallet id is set at startup in setup_db()");
-
-    match bitcoind
-        .listwallets()?
-        .into_iter()
-        .filter(|path| path == &bitcoind_wallet_path)
-        .count()
-    {
-        0 => {
-            log::info!("Loading our watchonly wallet '{}'.", bitcoind_wallet_path);
-            bitcoind.loadwallet_startup(bitcoind_wallet_path)?;
-            Ok(())
-        }
-        1 => {
-            log::info!(
-                "Watchonly wallet '{}' already loaded.",
-                bitcoind_wallet_path
-            );
-            Ok(())
-        }
-        n => Err(BitcoindError::Custom(format!(
-            "{} watchonly wallet '{}' are loaded on bitcoind.",
-            n, bitcoind_wallet_path
-        ))),
-    }
-}
-
-/// Connects to and sanity checks bitcoind.
-pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError> {
-    let bitcoind = BitcoinD::new(
-        &revaultd.bitcoind_config,
-        revaultd
-            .watchonly_wallet_file()
-            .expect("Wallet id is set at startup in setup_db()"),
-    )
-    .map_err(|e| {
-        BitcoindError::Custom(format!("Could not connect to bitcoind: {}", e.to_string()))
-    })?;
-
-    while let Err(e) = bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config) {
-        if e.is_warming_up() {
-            log::info!("Bitcoind is warming up. Waiting for it to be back up.");
-            thread::sleep(Duration::from_secs(3))
-        } else {
-            return Err(e);
-        }
-    }
-
-    Ok(bitcoind)
-}
 
 // Try to broadcast fully signed spend transactions, only mature ones will get through
 fn maybe_broadcast_spend_transactions(
@@ -1904,7 +1672,175 @@ fn update_utxos(
     Ok(())
 }
 
-fn poller_main(
+/// Bitcoind uses a guess for the value of verificationprogress. It will eventually get to
+/// be 1, but can take some time; when it's > 0.99999 we are synced anyways so use that.
+fn roundup_progress(progress: f64) -> f64 {
+    let precision = 10u64.pow(5);
+    ((progress * precision as f64 + 1.0) as u64 / precision) as f64
+}
+
+/// Polls bitcoind to check if we are synced yet.
+/// Tries to be smart with getblockchaininfo calls by adjsuting the sleep duration
+/// between calls.
+/// If sync_progress == 1.0, we are done.
+fn bitcoind_sync_status(
+    bitcoind: &BitcoinD,
+    bitcoind_config: &BitcoindConfig,
+    sleep_duration: &mut Option<Duration>,
+    sync_progress: &mut f64,
+) -> Result<(), BitcoindError> {
+    let first_poll = sleep_duration.is_none();
+
+    let SyncInfo {
+        headers,
+        blocks,
+        ibd,
+        progress,
+    } = bitcoind.synchronization_info()?;
+    *sync_progress = roundup_progress(progress);
+
+    if first_poll {
+        if ibd {
+            log::info!(
+                "Bitcoind is currently performing IBD, this is going to \
+                        take some time."
+            );
+
+            // If it may not have received all headers, be conservative and wait
+            // for that first. Let's assume it won't take longer than 5min from now
+            // for mainnet.
+            if progress < 0.01 {
+                log::info!("Waiting for bitcoind to gather enough headers..");
+
+                *sleep_duration = if bitcoind_config.network.to_string().eq("regtest") {
+                    Some(Duration::from_secs(3))
+                } else {
+                    Some(Duration::from_secs(5 * 60))
+                };
+
+                return Ok(());
+            }
+        }
+
+        if progress < 0.7 {
+            log::info!(
+                "Bitcoind is far behind network tip, this is going to \
+                        take some time."
+            );
+        }
+    }
+
+    // Sleeping a second per 20 blocks seems a good upper bound estimation
+    // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
+    // conservative. Eg if 10_000 are left to be downloaded we'll check back
+    // in ~4min.
+    let delta = if headers > blocks {
+        headers - blocks
+    } else {
+        0
+    };
+    *sleep_duration = Some(std::cmp::max(
+        Duration::from_secs(delta / 20 / 2),
+        Duration::from_secs(5),
+    ));
+
+    log::info!("We'll poll bitcoind again in {:?} seconds", sleep_duration);
+
+    Ok(())
+}
+
+// This creates the actual wallet file, and imports the descriptors
+fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    let wallet = db_wallet(&revaultd.db_file())?;
+    let bitcoind_wallet_path = revaultd
+        .watchonly_wallet_file()
+        .expect("Wallet id is set at startup in setup_db()");
+    // Did we just create the wallet ?
+    let curr_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_secs())
+        .map_err(|e| {
+            BitcoindError::Custom(format!("Computing time since epoch: {}", e.to_string()))
+        })?;
+    let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
+
+    // TODO: sanity check descriptors are imported when migrating to 0.22
+
+    if !PathBuf::from(bitcoind_wallet_path.clone()).exists() {
+        // Remove any leftover. This can happen if we delete the watchonly wallet but don't restart
+        // bitcoind.
+        while bitcoind.listwallets()?.contains(&bitcoind_wallet_path) {
+            log::info!("Found a leftover watchonly wallet loaded on bitcoind. Removing it.");
+            if let Err(e) = bitcoind.unloadwallet(bitcoind_wallet_path.clone()) {
+                log::error!("Unloading wallet '{}': '{}'", &bitcoind_wallet_path, e);
+            }
+        }
+
+        bitcoind.createwallet_startup(bitcoind_wallet_path)?;
+        log::info!("Importing descriptors to bitcoind watchonly wallet.");
+
+        // Now, import descriptors.
+        // In theory, we could just import the vault (deposit) descriptor expressed using xpubs, give a
+        // range to bitcoind as the gap limit, and be fine.
+        // Unfortunately we cannot just import descriptors as is, since bitcoind does not support
+        // Miniscript ones yet. Worse, we actually need to derive them to pass them to bitcoind since
+        // the vault one (which we are interested about) won't be expressed with a `multi()` statement (
+        // currently supported by bitcoind) if there are more than 15 stakeholders.
+        // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
+        // the derivation index mess ourselves :'(
+        let mut addresses = revaultd.all_deposit_addresses();
+        for i in 0..addresses.len() {
+            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
+        }
+        log::trace!("Importing deposit descriptors '{:?}'", &addresses);
+        bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
+
+        // As a consequence, we don't have enough information to opportunistically import a
+        // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
+        // deposit and unvault descriptors..
+        // FIXME: maybe we actually have, with the derivation_index_map ?
+        let mut addresses = revaultd.all_unvault_addresses();
+        for i in 0..addresses.len() {
+            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
+        }
+        log::trace!("Importing unvault descriptors '{:?}'", &addresses);
+        bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
+    }
+
+    Ok(())
+}
+
+fn maybe_load_wallet(revaultd: &RevaultD, bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    let bitcoind_wallet_path = revaultd
+        .watchonly_wallet_file()
+        .expect("Wallet id is set at startup in setup_db()");
+
+    match bitcoind
+        .listwallets()?
+        .into_iter()
+        .filter(|path| path == &bitcoind_wallet_path)
+        .count()
+    {
+        0 => {
+            log::info!("Loading our watchonly wallet '{}'.", bitcoind_wallet_path);
+            bitcoind.loadwallet_startup(bitcoind_wallet_path)?;
+            Ok(())
+        }
+        1 => {
+            log::info!(
+                "Watchonly wallet '{}' already loaded.",
+                bitcoind_wallet_path
+            );
+            Ok(())
+        }
+        n => Err(BitcoindError::Custom(format!(
+            "{} watchonly wallet '{}' are loaded on bitcoind.",
+            n, bitcoind_wallet_path
+        ))),
+    }
+}
+
+pub fn poller_main(
     mut revaultd: Arc<RwLock<RevaultD>>,
     bitcoind: Arc<RwLock<BitcoinD>>,
     sync_progress: Arc<RwLock<f64>>,
@@ -1980,95 +1916,6 @@ fn poller_main(
             &mut unvaults_cache,
             &previous_tip,
         )?;
-    }
-
-    Ok(())
-}
-
-fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {
-    let res = bitcoind.get_wallet_transaction(&txid);
-    if let Ok((hex, blockheight, received_time)) = res {
-        Some(WalletTransaction {
-            hex,
-            blockheight,
-            received_time,
-        })
-    } else {
-        log::trace!(
-            "Got '{:?}' from bitcoind when requesting wallet transaction '{}'",
-            res,
-            txid
-        );
-        None
-    }
-}
-
-/// The bitcoind event loop.
-/// Listens for bitcoind requests (wallet / chain) and poll bitcoind every 30 seconds,
-/// updating our state accordingly.
-pub fn bitcoind_main_loop(
-    rx: Receiver<BitcoindMessageOut>,
-    revaultd: Arc<RwLock<RevaultD>>,
-    bitcoind: Arc<RwLock<BitcoinD>>,
-) -> Result<(), BitcoindError> {
-    // The verification progress announced by bitcoind *at startup* thus won't be updated
-    // after startup check. Should be *exactly* 1.0 when synced, but hey, floats so we are
-    // careful.
-    let sync_progress = Arc::new(RwLock::new(0.0f64));
-    // Used to shutdown the poller thread
-    let shutdown = Arc::new(AtomicBool::new(false));
-
-    // We use a thread to 1) wait for bitcoind to be synced 2) poll listunspent
-    let poller_thread = std::thread::spawn({
-        let _revaultd = revaultd.clone();
-        let _bitcoind = bitcoind.clone();
-        let _sync_progress = sync_progress.clone();
-        let _shutdown = shutdown.clone();
-        move || poller_main(_revaultd, _bitcoind, _sync_progress, _shutdown)
-    });
-
-    for msg in rx {
-        match msg {
-            BitcoindMessageOut::Shutdown => {
-                log::info!("Bitcoind received shutdown from main. Exiting.");
-                shutdown.store(true, Ordering::Relaxed);
-                assume_ok!(
-                    assume_ok!(poller_thread.join(), "Joining bitcoind poller thread"),
-                    "Error in bitcoind poller thread"
-                );
-                return Ok(());
-            }
-            BitcoindMessageOut::SyncProgress(resp_tx) => {
-                resp_tx.send(*sync_progress.read().unwrap()).map_err(|e| {
-                    BitcoindError::Custom(format!(
-                        "Sending synchronization progress to main thread: {}",
-                        e
-                    ))
-                })?;
-            }
-            BitcoindMessageOut::WalletTransaction(txid, resp_tx) => {
-                log::trace!("Received 'wallettransaction' from main thread");
-                resp_tx
-                    .send(wallet_transaction(&bitcoind.read().unwrap(), txid))
-                    .map_err(|e| {
-                        BitcoindError::Custom(format!(
-                            "Sending wallet transaction to main thread: {}",
-                            e
-                        ))
-                    })?;
-            }
-            BitcoindMessageOut::BroadcastTransactions(txs, resp_tx) => {
-                log::trace!("Received 'broadcastransactions' from main thread");
-                resp_tx
-                    .send(bitcoind.read().unwrap().broadcast_transactions(&txs))
-                    .map_err(|e| {
-                        BitcoindError::Custom(format!(
-                            "Sending transactions broadcast result to main thread: {}",
-                            e
-                        ))
-                    })?;
-            }
-        }
     }
 
     Ok(())

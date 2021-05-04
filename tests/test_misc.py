@@ -1651,6 +1651,12 @@ def test_large_spends(revault_network, bitcoind, executor):
     spend_psbt.tx.calc_sha256()
     man.rpc.setspendtx(spend_psbt.tx.hash)
 
+    # Killing the daemon and restart it while unvaulting shouldn't cause
+    # any issue
+    for man in revault_network.mans():
+        man.stop()
+        man.start()
+
     wait_for(
         lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
         == len(deposits)

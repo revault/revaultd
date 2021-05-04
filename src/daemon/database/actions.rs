@@ -1000,7 +1000,8 @@ mod test {
             .unwrap();
         assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
-        let (tx_db_id, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (tx_db_id, stored_emer_tx) =
+            db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
         assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
         let mut emer_tx = fresh_emer_tx.clone();
         revault_tx_add_dummy_sig(&mut emer_tx, 0);
@@ -1012,11 +1013,12 @@ mod test {
             &revaultd.secp_ctx,
         )
         .unwrap();
-        let (_, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (_, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
         assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
-        let (tx_db_id, stored_unemer_tx) =
-            db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (tx_db_id, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
         let mut unemer_tx = fresh_unemer_tx.clone();
         revault_tx_add_dummy_sig(&mut unemer_tx, 0);
@@ -1028,7 +1030,9 @@ mod test {
             &revaultd.secp_ctx,
         )
         .unwrap();
-        let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
         let (tx_db_id, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
@@ -1049,7 +1053,10 @@ mod test {
         // They can also be queried
         assert_eq!(
             emer_tx,
-            db_emer_transaction(&db_path, db_vault.id).unwrap().1
+            db_emer_transaction(&db_path, db_vault.id)
+                .unwrap()
+                .unwrap()
+                .1
         );
         assert_eq!(
             cancel_tx,
@@ -1061,6 +1068,7 @@ mod test {
         assert_eq!(
             unemer_tx,
             db_unvault_emer_transaction(&db_path, db_vault.id)
+                .unwrap()
                 .unwrap()
                 .1
         );
@@ -1075,11 +1083,15 @@ mod test {
             Ok(())
         })
         .unwrap();
-        db_emer_transaction(&db_path, db_vault.id).unwrap_err();
+        assert!(db_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .is_none());
         assert!(db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
             .is_none());
-        db_unvault_emer_transaction(&db_path, db_vault.id).unwrap_err();
+        assert!(db_unvault_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .is_none());
         db_unvault_transaction(&db_path, db_vault.id).unwrap_err();
 
         // And re-added of course

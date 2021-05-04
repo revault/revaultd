@@ -327,7 +327,9 @@ pub fn presigned_txs_list_from_outpoints(
         let mut emergency = None;
         let mut unvault_emergency = None;
         if revaultd.is_stakeholder() {
-            let (_, emer_psbt) = db_emer_transaction(db_path, db_vault.id)?;
+            // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+            let (_, emer_psbt) = db_emer_transaction(db_path, db_vault.id)?
+                .expect("Must be here post 'Funded' state");
             let mut finalized_emer = emer_psbt.clone();
             emergency = Some(VaultPresignedTransaction {
                 transaction: if finalized_emer.finalize(&revaultd.secp_ctx).is_ok() {
@@ -338,7 +340,9 @@ pub fn presigned_txs_list_from_outpoints(
                 psbt: emer_psbt,
             });
 
-            let (_, unemer_psbt) = db_unvault_emer_transaction(db_path, db_vault.id)?;
+            // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+            let (_, unemer_psbt) = db_unvault_emer_transaction(db_path, db_vault.id)?
+                .expect("Must be here post 'Funded' state");
             let mut finalized_unemer = unemer_psbt.clone();
             unvault_emergency = Some(VaultPresignedTransaction {
                 transaction: if finalized_unemer.finalize(&revaultd.secp_ctx).is_ok() {
@@ -415,11 +419,17 @@ pub fn onchain_txs_list_from_outpoints(
                 let mut emergency = None;
                 let mut unvault_emergency = None;
                 if revaultd.is_stakeholder() {
-                    let emer = db_emer_transaction(db_path, db_vault.id)?.1;
+                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                    let emer = db_emer_transaction(db_path, db_vault.id)?
+                        .expect("Must be here post 'Funded' state")
+                        .1;
                     emergency =
                         bitcoind_wallet_tx(bitcoind_tx, emer.into_psbt().extract_tx().txid())?;
 
-                    let unemer = db_unvault_emer_transaction(db_path, db_vault.id)?.1;
+                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                    let unemer = db_unvault_emer_transaction(db_path, db_vault.id)?
+                        .expect("Must be here if not 'unconfirmed'")
+                        .1;
                     unvault_emergency =
                         bitcoind_wallet_tx(bitcoind_tx, unemer.into_psbt().extract_tx().txid())?;
                 }

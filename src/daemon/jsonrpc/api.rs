@@ -482,8 +482,10 @@ impl RpcApi for RpcImpl {
                 db_txid, rpc_txid
             )));
         }
+        // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
         let (emer_db_id, db_emergency_tx) = db_emer_transaction(&revaultd.db_file(), db_vault.id)
-            .map_err(|e| internal_error!(e))?;
+            .map_err(|e| internal_error!(e))?
+            .expect("Must be here if 'funded'");
         let rpc_txid = emergency_tx.inner_tx().global.unsigned_tx.wtxid();
         let db_txid = db_emergency_tx.inner_tx().global.unsigned_tx.wtxid();
         if rpc_txid != db_txid {
@@ -492,9 +494,11 @@ impl RpcApi for RpcImpl {
                 db_txid, rpc_txid
             )));
         }
+        // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
         let (unvault_emer_db_id, db_unemergency_tx) =
             db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)
-                .map_err(|e| internal_error!(e))?;
+                .map_err(|e| internal_error!(e))?
+                .expect("Must be here if 'funded'");
         let rpc_txid = unvault_emergency_tx.inner_tx().global.unsigned_tx.wtxid();
         let db_txid = db_unemergency_tx.inner_tx().global.unsigned_tx.wtxid();
         if rpc_txid != db_txid {

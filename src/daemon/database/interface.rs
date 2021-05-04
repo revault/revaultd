@@ -547,21 +547,21 @@ pub fn db_cancel_dbtx(
 pub fn db_emer_transaction(
     db_path: &PathBuf,
     vault_id: u32,
-) -> Result<(u32, EmergencyTransaction), DatabaseError> {
-    let mut rows: Vec<DbTransaction> = db_query(
+) -> Result<Option<(u32, EmergencyTransaction)>, DatabaseError> {
+    db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::Emergency as u32],
         |row| row.try_into(),
-    )?;
-    let db_tx = rows.pop().ok_or_else(|| {
-        DatabaseError(format!("No emergency tx in db for vault id '{}'", vault_id))
-    })?;
-
-    Ok((
-        db_tx.id,
-        assert_tx_type!(db_tx.psbt, Emergency, "We just queryed it"),
-    ))
+    )
+    .map(|mut rows| {
+        rows.pop().map(|db_tx: DbTransaction| {
+            (
+                db_tx.id,
+                assert_tx_type!(db_tx.psbt, Emergency, "We just queryed it"),
+            )
+        })
+    })
 }
 
 /// Get the Unvault Emergency transaction corresponding to this vault
@@ -569,24 +569,21 @@ pub fn db_emer_transaction(
 pub fn db_unvault_emer_transaction(
     db_path: &PathBuf,
     vault_id: u32,
-) -> Result<(u32, UnvaultEmergencyTransaction), DatabaseError> {
-    let mut rows: Vec<DbTransaction> = db_query(
+) -> Result<Option<(u32, UnvaultEmergencyTransaction)>, DatabaseError> {
+    db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::UnvaultEmergency as u32],
         |row| row.try_into(),
-    )?;
-    let db_tx = rows.pop().ok_or_else(|| {
-        DatabaseError(format!(
-            "No unvault emergency tx in db for vault id '{}'",
-            vault_id
-        ))
-    })?;
-
-    Ok((
-        db_tx.id,
-        assert_tx_type!(db_tx.psbt, UnvaultEmergency, "We just queryed it"),
-    ))
+    )
+    .map(|mut rows| {
+        rows.pop().map(|db_tx: DbTransaction| {
+            (
+                db_tx.id,
+                assert_tx_type!(db_tx.psbt, UnvaultEmergency, "We just queryed it"),
+            )
+        })
+    })
 }
 
 /// Get a vault and its Unvault transaction out of an Unvault txid
@@ -657,7 +654,9 @@ pub fn db_signed_emer_txs(db_path: &PathBuf) -> Result<Vec<EmergencyTransaction>
 }
 
 /// Get all the UnvaultEmergency transactions of the Unvaulted vaults that were not yet Spent
-pub fn db_signed_unemer_txs(db_path: &PathBuf) -> Result<Vec<UnvaultEmergencyTransaction>, DatabaseError> {
+pub fn db_signed_unemer_txs(
+    db_path: &PathBuf,
+) -> Result<Vec<UnvaultEmergencyTransaction>, DatabaseError> {
     db_query(
         db_path,
         "SELECT ptx.* FROM presigned_transactions as ptx INNER JOIN vaults as v on ptx.vault_id = v.id \

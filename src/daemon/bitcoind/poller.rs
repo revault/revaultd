@@ -1675,8 +1675,14 @@ fn update_utxos(
 /// Bitcoind uses a guess for the value of verificationprogress. It will eventually get to
 /// be 1, but can take some time; when it's > 0.99999 we are synced anyways so use that.
 fn roundup_progress(progress: f64) -> f64 {
-    let precision = 10u64.pow(5);
-    ((progress * precision as f64 + 1.0) as u64 / precision) as f64
+    let precision = 10u64.pow(5) as f64;
+    let progress_rounded = (progress * precision + 1.0) as u64;
+
+    if progress_rounded >= precision as u64 {
+        1.0
+    } else {
+        (progress_rounded as f64 / precision) as f64
+    }
 }
 
 /// Polls bitcoind to check if we are synced yet.
@@ -1734,11 +1740,7 @@ fn bitcoind_sync_status(
     // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
     // conservative. Eg if 10_000 are left to be downloaded we'll check back
     // in ~4min.
-    let delta = if headers > blocks {
-        headers - blocks
-    } else {
-        0
-    };
+    let delta = headers.checked_sub(blocks).unwrap_or(0);
     *sleep_duration = Some(std::cmp::max(
         Duration::from_secs(delta / 20 / 2),
         Duration::from_secs(5),

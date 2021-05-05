@@ -1155,24 +1155,14 @@ fn unvault_spender(
 
     // First, check if it was spent by a Cancel, it's cheaper.
     let cancel_txid = cancel_txid(revaultd, &vault)?;
-    if let Ok((_, blockheight, _)) = bitcoind.get_wallet_transaction(&cancel_txid) {
-        // If it's not in the block chain nor in mempool, it's not really what spent it.
-        if blockheight.is_some() || bitcoind.is_in_mempool(&cancel_txid)? {
-            return Ok(Some(UnvaultSpender::Cancel(cancel_txid)));
-        } else {
-            return Ok(None);
-        }
+    if bitcoind.is_current(&cancel_txid)? {
+        return Ok(Some(UnvaultSpender::Cancel(cancel_txid)));
     }
 
     // Second, check if it was spent by an UnvaultEmergency if we are able to, it's as cheap.
     if let Some(unemer_txid) = unemer_txid(revaultd, &vault)? {
-        if let Ok((_, blockheight, _)) = bitcoind.get_wallet_transaction(&unemer_txid) {
-            // If it's not in the block chain nor in mempool, it's not really what spent it.
-            if blockheight.is_some() || bitcoind.is_in_mempool(&unemer_txid)? {
-                return Ok(Some(UnvaultSpender::Emergency(unemer_txid)));
-            } else {
-                return Ok(None);
-            }
+        if bitcoind.is_current(&unemer_txid)? {
+            return Ok(Some(UnvaultSpender::Emergency(unemer_txid)));
         }
     }
 
@@ -1180,8 +1170,7 @@ fn unvault_spender(
     if let Some(spend_txid) = bitcoind.get_spender_txid(&unvault_outpoint, &previous_tip.hash)? {
         // FIXME: be smarter, all the information are in the previous call, no need for a
         // second one.
-        let (_, blockheight, _) = bitcoind.get_wallet_transaction(&spend_txid)?;
-        if blockheight.is_some() || bitcoind.is_in_mempool(&spend_txid)? {
+        if bitcoind.is_current(&spend_txid)? {
             return Ok(Some(UnvaultSpender::Spend(spend_txid)));
         }
     }
@@ -1459,75 +1448,47 @@ fn handle_spent_deposit(
 
     // Was it spent by an Unvault tx? No worry if the Unvault txo was spent too, it'll be
     // noticed when we poll them next.
-    match bitcoind.get_wallet_transaction(&unvault_outpoint.txid) {
-        Ok((_, blockheight, _)) => {
-            if blockheight.is_some() || bitcoind.is_in_mempool(&unvault_outpoint.txid)? {
-                log::debug!(
-                    "Found {} Unvault transaction '{}' in wallet for vault at '{}'",
-                    if blockheight.is_some() {
-                        "confirmed"
-                    } else {
-                        "unconfirmed"
-                    },
-                    &unvault_outpoint.txid,
-                    &deposit_outpoint
-                );
+    if bitcoind.is_current(&unvault_outpoint.txid)? {
+        log::debug!(
+            "Found Unvault transaction '{}' in wallet for vault at '{}'",
+            &unvault_outpoint.txid,
+            &deposit_outpoint
+        );
 
-                db_unvault_deposit(&db_path, &unvault_outpoint.txid)?;
-                unvaults_cache.insert(
-                    unvault_outpoint,
-                    UtxoInfo {
-                        is_confirmed: false,
-                        txo: unvault_txin.into_txout().into_txout(),
-                    },
-                );
-                deposits_cache
-                    .remove(&deposit_outpoint)
-                    .expect("It was in spent_deposits, it must still be here.");
+        db_unvault_deposit(&db_path, &unvault_outpoint.txid)?;
+        unvaults_cache.insert(
+            unvault_outpoint,
+            UtxoInfo {
+                is_confirmed: false,
+                txo: unvault_txin.into_txout().into_txout(),
+            },
+        );
+        deposits_cache
+            .remove(&deposit_outpoint)
+            .expect("It was in spent_deposits, it must still be here.");
 
-                return Ok(());
-            } else {
-                log::warn!("Found Unvault transaction in wallet but it is neither confirmed nor in mempool.");
-            }
-        }
-        Err(e) => {
-            log::debug!(
-                "Requesting Unvault transaction '{}' to bitcoind: '{}'",
-                &unvault_outpoint.txid,
-                e
-            );
-        }
+        return Ok(());
     }
 
     // Was it spent by the Emergency transaction?
     let db_vault =
         db_vault_by_deposit(&db_path, &deposit_outpoint)?.expect("Spent deposit doesn't exist?");
     if let Some(emer_txid) = emer_txid(revaultd, &db_vault)? {
-        if let Ok((_, blockheight, _)) = bitcoind.get_wallet_transaction(&emer_txid) {
-            // If it's not in the block chain nor in mempool, it's not really what spent it.
-            if blockheight.is_some() || bitcoind.is_in_mempool(&emer_txid)? {
-                db_mark_emergencying_vault(&db_path, db_vault.id)?;
-                deposits_cache
-                    .remove(&deposit_outpoint)
-                    .expect("It was in spent_deposits, it must still be here.");
-            }
+        if bitcoind.is_current(&emer_txid)? {
+            db_mark_emergencying_vault(&db_path, db_vault.id)?;
+            deposits_cache
+                .remove(&deposit_outpoint)
+                .expect("It was in spent_deposits, it must still be here.");
         }
     }
 
     // TODO: handle bypass
 
     // Only remove the deposit from the cache if it's not in mempool nor in block chain.
-    if let (_, Some(height), _) = bitcoind.get_wallet_transaction(&deposit_outpoint.txid)? {
+    if bitcoind.is_current(&deposit_outpoint.txid)? {
         log::error!(
-            "Deposit at '{}' is still confirmed at height '{}' but is not returned \
-                 by listunspent and Unvault/Emer transactions aren't seen",
-            &deposit_outpoint,
-            height
-        );
-    } else if bitcoind.is_in_mempool(&deposit_outpoint.txid)? {
-        log::error!(
-            "Deposit at '{}' is in mempool but is not returned by listunspent and \
-                 Unvault/Emer transactions aren't seen",
+            "Deposit at '{}' is still current but is not returned by listunspent and \
+             Unvault/Emer transactions aren't seen",
             &deposit_outpoint,
         );
     } else {

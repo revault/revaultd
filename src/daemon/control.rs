@@ -52,7 +52,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
 /// A presigned transaction
 #[derive(Debug, Serialize)]
@@ -124,6 +124,14 @@ where
     } else {
         s.serialize_none()
     }
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ListSpendStatus {
+    NonFinal,
+    Pending,
+    Broadcasted,
 }
 
 /// Any error that could arise during the process of executing the user's will.

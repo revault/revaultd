@@ -633,9 +633,9 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
 /// List all Spend transactions in DB along with the vault they are spending
 pub fn db_list_spends(
     db_path: &PathBuf,
-) -> Result<HashMap<Txid, (SpendTransaction, Vec<OutPoint>)>, DatabaseError> {
+) -> Result<HashMap<Txid, (DbSpendTransaction, Vec<OutPoint>)>, DatabaseError> {
     // SpendTransaction can't be Hash for the moment
-    let mut res: HashMap<Txid, (SpendTransaction, Vec<OutPoint>)> = HashMap::with_capacity(128);
+    let mut res: HashMap<Txid, (DbSpendTransaction, Vec<OutPoint>)> = HashMap::with_capacity(128);
 
     db_query(
         db_path,
@@ -652,14 +652,13 @@ pub fn db_list_spends(
             let vout: u32 = row.get(5)?;
             let deposit_outpoint = OutPoint { txid, vout };
 
-            let spend_tx = db_spend.psbt;
-            let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+            let spend_txid = db_spend.psbt.inner_tx().global.unsigned_tx.txid();
 
             if res.contains_key(&spend_txid) {
                 let (_, outpoints) = res.get_mut(&spend_txid).unwrap();
                 outpoints.push(deposit_outpoint);
             } else {
-                res.insert(spend_txid, (spend_tx, vec![deposit_outpoint]));
+                res.insert(spend_txid, (db_spend, vec![deposit_outpoint]));
             }
 
             Ok(())

@@ -1,5 +1,6 @@
 pub mod interface;
 pub mod poller;
+pub mod utils;
 
 use crate::{
     database::DatabaseError,

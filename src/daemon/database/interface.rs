@@ -25,7 +25,7 @@ use std::{
     boxed::Box,
     collections::HashMap,
     convert::{TryFrom, TryInto},
-    path::PathBuf,
+    path::Path,
     str::FromStr,
 };
 
@@ -41,7 +41,7 @@ use rusqlite::{
 // For concurrent write accesses, we rely on the 'unlock_notify' feature of SQLite: https://sqlite.org/unlock_notify.html
 
 /// Perform a set of modifications to the database inside a single transaction
-pub fn db_exec<F>(path: &PathBuf, modifications: F) -> Result<(), DatabaseError>
+pub fn db_exec<F>(path: &Path, modifications: F) -> Result<(), DatabaseError>
 where
     F: FnOnce(&Transaction) -> Result<(), DatabaseError>,
 {
@@ -61,7 +61,7 @@ where
 
 // Internal helper for queries boilerplate
 fn db_query<'a, P, F, T>(
-    path: &PathBuf,
+    path: &Path,
     stmt_str: &'a str,
     params: P,
     f: F,
@@ -110,7 +110,7 @@ where
 }
 
 /// Get the database version
-pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
+pub fn db_version(db_path: &Path) -> Result<u32, DatabaseError> {
     let mut rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
         row.get::<_, u32>(0)
     })?;
@@ -120,7 +120,7 @@ pub fn db_version(db_path: &PathBuf) -> Result<u32, DatabaseError> {
 }
 
 /// Get our tip from the database
-pub fn db_tip(db_path: &PathBuf) -> Result<BlockchainTip, DatabaseError> {
+pub fn db_tip(db_path: &Path) -> Result<BlockchainTip, DatabaseError> {
     let mut rows = db_query(
         db_path,
         "SELECT blockheight, blockhash FROM tip",
@@ -139,7 +139,7 @@ pub fn db_tip(db_path: &PathBuf) -> Result<BlockchainTip, DatabaseError> {
 }
 
 /// Get the network this DB was created on
-pub fn db_network(db_path: &PathBuf) -> Result<Network, DatabaseError> {
+pub fn db_network(db_path: &Path) -> Result<Network, DatabaseError> {
     let mut rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
         Ok(Network::from_str(&row.get::<_, String>(0)?)
             .expect("We only evert insert from to_string"))
@@ -150,7 +150,7 @@ pub fn db_network(db_path: &PathBuf) -> Result<Network, DatabaseError> {
 }
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
-pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
+pub fn db_wallet(db_path: &Path) -> Result<DbWallet, DatabaseError> {
     let mut rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
         let id = row.get(0)?;
         let timestamp = row.get(1)?;
@@ -263,7 +263,7 @@ impl TryFrom<&Row<'_>> for DbVault {
 }
 
 /// Get all the vaults we know about from the db, sorted by last update
-pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
+pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(
         db_path,
         "SELECT * FROM vaults ORDER BY updated_at DESC",
@@ -274,7 +274,7 @@ pub fn db_vaults(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
 
 /// Get all the vaults where status is *at least* `status`
 pub fn db_vaults_min_status(
-    db_path: &PathBuf,
+    db_path: &Path,
     status: VaultStatus,
 ) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(
@@ -293,7 +293,7 @@ pub fn db_vaults_dbtx(db_tx: &Transaction) -> Result<Vec<DbVault>, DatabaseError
 }
 
 /// Get the vaults that didn't move onchain yet from the DB.
-pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
+pub fn db_deposits(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query(
         db_path,
         "SELECT * FROM vaults WHERE status <= (?1) ORDER BY updated_at DESC",
@@ -304,7 +304,7 @@ pub fn db_deposits(db_path: &PathBuf) -> Result<Vec<DbVault>, DatabaseError> {
 
 /// Get a vault from a deposit outpoint. Returns None if we never heard of such a vault.
 pub fn db_vault_by_deposit(
-    db_path: &PathBuf,
+    db_path: &Path,
     deposit: &OutPoint,
 ) -> Result<Option<DbVault>, DatabaseError> {
     db_query(
@@ -318,7 +318,7 @@ pub fn db_vault_by_deposit(
 
 /// Get the vaults that were unvaulted but for which the Unvault was not spent yet from the DB.
 pub fn db_unvaulted_vaults(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<Vec<(DbVault, UnvaultTransaction)>, DatabaseError> {
     db_query(
         db_path,
@@ -343,7 +343,7 @@ pub fn db_unvaulted_vaults(
 /// Get the vaults that are in the process of being spent, along with the respective Unvault
 /// transaction.
 pub fn db_spending_vaults(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<Vec<(DbVault, UnvaultTransaction)>, DatabaseError> {
     db_query(
         db_path,
@@ -368,7 +368,7 @@ pub fn db_spending_vaults(
 /// Get the vaults that are in the process of being canceled, along with the respective Cancel
 /// transaction.
 pub fn db_canceling_vaults(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<Vec<(DbVault, CancelTransaction)>, DatabaseError> {
     db_query(
         db_path,
@@ -393,7 +393,7 @@ pub fn db_canceling_vaults(
 /// Get the vaults that are in the process of being Emergency Vaulted, along with the respective
 /// Emergency transaction.
 pub fn db_emering_vaults(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<Vec<(DbVault, EmergencyTransaction)>, DatabaseError> {
     db_query(
         db_path,
@@ -418,7 +418,7 @@ pub fn db_emering_vaults(
 /// Get the Unvaulted vaults that are in the process of being Emergency Vaulted, along with the
 /// respective UnvaultEmergency transaction.
 pub fn db_unemering_vaults(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<Vec<(DbVault, UnvaultEmergencyTransaction)>, DatabaseError> {
     db_query(
         db_path,
@@ -503,7 +503,7 @@ impl TryFrom<&Row<'_>> for DbTransaction {
 
 /// Get the Unvault transaction for this vault
 pub fn db_unvault_transaction(
-    db_path: &PathBuf,
+    db_path: &Path,
     vault_id: u32,
 ) -> Result<(u32, UnvaultTransaction), DatabaseError> {
     let mut rows: Vec<DbTransaction> = db_query(
@@ -542,7 +542,7 @@ pub fn db_unvault_dbtx(
 /// Get the Unvault transaction corresponding to this vault from the database.
 /// Note that unconfirmed vaults don't have the Unvault transaction stored in database.
 pub fn db_unvault_from_deposit(
-    db_path: &PathBuf,
+    db_path: &Path,
     deposit: &OutPoint,
 ) -> Result<Option<UnvaultTransaction>, DatabaseError> {
     let db_unvault: Option<DbTransaction> = db_query(
@@ -558,7 +558,7 @@ pub fn db_unvault_from_deposit(
 
 /// Get the Cancel transaction corresponding to this vault
 pub fn db_cancel_transaction(
-    db_path: &PathBuf,
+    db_path: &Path,
     vault_id: u32,
 ) -> Result<Option<(u32, CancelTransaction)>, DatabaseError> {
     let mut rows: Vec<DbTransaction> = db_query(
@@ -595,7 +595,7 @@ pub fn db_cancel_dbtx(
 /// Get the Emergency transaction corresponding to this vault.
 /// Will error if there are none, ie if called by a non-stakeholder!
 pub fn db_emer_transaction(
-    db_path: &PathBuf,
+    db_path: &Path,
     vault_id: u32,
 ) -> Result<Option<(u32, EmergencyTransaction)>, DatabaseError> {
     db_query(
@@ -617,7 +617,7 @@ pub fn db_emer_transaction(
 /// Get the Unvault Emergency transaction corresponding to this vault
 /// Will error if there are none, ie if called by a non-stakeholder!
 pub fn db_unvault_emer_transaction(
-    db_path: &PathBuf,
+    db_path: &Path,
     vault_id: u32,
 ) -> Result<Option<(u32, UnvaultEmergencyTransaction)>, DatabaseError> {
     db_query(
@@ -638,7 +638,7 @@ pub fn db_unvault_emer_transaction(
 
 /// Get a vault and its Unvault transaction out of an Unvault txid
 pub fn db_vault_by_unvault_txid(
-    db_path: &PathBuf,
+    db_path: &Path,
     txid: &Txid,
 ) -> Result<Option<(DbVault, DbTransaction)>, DatabaseError> {
     Ok(db_query(
@@ -673,7 +673,7 @@ pub fn db_vault_by_unvault_txid(
 /// Get all the presigned transactions for which we don't have all the sigs yet.
 /// Note that it will return the emergency transactions (if unsigned) only if we
 /// are a stakeholder.
-pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransaction>, DatabaseError> {
+pub fn db_transactions_sig_missing(db_path: &Path) -> Result<Vec<DbTransaction>, DatabaseError> {
     db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE fullysigned = 0",
@@ -684,7 +684,7 @@ pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransactio
 
 /// Get all the Emergency transactions of the "secured" (Emergency signed) vaults that were not yet
 /// Unvaulted.
-pub fn db_signed_emer_txs(db_path: &PathBuf) -> Result<Vec<EmergencyTransaction>, DatabaseError> {
+pub fn db_signed_emer_txs(db_path: &Path) -> Result<Vec<EmergencyTransaction>, DatabaseError> {
     db_query(
         db_path,
         "SELECT ptx.* FROM presigned_transactions as ptx INNER JOIN vaults as v ON ptx.vault_id = v.id \
@@ -705,7 +705,7 @@ pub fn db_signed_emer_txs(db_path: &PathBuf) -> Result<Vec<EmergencyTransaction>
 
 /// Get all the UnvaultEmergency transactions of the Unvaulted vaults that were not yet Spent
 pub fn db_signed_unemer_txs(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<Vec<UnvaultEmergencyTransaction>, DatabaseError> {
     db_query(
         db_path,
@@ -755,7 +755,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
 
 /// List all Spend transactions in DB along with the vault they are spending
 pub fn db_list_spends(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<HashMap<Txid, (DbSpendTransaction, Vec<OutPoint>)>, DatabaseError> {
     // SpendTransaction can't be Hash for the moment
     let mut res: HashMap<Txid, (DbSpendTransaction, Vec<OutPoint>)> = HashMap::with_capacity(128);
@@ -792,7 +792,7 @@ pub fn db_list_spends(
 }
 
 pub fn db_broadcastable_spend_transactions(
-    db_path: &PathBuf,
+    db_path: &Path,
 ) -> Result<Vec<DbSpendTransaction>, DatabaseError> {
     db_query(
         db_path,
@@ -804,7 +804,7 @@ pub fn db_broadcastable_spend_transactions(
 
 /// Get a single Spend transaction from DB by its txid
 pub fn db_spend_transaction(
-    db_path: &PathBuf,
+    db_path: &Path,
     spend_txid: &Txid,
 ) -> Result<Option<DbSpendTransaction>, DatabaseError> {
     Ok(db_query(
@@ -820,7 +820,7 @@ pub fn db_spend_transaction(
 /// can't have two Unvault outputs in a single Unvault transaction therefore it's fine to use the
 /// txid for identifying the Unvault output.
 pub fn db_vaults_from_spend(
-    db_path: &PathBuf,
+    db_path: &Path,
     spend_txid: &Txid,
 ) -> Result<HashMap<Txid, DbVault>, DatabaseError> {
     let mut db_vaults = HashMap::with_capacity(128);

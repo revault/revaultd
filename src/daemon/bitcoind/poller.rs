@@ -37,7 +37,7 @@ use revault_tx::{
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, RwLock,
@@ -85,7 +85,7 @@ fn maybe_broadcast_spend_transactions(
 }
 
 fn maybe_confirm_spend(
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     db_vault: &DbVault,
     spend_txid: &Txid,
@@ -172,7 +172,7 @@ fn mark_confirmed_spends(
 // Unvault is dropped from the mempool. This groups the code for doing so.
 fn mark_unvaulted(
     revaultd: &Arc<RwLock<RevaultD>>,
-    db_path: &PathBuf,
+    db_path: &Path,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
     db_vault: &DbVault,
 ) -> Result<(), BitcoindError> {
@@ -206,7 +206,7 @@ fn mark_unvaulted(
 }
 
 fn maybe_confirm_cancel(
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     db_vault: &DbVault,
     cancel_txid: &Txid,
@@ -262,7 +262,7 @@ fn mark_confirmed_cancels(
 }
 
 fn maybe_confirm_unemer(
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     db_vault: &DbVault,
     unemer_txid: &Txid,
@@ -324,7 +324,7 @@ fn mark_confirmed_unemers(
 }
 
 fn maybe_confirm_emer(
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     db_vault: &DbVault,
     emer_txid: &Txid,
@@ -932,7 +932,7 @@ fn unvault_spender(
 // Update the state of a vault whose Unvault txo was spent.
 fn handle_spent_unvault(
     revaultd: &mut Arc<RwLock<RevaultD>>,
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
     previous_tip: &BlockchainTip,
@@ -1035,7 +1035,7 @@ fn handle_spent_unvault(
 // Update our state when a new UTXO appears that is paying to the Deposit descriptor
 fn handle_new_deposit(
     revaultd: &mut Arc<RwLock<RevaultD>>,
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     outpoint: OutPoint,
@@ -1118,7 +1118,7 @@ fn handle_new_deposit(
 // Update our state when we notice a deeply-enough confirmed deposit UTXO
 fn handle_confirmed_deposit(
     revaultd: &mut Arc<RwLock<RevaultD>>,
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     outpoint: OutPoint,
@@ -1177,7 +1177,7 @@ fn handle_confirmed_deposit(
 // to figure out where it went.
 fn handle_spent_deposit(
     revaultd: &mut Arc<RwLock<RevaultD>>,
-    db_path: &PathBuf,
+    db_path: &Path,
     bitcoind: &BitcoinD,
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,

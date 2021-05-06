@@ -1,8 +1,10 @@
 import bip32
+import bitcoin
 import logging
 import os
 import random
 
+from bitcoin.wallet import CBitcoinSecret
 from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
 from test_framework import serializations
@@ -46,6 +48,7 @@ class RevaultNetwork:
         self.man_wallets = []
 
         self.csv = None
+        self.emergency_address = None
 
     def deploy(self, n_stakeholders, n_managers, n_stkmanagers=0, csv=None):
         """
@@ -83,6 +86,25 @@ class RevaultNetwork:
         (deposit_desc, unvault_desc, cpfp_desc) = get_descriptors(
             stks_xpubs, cosigs_keys, mans_xpubs, len(mans_xpubs), cpfp_xpubs, csv
         )
+        # Generate a dummy 2of2 to be used as our Emergency address
+        bitcoin.SelectParams("regtest")
+        pka = str(CBitcoinSecret.from_secret_bytes(os.urandom(32)))
+        pkb = str(CBitcoinSecret.from_secret_bytes(os.urandom(32)))
+        desc = f"wsh(multi(2,{pka},{pkb}))"
+        checksum = self.bitcoind.rpc.getdescriptorinfo(desc)["checksum"]
+        desc = f"{desc}#{checksum}"
+        self.emergency_address = self.bitcoind.rpc.deriveaddresses(desc)[0]
+        desc_import = self.bitcoind.rpc.importdescriptors(
+            [
+                {
+                    "desc": desc,
+                    "timestamp": "now",
+                    "label": "revault-emergency",
+                }
+            ]
+        )
+        if not desc_import[0]["success"]:
+            raise Exception(desc_import)
 
         # FIXME: this is getting dirty.. We should re-centralize information
         # about each participant in specified data structures
@@ -193,6 +215,7 @@ class RevaultNetwork:
                         "noise_key": os.urandom(32),
                     }
                 ],
+                "emergency_address": self.emergency_address,
             }
 
             revaultd = StakeholderRevaultd(
@@ -236,6 +259,7 @@ class RevaultNetwork:
                         "noise_key": os.urandom(32),
                     }
                 ],
+                "emergency_address": self.emergency_address,
             }
             man_config = {
                 "keychain": stkman_man_keychains[i],
@@ -402,6 +426,14 @@ class RevaultNetwork:
         for w in self.participants():
             w.wait_for_secured_vaults([deposit])
 
+    def secure_vaults(self, vaults):
+        """Secure all these vaults, concurrently."""
+        sec_jobs = []
+        for v in vaults:
+            sec_jobs.append(self.executor.submit(self.secure_vault, v))
+        for j in sec_jobs:
+            j.result(TIMEOUT)
+
     def activate_vault(self, vault):
         """Make all stakeholders share signatures for the unvault tx"""
         deposit = f"{vault['txid']}:{vault['vout']}"
@@ -419,11 +451,7 @@ class RevaultNetwork:
         """Secure then activate all these vaults, concurrently."""
         # TODO: i'm sure we don't even need to wait for all sec jobs to be complete
         # before starting the activate_vault futures, given a high enough TIMEOUT.
-        sec_jobs = []
-        for v in vaults:
-            sec_jobs.append(self.executor.submit(self.secure_vault, v))
-        for j in sec_jobs:
-            j.result(TIMEOUT)
+        self.secure_vaults(vaults)
 
         act_jobs = []
         for v in vaults:

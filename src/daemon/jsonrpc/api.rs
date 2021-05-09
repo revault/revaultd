@@ -6,9 +6,8 @@ use crate::{
     control::{
         announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
         check_spend_signatures, check_unvault_signatures, fetch_cosigs_signatures,
-        finalized_emer_txs, listvaults_from_db, onchain_txs_list_from_outpoints,
-        presigned_txs_list_from_outpoints, share_rev_signatures, share_unvault_signatures,
-        ListSpendEntry, ListSpendStatus, RpcUtils,
+        finalized_emer_txs, listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
+        share_unvault_signatures, vaults_from_deposits, ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -19,7 +18,7 @@ use crate::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
             db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
-            db_vault_by_unvault_txid, db_vaults_from_spend,
+            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status,
         },
     },
     jsonrpc::UserRole,
@@ -757,10 +756,17 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let vaults =
-            presigned_txs_list_from_outpoints(&meta.rpc_utils.revaultd.read().unwrap(), outpoints)
-                .map_err(|e| internal_error!(e))?
-                .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let db_path = revaultd.db_file();
+
+        // If they didn't provide us with a list of outpoints, catch'em all!
+        let db_vaults = if let Some(outpoints) = outpoints {
+            vaults_from_deposits(&db_path, &outpoints, &[VaultStatus::Unconfirmed])
+                .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?
+        } else {
+            db_vaults_min_status(&db_path, VaultStatus::Funded).map_err(|e| internal_error!(e))?
+        };
+        let vaults = presigned_txs(&revaultd, db_vaults).map_err(|e| internal_error!(e))?;
 
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
@@ -783,13 +789,23 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let vaults = onchain_txs_list_from_outpoints(
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let db_path = revaultd.db_file();
+
+        // If they didn't provide us with a list of outpoints, catch'em all!
+        let db_vaults = if let Some(outpoints) = outpoints {
+            // We accept any status
+            vaults_from_deposits(&db_path, &outpoints, &[])
+                .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?
+        } else {
+            db_vaults(&db_path).map_err(|e| internal_error!(e))?
+        };
+        let vaults = onchain_txs(
             &meta.rpc_utils.revaultd.read().unwrap(),
             &meta.rpc_utils.bitcoind_tx,
-            outpoints,
+            db_vaults,
         )
-        .map_err(|e| internal_error!(e))?
-        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+        .map_err(|e| internal_error!(e))?;
 
         fn wallet_tx_to_json(tx: WalletTransaction) -> serde_json::Value {
             json!({

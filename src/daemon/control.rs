@@ -8,7 +8,6 @@ use crate::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
             db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
-            db_vaults_min_status,
         },
         schema::DbVault,
         DatabaseError,
@@ -136,8 +135,7 @@ pub enum ListSpendStatus {
 /// Error specific to calls that originated from the RPC server.
 #[derive(Debug)]
 pub enum RpcControlError {
-    // .0 is current status, .1 is required status
-    InvalidStatus(VaultStatus, VaultStatus),
+    InvalidStatus(VaultStatus, OutPoint),
     UnknownOutPoint(OutPoint),
     Database(DatabaseError),
     Tx(revault_tx::Error),
@@ -179,10 +177,10 @@ impl fmt::Display for RpcControlError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::UnknownOutPoint(ref o) => write!(f, "No vault at '{}'", o),
-            Self::InvalidStatus(current, required) => write!(
+            Self::InvalidStatus(status, outpoint) => write!(
                 f,
-                "Invalid vault status: '{}'. Need '{}'",
-                current, required
+                "Invalid vault status '{}' for deposit outpoint '{}'",
+                status, outpoint
             ),
             Self::Database(ref e) => write!(f, "Database error: '{}'", e),
             Self::Tx(ref e) => write!(f, "Transaction handling error: '{}'", e),
@@ -263,37 +261,40 @@ pub fn listvaults_from_db(
     })
 }
 
-/// List all the presigned transactions from these confirmed vaults.
-pub fn presigned_txs_list_from_outpoints(
-    revaultd: &RevaultD,
-    outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultPresignedTransactions>, RpcControlError>, RpcControlError> {
-    let db_path = &revaultd.db_file();
+/// Get all vaults from a list of deposit outpoints, if they are not in a given status.
+///
+/// # Errors
+/// If an outpoint does not refer to a known deposit, or if the status of the vault is
+/// part of `invalid_statuses`.
+pub fn vaults_from_deposits(
+    db_path: &std::path::PathBuf,
+    outpoints: &[OutPoint],
+    invalid_statuses: &[VaultStatus],
+) -> Result<Vec<DbVault>, RpcControlError> {
+    let mut vaults = Vec::with_capacity(outpoints.len());
 
-    // If they didn't provide us with a list of outpoints, catch'em all!
-    let db_vaults = if let Some(outpoints) = outpoints {
-        // FIXME: we can probably make this more efficient with some SQL magic
-        let mut vaults = Vec::with_capacity(outpoints.len());
-        for outpoint in outpoints.iter() {
-            if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
-                // If it's unconfirmed, the presigned transactions are not in db!
-                match vault.status {
-                    VaultStatus::Unconfirmed => {
-                        return Ok(Err(RpcControlError::InvalidStatus(
-                            vault.status,
-                            VaultStatus::Funded,
-                        )));
-                    }
-                    _ => vaults.push(vault),
-                }
-            } else {
-                return Ok(Err(RpcControlError::UnknownOutPoint(*outpoint)));
+    for outpoint in outpoints.iter() {
+        // Note: being smarter with SQL queries implies enabling the 'table' feature of rusqlite
+        // with a shit ton of dependencies.
+        if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
+            if invalid_statuses.contains(&vault.status) {
+                return Err(RpcControlError::InvalidStatus(vault.status, *outpoint));
             }
+            vaults.push(vault);
+        } else {
+            return Err(RpcControlError::UnknownOutPoint(*outpoint));
         }
-        vaults
-    } else {
-        db_vaults_min_status(db_path, VaultStatus::Funded)?
-    };
+    }
+
+    Ok(vaults)
+}
+
+/// List all the presigned transactions from these confirmed vaults.
+pub fn presigned_txs(
+    revaultd: &RevaultD,
+    db_vaults: Vec<DbVault>,
+) -> Result<Vec<VaultPresignedTransactions>, RpcControlError> {
+    let db_path = &revaultd.db_file();
 
     // For each presigned transaction, append it as well as its extracted version if it's final.
     let mut tx_list = Vec::with_capacity(db_vaults.len());
@@ -363,33 +364,16 @@ pub fn presigned_txs_list_from_outpoints(
         });
     }
 
-    Ok(Ok(tx_list))
+    Ok(tx_list)
 }
 
 /// List all the onchain transactions from these vaults.
-pub fn onchain_txs_list_from_outpoints(
+pub fn onchain_txs(
     revaultd: &RevaultD,
     bitcoind_tx: &Sender<BitcoindMessageOut>,
-    outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultOnchainTransactions>, RpcControlError>, RpcControlError> {
+    db_vaults: Vec<DbVault>,
+) -> Result<Vec<VaultOnchainTransactions>, RpcControlError> {
     let db_path = &revaultd.db_file();
-
-    // If they didn't provide us with a list of outpoints, catch'em all!
-    let db_vaults = if let Some(outpoints) = outpoints {
-        // FIXME: we can probably make this more efficient with some SQL magic
-        let mut vaults = Vec::with_capacity(outpoints.len());
-        for outpoint in outpoints.iter() {
-            if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
-                // Note that we accept any status
-                vaults.push(vault);
-            } else {
-                return Ok(Err(RpcControlError::UnknownOutPoint(*outpoint)));
-            }
-        }
-        vaults
-    } else {
-        db_vaults(db_path)?
-    };
 
     let mut tx_list = Vec::with_capacity(db_vaults.len());
     for db_vault in db_vaults {
@@ -450,7 +434,7 @@ pub fn onchain_txs_list_from_outpoints(
         });
     }
 
-    Ok(Ok(tx_list))
+    Ok(tx_list)
 }
 
 /// Get all the finalized Emergency transactions for each vault, depending on wether the Unvault

@@ -221,7 +221,7 @@ pub struct DbSpendInput {
 }
 
 /// A row in the "spend_transactions" table
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct DbSpendTransaction {
     pub id: i64,
     pub psbt: SpendTransaction,

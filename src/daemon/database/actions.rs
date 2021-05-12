@@ -732,6 +732,7 @@ pub fn db_mark_rebroadcastable_spend(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::database::schema::DbSpendTransaction;
     use crate::revaultd::RevaultD;
     use common::config::Config;
     use revault_tx::{
@@ -1241,7 +1242,14 @@ mod test {
         let spend_txid = spend_tx.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid),
-            Some(&(spend_tx.clone(), vec![outpoint]))
+            Some(&(
+                DbSpendTransaction {
+                    id: 1,
+                    psbt: spend_tx.clone(),
+                    broadcasted: None
+                },
+                vec![outpoint]
+            ))
         );
 
         // We can update it, eg with a Spend with more sigs
@@ -1250,12 +1258,19 @@ mod test {
         let spend_txid = spend_tx.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid),
-            Some(&(spend_tx.clone(), vec![outpoint]))
+            Some(&(
+                DbSpendTransaction {
+                    id: 1,
+                    psbt: spend_tx.clone(),
+                    broadcasted: None
+                },
+                vec![outpoint]
+            ))
         );
 
         // And delete it
         db_delete_spend(&db_path, &spend_tx.txid()).unwrap();
-        assert_eq!(db_list_spends(&db_path).unwrap().get(&spend_txid), None,);
+        assert!(db_list_spends(&db_path).unwrap().get(&spend_txid).is_none());
 
         // And this works with multiple unvaults too
 
@@ -1316,12 +1331,26 @@ mod test {
         let spend_txid = spend_tx.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid),
-            Some(&(spend_tx.clone(), vec![outpoint]))
+            Some(&(
+                DbSpendTransaction {
+                    id: 1,
+                    psbt: spend_tx.clone(),
+                    broadcasted: None
+                },
+                vec![outpoint]
+            ))
         );
         let spend_txid_b = spend_tx_b.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid_b),
-            Some(&(spend_tx_b.clone(), vec![outpoint, outpoint_b]))
+            Some(&(
+                DbSpendTransaction {
+                    id: 2,
+                    psbt: spend_tx_b.clone(),
+                    broadcasted: None
+                },
+                vec![outpoint, outpoint_b]
+            ))
         );
 
         let spend_tx_b = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAXHqOcTAJnPyXEF1cxFATe4S6yHLGZm+s0aj9mUTtKgVAAAAAACHGwAAAoAyAAAAAAAAIgAgAYLPNnsrzQaSg7aZR0JUgXHtO6bnZRehvxqxyzW5m5ygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4iAgKkxJmDMXYy1OdMI/x8PV9j3+1kQ0gpzuD+KqSeYfjzTkgwRQIhAMwdbbLXqH49pRfZR6PtSzNg/MB+DuVo1xs7rPTZQ12RAiBDSHEGyQaE1K+wknL2IFnhWXKn+/YSfSMtMg9u4zepNwEiAgO2p8sldVsHhhEimy+ZW0E1L3vX5d9mqQ0d01XVdx3DWUcwRAIgRhhHxuXx5X2eniy4tMP4wP2xoBD+XZlxMQiF9HoXIDYCIEfKdXOOILXSFKeOZ2v6nomllEQOyjuBUk+0LhK7+55mASICAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VSDBFAiEAzSxWF19m2/1Sh92jahJ/A6pMvmCa95USVSXzPEOBn3ACIHzYQdjjDJIhZ5z1xkduaEtjvYtLDIauoMA00xO6fok3AQEDBAEAAAABBaohAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHZHapFLyK7KRbyUNl1FZeArhRjSAsCSNfiKxrdqkUn6VDRhuPgSKDvf3VMS3GKSA/gMOIrGyTUodnUiECpMSZgzF2MtTnTCP8fD1fY9/tZENIKc7g/iqknmH4804hA7anyyV1WweGESKbL5lbQTUve9fl32apDR3TVdV3HcNZUq8ChxuyaAABASUhAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHAAA=").unwrap();

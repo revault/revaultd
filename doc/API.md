@@ -338,8 +338,20 @@ disregarded for forward compatibility.
 
 #### Request
 
-| Field          | Type   | Description                                         |
-| -------------- | ------ | --------------------------------------------------- |
+| Field          | Type   | Description                                                          |
+| -------------- | ------ | -------------------------------------------------------------------- |
+| `status`       | array  | Array of [Spend status](#spend_status) |
+
+##### Spend status
+
+Please note that this status refers only to the Spend transaction, with regarding to the signatures and the broadcast status.
+You'll have to manually fetch the vaults statuses if you want to know, for example, if the vault was canceled or not.
+
+| Value           | Description                                                                                                                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `non_final`     | The Spend transaction is not final, we are awaiting signatures either from managers or cosigners |
+| `pending`       | The transaction is not broadcasted to the Bitcoin network                                        |
+| `broadcasted`   | The Spend transaction has been broadcasted                                                       |
 
 #### Response
 

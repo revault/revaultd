@@ -8,7 +8,7 @@ use crate::{
         check_revocation_signatures, check_spend_signatures, check_unvault_signatures,
         fetch_cosigs_signatures, listvaults_from_db, onchain_txs_list_from_outpoints,
         presigned_txs_list_from_outpoints, share_rev_signatures, share_unvault_signatures,
-        ListSpendEntry, RpcUtils,
+        ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -187,7 +187,11 @@ pub trait RpcApi {
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     #[rpc(meta, name = "listspendtxs")]
-    fn listspendtxs(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+    fn listspendtxs(
+        &self,
+        meta: Self::Metadata,
+        status: Option<Vec<ListSpendStatus>>,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 
     #[rpc(meta, name = "setspendtx")]
     fn setspendtx(
@@ -1021,15 +1025,35 @@ impl RpcApi for RpcImpl {
         Ok(json!({}))
     }
 
-    fn listspendtxs(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+    fn listspendtxs(
+        &self,
+        meta: Self::Metadata,
+        status: Option<Vec<ListSpendStatus>>,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
         manager_only!(meta);
 
-        let db_path = meta.rpc_utils.revaultd.read().unwrap().db_file();
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let db_path = revaultd.db_file();
+
         let spend_tx_map = db_list_spends(&db_path).map_err(|e| internal_error!(e))?;
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
-        for (_, (psbt, deposit_outpoints)) in spend_tx_map {
+        for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
+            // Filter by status
+            if let Some(s) = &status {
+                let status = if let Some(true) = db_spend.broadcasted {
+                    ListSpendStatus::Broadcasted
+                } else if let Some(false) = db_spend.broadcasted {
+                    ListSpendStatus::Pending
+                } else {
+                    ListSpendStatus::NonFinal
+                };
+
+                if !s.contains(&status) {
+                    continue;
+                }
+            }
             listspend_entries.push(ListSpendEntry {
-                psbt,
+                psbt: db_spend.psbt,
                 deposit_outpoints,
             });
         }

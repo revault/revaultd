@@ -14,10 +14,9 @@ class Revaultd(TailableProc):
     def __init__(
         self,
         datadir,
-        stks,
-        cosigs,
-        mans,
-        csv,
+        deposit_desc,
+        unvault_desc,
+        cpfp_desc,
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
@@ -26,7 +25,6 @@ class Revaultd(TailableProc):
         man_config=None,
     ):
         assert stk_config is not None or man_config is not None
-        assert len(stks) == len(cosigs)
         TailableProc.__init__(self, datadir, verbose=VERBOSE)
 
         self.prefix = os.path.split(datadir)[-1]
@@ -50,7 +48,6 @@ class Revaultd(TailableProc):
 
         bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest", ".cookie")
         with open(self.conf_file, "w") as f:
-            f.write(f"unvault_csv = {csv}\n")
             f.write(f"data_dir = '{datadir}'\n")
             f.write("daemon = false\n")
             f.write(f"log_level = '{LOG_LEVEL}'\n")
@@ -59,20 +56,10 @@ class Revaultd(TailableProc):
             f.write(f'coordinator_noise_key = "{coordinator_noise_key}"\n')
             f.write("coordinator_poll_seconds = 2\n")
 
-            f.write("stakeholders_xpubs = [")
-            for stk in stks:
-                f.write(f'"{stk.get_xpub()}", ')
-            f.write("]\n")
-
-            f.write("managers_xpubs = [")
-            for man in mans:
-                f.write(f'"{man.get_xpub()}", ')
-            f.write("]\n")
-
-            f.write("cosigners_keys = [")
-            for cosig in cosigs:
-                f.write(f'"{cosig.get_static_key().hex()}", ')
-            f.write("]\n")
+            f.write("[scripts_config]\n")
+            f.write(f'deposit_descriptor = "{deposit_desc}"\n')
+            f.write(f'unvault_descriptor = "{unvault_desc}"\n')
+            f.write(f'cpfp_descriptor = "{cpfp_desc}"\n')
 
             f.write("[bitcoind_config]\n")
             f.write('network = "regtest"\n')
@@ -173,10 +160,9 @@ class ManagerRevaultd(Revaultd):
     def __init__(
         self,
         datadir,
-        stks,
-        cosigs,
-        mans,
-        csv,
+        deposit_desc,
+        unvault_desc,
+        cpfp_desc,
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
@@ -189,10 +175,9 @@ class ManagerRevaultd(Revaultd):
         """
         super(ManagerRevaultd, self).__init__(
             datadir,
-            stks,
-            cosigs,
-            mans,
-            csv,
+            deposit_desc,
+            unvault_desc,
+            cpfp_desc,
             noise_priv,
             coordinator_noise_key,
             coordinator_port,
@@ -206,10 +191,9 @@ class StakeholderRevaultd(Revaultd):
     def __init__(
         self,
         datadir,
-        stks,
-        cosigs,
-        mans,
-        csv,
+        deposit_desc,
+        unvault_desc,
+        cpfp_desc,
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
@@ -222,10 +206,9 @@ class StakeholderRevaultd(Revaultd):
         """
         super(StakeholderRevaultd, self).__init__(
             datadir,
-            stks,
-            cosigs,
-            mans,
-            csv,
+            deposit_desc,
+            unvault_desc,
+            cpfp_desc,
             noise_priv,
             coordinator_noise_key,
             coordinator_port,
@@ -240,10 +223,9 @@ class StkManRevaultd(Revaultd):
     def __init__(
         self,
         datadir,
-        stks,
-        cosigs,
-        mans,
-        csv,
+        deposit_desc,
+        unvault_desc,
+        cpfp_desc,
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
@@ -254,10 +236,9 @@ class StkManRevaultd(Revaultd):
         """A revaultd instance that is both stakeholder and manager."""
         super(StkManRevaultd, self).__init__(
             datadir,
-            stks,
-            cosigs,
-            mans,
-            csv,
+            deposit_desc,
+            unvault_desc,
+            cpfp_desc,
             noise_priv,
             coordinator_noise_key,
             coordinator_port,

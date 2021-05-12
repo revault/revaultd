@@ -4,6 +4,7 @@ use revault_tx::{
         util::bip32::{ChildNumber, ExtendedPubKey},
         Amount, OutPoint, Txid,
     },
+    scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
     transactions::{
         CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
@@ -32,6 +33,7 @@ CREATE TABLE wallets (
     timestamp INTEGER NOT NULL,
     deposit_descriptor TEXT NOT NULL,
     unvault_descriptor TEXT NOT NULL,
+    cpfp_descriptor TEXT NOT NULL,
     our_manager_xpub TEXT,
     our_stakeholder_xpub TEXT,
     deposit_derivation_index INTEGER NOT NULL
@@ -119,8 +121,9 @@ CREATE INDEX vault_transactions ON presigned_transactions (vault_id);
 pub struct DbWallet {
     pub id: u32, // FIXME: should be an i64
     pub timestamp: u32,
-    pub deposit_descriptor: String,
-    pub unvault_descriptor: String,
+    pub deposit_descriptor: DepositDescriptor,
+    pub unvault_descriptor: UnvaultDescriptor,
+    pub cpfp_descriptor: CpfpDescriptor,
     pub our_man_xpub: Option<ExtendedPubKey>,
     pub our_stk_xpub: Option<ExtendedPubKey>,
     pub deposit_derivation_index: ChildNumber,

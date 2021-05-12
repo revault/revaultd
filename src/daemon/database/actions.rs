@@ -11,7 +11,6 @@ use revault_tx::{
         secp256k1, util::bip32::ChildNumber, Amount, OutPoint, PublicKey as BitcoinPubKey, Txid,
     },
     miniscript::descriptor::DescriptorTrait,
-    scripts::{DepositDescriptor, UnvaultDescriptor},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -23,7 +22,6 @@ use std::{
     convert::TryInto,
     fs,
     path::PathBuf,
-    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -78,6 +76,7 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Computing time since epoch: {}", e.to_string())))?;
     let deposit_descriptor = revaultd.deposit_descriptor.to_string();
     let unvault_descriptor = revaultd.unvault_descriptor.to_string();
+    let cpfp_descriptor = revaultd.cpfp_descriptor.to_string();
     let our_man_xpub_str = revaultd.our_man_xpub.as_ref().map(|xpub| xpub.to_string());
     let our_stk_xpub_str = revaultd.our_stk_xpub.as_ref().map(|xpub| xpub.to_string());
     let raw_unused_index: u32 = revaultd.current_unused_index.into();
@@ -105,12 +104,13 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Inserting version: {}", e.to_string())))?;
         tx.execute(
             "INSERT INTO wallets (timestamp, deposit_descriptor, unvault_descriptor,\
-            our_manager_xpub, our_stakeholder_xpub, deposit_derivation_index) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            cpfp_descriptor, our_manager_xpub, our_stakeholder_xpub, deposit_derivation_index) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 timestamp,
                 deposit_descriptor,
                 unvault_descriptor,
+                cpfp_descriptor,
                 our_man_xpub_str,
                 our_stk_xpub_str,
                 raw_unused_index,
@@ -125,6 +125,7 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
 // Called on startup to check database integrity
 fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
     let db_path = revaultd.db_file();
+    let wallet = db_wallet(&db_path)?;
 
     // Check if their database is not from the future.
     // We'll eventually do migration here if version < VERSION, but be strict until then.
@@ -136,11 +137,32 @@ fn check_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         )));
     }
 
+    // Then that we are on the right network..
     let db_net = db_network(&db_path)?;
     if db_net != revaultd.bitcoind_config.network {
         return Err(DatabaseError(format!(
             "Invalid network. Database is on '{}' but config says '{}'.",
             db_net, revaultd.bitcoind_config.network
+        )));
+    }
+
+    // .. And managing the same Scripts!
+    if revaultd.deposit_descriptor != wallet.deposit_descriptor {
+        return Err(DatabaseError(format!(
+            "Database Deposit descriptor mismatch: '{}' (config) vs '{}' (database)",
+            revaultd.deposit_descriptor, wallet.deposit_descriptor
+        )));
+    }
+    if revaultd.unvault_descriptor != wallet.unvault_descriptor {
+        return Err(DatabaseError(format!(
+            "Database Unvault descriptor mismatch: '{}' (config) vs '{}' (database)",
+            revaultd.unvault_descriptor, wallet.unvault_descriptor
+        )));
+    }
+    if revaultd.cpfp_descriptor != wallet.cpfp_descriptor {
+        return Err(DatabaseError(format!(
+            "Database Cpfp descriptor mismatch: '{}' (config) vs '{}' (database)",
+            revaultd.cpfp_descriptor, wallet.cpfp_descriptor
         )));
     }
 
@@ -153,25 +175,6 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     let wallet = db_wallet(&db_path)?;
 
     revaultd.tip = Some(db_tip(&db_path)?);
-
-    //FIXME: Use the Abstract Miniscript policy to check the policies described in the
-    // config files are equivalent to the miniscript in the db.
-    revaultd.deposit_descriptor =
-        DepositDescriptor::from_str(&wallet.deposit_descriptor).map_err(|e| {
-            DatabaseError(format!(
-                "Interpreting database vault descriptor '{}': {}",
-                wallet.deposit_descriptor,
-                e.to_string()
-            ))
-        })?;
-    revaultd.unvault_descriptor =
-        UnvaultDescriptor::from_str(&wallet.unvault_descriptor).map_err(|e| {
-            DatabaseError(format!(
-                "Interpreting database unvault descriptor '{}': {}",
-                wallet.unvault_descriptor,
-                e.to_string()
-            ))
-        })?;
 
     revaultd.current_unused_index = wallet.deposit_derivation_index;
     // Of course, it's no good... Miniscript on bitcoind soon :tm:
@@ -192,8 +195,6 @@ fn state_from_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
         );
     });
     revaultd.wallet_id = Some(wallet.id);
-
-    // TODO: update vaults-that-are-not-in-deposit-state cache from the database
 
     Ok(())
 }

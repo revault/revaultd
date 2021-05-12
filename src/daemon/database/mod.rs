@@ -4,6 +4,7 @@ pub mod schema;
 
 use revault_tx::bitcoin::util::psbt::Error as PsbtError;
 
+// FIXME: make this an enum and have actual specific errors
 #[derive(PartialEq, Eq, Debug)]
 pub struct DatabaseError(pub String);
 

@@ -51,7 +51,7 @@ It's important to clarify how many managers and how many stakeholders you'll hav
 
 Revault supposes that every manager and every stakeholder has its own computer, but since we're just trying out things, we'll use a single computer in this tutorial. If you want to try out with multiple machines, please see the (below)[#Organizing the perfect Revault party] section.
 
-Each entity in the company will have a pair of BIP32 keys: generating them is the first step in the ceremony. The ceremony is not fully specified yet, but it will instruct managers and stakeholders on how to securily create and store the keys. Since we're on regtest anyway, we don't really care much about security in this specific example: just create the keys on bip32.org or, if you don't know how to do it, just use the ones provided in the [example config](contrib/config_regtest.toml).
+Each entity in the company will have a pair of BIP32 keys: generating them is the first step in the ceremony. The ceremony is not fully specified yet, but it will instruct managers and stakeholders on how to securely create and store the keys. Since we're on regtest anyway, we don't really care much about security in this specific example: just create the keys on bip32.org or, if you don't know how to do it, just use the ones provided in the [example config](contrib/config_regtest.toml).
 
 At this point your notes should contain:
 ```
@@ -65,6 +65,11 @@ We need docker to spin up the `coordinatord`'s Postgre database. You can avoid u
 
 ### Python (kinda optional)
 We use python to quickly generate a couple of Bitcoin keys. If you don't have Python on your computer it's fine, but you'll have to find a way to generate Bitcoin keys by yourself.
+
+Unless you are very unlucky (probability of `1**-127`), this should be fine:
+```
+dd if=/dev/urandom of=bitcoin_secret bs=32 count=1
+```
 
 ## Downloading the repositories
 Let's start by creating a dedicated folder - this way if you don't like Revault it will be easier to erase everything :D
@@ -88,6 +93,7 @@ You working directory should look like:
 ```
 
 ## Let's get started!
+
 ### 1. Spinning up Bitcoin Core
 In this tutorial we'll use the regtest network. We'll use a custom data directory inside the `revault_tutorial`.
 ```
@@ -233,6 +239,7 @@ Go back to the parent directory for the next step
 cd ..
 ```
 ### 4. Creating the revaultd configuration
+
 Cd into the project:
 ```
 cd revaultd
@@ -244,6 +251,47 @@ cargo build
 ```
 
 Now we need to setup `revaultd` three times, one for each entity.
+
+#### Generating the Miniscript descriptors
+All wallets are going to track the same coins, which are specified using the [output descriptors language](https://github.com/bitcoin/bitcoin/blob/master/doc/descriptors.md).
+
+Since we want all wallets to be using the same descriptors, we are going to generate them once and for all.
+For this purpose you can use the `mscompiler` tool:
+```
+cd contrib/tools/mscompiler
+cargo build
+```
+
+This small command line tool takes 6 parameters as input, allowing to tweak the configuration of the
+Revault setup at the chain level. These tweakable parameters are:
+- The xpubs of the stakeholders
+- The raw public keys of the cosigning servers (as many as stakeholders xpubs)
+- The xpubs of the managers, and the threshold of the multisig (eg you may have 3 xpubs and a
+  threshold of 2 in order to allow 2 managers to Spend while the third one is on vacation)
+- The xpubs of the managers' "CPFP wallet". This functionality isn't implemented yet so you can put
+  garbage for now (just use the xpub from the below example, for instance) but it will eventually
+  allow managers to speed up the confirmation of a Spend transaction during a high-fee period.
+- The value of the Unvault relative timelock. It specifies how much time do the stakeholders and all
+  their watchtowers have to Revault a spending attempt from the managers should they feel like it.
+
+Use the xpubs you previously generated, and make the other parameters vary as you'd like. Here is an
+example of usage:
+```
+cargo run --  '["xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp","xpub6FEZyiJxqwu7zkqqVGXVbGhcAj1L5imn55VVa4Mk5WE46xdAKgD4uSR9ems9EehAApZPVXFrxcLQ7zPqYywu1z4Cjhesyp7HeRSgSdUq1BB","xpub6CFH8m3bnUFXa6UB8KhTMTPDz3cNQ9wAsQ9fGM52WZ1jBenPtf1GED6fJoDmpEYQQkk3VUHFN5ZRDLV7SRgX4M8KMTpRTH9zGRzg5udqwwo","xpub6ETaaosT68a6mxPp1dRh1yeGjMZonsZMxA1SA95iqKWDcQUXxQPYFyottUR58E8qjjnAwPcEtYS9iejkERbnGuNqfF2wgToLcxzf97FHevs"]' '["02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2","03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c","026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779","030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"]' '["xpub6CFH8m3bnUFXvS78XZyCQ9mCbp7XmKXbS67YHGUS3NxHSLhAMCGHGaEPojcoYt5PYnocyuScAM5xuDzf4BqFQt3fhmKEaRgmVzDcAR46Byh","xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"]' 2 '["xpub6BhQvtXJmw6hi2ALFeWMi9m7G8rGterJnMTNRqUm29uvB6dVTELvnEs7hfxyN3JM48FR2oh4t8chsvw7bRRRukkyhqp9WZD4oB9UvxAMpqC","xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa"]' 18
+```
+
+It's going to output:
+```
+./target/debug/mscompiler '["xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp","xpub6FEZyiJxqwu7zkqqVGXVbGhcAj1L5imn55VVa4Mk5WE46xdAKgD4uSR9ems9EehAApZPVXFrxcLQ7zPqYywu1z4Cjhesyp7HeRSgSdUq1BB","xpub6CFH8m3bnUFXa6UB8KhTMTPDz3cNQ9wAsQ9fGM52WZ1jBenPtf1GED6fJoDmpEYQQkk3VUHFN5ZRDLV7SRgX4M8KMTpRTH9zGRzg5udqwwo","xpub6ETaaosT68a6mxPp1dRh1yeGjMZonsZMxA1SA95iqKWDcQUXxQPYFyottUR58E8qjjnAwPcEtYS9iejkERbnGuNqfF2wgToLcxzf97FHevs"]' '["02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2","03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c","026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779","030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3"]' '["xpub6CFH8m3bnUFXvS78XZyCQ9mCbp7XmKXbS67YHGUS3NxHSLhAMCGHGaEPojcoYt5PYnocyuScAM5xuDzf4BqFQt3fhmKEaRgmVzDcAR46Byh","xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ"]' 2 '["xpub6BhQvtXJmw6hi2ALFeWMi9m7G8rGterJnMTNRqUm29uvB6dVTELvnEs7hfxyN3JM48FR2oh4t8chsvw7bRRRukkyhqp9WZD4oB9UvxAMpqC","xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa"]' 18
+{
+  "cpfp_descriptor": "wsh(multi(1,xpub6BhQvtXJmw6hi2ALFeWMi9m7G8rGterJnMTNRqUm29uvB6dVTELvnEs7hfxyN3JM48FR2oh4t8chsvw7bRRRukkyhqp9WZD4oB9UvxAMpqC/*,xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa/*))#4s76hpqg",
+  "deposit_descriptor": "wsh(multi(4,xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp/*,xpub6FEZyiJxqwu7zkqqVGXVbGhcAj1L5imn55VVa4Mk5WE46xdAKgD4uSR9ems9EehAApZPVXFrxcLQ7zPqYywu1z4Cjhesyp7HeRSgSdUq1BB/*,xpub6CFH8m3bnUFXa6UB8KhTMTPDz3cNQ9wAsQ9fGM52WZ1jBenPtf1GED6fJoDmpEYQQkk3VUHFN5ZRDLV7SRgX4M8KMTpRTH9zGRzg5udqwwo/*,xpub6ETaaosT68a6mxPp1dRh1yeGjMZonsZMxA1SA95iqKWDcQUXxQPYFyottUR58E8qjjnAwPcEtYS9iejkERbnGuNqfF2wgToLcxzf97FHevs/*))#gu0vtd0k",
+  "unvault_descriptor": "wsh(andor(multi(2,xpub6CFH8m3bnUFXvS78XZyCQ9mCbp7XmKXbS67YHGUS3NxHSLhAMCGHGaEPojcoYt5PYnocyuScAM5xuDzf4BqFQt3fhmKEaRgmVzDcAR46Byh/*,xpub6ECZqYNQzHkveSWmsGh6XSL8wMGXRtoZ5hkbWXwRSVEyEsKADe34dbdnMob1ZjUpd4TD7no1isnnvpQq9DchFes5DnHJ7JupSntZsKr7VbQ/*),and_v(v:multi(4,02644cf9e2b78feb0a751e50502f530a4cbd0bbda3020779605391e71654dd66c2,03ced55d1208bd8c6b42b11e29baa577711cae831b3a1296607c5e5d3ed365f49c,026237f655f3bf45fd6b7aa00e91c2603d6155f1cc001e40f5e47662d965c4c779,030a3cbcfbfdf7122fe7fa830354c956ea6595f2dbde23286f03bc1ec0c1685ca3),older(18)),thresh(4,pkh(xpub6CFH8m3bnUFXWXxKVQjMXqMiQWYRhcTeZCW1QghmkNeGkPFwADfFNt9JMuW38MnYVSAV9eyqJ3A61kbsfC5PSCdkZWi7pD2L4jv6edaPxKp/*),a:pkh(xpub6FEZyiJxqwu7zkqqVGXVbGhcAj1L5imn55VVa4Mk5WE46xdAKgD4uSR9ems9EehAApZPVXFrxcLQ7zPqYywu1z4Cjhesyp7HeRSgSdUq1BB/*),a:pkh(xpub6CFH8m3bnUFXa6UB8KhTMTPDz3cNQ9wAsQ9fGM52WZ1jBenPtf1GED6fJoDmpEYQQkk3VUHFN5ZRDLV7SRgX4M8KMTpRTH9zGRzg5udqwwo/*),a:pkh(xpub6ETaaosT68a6mxPp1dRh1yeGjMZonsZMxA1SA95iqKWDcQUXxQPYFyottUR58E8qjjnAwPcEtYS9iejkERbnGuNqfF2wgToLcxzf97FHevs/*))))#rzut3gm7"
+}
+```
+
+Keep track of these `deposit_descriptor`, `unvault_descriptor` and `cpfp_descriptor`. We'll use them
+in a minute.
 
 #### Stakeholder 1
 Let's create a directory for storing revaultd data:
@@ -264,37 +312,10 @@ echo $PWD/stake_1_data
 ```
 and paste the result as the data dir.
 - Update the `coordinator_host` with `127.0.0.1:8383`, `coordinator_noise_key` with the key obtained in step 2
-- Update the `stakeholders_xpubs`: it will contain all the stakeholder xpubs created in the ceremony
-
-```
-stakeholders_xpubs = [
-    *first stakeholder xpub*,
-    *second stakeholder xpub*,
-]
-```
-Please make sure that the keys are in the right order, the first as first and the second as second. Not doing so could lead to tricky bugs.
-- Update the `managers_xpubs`: it will contain all the manager xpubs created in the ceremony:
-
-```
-managers_xpubs = [
-    *first manager xpub*,
-]
-```
-
-- Update the `cosigners_keys`: it will contain all the cosigner keys created in step 3
-
-```
-cosigners_keys = [
-    *first cosigner key*,
-    *second cosigner key*,
-]
-```
-Please make sure that the keys are in the right order, the first as first and the second as second. Not doing so could lead to tricky bugs.
-
+- Update the `scripts_config`: replace the `deposit_descriptor`, `unvault_descriptor` and
+  `cpfp_descriptor` with your own you generated with the `mscompiler` tool.
 - Update the `stakeholder_config`: update `xpub` to match the first stakeholder's xpub; leave the watchtowers section as it is, it's not used (yet!)
-
 - Remove the `manager_config`
-
 - Update the `bitcoind_config` `addr` to the address of your bitcoin RPC. In regtest it defaults to `127.0.0.1:18443`. The one contained in the regtest config is the correct one if you're using the regtest manager script, as outlined below
 - Update the `bitcoind_config` `cookie` file. Get the path of the cookie file by typing:
 ```
@@ -542,54 +563,11 @@ You should see something like:
 
 Do the same with `stake_2_cli` and `man_1_cli`, just to make sure everything works :)
 
-### 9. Checking if you fucked up
-
-Please run
-
-```
-stake_1_cli getdepositaddress
-```
-
-and then
-
-```
-stake_2_cli getdepositaddress
-```
-
-and then
-
-```
-man_1_cli getdepositaddress
-```
-
-If they all return the same address, cool, somehow you managed to not fuck it up. Otherwise, well, you fucked up.
-Don't worrry, it happens. We're working towards making it happen less often by introducing descriptors in the configuration file, but in the meanwhile, you'll have to debug.
-
-If the deposit address are different, it means that the descriptors created by `revaultd` are different. Please check that:
-
-- The `stakeholders_xpubs` are all equal in all configurations, **the order of the keys MUST be the same**
-- The `managers_xpubs` are all equal in all configurations, **the order of the keys MUST be the same**
-- The `cosigners_keys` are all equal in all configurations, **the order of the keys MUST be the same**
-- The `unvault_csv` is the same in every configuration
-
-Delete your sqlite database and your watchonly wallet:
-
-```
-rm ./stake_1_data/revaultd.sqlite3
-rm ./stake_2_data/revaultd.sqlite3
-rm ./man_1_data/revaultd.sqlite3
-rm -r ./stake_1_data/revaultd-watchonly-wallet-1/
-rm -r ./stake_2_data/revaultd-watchonly-wallet-1/
-rm -r ./man_1_data/revaultd-watchonly-wallet-1/
-```
-
-Restart `revaultd` and check again the deposit addresses. If that didn't work either, try restarting `bitcoind`, or open an issue, or ask on #revault on freenode :)
-
-### 10. Playing around with the CLI
+### 9. Playing around with the CLI
 
 If you want to play around with the CLI a bit, all the available commands are listed in [doc/API.md][./API.md].
 
-### 11. Wait, CLI only?!
+### 10. Wait, CLI only?!
 Nah. We also have a GUI. Check out [revault-gui](https://github.com/revault/revault-gui) :)
 
 ## Organizing the perfect Revault party

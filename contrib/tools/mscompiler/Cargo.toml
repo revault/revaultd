@@ -1,0 +1,9 @@
+[package]
+name = "mscompiler"
+version = "0.0.1"
+authors = ["Antoine Poinsot <darosior@protonmail.com>"]
+edition = "2018"
+
+[dependencies]
+revault_tx = "0.2"
+serde_json = "1"

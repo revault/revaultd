@@ -14,6 +14,7 @@ use revault_tx::{
         util::bip32::{ChildNumber, ExtendedPubKey},
         Amount, BlockHash, Network, OutPoint, Txid,
     },
+    scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -151,7 +152,32 @@ pub fn db_network(db_path: &PathBuf) -> Result<Network, DatabaseError> {
 /// Get the database wallet. We only support single wallet, so this always return the first row.
 pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
     let mut rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
-        let our_man_xpub_str = row.get::<_, Option<String>>(4)?;
+        let id = row.get(0)?;
+        let timestamp = row.get(1)?;
+
+        let deposit_desc_str: String = row.get(2)?;
+        let deposit_descriptor = DepositDescriptor::from_str(&deposit_desc_str).map_err(|e| {
+            FromSqlError::Other(Box::new(DatabaseError(format!(
+                "Parsing database Deposit descriptor '{}': {}",
+                deposit_desc_str, e
+            ))))
+        })?;
+        let unvault_desc_str: String = row.get(3)?;
+        let unvault_descriptor = UnvaultDescriptor::from_str(&unvault_desc_str).map_err(|e| {
+            FromSqlError::Other(Box::new(DatabaseError(format!(
+                "Parsing database Unvault descriptor '{}': {}",
+                unvault_desc_str, e
+            ))))
+        })?;
+        let cpfp_desc_str: String = row.get(4)?;
+        let cpfp_descriptor = CpfpDescriptor::from_str(&cpfp_desc_str).map_err(|e| {
+            FromSqlError::Other(Box::new(DatabaseError(format!(
+                "Parsing database Cpfp descriptor '{}': {}",
+                cpfp_desc_str, e
+            ))))
+        })?;
+
+        let our_man_xpub_str = row.get::<_, Option<String>>(5)?;
         let our_man_xpub = if let Some(ref xpub_str) = our_man_xpub_str {
             Some(
                 ExtendedPubKey::from_str(&xpub_str)
@@ -161,7 +187,7 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
             None
         };
 
-        let our_stk_xpub_str = row.get::<_, Option<String>>(5)?;
+        let our_stk_xpub_str = row.get::<_, Option<String>>(6)?;
         let our_stk_xpub = if let Some(ref xpub_str) = our_stk_xpub_str {
             Some(
                 ExtendedPubKey::from_str(&xpub_str)
@@ -176,14 +202,18 @@ pub fn db_wallet(db_path: &PathBuf) -> Result<DbWallet, DatabaseError> {
             "The database is messed up, and we could not catch the error."
         );
 
+        let deposit_derivation_index: u32 = row.get(7)?;
+        let deposit_derivation_index: ChildNumber = deposit_derivation_index.into();
+
         Ok(DbWallet {
-            id: row.get(0)?,
-            timestamp: row.get(1)?,
-            deposit_descriptor: row.get(2)?,
-            unvault_descriptor: row.get(3)?,
+            id,
+            timestamp,
+            deposit_descriptor,
+            unvault_descriptor,
+            cpfp_descriptor,
             our_man_xpub,
             our_stk_xpub,
-            deposit_derivation_index: ChildNumber::from(row.get::<_, u32>(6)?),
+            deposit_derivation_index,
         })
     })?;
 

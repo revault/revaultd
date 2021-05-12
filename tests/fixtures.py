@@ -9,6 +9,7 @@ from test_framework.bitcoind import BitcoinD
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd
 from test_framework.revault_network import RevaultNetwork
 from test_framework.utils import (
+    get_descriptors,
     get_participants,
     POSTGRES_USER,
     POSTGRES_PASS,
@@ -136,21 +137,29 @@ def revaultd_stakeholder(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
+    # TODO: implement CPFP
+    cpfp_xpubs = [
+        "xpub6FD2XRGE3DAJzb69LXMEAiHfj3U4xVqLExMSV4DJXs5zCntHmtdvpkErLwAMGMnKJN2m3LGgaaAMvBELwNNJDAwWvidNMxVgSqLyoC2y2Kc"
+    ]
+    stks_xpubs = [stk.get_xpub() for stk in stks]
+    cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs]
+    mans_xpubs = [man.get_xpub() for man in mans]
+    (dep_desc, unv_desc, cpfp_desc) = get_descriptors(
+        stks_xpubs, cosigs_keys, mans_xpubs, len(mans_xpubs), cpfp_xpubs, 232
+    )
 
     stk_config = {
         "keychain": stks[0],
         "watchtowers": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32)}],
     }
-    csv = 35
     coordinator_noise_key = (
         "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
     )
     revaultd = StakeholderRevaultd(
         datadir,
-        stks,
-        cosigs,
-        mans,
-        csv,
+        dep_desc,
+        unv_desc,
+        cpfp_desc,
         os.urandom(32),
         coordinator_noise_key,
         reserve(),
@@ -169,21 +178,29 @@ def revaultd_manager(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
+    # TODO: implement CPFP
+    cpfp_xpubs = [
+        "xpub6FD2XRGE3DAJzb69LXMEAiHfj3U4xVqLExMSV4DJXs5zCntHmtdvpkErLwAMGMnKJN2m3LGgaaAMvBELwNNJDAwWvidNMxVgSqLyoC2y2Kc"
+    ]
+    stks_xpubs = [stk.get_xpub() for stk in stks]
+    cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs]
+    mans_xpubs = [man.get_xpub() for man in mans]
+    (dep_desc, unv_desc, cpfp_desc) = get_descriptors(
+        stks_xpubs, cosigs_keys, mans_xpubs, len(mans_xpubs), cpfp_xpubs, 232
+    )
 
     man_config = {
         "keychain": mans[0],
         "cosigners": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32)}],
     }
-    csv = 35
     coordinator_noise_key = (
         "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
     )
     revaultd = ManagerRevaultd(
         datadir,
-        stks,
-        cosigs,
-        mans,
-        csv,
+        dep_desc,
+        unv_desc,
+        cpfp_desc,
         os.urandom(32),
         coordinator_noise_key,
         reserve(),

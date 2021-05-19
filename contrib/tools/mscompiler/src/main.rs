@@ -1,8 +1,11 @@
 use std::{env, process, str::FromStr};
 
 use revault_tx::{
-    bitcoin::util::bip32,
-    miniscript::descriptor::{DescriptorPublicKey, DescriptorXKey, Wildcard},
+    bitcoin::{secp256k1, util::bip32},
+    miniscript::{
+        descriptor::{Descriptor, DescriptorPublicKey, DescriptorTrait, DescriptorXKey, Wildcard},
+        MiniscriptKey,
+    },
     scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
 };
 
@@ -27,7 +30,7 @@ fn xpubs_from_json(json_array: &str) -> Vec<DescriptorPublicKey> {
                 origin: None,
                 xkey: xpub,
                 derivation_path: vec![].into(),
-                wildcard: Wildcard::Unhardened
+                wildcard: Wildcard::Unhardened,
             })
         })
         .collect()
@@ -43,6 +46,56 @@ fn keys_from_json(json_array: &str) -> Vec<DescriptorPublicKey> {
             })
         })
         .collect()
+}
+
+fn desc_san_check<P: MiniscriptKey>(
+    desc: &Descriptor<P>,
+) -> Result<(), revault_tx::miniscript::Error> {
+    match desc {
+        Descriptor::Wsh(wsh) => wsh.sanity_check(),
+        _ => unreachable!(),
+    }
+}
+
+fn sanity_checks(
+    dep_desc: &DepositDescriptor,
+    unv_desc: &UnvaultDescriptor,
+    cpfp_desc: &CpfpDescriptor,
+) {
+    desc_san_check(dep_desc.clone().inner()).unwrap_or_else(|e| {
+        eprintln!("Error sanity checking xpub Deposit descriptor: '{:?}'", e);
+        process::exit(1);
+    });
+    desc_san_check(unv_desc.clone().inner()).unwrap_or_else(|e| {
+        eprintln!("Error sanity checking xpub Unvault descriptor: '{:?}'", e);
+        process::exit(1);
+    });
+    desc_san_check(cpfp_desc.clone().inner()).unwrap_or_else(|e| {
+        eprintln!("Error sanity checking xpub CPFP descriptor: '{:?}'", e);
+        process::exit(1);
+    });
+
+    let secp = secp256k1::Secp256k1::verification_only();
+    for i in &[0, 5, 10, 100, 1000] {
+        desc_san_check(dep_desc.derive((*i).into(), &secp).inner()).unwrap_or_else(|e| {
+            eprintln!(
+                "Error sanity checking derived Deposit descriptor: '{:?}'",
+                e
+            );
+            process::exit(1);
+        });
+        desc_san_check(unv_desc.derive((*i).into(), &secp).inner()).unwrap_or_else(|e| {
+            eprintln!(
+                "Error sanity checking derived Unvault descriptor: '{:?}'",
+                e
+            );
+            process::exit(1);
+        });
+        desc_san_check(cpfp_desc.derive((*i).into(), &secp).inner()).unwrap_or_else(|e| {
+            eprintln!("Error sanity checking derived CPFP descriptor: '{:?}'", e);
+            process::exit(1);
+        });
+    }
 }
 
 fn main() {
@@ -83,6 +136,7 @@ fn main() {
         eprintln!("Compiling CPFP descriptor: '{}'", e);
         process::exit(1);
     });
+    sanity_checks(&deposit_desc, &unvault_desc, &cpfp_desc);
 
     let dep_str: serde_json::Value = deposit_desc.to_string().into();
     let unv_str: serde_json::Value = unvault_desc.to_string().into();

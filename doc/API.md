@@ -21,6 +21,7 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
 | [`listspendtxs`](#listspendtxs)                             | List all stored Spend transactions                   |
 | [`gethistory`](#gethistory)                                 | Retrieve history of funds                            |
+| [`emergency`](#emergency)                                   | Broadcast all Emergency signed transactions          |
 
 
 
@@ -410,6 +411,20 @@ of inflows and outflows net of any change amount (that is technically a transact
 | `date`   | int    | Timestamp of the event                                                                   |
 | `amount` | int    | Absolute amount in satoshis that is entering or exiting the wallet                       |
 | `fee`    | int    | Fee of the event transaction                                                             |
+
+
+### `emergency`
+
+#### Request
+
+| Field          | Type   | Description                                    |
+| -------------- | ------ | ---------------------------------------------- |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
 
 ## User flows
 

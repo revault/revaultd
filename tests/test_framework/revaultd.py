@@ -78,11 +78,7 @@ class Revaultd(TailableProc):
                         f"\"{wt['noise_key'].hex()}\" }}, "
                     )
                 f.write("]\n")
-                # FIXME: eventually use a real one here
-                f.write(
-                    "emergency_address = "
-                    '"bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq"\n'
-                )
+                f.write(f"emergency_address = \"{stk_config['emergency_address']}\"\n")
 
             if man_config is not None:
                 f.write("[manager_config]\n")

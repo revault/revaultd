@@ -15,6 +15,8 @@ pub enum BitcoindError {
     Custom(String),
     /// Or directly to bitcoind's RPC server
     Server(Error),
+    /// They replied to a batch request omitting some responses
+    BatchMissingResponse,
     RevaultTx(revault_tx::Error),
 }
 
@@ -34,6 +36,10 @@ impl std::fmt::Display for BitcoindError {
         match self {
             BitcoindError::Custom(ref s) => write!(f, "Bitcoind manager error: {}", s),
             BitcoindError::Server(ref e) => write!(f, "Bitcoind server error: {}", e),
+            BitcoindError::BatchMissingResponse => write!(
+                f,
+                "Bitcoind server replied without enough responses to our batched request"
+            ),
             BitcoindError::RevaultTx(ref s) => write!(f, "Bitcoind manager error: {}", s),
         }
     }

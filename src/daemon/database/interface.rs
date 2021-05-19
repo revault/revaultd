@@ -390,6 +390,56 @@ pub fn db_canceling_vaults(
     )
 }
 
+/// Get the vaults that are in the process of being Emergency Vaulted, along with the respective
+/// Emergency transaction.
+pub fn db_emering_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, EmergencyTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults \
+         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) AND ptx.type = (?2)",
+        &[
+            VaultStatus::EmergencyVaulting as u32,
+            TransactionType::Emergency as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let emer_tx: Vec<u8> = row.get(11)?;
+            let emer_tx = EmergencyTransaction::from_psbt_serialized(&emer_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, emer_tx))
+        },
+    )
+}
+
+/// Get the Unvaulted vaults that are in the process of being Emergency Vaulted, along with the
+/// respective UnvaultEmergency transaction.
+pub fn db_unemering_vaults(
+    db_path: &PathBuf,
+) -> Result<Vec<(DbVault, UnvaultEmergencyTransaction)>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT vaults.*, ptx.psbt FROM vaults \
+         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
+         WHERE vaults.status = (?1) AND ptx.type = (?2)",
+        &[
+            VaultStatus::UnvaultEmergencyVaulting as u32,
+            TransactionType::UnvaultEmergency as u32,
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let unemer_tx: Vec<u8> = row.get(11)?;
+            let unemer_tx = UnvaultEmergencyTransaction::from_psbt_serialized(&unemer_tx)
+                .expect("We store it with to_psbt_serialized");
+
+            Ok((db_vault, unemer_tx))
+        },
+    )
+}
+
 impl TryFrom<&Row<'_>> for DbTransaction {
     type Error = rusqlite::Error;
 
@@ -547,21 +597,21 @@ pub fn db_cancel_dbtx(
 pub fn db_emer_transaction(
     db_path: &PathBuf,
     vault_id: u32,
-) -> Result<(u32, EmergencyTransaction), DatabaseError> {
-    let mut rows: Vec<DbTransaction> = db_query(
+) -> Result<Option<(u32, EmergencyTransaction)>, DatabaseError> {
+    db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::Emergency as u32],
         |row| row.try_into(),
-    )?;
-    let db_tx = rows.pop().ok_or_else(|| {
-        DatabaseError(format!("No emergency tx in db for vault id '{}'", vault_id))
-    })?;
-
-    Ok((
-        db_tx.id,
-        assert_tx_type!(db_tx.psbt, Emergency, "We just queryed it"),
-    ))
+    )
+    .map(|mut rows| {
+        rows.pop().map(|db_tx: DbTransaction| {
+            (
+                db_tx.id,
+                assert_tx_type!(db_tx.psbt, Emergency, "We just queryed it"),
+            )
+        })
+    })
 }
 
 /// Get the Unvault Emergency transaction corresponding to this vault
@@ -569,24 +619,21 @@ pub fn db_emer_transaction(
 pub fn db_unvault_emer_transaction(
     db_path: &PathBuf,
     vault_id: u32,
-) -> Result<(u32, UnvaultEmergencyTransaction), DatabaseError> {
-    let mut rows: Vec<DbTransaction> = db_query(
+) -> Result<Option<(u32, UnvaultEmergencyTransaction)>, DatabaseError> {
+    db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::UnvaultEmergency as u32],
         |row| row.try_into(),
-    )?;
-    let db_tx = rows.pop().ok_or_else(|| {
-        DatabaseError(format!(
-            "No unvault emergency tx in db for vault id '{}'",
-            vault_id
-        ))
-    })?;
-
-    Ok((
-        db_tx.id,
-        assert_tx_type!(db_tx.psbt, UnvaultEmergency, "We just queryed it"),
-    ))
+    )
+    .map(|mut rows| {
+        rows.pop().map(|db_tx: DbTransaction| {
+            (
+                db_tx.id,
+                assert_tx_type!(db_tx.psbt, UnvaultEmergency, "We just queryed it"),
+            )
+        })
+    })
 }
 
 /// Get a vault and its Unvault transaction out of an Unvault txid
@@ -632,6 +679,52 @@ pub fn db_transactions_sig_missing(db_path: &PathBuf) -> Result<Vec<DbTransactio
         "SELECT * FROM presigned_transactions WHERE fullysigned = 0",
         params![],
         |row| row.try_into(),
+    )
+}
+
+/// Get all the Emergency transactions of the "secured" (Emergency signed) vaults that were not yet
+/// Unvaulted.
+pub fn db_signed_emer_txs(db_path: &PathBuf) -> Result<Vec<EmergencyTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT ptx.* FROM presigned_transactions as ptx INNER JOIN vaults as v ON ptx.vault_id = v.id \
+         WHERE ptx.fullysigned = 1 AND ptx.type = (?1) AND v.status < (?2)",
+        params![
+            TransactionType::Emergency as u32,
+            VaultStatus::Unvaulting as u32,
+        ],
+        |row| {
+            let db_tx: DbTransaction = row.try_into()?;
+            Ok(match db_tx.psbt {
+                RevaultTx::Emergency(tx) => tx,
+                _ => unreachable!("Inconsistency between TransactionType and RevaultTx variant?"),
+            })
+        },
+    )
+}
+
+/// Get all the UnvaultEmergency transactions of the Unvaulted vaults that were not yet Spent
+pub fn db_signed_unemer_txs(
+    db_path: &PathBuf,
+) -> Result<Vec<UnvaultEmergencyTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT ptx.* FROM presigned_transactions as ptx INNER JOIN vaults as v on ptx.vault_id = v.id \
+         WHERE ptx.fullysigned = 1 AND ptx.type = (?1) AND v.status IN ((?2), (?3), (?4), (?5))",
+        params![
+            TransactionType::UnvaultEmergency as u32,
+            VaultStatus::Unvaulting as u32,
+            VaultStatus::Unvaulted as u32,
+            VaultStatus::Spending as u32,
+            VaultStatus::Canceling as u32,
+        ],
+        |row| {
+            let db_tx: DbTransaction = row.try_into()?;
+            Ok(match db_tx.psbt {
+                RevaultTx::UnvaultEmergency(tx) => tx,
+                _ => unreachable!("Inconsistency between TransactionType and RevaultTx variant?"),
+            })
+        },
     )
 }
 

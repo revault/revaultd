@@ -650,6 +650,142 @@ def test_unvaulttx(revault_network):
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_emergency(revault_network, bitcoind):
+    """This tests the 'emergency' RPC command"""
+    rn = revault_network
+    rn.deploy(1, 1, n_stkmanagers=1, csv=3)
+
+    with pytest.raises(RpcError, match="This is a stakeholder command"):
+        rn.man(1).rpc.emergency()
+
+    # Calling it without any vault won't do anything
+    rn.stk(1).rpc.emergency()
+
+    # Emergencying with a single, not unvaulted vault
+    vault = rn.fund(8)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    rn.secure_vault(vault)
+    rn.stk(0).rpc.emergency()
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(stk.rpc.listvaults(["emergencyvaulting"], [deposit])["vaults"])
+            == 1
+        )
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(stk.rpc.listvaults(["emergencyvaulted"], [deposit])["vaults"])
+            == 1
+        )
+    assert len(bitcoind.rpc.listunspent(1, 1, [rn.emergency_address])) == 1
+
+    # Emergencying with a single unvaulted vault
+    vault = rn.fund(42)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    rn.secure_vault(vault)
+    rn.activate_vault(vault)
+    rn.unvault_vaults_anyhow([vault])
+    rn.stk(1).rpc.emergency()
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(
+                stk.rpc.listvaults(["unvaultemergencyvaulting"], [deposit])["vaults"]
+            )
+            == 1
+        )
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(
+                stk.rpc.listvaults(["unvaultemergencyvaulted"], [deposit])["vaults"]
+            )
+            == 1
+        )
+    assert len(bitcoind.rpc.listunspent(1, 1, [rn.emergency_address])) == 1
+
+    # Emergencying with several, not unvaulted vaults
+    vaults = rn.fundmany([1.2, 3.4])
+    deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
+    rn.secure_vaults(vaults)
+    rn.stk(0).rpc.emergency()
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(stk.rpc.listvaults(["emergencyvaulting"], deposits)["vaults"])
+            == len(deposits)
+        )
+    bitcoind.generate_block(1, wait_for_mempool=2)
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(stk.rpc.listvaults(["emergencyvaulted"], deposits)["vaults"])
+            == len(deposits)
+        )
+    assert len(bitcoind.rpc.listunspent(1, 1, [rn.emergency_address])) == 2
+
+    # Emergencying with several unvaulted vaults
+    vaults = [rn.fund(18), rn.fund(12)]
+    deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
+    rn.activate_fresh_vaults(vaults)
+    rn.unvault_vaults_anyhow(vaults)
+    rn.stk(0).rpc.emergency()
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(
+                stk.rpc.listvaults(["unvaultemergencyvaulting"], deposits)["vaults"]
+            )
+            == len(deposits)
+        )
+    bitcoind.generate_block(1, wait_for_mempool=2)
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(
+                stk.rpc.listvaults(["unvaultemergencyvaulted"], deposits)["vaults"]
+            )
+            == len(deposits)
+        )
+    assert len(bitcoind.rpc.listunspent(1, 1, [rn.emergency_address])) == 2
+
+    # Emergencying with some unvaulted vaults and many non-unvaulted ones
+    vaults = rn.fundmany([random.randint(5, 5000) / 100 for _ in range(30)])
+    unvaulted_vaults, vaults = (vaults[:3], vaults[3:])
+    deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
+    unvaulted_deposits = [f"{v['txid']}:{v['vout']}" for v in unvaulted_vaults]
+    rn.secure_vaults(vaults)
+    rn.activate_fresh_vaults(unvaulted_vaults)
+    rn.unvault_vaults_anyhow(unvaulted_vaults)
+    rn.stk(1).rpc.emergency()
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(stk.rpc.listvaults(["emergencyvaulting"], deposits)["vaults"])
+            == len(deposits)
+        )
+        wait_for(
+            lambda: len(
+                stk.rpc.listvaults(["unvaultemergencyvaulting"], unvaulted_deposits)[
+                    "vaults"
+                ]
+            )
+            == len(unvaulted_deposits)
+        )
+    bitcoind.generate_block(1, wait_for_mempool=len(vaults) + len(unvaulted_vaults))
+    for stk in rn.stks():
+        wait_for(
+            lambda: len(stk.rpc.listvaults(["emergencyvaulted"], deposits)["vaults"])
+            == len(deposits)
+        )
+        wait_for(
+            lambda: len(
+                stk.rpc.listvaults(["unvaultemergencyvaulted"], unvaulted_deposits)[
+                    "vaults"
+                ]
+            )
+            == len(unvaulted_deposits)
+        )
+    assert len(bitcoind.rpc.listunspent(1, 1, [rn.emergency_address])) == len(
+        vaults
+    ) + len(unvaulted_vaults)
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_revocation_sig_sharing(revault_network):
     revault_network.deploy(4, 2, n_stkmanagers=1)
     stks = revault_network.stks()
@@ -1000,6 +1136,9 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["canceling"])["vaults"]) == 1)
+
+    # Now the same dance with an emergencied vault
+    # TODO
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -1959,6 +2098,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     """Test we keep track of coins that moved without us actively noticing it."""
     CSV = 3
     revault_network.deploy(2, 2, csv=CSV)
+    stks = revault_network.stk_wallets
     # We don't use mans() here as we need a reference to the actual list in order to
     # modify it.
     mans = revault_network.man_wallets
@@ -2227,7 +2367,50 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     deposit = f"{vault['txid']}:{vault['vout']}"
     mans[0].wait_for_secured_vaults([deposit])
 
-    # TODO: same dance with all emergency statuses
+    # Now do the same dance with an "emergencyvaulting" vault
+    vault = revault_network.fund(0.98634)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    revault_network.secure_vault(vault)
+    stk = stks.pop(0)
+    stk.stop()
+
+    stks[0].rpc.emergency()
+    wait_for(
+        lambda: len(stks[0].rpc.listvaults(["emergencyvaulting"], [deposit])["vaults"])
+        == 1
+    )
+
+    # The stakeholder should restart, and acknowledge the vault as being "emergencyvaulting"
+    stks.insert(0, stk)
+    stks[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(stks[0].rpc.listvaults(["emergencyvaulting"], [deposit])["vaults"])
+        == 1
+    )
+
+    # Now do the same dance with an "unvaultemergencyvaulting" vault
+    vault = revault_network.fund(1.64329)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    revault_network.activate_fresh_vaults([vault])
+    revault_network.unvault_vaults_anyhow([vault])
+    stk = stks.pop(0)
+    stk.stop()
+
+    stks[0].rpc.emergency()
+    wait_for(
+        lambda: len(stks[0].rpc.listvaults(["unvaultemergencyvaulting"], [deposit])["vaults"])
+        == 1
+    )
+
+    # The stakeholder should restart, and acknowledge the vault as being "emergencyvaulting"
+    stks.insert(0, stk)
+    stks[0].start()
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    wait_for(
+        lambda: len(stks[0].rpc.listvaults(["unvaultemergencyvaulting"], [deposit])["vaults"])
+        == 1
+    )
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

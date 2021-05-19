@@ -119,7 +119,7 @@ def bitcoind(directory):
     bitcoind = BitcoinD(bitcoin_dir=directory)
     bitcoind.startup()
 
-    bitcoind.rpc.createwallet(bitcoind.rpc.wallet_name, False, False, "", True)
+    bitcoind.rpc.createwallet(bitcoind.rpc.wallet_name, False, False, "", False, True)
 
     while bitcoind.rpc.getbalance() < 50:
         bitcoind.rpc.generatetoaddress(1, bitcoind.rpc.getnewaddress())
@@ -151,6 +151,8 @@ def revaultd_stakeholder(bitcoind, directory):
     stk_config = {
         "keychain": stks[0],
         "watchtowers": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32)}],
+        # We use a dummy one since we don't use it anyways
+        "emergency_address": "bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq",
     }
     coordinator_noise_key = (
         "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
@@ -192,6 +194,8 @@ def revaultd_manager(bitcoind, directory):
     man_config = {
         "keychain": mans[0],
         "cosigners": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32)}],
+        # We use a dummy one since we don't use it anyways
+        "emergency_address": "bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq",
     }
     coordinator_noise_key = (
         "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"

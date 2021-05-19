@@ -4,11 +4,10 @@
 
 use crate::{
     control::{
-        announce_spend_transaction, bitcoind_broadcast_cancel, bitcoind_broadcast_unvaults,
-        check_revocation_signatures, check_spend_signatures, check_unvault_signatures,
-        fetch_cosigs_signatures, listvaults_from_db, onchain_txs_list_from_outpoints,
-        presigned_txs_list_from_outpoints, share_rev_signatures, share_unvault_signatures,
-        ListSpendEntry, ListSpendStatus, RpcUtils,
+        announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
+        check_spend_signatures, check_unvault_signatures, fetch_cosigs_signatures,
+        finalized_emer_txs, listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
+        share_unvault_signatures, vaults_from_deposits, ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -19,7 +18,7 @@ use crate::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
             db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
-            db_vault_by_unvault_txid, db_vaults_from_spend,
+            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status,
         },
     },
     jsonrpc::UserRole,
@@ -29,7 +28,7 @@ use crate::{
 use common::VERSION;
 
 use revault_tx::{
-    bitcoin::{util::bip32, Address, OutPoint, TxOut, Txid},
+    bitcoin::{util::bip32, Address, OutPoint, Transaction as BitcoinTransaction, TxOut, Txid},
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
         RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -206,6 +205,9 @@ pub trait RpcApi {
         meta: Self::Metadata,
         deposit_outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "emergency")]
+    fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 // TODO: we should probably make these proc macros and apply them above?
@@ -479,8 +481,10 @@ impl RpcApi for RpcImpl {
                 db_txid, rpc_txid
             )));
         }
+        // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
         let (emer_db_id, db_emergency_tx) = db_emer_transaction(&revaultd.db_file(), db_vault.id)
-            .map_err(|e| internal_error!(e))?;
+            .map_err(|e| internal_error!(e))?
+            .expect("Must be here if 'funded'");
         let rpc_txid = emergency_tx.inner_tx().global.unsigned_tx.wtxid();
         let db_txid = db_emergency_tx.inner_tx().global.unsigned_tx.wtxid();
         if rpc_txid != db_txid {
@@ -489,9 +493,11 @@ impl RpcApi for RpcImpl {
                 db_txid, rpc_txid
             )));
         }
+        // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
         let (unvault_emer_db_id, db_unemergency_tx) =
             db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)
-                .map_err(|e| internal_error!(e))?;
+                .map_err(|e| internal_error!(e))?
+                .expect("Must be here if 'funded'");
         let rpc_txid = unvault_emergency_tx.inner_tx().global.unsigned_tx.wtxid();
         let db_txid = db_unemergency_tx.inner_tx().global.unsigned_tx.wtxid();
         if rpc_txid != db_txid {
@@ -750,10 +756,17 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let vaults =
-            presigned_txs_list_from_outpoints(&meta.rpc_utils.revaultd.read().unwrap(), outpoints)
-                .map_err(|e| internal_error!(e))?
-                .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let db_path = revaultd.db_file();
+
+        // If they didn't provide us with a list of outpoints, catch'em all!
+        let db_vaults = if let Some(outpoints) = outpoints {
+            vaults_from_deposits(&db_path, &outpoints, &[VaultStatus::Unconfirmed])
+                .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?
+        } else {
+            db_vaults_min_status(&db_path, VaultStatus::Funded).map_err(|e| internal_error!(e))?
+        };
+        let vaults = presigned_txs(&revaultd, db_vaults).map_err(|e| internal_error!(e))?;
 
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
@@ -776,13 +789,23 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let vaults = onchain_txs_list_from_outpoints(
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let db_path = revaultd.db_file();
+
+        // If they didn't provide us with a list of outpoints, catch'em all!
+        let db_vaults = if let Some(outpoints) = outpoints {
+            // We accept any status
+            vaults_from_deposits(&db_path, &outpoints, &[])
+                .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?
+        } else {
+            db_vaults(&db_path).map_err(|e| internal_error!(e))?
+        };
+        let vaults = onchain_txs(
             &meta.rpc_utils.revaultd.read().unwrap(),
             &meta.rpc_utils.bitcoind_tx,
-            outpoints,
+            db_vaults,
         )
-        .map_err(|e| internal_error!(e))?
-        .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+        .map_err(|e| internal_error!(e))?;
 
         fn wallet_tx_to_json(tx: WalletTransaction) -> serde_json::Value {
             json!({
@@ -1139,14 +1162,24 @@ impl RpcApi for RpcImpl {
 
         // Finally we can broadcast the Unvault(s) transaction(s) and store the Spend
         // transaction for later broadcast
-        bitcoind_broadcast_unvaults(
-            &meta.rpc_utils.bitcoind_tx,
-            &meta.rpc_utils.revaultd.read().unwrap().db_file(),
-            &revaultd.secp_ctx,
-            &spent_vaults,
-        )
-        .map_err(|e| {
-            JsonRpcError::invalid_params(format!("Broadcasting Unvault transaction(s): '{}'", e))
+        log::debug!(
+            "Broadcasting Unvault transactions with ids '{:?}'",
+            spent_vaults.keys()
+        );
+        let bitcoin_txs = spent_vaults
+            .values()
+            .into_iter()
+            .map(|db_vault| {
+                let (_, mut unvault_tx) = db_unvault_transaction(&db_path, db_vault.id)
+                    .map_err(|e| internal_error!(e))?;
+                unvault_tx
+                    .finalize(&revaultd.secp_ctx)
+                    .map_err(|e| internal_error!(e))?;
+                Ok(unvault_tx.into_psbt().extract_tx())
+            })
+            .collect::<Result<Vec<BitcoinTransaction>, JsonRpcError>>()?;
+        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, bitcoin_txs).map_err(|e| {
+            internal_error!(format!("Broadcasting Unvault transaction(s): '{}'", e))
         })?;
         db_mark_broadcastable_spend(&db_path, &spend_txid).map_err(|e| internal_error!(e))?;
 
@@ -1174,15 +1207,35 @@ impl RpcApi for RpcImpl {
             return Err(invalid_status!(vault.status, VaultStatus::Unvaulting));
         }
 
-        bitcoind_broadcast_cancel(
-            &meta.rpc_utils.bitcoind_tx,
-            &db_path,
-            &revaultd.secp_ctx,
-            vault,
-        )
-        .map_err(|e| {
-            JsonRpcError::invalid_params(format!("Broadcasting Cancel transaction: '{}'", e))
-        })?;
+        let (_, mut cancel_tx) = db_cancel_transaction(&db_path, vault.id)
+            .map_err(|e| internal_error!(e))?
+            .expect("Must be in DB post 'Secured' status");
+
+        cancel_tx
+            .finalize(&revaultd.secp_ctx)
+            .map_err(|e| internal_error!(e))?;
+        let transaction = cancel_tx.into_psbt().extract_tx();
+        log::debug!(
+            "Broadcasting Cancel transactions with id '{:?}'",
+            transaction.txid()
+        );
+        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, vec![transaction])
+            .map_err(|e| internal_error!(format!("Broadcasting Cancel transaction: '{}'", e)))?;
+
+        Ok(json!({}))
+    }
+
+    fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        stakeholder_only!(meta);
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let bitcoind_tx = &meta.rpc_utils.bitcoind_tx;
+
+        // FIXME: there is a ton of edge cases not covered here. We should additionally opt for a
+        // bulk method, like broadcasting all Emergency transactions in a thread forever without
+        // trying to be smart by differentiating between Emer and UnvaultEmer until we die or all
+        // vaults are confirmed in the EDV.
+        let emers = finalized_emer_txs(&revaultd).map_err(|e| internal_error!(e))?;
+        bitcoind_broadcast(bitcoind_tx, emers).map_err(|e| internal_error!(e))?;
 
         Ok(json!({}))
     }

@@ -1,13 +1,13 @@
-//! Any process is at first initiated by a manual interaction. This interaction is possible using the
-//! JSONRPC api, which events are handled in the main thread.
-//! This module contains useful functions for handling RPC requests.
+//! This module contains routines for controlling our actions (checking signatures, communicating
+//! with servers, with bitcoind, ..). Requests may originate from the RPC server or the signature
+//! fetcher thread.
 
 use crate::{
     bitcoind::BitcoindError,
     database::{
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_unvault_emer_transaction,
-            db_unvault_transaction, db_vault_by_deposit, db_vaults, db_vaults_min_status,
+            db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
+            db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
         },
         schema::DbVault,
         DatabaseError,
@@ -42,9 +42,7 @@ use revault_tx::{
 
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt,
-    path::PathBuf,
-    process,
+    fmt, process,
     sync::{
         mpsc::{self, RecvError, SendError, Sender},
         Arc, RwLock,
@@ -134,82 +132,60 @@ pub enum ListSpendStatus {
     Broadcasted,
 }
 
-/// Any error that could arise during the process of executing the user's will.
-/// Usually fatal.
-#[derive(Debug)]
-pub enum ControlError {
-    ChannelCommunication(String),
-    Database(String),
-    Bitcoind(String),
-    TransactionManagement(String),
-}
-
-impl fmt::Display for ControlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::ChannelCommunication(s) => write!(f, "Channel communication error: '{}'", s),
-            Self::Database(s) => write!(f, "Database error: '{}'", s),
-            Self::Bitcoind(s) => write!(f, "Bitcoind error: '{}'", s),
-            Self::TransactionManagement(s) => write!(f, "Transaction management error: '{}'", s),
-        }
-    }
-}
-
-impl std::error::Error for ControlError {}
-
-impl<T> From<SendError<T>> for ControlError {
-    fn from(e: SendError<T>) -> Self {
-        Self::ChannelCommunication(format!("Sending to channel: '{}'", e))
-    }
-}
-
-impl From<RecvError> for ControlError {
-    fn from(e: RecvError) -> Self {
-        Self::ChannelCommunication(format!("Receiving from channel: '{}'", e))
-    }
-}
-
-impl From<DatabaseError> for ControlError {
-    fn from(e: DatabaseError) -> Self {
-        Self::Database(format!("Database error: {}", e))
-    }
-}
-
-impl From<BitcoindError> for ControlError {
-    fn from(e: BitcoindError) -> Self {
-        Self::Bitcoind(format!("Bitcoind error: {}", e))
-    }
-}
-
-impl From<revault_tx::Error> for ControlError {
-    fn from(e: revault_tx::Error) -> Self {
-        Self::TransactionManagement(format!("Revault transaction error: {}", e))
-    }
-}
-
-impl From<revault_tx::error::TransactionCreationError> for ControlError {
-    fn from(e: revault_tx::error::TransactionCreationError) -> Self {
-        Self::TransactionManagement(format!("Revault transaction creation error: {}", e))
-    }
-}
-
-/// Error while handling an RPC call
+/// Error specific to calls that originated from the RPC server.
 #[derive(Debug)]
 pub enum RpcControlError {
-    // .0 is current status, .1 is required status
-    InvalidStatus(VaultStatus, VaultStatus),
+    InvalidStatus(VaultStatus, OutPoint),
     UnknownOutPoint(OutPoint),
+    Database(DatabaseError),
+    Tx(revault_tx::Error),
+    Bitcoind(BitcoindError),
+    ThreadCommunication(String),
+}
+
+impl From<DatabaseError> for RpcControlError {
+    fn from(e: DatabaseError) -> Self {
+        Self::Database(e)
+    }
+}
+
+impl From<revault_tx::Error> for RpcControlError {
+    fn from(e: revault_tx::Error) -> Self {
+        Self::Tx(e)
+    }
+}
+
+impl From<BitcoindError> for RpcControlError {
+    fn from(e: BitcoindError) -> Self {
+        Self::Bitcoind(e)
+    }
+}
+
+impl<T> From<SendError<T>> for RpcControlError {
+    fn from(e: SendError<T>) -> Self {
+        Self::ThreadCommunication(format!("Sending to thread: '{}'", e))
+    }
+}
+
+impl From<RecvError> for RpcControlError {
+    fn from(e: RecvError) -> Self {
+        Self::ThreadCommunication(format!("Receiving from thread: '{}'", e))
+    }
 }
 
 impl fmt::Display for RpcControlError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::UnknownOutPoint(ref o) => write!(f, "No vault at '{}'", o),
-            Self::InvalidStatus(current, required) => write!(
+            Self::InvalidStatus(status, outpoint) => write!(
                 f,
-                "Invalid vault status: '{}'. Need '{}'",
-                current, required
+                "Invalid vault status '{}' for deposit outpoint '{}'",
+                status, outpoint
             ),
+            Self::Database(ref e) => write!(f, "Database error: '{}'", e),
+            Self::Tx(ref e) => write!(f, "Transaction handling error: '{}'", e),
+            Self::Bitcoind(ref e) => write!(f, "Bitcoind error: '{}'", e),
+            Self::ThreadCommunication(ref e) => write!(f, "Thread communication error: '{}'", e),
         }
     }
 }
@@ -218,7 +194,7 @@ impl fmt::Display for RpcControlError {
 fn bitcoind_wallet_tx(
     bitcoind_tx: &Sender<BitcoindMessageOut>,
     txid: Txid,
-) -> Result<Option<WalletTransaction>, ControlError> {
+) -> Result<Option<WalletTransaction>, RpcControlError> {
     log::trace!("Sending WalletTx to bitcoind thread for {}", txid);
 
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
@@ -226,61 +202,22 @@ fn bitcoind_wallet_tx(
     bitrep_rx.recv().map_err(|e| e.into())
 }
 
-/// Tell bitcoind to broadcast the Unvault transactions of all these vaults.
-/// The vaults must be active for the Unvault to be finalizable.
-pub fn bitcoind_broadcast_unvaults(
+/// Have bitcoind broadcast all these transactions
+pub fn bitcoind_broadcast(
     bitcoind_tx: &Sender<BitcoindMessageOut>,
-    db_path: &PathBuf,
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    db_vaults: &HashMap<Txid, DbVault>,
-) -> Result<(), ControlError> {
-    log::debug!(
-        "Broadcasting Unvault transactions with ids '{:?}'",
-        db_vaults.keys()
-    );
-
-    // For each vault, get the Unvault transaction, finalize it, and tell bitcoind to broadcast it
+    transactions: Vec<BitcoinTransaction>,
+) -> Result<(), RpcControlError> {
     let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-    for db_vault in db_vaults.values() {
-        let (_, mut unvault_tx) = db_unvault_transaction(db_path, db_vault.id)?;
-        unvault_tx.finalize(secp)?;
-        let transaction = unvault_tx.into_psbt().extract_tx();
 
-        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
-            transaction,
+    if !transactions.is_empty() {
+        // Note: this is a batched call to bitcoind's RPC, any failure will
+        // override all the results.
+        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransactions(
+            transactions,
             bitrep_tx.clone(),
         ))?;
         bitrep_rx.recv()??;
     }
-
-    Ok(())
-}
-
-/// Tell bitcoind to broadcast the Cancel transactions of this vault.
-pub fn bitcoind_broadcast_cancel(
-    bitcoind_tx: &Sender<BitcoindMessageOut>,
-    db_path: &PathBuf,
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    vault: DbVault,
-) -> Result<(), ControlError> {
-    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-    // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-    let (_, mut cancel_tx) =
-        db_cancel_transaction(&db_path, vault.id)?.expect("Must be in DB post 'Secured' status");
-
-    cancel_tx.finalize(secp)?;
-    let transaction = cancel_tx.into_psbt().extract_tx();
-    log::debug!(
-        "Broadcasting Cancel transactions with id '{:?}'",
-        transaction.txid()
-    );
-
-    bitcoind_tx.send(BitcoindMessageOut::BroadcastTransaction(
-        transaction,
-        bitrep_tx,
-    ))?;
-
-    bitrep_rx.recv()??;
 
     Ok(())
 }
@@ -324,37 +261,40 @@ pub fn listvaults_from_db(
     })
 }
 
-/// List all the presigned transactions from these confirmed vaults.
-pub fn presigned_txs_list_from_outpoints(
-    revaultd: &RevaultD,
-    outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultPresignedTransactions>, RpcControlError>, ControlError> {
-    let db_path = &revaultd.db_file();
+/// Get all vaults from a list of deposit outpoints, if they are not in a given status.
+///
+/// # Errors
+/// If an outpoint does not refer to a known deposit, or if the status of the vault is
+/// part of `invalid_statuses`.
+pub fn vaults_from_deposits(
+    db_path: &std::path::PathBuf,
+    outpoints: &[OutPoint],
+    invalid_statuses: &[VaultStatus],
+) -> Result<Vec<DbVault>, RpcControlError> {
+    let mut vaults = Vec::with_capacity(outpoints.len());
 
-    // If they didn't provide us with a list of outpoints, catch'em all!
-    let db_vaults = if let Some(outpoints) = outpoints {
-        // FIXME: we can probably make this more efficient with some SQL magic
-        let mut vaults = Vec::with_capacity(outpoints.len());
-        for outpoint in outpoints.iter() {
-            if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
-                // If it's unconfirmed, the presigned transactions are not in db!
-                match vault.status {
-                    VaultStatus::Unconfirmed => {
-                        return Ok(Err(RpcControlError::InvalidStatus(
-                            vault.status,
-                            VaultStatus::Funded,
-                        )));
-                    }
-                    _ => vaults.push(vault),
-                }
-            } else {
-                return Ok(Err(RpcControlError::UnknownOutPoint(*outpoint)));
+    for outpoint in outpoints.iter() {
+        // Note: being smarter with SQL queries implies enabling the 'table' feature of rusqlite
+        // with a shit ton of dependencies.
+        if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
+            if invalid_statuses.contains(&vault.status) {
+                return Err(RpcControlError::InvalidStatus(vault.status, *outpoint));
             }
+            vaults.push(vault);
+        } else {
+            return Err(RpcControlError::UnknownOutPoint(*outpoint));
         }
-        vaults
-    } else {
-        db_vaults_min_status(db_path, VaultStatus::Funded)?
-    };
+    }
+
+    Ok(vaults)
+}
+
+/// List all the presigned transactions from these confirmed vaults.
+pub fn presigned_txs(
+    revaultd: &RevaultD,
+    db_vaults: Vec<DbVault>,
+) -> Result<Vec<VaultPresignedTransactions>, RpcControlError> {
+    let db_path = &revaultd.db_file();
 
     // For each presigned transaction, append it as well as its extracted version if it's final.
     let mut tx_list = Vec::with_capacity(db_vaults.len());
@@ -388,7 +328,9 @@ pub fn presigned_txs_list_from_outpoints(
         let mut emergency = None;
         let mut unvault_emergency = None;
         if revaultd.is_stakeholder() {
-            let (_, emer_psbt) = db_emer_transaction(db_path, db_vault.id)?;
+            // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+            let (_, emer_psbt) = db_emer_transaction(db_path, db_vault.id)?
+                .expect("Must be here post 'Funded' state");
             let mut finalized_emer = emer_psbt.clone();
             emergency = Some(VaultPresignedTransaction {
                 transaction: if finalized_emer.finalize(&revaultd.secp_ctx).is_ok() {
@@ -399,7 +341,9 @@ pub fn presigned_txs_list_from_outpoints(
                 psbt: emer_psbt,
             });
 
-            let (_, unemer_psbt) = db_unvault_emer_transaction(db_path, db_vault.id)?;
+            // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+            let (_, unemer_psbt) = db_unvault_emer_transaction(db_path, db_vault.id)?
+                .expect("Must be here post 'Funded' state");
             let mut finalized_unemer = unemer_psbt.clone();
             unvault_emergency = Some(VaultPresignedTransaction {
                 transaction: if finalized_unemer.finalize(&revaultd.secp_ctx).is_ok() {
@@ -420,33 +364,16 @@ pub fn presigned_txs_list_from_outpoints(
         });
     }
 
-    Ok(Ok(tx_list))
+    Ok(tx_list)
 }
 
 /// List all the onchain transactions from these vaults.
-pub fn onchain_txs_list_from_outpoints(
+pub fn onchain_txs(
     revaultd: &RevaultD,
     bitcoind_tx: &Sender<BitcoindMessageOut>,
-    outpoints: Option<Vec<OutPoint>>,
-) -> Result<Result<Vec<VaultOnchainTransactions>, RpcControlError>, ControlError> {
+    db_vaults: Vec<DbVault>,
+) -> Result<Vec<VaultOnchainTransactions>, RpcControlError> {
     let db_path = &revaultd.db_file();
-
-    // If they didn't provide us with a list of outpoints, catch'em all!
-    let db_vaults = if let Some(outpoints) = outpoints {
-        // FIXME: we can probably make this more efficient with some SQL magic
-        let mut vaults = Vec::with_capacity(outpoints.len());
-        for outpoint in outpoints.iter() {
-            if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
-                // Note that we accept any status
-                vaults.push(vault);
-            } else {
-                return Ok(Err(RpcControlError::UnknownOutPoint(*outpoint)));
-            }
-        }
-        vaults
-    } else {
-        db_vaults(db_path)?
-    };
 
     let mut tx_list = Vec::with_capacity(db_vaults.len());
     for db_vault in db_vaults {
@@ -476,11 +403,17 @@ pub fn onchain_txs_list_from_outpoints(
                 let mut emergency = None;
                 let mut unvault_emergency = None;
                 if revaultd.is_stakeholder() {
-                    let emer = db_emer_transaction(db_path, db_vault.id)?.1;
+                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                    let emer = db_emer_transaction(db_path, db_vault.id)?
+                        .expect("Must be here post 'Funded' state")
+                        .1;
                     emergency =
                         bitcoind_wallet_tx(bitcoind_tx, emer.into_psbt().extract_tx().txid())?;
 
-                    let unemer = db_unvault_emer_transaction(db_path, db_vault.id)?.1;
+                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                    let unemer = db_unvault_emer_transaction(db_path, db_vault.id)?
+                        .expect("Must be here if not 'unconfirmed'")
+                        .1;
                     unvault_emergency =
                         bitcoind_wallet_tx(bitcoind_tx, unemer.into_psbt().extract_tx().txid())?;
                 }
@@ -501,7 +434,27 @@ pub fn onchain_txs_list_from_outpoints(
         });
     }
 
-    Ok(Ok(tx_list))
+    Ok(tx_list)
+}
+
+/// Get all the finalized Emergency transactions for each vault, depending on wether the Unvault
+/// was already broadcast or not (ie get the one spending from the deposit or the Unvault tx).
+pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>, RpcControlError> {
+    let db_path = revaultd.db_file();
+
+    let emer_iter = db_signed_emer_txs(&db_path)?.into_iter().map(|mut tx| {
+        tx.finalize(&revaultd.secp_ctx)?;
+        Ok(tx.into_psbt().extract_tx())
+    });
+    let unemer_iter = db_signed_unemer_txs(&db_path)?.into_iter().map(|mut tx| {
+        tx.finalize(&revaultd.secp_ctx)?;
+        Ok(tx.into_psbt().extract_tx())
+    });
+
+    emer_iter
+        .chain(unemer_iter)
+        .collect::<Result<Vec<BitcoinTransaction>, revault_tx::Error>>()
+        .map_err(|e| e.into())
 }
 
 /// An error thrown when the verification of a signature fails

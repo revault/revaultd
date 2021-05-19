@@ -423,6 +423,22 @@ pub fn db_unconfirm_cancel_dbtx(
     dbtx_downgrade(db_tx, vault_id, VaultStatus::Canceling)
 }
 
+/// Downgrade a vault from 'emergencied' to 'emergencying'
+pub fn db_unconfirm_emer_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::EmergencyVaulting)
+}
+
+/// Downgrade a vault from 'unvaultemergencied' to 'unvaultemergencying'
+pub fn db_unconfirm_unemer_dbtx(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+) -> Result<(), DatabaseError> {
+    dbtx_downgrade(db_tx, vault_id, VaultStatus::UnvaultEmergencyVaulting)
+}
+
 fn db_status_from_unvault_txid(
     db_path: &PathBuf,
     unvault_txid: &Txid,
@@ -450,6 +466,7 @@ pub fn db_confirm_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), 
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
 }
 
+/// Mark a vault as being in the 'canceling' state, out of the Unvault txid
 pub fn db_cancel_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Canceling)
 }
@@ -472,6 +489,11 @@ pub fn db_spend_unvault(
     })
 }
 
+/// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid
+pub fn db_emer_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
+}
+
 fn db_mark_vault_as(
     db_path: &PathBuf,
     vault_id: u32,
@@ -488,12 +510,25 @@ fn db_mark_vault_as(
         Ok(())
     })
 }
+
 pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::Spent)
 }
 
 pub fn db_mark_canceled_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::Canceled)
+}
+
+pub fn db_mark_emergencied_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::UnvaultEmergencyVaulted)
+}
+
+pub fn db_mark_emergencying_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulting)
+}
+
+pub fn db_mark_emergencied_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+    db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulted)
 }
 
 /// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.
@@ -934,6 +969,10 @@ mod test {
 
         setup_db(&mut revaultd).unwrap();
 
+        // There is no fully signed Emergency transaction at this point.
+        assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
+        assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
+
         // Let's insert a deposit
         let wallet_id = 1;
         let outpoint = OutPoint::from_str(
@@ -972,6 +1011,10 @@ mod test {
         )
         .unwrap();
 
+        // There is still no *fully signed* Emergency transaction at this point!
+        assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
+        assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
+
         // Sanity check we can add sigs to them now
         let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
@@ -992,7 +1035,8 @@ mod test {
             .unwrap();
         assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
-        let (tx_db_id, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (tx_db_id, stored_emer_tx) =
+            db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
         assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
         let mut emer_tx = fresh_emer_tx.clone();
         revault_tx_add_dummy_sig(&mut emer_tx, 0);
@@ -1004,11 +1048,12 @@ mod test {
             &revaultd.secp_ctx,
         )
         .unwrap();
-        let (_, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (_, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
         assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
-        let (tx_db_id, stored_unemer_tx) =
-            db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (tx_db_id, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
         let mut unemer_tx = fresh_unemer_tx.clone();
         revault_tx_add_dummy_sig(&mut unemer_tx, 0);
@@ -1020,7 +1065,9 @@ mod test {
             &revaultd.secp_ctx,
         )
         .unwrap();
-        let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id).unwrap();
+        let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
 
         let (tx_db_id, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
@@ -1041,7 +1088,10 @@ mod test {
         // They can also be queried
         assert_eq!(
             emer_tx,
-            db_emer_transaction(&db_path, db_vault.id).unwrap().1
+            db_emer_transaction(&db_path, db_vault.id)
+                .unwrap()
+                .unwrap()
+                .1
         );
         assert_eq!(
             cancel_tx,
@@ -1053,6 +1103,7 @@ mod test {
         assert_eq!(
             unemer_tx,
             db_unvault_emer_transaction(&db_path, db_vault.id)
+                .unwrap()
                 .unwrap()
                 .1
         );
@@ -1067,11 +1118,15 @@ mod test {
             Ok(())
         })
         .unwrap();
-        db_emer_transaction(&db_path, db_vault.id).unwrap_err();
+        assert!(db_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .is_none());
         assert!(db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
             .is_none());
-        db_unvault_emer_transaction(&db_path, db_vault.id).unwrap_err();
+        assert!(db_unvault_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .is_none());
         db_unvault_transaction(&db_path, db_vault.id).unwrap_err();
 
         // And re-added of course
@@ -1096,6 +1151,32 @@ mod test {
             Some(&fresh_unemer_tx),
         )
         .unwrap_err();
+
+        // If we mark the Emergency transaction as fully signed, it'll get returned by the
+        // fetcher.
+        db_exec(&db_path, |tx| {
+            tx.execute(
+                "UPDATE presigned_transactions SET fullysigned = 1 WHERE txid = (?1)",
+                params![fresh_emer_tx.txid().to_vec()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db_signed_emer_txs(&db_path).unwrap().len(), 1);
+        assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
+        // If we mark the UnvaultEmergency transaction as fully signed and the vault as
+        // Unvaulting, it'll get returned by the unemer fetcher instead.
+        db_unvault_deposit(&db_path, &fresh_unvault_tx.txid()).unwrap();
+        db_exec(&db_path, |tx| {
+            tx.execute(
+                "UPDATE presigned_transactions SET fullysigned = 1 WHERE txid = (?1)",
+                params![fresh_unemer_tx.txid().to_vec()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
+        assert_eq!(db_signed_unemer_txs(&db_path).unwrap().len(), 1);
 
         fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
     }

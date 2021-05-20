@@ -21,7 +21,7 @@ use std::{
     collections::BTreeMap,
     convert::TryInto,
     fs,
-    path::PathBuf,
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -46,7 +46,7 @@ fn amount_to_i64(amount: &Amount) -> i64 {
 }
 
 // Create the db file with RW permissions only for the user
-fn create_db_file(db_path: &PathBuf) -> Result<(), std::io::Error> {
+fn create_db_file(db_path: &Path) -> Result<(), std::io::Error> {
     let mut options = fs::OpenOptions::new();
     let options = options.read(true).write(true).create_new(true);
 
@@ -230,12 +230,12 @@ pub fn db_update_tip_dbtx(
 }
 
 /// Set the current best block hash and height
-pub fn db_update_tip(db_path: &PathBuf, tip: &BlockchainTip) -> Result<(), DatabaseError> {
+pub fn db_update_tip(db_path: &Path, tip: &BlockchainTip) -> Result<(), DatabaseError> {
     db_exec(db_path, |db_tx| db_update_tip_dbtx(db_tx, tip))
 }
 
 pub fn db_update_deposit_index(
-    db_path: &PathBuf,
+    db_path: &Path,
     new_index: ChildNumber,
 ) -> Result<(), DatabaseError> {
     let new_index: u32 = new_index.into();
@@ -253,7 +253,7 @@ pub fn db_update_deposit_index(
 /// Insert a new deposit in the database
 #[allow(clippy::too_many_arguments)]
 pub fn db_insert_new_unconfirmed_vault(
-    db_path: &PathBuf,
+    db_path: &Path,
     wallet_id: u32,
     deposit_outpoint: &OutPoint,
     amount: &Amount,
@@ -313,7 +313,7 @@ macro_rules! db_store_unsigned_transactions {
 /// unsigned "presigned-transactions".
 /// The `emer_tx` and `unemer_tx` may only be passed for stakeholders.
 pub fn db_confirm_deposit(
-    db_path: &PathBuf,
+    db_path: &Path,
     outpoint: &OutPoint,
     blockheight: u32,
     unvault_tx: &UnvaultTransaction,
@@ -440,7 +440,7 @@ pub fn db_unconfirm_unemer_dbtx(
 }
 
 fn db_status_from_unvault_txid(
-    db_path: &PathBuf,
+    db_path: &Path,
     unvault_txid: &Txid,
     status: VaultStatus,
 ) -> Result<(), DatabaseError> {
@@ -457,23 +457,23 @@ fn db_status_from_unvault_txid(
 }
 
 /// Mark an active vault as being in 'unvaulting' state from the Unvault txid
-pub fn db_unvault_deposit(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+pub fn db_unvault_deposit(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
 }
 
 /// Mark a vault as being in the 'unvaulted' state, out of the Unvault txid
-pub fn db_confirm_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+pub fn db_confirm_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
 }
 
 /// Mark a vault as being in the 'canceling' state, out of the Unvault txid
-pub fn db_cancel_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+pub fn db_cancel_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Canceling)
 }
 
 /// Mark a vault as being in the 'spending' state, out of the Unvault txid
 pub fn db_spend_unvault(
-    db_path: &PathBuf,
+    db_path: &Path,
     unvault_txid: &Txid,
     spend_txid: &Txid,
 ) -> Result<(), DatabaseError> {
@@ -490,12 +490,12 @@ pub fn db_spend_unvault(
 }
 
 /// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid
-pub fn db_emer_unvault(db_path: &PathBuf, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+pub fn db_emer_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
 }
 
 fn db_mark_vault_as(
-    db_path: &PathBuf,
+    db_path: &Path,
     vault_id: u32,
     status: VaultStatus,
 ) -> Result<(), DatabaseError> {
@@ -511,28 +511,28 @@ fn db_mark_vault_as(
     })
 }
 
-pub fn db_mark_spent_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+pub fn db_mark_spent_unvault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::Spent)
 }
 
-pub fn db_mark_canceled_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+pub fn db_mark_canceled_unvault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::Canceled)
 }
 
-pub fn db_mark_emergencied_unvault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+pub fn db_mark_emergencied_unvault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::UnvaultEmergencyVaulted)
 }
 
-pub fn db_mark_emergencying_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+pub fn db_mark_emergencying_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulting)
 }
 
-pub fn db_mark_emergencied_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+pub fn db_mark_emergencied_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulted)
 }
 
 /// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.
-pub fn db_mark_securing_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+pub fn db_mark_securing_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
             "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
@@ -550,7 +550,7 @@ pub fn db_mark_securing_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), Da
 }
 
 /// Mark that we actually signed this vault's Unvault tx, and stored the signature for it.
-pub fn db_mark_activating_vault(db_path: &PathBuf, vault_id: u32) -> Result<(), DatabaseError> {
+pub fn db_mark_activating_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
             "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
@@ -582,7 +582,7 @@ fn revault_tx_merge_sigs(
 /// transactions are remaining unsigned for this vault, it will update the vault status as well in
 /// the same database transaction.
 pub fn db_update_presigned_tx(
-    db_path: &PathBuf,
+    db_path: &Path,
     vault_id: u32,
     tx_db_id: u32,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
@@ -661,7 +661,7 @@ pub fn db_update_presigned_tx(
 
 /// Insert a new Spend transaction in the database
 pub fn db_insert_spend(
-    db_path: &PathBuf,
+    db_path: &Path,
     // FIXME: Rust newbie: i *don't* need to be moving this. So i want to take &[&T] but i can't
     // have it working in a generic manner (eg once by passing a slice the second time by passing a
     // Vec<T> somehow)
@@ -689,10 +689,7 @@ pub fn db_insert_spend(
     })
 }
 
-pub fn db_update_spend(
-    db_path: &PathBuf,
-    spend_tx: &SpendTransaction,
-) -> Result<(), DatabaseError> {
+pub fn db_update_spend(db_path: &Path, spend_tx: &SpendTransaction) -> Result<(), DatabaseError> {
     let spend_txid = spend_tx.txid();
     let spend_psbt = spend_tx.as_psbt_serialized();
 
@@ -705,7 +702,7 @@ pub fn db_update_spend(
     })
 }
 
-pub fn db_delete_spend(db_path: &PathBuf, spend_txid: &Txid) -> Result<(), DatabaseError> {
+pub fn db_delete_spend(db_path: &Path, spend_txid: &Txid) -> Result<(), DatabaseError> {
     db_exec(db_path, |db_tx| {
         db_tx.execute(
             "DELETE FROM spend_inputs WHERE spend_id = (SELECT id FROM \
@@ -720,10 +717,7 @@ pub fn db_delete_spend(db_path: &PathBuf, spend_txid: &Txid) -> Result<(), Datab
     })
 }
 
-pub fn db_mark_broadcastable_spend(
-    db_path: &PathBuf,
-    spend_txid: &Txid,
-) -> Result<(), DatabaseError> {
+pub fn db_mark_broadcastable_spend(db_path: &Path, spend_txid: &Txid) -> Result<(), DatabaseError> {
     db_exec(db_path, |db_tx| {
         db_tx.execute(
             "UPDATE spend_transactions SET broadcasted = 0 WHERE txid = (?1)",
@@ -733,10 +727,7 @@ pub fn db_mark_broadcastable_spend(
     })
 }
 
-pub fn db_mark_broadcasted_spend(
-    db_path: &PathBuf,
-    spend_txid: &Txid,
-) -> Result<(), DatabaseError> {
+pub fn db_mark_broadcasted_spend(db_path: &Path, spend_txid: &Txid) -> Result<(), DatabaseError> {
     db_exec(db_path, |db_tx| {
         db_tx.execute(
             "UPDATE spend_transactions SET broadcasted = 1 WHERE txid = (?1)",

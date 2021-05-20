@@ -705,6 +705,7 @@ impl BitcoinD {
         self.sync_chainstate(unvault_utxos, self.unvault_utxos_label(), 1, None)
     }
 
+    // FIXME: this should return a struct not a footguny tuple.
     /// Get the raw transaction as hex, the blockheight it was included in if
     /// it's confirmed, as well as the reception time.
     pub fn get_wallet_transaction(
@@ -887,6 +888,19 @@ impl BitcoinD {
                 ..
             }))) => Ok(false),
             Err(e) => Err(e),
+        }
+    }
+
+    /// Check whether a transaction is part of the wallet, and not stuck (as in is confirmed or
+    /// part of the mempool).
+    pub fn is_current(&self, txid: &Txid) -> Result<bool, BitcoindError> {
+        match self.get_wallet_transaction(txid) {
+            // Non wallet transaction?
+            Err(_) => Ok(false),
+            // Confirmed wallet transaction
+            Ok((_, Some(_), _)) => Ok(true),
+            // Not confirmed wallet transaction
+            Ok((_, None, _)) => self.is_in_mempool(txid),
         }
     }
 }

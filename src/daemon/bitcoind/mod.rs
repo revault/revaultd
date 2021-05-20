@@ -1,12 +1,32 @@
-use crate::database::DatabaseError;
+pub mod interface;
+pub mod poller;
+pub mod utils;
+
+use crate::{
+    database::DatabaseError,
+    revaultd::RevaultD,
+    threadmessages::{BitcoindMessageOut, WalletTransaction},
+};
+use common::{assume_ok, config::BitcoindConfig};
+use interface::BitcoinD;
+use poller::poller_main;
+use revault_tx::bitcoin::{Network, Txid};
+
+use std::{
+    process,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
+        Arc, RwLock,
+    },
+    thread,
+    time::Duration,
+};
 
 use jsonrpc::{
     error::{Error, RpcError},
     simple_http,
 };
-
-pub mod actions;
-pub mod interface;
 
 /// An error happened in the bitcoind-manager thread
 #[derive(Debug)]
@@ -63,4 +83,155 @@ impl From<revault_tx::Error> for BitcoindError {
     fn from(e: revault_tx::Error) -> Self {
         Self::RevaultTx(e)
     }
+}
+
+fn check_bitcoind_network(
+    bitcoind: &BitcoinD,
+    config_network: &Network,
+) -> Result<(), BitcoindError> {
+    let chaininfo = bitcoind.getblockchaininfo()?;
+    let chain = chaininfo
+        .get("chain")
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| {
+            BitcoindError::Custom("No valid 'chain' in getblockchaininfo response?".to_owned())
+        })?;
+    let bip70_net = match config_network {
+        Network::Bitcoin => "main",
+        Network::Testnet => "test",
+        Network::Regtest => "regtest",
+        Network::Signet => "signet",
+    };
+
+    if !bip70_net.eq(chain) {
+        return Err(BitcoindError::Custom(format!(
+            "Wrong network, bitcoind is on '{}' but our config says '{}' ({})",
+            chain, bip70_net, config_network
+        )));
+    }
+
+    Ok(())
+}
+
+/// Some sanity checks to be done at startup to make sure our bitcoind isn't going to fail under
+/// our feet for a legitimate reason.
+fn bitcoind_sanity_checks(
+    bitcoind: &BitcoinD,
+    bitcoind_config: &BitcoindConfig,
+) -> Result<(), BitcoindError> {
+    check_bitcoind_network(&bitcoind, &bitcoind_config.network)
+}
+
+/// Connects to and sanity checks bitcoind.
+pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError> {
+    let bitcoind = BitcoinD::new(
+        &revaultd.bitcoind_config,
+        revaultd
+            .watchonly_wallet_file()
+            .expect("Wallet id is set at startup in setup_db()"),
+    )
+    .map_err(|e| {
+        BitcoindError::Custom(format!("Could not connect to bitcoind: {}", e.to_string()))
+    })?;
+
+    while let Err(e) = bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config) {
+        if e.is_warming_up() {
+            log::info!("Bitcoind is warming up. Waiting for it to be back up.");
+            thread::sleep(Duration::from_secs(3))
+        } else {
+            return Err(e);
+        }
+    }
+
+    Ok(bitcoind)
+}
+
+fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {
+    let res = bitcoind.get_wallet_transaction(&txid);
+    if let Ok((hex, blockheight, received_time)) = res {
+        Some(WalletTransaction {
+            hex,
+            blockheight,
+            received_time,
+        })
+    } else {
+        log::trace!(
+            "Got '{:?}' from bitcoind when requesting wallet transaction '{}'",
+            res,
+            txid
+        );
+        None
+    }
+}
+
+/// The bitcoind event loop.
+/// Listens for bitcoind requests (wallet / chain) and poll bitcoind every 30 seconds,
+/// updating our state accordingly.
+pub fn bitcoind_main_loop(
+    rx: Receiver<BitcoindMessageOut>,
+    revaultd: Arc<RwLock<RevaultD>>,
+    bitcoind: Arc<RwLock<BitcoinD>>,
+) -> Result<(), BitcoindError> {
+    // The verification progress announced by bitcoind *at startup* thus won't be updated
+    // after startup check. Should be *exactly* 1.0 when synced, but hey, floats so we are
+    // careful.
+    let sync_progress = Arc::new(RwLock::new(0.0f64));
+    // Used to shutdown the poller thread
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    // We use a thread to 1) wait for bitcoind to be synced 2) poll listunspent
+    let poller_thread = std::thread::spawn({
+        let _revaultd = revaultd.clone();
+        let _bitcoind = bitcoind.clone();
+        let _sync_progress = sync_progress.clone();
+        let _shutdown = shutdown.clone();
+        move || poller_main(_revaultd, _bitcoind, _sync_progress, _shutdown)
+    });
+
+    for msg in rx {
+        match msg {
+            BitcoindMessageOut::Shutdown => {
+                log::info!("Bitcoind received shutdown from main. Exiting.");
+                shutdown.store(true, Ordering::Relaxed);
+                assume_ok!(
+                    assume_ok!(poller_thread.join(), "Joining bitcoind poller thread"),
+                    "Error in bitcoind poller thread"
+                );
+                return Ok(());
+            }
+            BitcoindMessageOut::SyncProgress(resp_tx) => {
+                resp_tx.send(*sync_progress.read().unwrap()).map_err(|e| {
+                    BitcoindError::Custom(format!(
+                        "Sending synchronization progress to main thread: {}",
+                        e
+                    ))
+                })?;
+            }
+            BitcoindMessageOut::WalletTransaction(txid, resp_tx) => {
+                log::trace!("Received 'wallettransaction' from main thread");
+                // FIXME: what if bitcoind isn't synced?
+                resp_tx
+                    .send(wallet_transaction(&bitcoind.read().unwrap(), txid))
+                    .map_err(|e| {
+                        BitcoindError::Custom(format!(
+                            "Sending wallet transaction to main thread: {}",
+                            e
+                        ))
+                    })?;
+            }
+            BitcoindMessageOut::BroadcastTransactions(txs, resp_tx) => {
+                log::trace!("Received 'broadcastransactions' from main thread");
+                resp_tx
+                    .send(bitcoind.read().unwrap().broadcast_transactions(&txs))
+                    .map_err(|e| {
+                        BitcoindError::Custom(format!(
+                            "Sending transactions broadcast result to main thread: {}",
+                            e
+                        ))
+                    })?;
+            }
+        }
+    }
+
+    Ok(())
 }

@@ -1337,12 +1337,6 @@ def test_reorged_cancel(revault_network, bitcoind):
     # Here we go canceling everything again
     bitcoind.generate_block(1, wait_for_mempool=2)
     for w in stks + mans:
-        w.wait_for_logs(
-            [
-                "Unvault transaction at .* is now being canceled",
-                "Cancel tx .* was confirmed",
-            ]
-        )
         wait_for(
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
         )
@@ -1704,12 +1698,6 @@ def test_spends_concurrent(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"])
             == len(deposits)
         )
-        w.wait_for_logs(
-            [
-                f"The deposit utxo created via '{deposit}' was unvaulted"
-                for deposit in deposits
-            ]
-        )
     # We need a single confirmation to consider the Unvault transaction confirmed
     bitcoind.generate_block(1, wait_for_mempool=len(deposits))
     for w in revault_network.participants():
@@ -1810,12 +1798,6 @@ def test_spends_conflicting(revault_network, bitcoind):
     wait_for(
         lambda: len(man.rpc.listvaults(["unvaulting"], deposits_a)["vaults"])
         == len(deposits_a)
-    )
-    man.wait_for_logs(
-        [
-            f"The deposit utxo created via '{deposit}' was unvaulted"
-            for deposit in deposits_a
-        ]
     )
     # We need a single confirmation to consider the Unvault transaction confirmed
     bitcoind.generate_block(1, wait_for_mempool=len(deposits_a))

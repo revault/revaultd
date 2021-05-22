@@ -555,7 +555,7 @@ def test_revocationtxs(revault_network):
         )
 
     # We can't mix up PSBTS (the Cancel can even be detected at parsing time)
-    with pytest.raises(RpcError, match="Invalid Revault transaction"):
+    with pytest.raises(RpcError, match="Invalid Cancel tx: db wtxid"):
         stks[0].rpc.revocationtxs(
             deposit,
             psbts["emergency_tx"],  # here

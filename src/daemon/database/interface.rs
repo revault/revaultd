@@ -740,7 +740,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
             .expect("We store it with as_psbt_serialized");
 
         debug_assert_eq!(
-            psbt.inner_tx().global.unsigned_tx.txid().to_vec(),
+            psbt.tx().txid().to_vec(),
             row.get::<_, Vec<u8>>(2)?,
             "Insane db, txid in column is not the same as psbt's one",
         );
@@ -775,7 +775,7 @@ pub fn db_list_spends(
             let vout: u32 = row.get(5)?;
             let deposit_outpoint = OutPoint { txid, vout };
 
-            let spend_txid = db_spend.psbt.inner_tx().global.unsigned_tx.txid();
+            let spend_txid = db_spend.psbt.tx().txid();
 
             if res.contains_key(&spend_txid) {
                 let (_, outpoints) = res.get_mut(&spend_txid).unwrap();

@@ -501,7 +501,7 @@ pub fn presigned_tx_sighash(
     hashtype: SigHashType,
 ) -> Result<secp256k1::Message, SigError> {
     // Presigned transactions only have one input when handled by revaultd.
-    if !tx.inner_tx().global.unsigned_tx.input.len() == 1 {
+    if !tx.tx().input.len() == 1 {
         return Err(SigError::InsaneTransaction);
     }
 
@@ -515,25 +515,9 @@ pub fn presigned_tx_sighash(
     }
 
     let sighash = tx
-        .signature_hash_internal_input(0, hashtype)
+        .signature_hash(0, hashtype)
         .map_err(|e| SigError::Tx(e.into()))?;
     Ok(secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash"))
-}
-
-/// Check a raw (with no SIGHASH type appended) presigned tx (ie Unvault, Cancel, Emergency, or
-/// UnvaultEmergency) signature.
-pub fn check_signature(
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    tx: &impl RevaultTransaction,
-    pubkey: BitcoinPubKey,
-    sig: &secp256k1::Signature,
-    hashtype: SigHashType,
-) -> Result<(), SigError> {
-    let sighash = presigned_tx_sighash(tx, hashtype)?;
-
-    secp.verify(&sighash, sig, &pubkey.key)?;
-
-    Ok(())
 }
 
 /// Check all complete signatures for revocation transactions (ie Cancel, Emergency,
@@ -566,7 +550,7 @@ pub fn check_unvault_signatures(
     let sighash_type = SigHashType::All;
     let sighash = presigned_tx_sighash(tx, sighash_type)?;
     let sigs = &tx
-        .inner_tx()
+        .psbt()
         .inputs
         .get(0)
         .ok_or(SigError::InsaneTransaction)?
@@ -594,16 +578,16 @@ pub fn check_spend_signatures(
     db_vaults: &HashMap<Txid, DbVault>,
 ) -> Result<(), SigError> {
     let sighash_type = SigHashType::All;
-    let unsigned_tx = &psbt.inner_tx().global.unsigned_tx;
+    let unsigned_tx = &psbt.tx();
 
     // We wouldn't check the signatures of an already valid transaction, would we?
     if psbt.is_finalized() {
         return Err(SigError::InsaneTransaction);
     }
 
-    for (i, psbtin) in psbt.inner_tx().inputs.iter().enumerate() {
+    for (i, psbtin) in psbt.psbt().inputs.iter().enumerate() {
         let sighash = psbt
-            .signature_hash_internal_input(i, sighash_type)
+            .signature_hash(i, sighash_type)
             .expect("In bounds, and we just checked it was not finalized");
         let sighash = secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash");
 
@@ -759,7 +743,7 @@ pub fn share_unvault_signatures(
     )?;
 
     let sigs = &unvault_tx
-        .inner_tx()
+        .psbt()
         .inputs
         .get(0)
         .expect("Unvault has a single input")
@@ -780,7 +764,7 @@ pub fn fetch_cosigs_signatures(
     // Strip the signatures before polling the Cosigning Server. It does not check them
     // anyways, and it makes us hit the Noise message size limit fairly quickly.
     let mut stripped_tx = spend_tx.clone();
-    for psbtin in stripped_tx.inner_tx_mut().inputs.iter_mut() {
+    for psbtin in stripped_tx.psbt_mut().inputs.iter_mut() {
         psbtin.partial_sigs.clear();
     }
 
@@ -799,14 +783,11 @@ pub fn fetch_cosigs_signatures(
 
         let sign_res: SignResult = transport.send_req(&msg.into())?;
         let signed_tx = sign_res.tx.ok_or(CommunicationError::CosigAlreadySigned)?;
-        log::debug!(
-            "Cosigning server returned: '{}'",
-            &signed_tx.as_psbt_string(),
-        );
+        log::debug!("Cosigning server returned: '{}'", &signed_tx,);
 
         for (i, psbtin) in signed_tx.into_psbt().inputs.into_iter().enumerate() {
             spend_tx
-                .inner_tx_mut()
+                .psbt_mut()
                 .inputs
                 .get_mut(i)
                 .ok_or(CommunicationError::CosigInsanePsbt)?

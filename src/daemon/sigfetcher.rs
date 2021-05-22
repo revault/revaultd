@@ -3,7 +3,7 @@ use crate::{
     control::{get_presigs, CommunicationError},
     database::{
         actions::db_update_presigned_tx,
-        interface::db_transactions_sig_missing,
+        interface::{db_transactions_sig_missing, db_vault},
         schema::{DbTransaction, RevaultTx, TransactionType},
         DatabaseError,
     },
@@ -81,6 +81,8 @@ fn get_sigs(
 ) -> Result<(), SignatureFetcherError> {
     let db_path = &revaultd.db_file();
     let secp_ctx = &revaultd.secp_ctx;
+    let db_vault = db_vault(&db_path, vault_id)?.expect("Presigned transactions without vault?");
+    let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
 
     let signatures = get_presigs(revaultd, tx.txid())?;
     for (key, sig) in signatures {
@@ -88,6 +90,19 @@ fn get_sigs(
             compressed: true,
             key,
         };
+        if !stk_keys.contains(&pubkey) {
+            // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
+            // keys something dodgy's happening.
+            log::warn!(
+                "Coordinator answered to 'getsigs' for tx '{}' with a key '{}' that is \
+                 not part of the stakeholders pubkeys '{:?}'",
+                tx.txid(),
+                key,
+                stk_keys
+            );
+            continue;
+        }
+
         // FIXME: don't blindly assume 0 here..
         if tx.psbt().inputs[0].partial_sigs.contains_key(&pubkey) {
             continue;

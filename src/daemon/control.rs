@@ -742,6 +742,7 @@ pub fn share_unvault_signatures(
         &revaultd.coordinator_noisekey,
     )?;
 
+    // FIXME: don't blindly assume the index here..
     let sigs = &unvault_tx
         .psbt()
         .inputs

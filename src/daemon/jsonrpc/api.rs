@@ -534,11 +534,8 @@ impl RpcApi for RpcImpl {
 
         // They must have included *at least* a signature for our pubkey
         let our_pubkey = revaultd
-            .our_stk_xpub
-            .expect("We are a stakeholder")
-            .derive_pub(secp_ctx, &[deriv_index])
-            .expect("The derivation index stored in the database is sane (unhardened)")
-            .public_key;
+            .our_stk_xpub_at(deriv_index)
+            .expect("We are a stakeholder, checked at the beginning of the call.");
         if !cancel_sigs.contains_key(&our_pubkey) {
             return Err(JsonRpcError::invalid_params(format!(
                 "No signature for ourselves ({}) in Cancel transaction",
@@ -556,6 +553,33 @@ impl RpcApi for RpcImpl {
             return Err(JsonRpcError::invalid_params(
                 "No signature for ourselves in UnvaultEmergency transaction".to_string(),
             ));
+        }
+
+        // There is no reason for them to include an unnecessary signature, so be strict.
+        let stk_keys = revaultd.stakeholders_xpubs_at(deriv_index);
+        for (ref key, _) in cancel_sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in Cancel transaction signatures: {}",
+                    key
+                )));
+            }
+        }
+        for (ref key, _) in emer_sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in Emergency transaction signatures: {}",
+                    key
+                )));
+            }
+        }
+        for (ref key, _) in unvault_emer_sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in UnvaultEmergency transaction signatures: {}",
+                    key
+                )));
+            }
         }
 
         // Don't share anything if we were given invalid signatures. This
@@ -708,18 +732,27 @@ impl RpcApi for RpcImpl {
             .get(0)
             .expect("UnvaultTransaction always has 1 input")
             .partial_sigs;
-        // They must have included *at least* a signature for our pubkey
-        let our_pubkey = revaultd
-            .our_stk_xpub
-            .expect("We are a stakeholder")
-            .derive_pub(secp_ctx, &[db_vault.derivation_index])
-            .expect("The derivation index stored in the database is sane (unhardened)")
-            .public_key;
-        if !sigs.contains_key(&our_pubkey) {
+        let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
+        let our_key = revaultd
+            .our_stk_xpub_at(db_vault.derivation_index)
+            .expect("We are a stakeholder, checked at the beginning.");
+        // They must have included *at least* a signature for our pubkey, and must not include an
+        // unnecessary signature.
+        if !sigs.contains_key(&our_key) {
             return Err(JsonRpcError::invalid_params(format!(
                 "No signature for ourselves ({}) in Unvault transaction",
-                our_pubkey
+                our_key
             )));
+        }
+
+        // There is no reason for them to include an unnecessary signature, so be strict.
+        for (ref key, _) in sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in Cancel transaction signatures: {}",
+                    key
+                )));
+            }
         }
 
         // Of course, don't send a PSBT with an invalid signature

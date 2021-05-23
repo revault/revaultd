@@ -787,13 +787,16 @@ pub fn fetch_cosigs_signatures(
         log::debug!("Cosigning server returned: '{}'", &signed_tx,);
 
         for (i, psbtin) in signed_tx.into_psbt().inputs.into_iter().enumerate() {
-            spend_tx
-                .psbt_mut()
-                .inputs
-                .get_mut(i)
-                .ok_or(CommunicationError::CosigInsanePsbt)?
-                .partial_sigs
-                .extend(psbtin.partial_sigs);
+            for (key, sig) in psbtin.partial_sigs {
+                let (_, rawsig) = sig
+                    .split_last()
+                    .ok_or(CommunicationError::CosigInsanePsbt)?;
+                let sig = secp256k1::Signature::from_der(&rawsig)
+                    .map_err(|_| CommunicationError::CosigInsanePsbt)?;
+                spend_tx
+                    .add_signature(i, key, (sig, SigHashType::All), &revaultd.secp_ctx)
+                    .map_err(|_| CommunicationError::CosigInsanePsbt)?;
+            }
         }
     }
 

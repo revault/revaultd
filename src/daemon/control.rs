@@ -90,6 +90,8 @@ pub struct VaultOnchainTransactions {
 pub struct ListSpendEntry {
     pub deposit_outpoints: Vec<OutPoint>,
     pub psbt: SpendTransaction,
+    pub cpfp_index: usize,
+    pub change_index: Option<usize>,
 }
 
 /// Contains information regarding a specific vault

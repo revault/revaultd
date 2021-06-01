@@ -29,6 +29,7 @@ use common::VERSION;
 
 use revault_tx::{
     bitcoin::{util::bip32, Address, OutPoint, Transaction as BitcoinTransaction, TxOut, Txid},
+    miniscript::DescriptorTrait,
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
         RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -1075,9 +1076,49 @@ impl RpcApi for RpcImpl {
                     continue;
                 }
             }
+
+            let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
+                .map_err(|e| internal_error!(e))?;
+            let derivation_index = spent_vaults
+                .values()
+                .map(|v| v.derivation_index)
+                .max()
+                .expect("Spent vaults should not be empty");
+            let cpfp_script_pubkey = revaultd
+                .cpfp_descriptor
+                .derive(derivation_index, &revaultd.secp_ctx)
+                .into_inner()
+                .script_pubkey();
+            let deposit_address = revaultd
+                .deposit_descriptor
+                .derive(derivation_index, &revaultd.secp_ctx)
+                .into_inner()
+                .script_pubkey();
+            let mut cpfp_index = None;
+            let mut change_index = None;
+            for (i, txout) in db_spend
+                .psbt
+                .inner_tx()
+                .global
+                .unsigned_tx
+                .output
+                .iter()
+                .enumerate()
+            {
+                if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
+                    cpfp_index = Some(i);
+                }
+
+                if deposit_address == txout.script_pubkey {
+                    change_index = Some(i);
+                }
+            }
+
             listspend_entries.push(ListSpendEntry {
                 psbt: db_spend.psbt,
                 deposit_outpoints,
+                cpfp_index: cpfp_index.expect("We always create a CPFP output"),
+                change_index,
             });
         }
 

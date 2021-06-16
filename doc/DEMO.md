@@ -51,7 +51,7 @@ It's important to clarify how many managers and how many stakeholders you'll hav
 
 Revault supposes that every manager and every stakeholder has its own computer, but since we're just trying out things, we'll use a single computer in this tutorial. If you want to try out with multiple machines, please see the (below)[#Organizing the perfect Revault party] section.
 
-Each entity in the company will have a pair of BIP32 keys: generating them is the first step in the ceremony. The ceremony is not fully specified yet, but it will instruct managers and stakeholders on how to securely create and store the keys. Since we're on regtest anyway, we don't really care much about security in this specific example: just create the keys on bip32.org or, if you don't know how to do it, just use the ones provided in the [example config](contrib/config_regtest.toml).
+Each entity in the company will have a pair of BIP32 keys: generating them is the first step in the ceremony. The ceremony is not fully specified yet, but it will instruct managers and stakeholders on how to securely create and store the keys. Since we're on regtest anyway, we don't really care much about security in this specific example: just create the keys on bip32.org or, if you don't know how to do it, just use the ones provided in the [example config](../contrib/config_regtest.toml).
 
 At this point your notes should contain:
 ```

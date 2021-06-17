@@ -108,8 +108,9 @@ either `status` or deposit `outpoints`.
 
 | Parameter   | Type         | Description                                                                                     |
 | ----------- | ------------ | ----------------------------------------------------------------------------------------------- |
-| `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
 | `status`    | string array | Vault status -- optional, see [vault statuses](#vault-statuses) for possible values             |
+| `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
+
 
 #### Response
 

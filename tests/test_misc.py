@@ -292,6 +292,7 @@ def test_listspendtxs(revault_network, bitcoind):
         rn.secure_vault(v)
         rn.activate_vault(v)
 
+    # _any_spend_data never creates change
     destinations, feerate = rn._any_spend_data(vaults)
     deposits = []
     deriv_indexes = []
@@ -304,7 +305,10 @@ def test_listspendtxs(revault_network, bitcoind):
     for man in rn.mans():
         spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
         man.rpc.updatespendtx(spend_tx)
-        assert len(man.rpc.listspendtxs(["non_final"])["spend_txs"]) == 1
+        spend_txs = man.rpc.listspendtxs(["non_final"])["spend_txs"]
+        assert len(spend_txs) == 1
+        assert spend_txs[0]["change_index"] is None
+        assert spend_txs[0]["cpfp_index"] is not None
 
     spend_psbt = serializations.PSBT()
     spend_psbt.deserialize(spend_tx)
@@ -317,7 +321,10 @@ def test_listspendtxs(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"])
             == len(deposits)
         )
-    assert len(man.rpc.listspendtxs(["pending"])["spend_txs"]) == 1
+    spend_txs = man.rpc.listspendtxs(["pending"])["spend_txs"]
+    assert len(spend_txs) == 1
+    assert spend_txs[0]["change_index"] is None
+    assert spend_txs[0]["cpfp_index"] is not None
 
     rn.bitcoind.generate_block(rn.csv - 1, wait_for_mempool=len(deposits))
 
@@ -327,7 +334,10 @@ def test_listspendtxs(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
             == len(deposits)
         )
-    assert len(man.rpc.listspendtxs(["pending"])["spend_txs"]) == 1
+    spend_txs = man.rpc.listspendtxs(["pending"])["spend_txs"]
+    assert len(spend_txs) == 1
+    assert spend_txs[0]["change_index"] is None
+    assert spend_txs[0]["cpfp_index"] is not None
 
     rn.bitcoind.generate_block(1)
 
@@ -337,12 +347,18 @@ def test_listspendtxs(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["spending"], deposits)["vaults"])
             == len(deposits)
         )
-    assert len(man.rpc.listspendtxs(["broadcasted"])["spend_txs"]) == 1
+    spend_txs = man.rpc.listspendtxs(["broadcasted"])["spend_txs"]
+    assert len(spend_txs) == 1
+    assert spend_txs[0]["change_index"] is None
+    assert spend_txs[0]["cpfp_index"] is not None
 
     rn.bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
 
     # Transaction is spent, the status is "broadcasted"
-    assert len(man.rpc.listspendtxs(["broadcasted"])["spend_txs"]) == 1
+    spend_txs = man.rpc.listspendtxs(["broadcasted"])["spend_txs"]
+    assert len(spend_txs) == 1
+    assert spend_txs[0]["change_index"] is None
+    assert spend_txs[0]["cpfp_index"] is not None
     for w in rn.participants():
         wait_for(
             lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
@@ -369,6 +385,21 @@ def test_listspendtxs(revault_network, bitcoind):
     rn.cancel_vault(v)
     # Status of the spend is still broadcasted, even if the transaction is canceled
     assert len(rn.man(1).rpc.listspendtxs(["broadcasted"])["spend_txs"]) == 2
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_listspendtxs_check_indexes(revault_network, bitcoind):
+    # Spending with the change output
+    rn = revault_network
+    rn.deploy(n_stakeholders=2, n_managers=1, n_stkmanagers=0, csv=5)
+    v = rn.fund(6)
+    rn.secure_vault(v)
+    rn.activate_vault(v)
+    address = rn.bitcoind.rpc.getnewaddress()
+    rn.spend_vaults([v], {address: 500000000}, 1)
+    spend_txs = rn.man(0).rpc.listspendtxs()["spend_txs"]
+    assert len(spend_txs) == 1
+    assert spend_txs[0]["change_index"] is not None
+    assert spend_txs[0]["cpfp_index"] is not None
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -1540,10 +1571,14 @@ def test_spendtx_management(revault_network, bitcoind):
     assert {
         "deposit_outpoints": [deposit],
         "psbt": spend_tx,
+        "change_index": None,
+        "cpfp_index": 0,
     } in man.rpc.listspendtxs()["spend_txs"]
     assert {
         "deposit_outpoints": [deposit, deposit_b],
         "psbt": spend_tx_b,
+        "change_index": 3,
+        "cpfp_index": 0,
     } in man.rpc.listspendtxs()["spend_txs"]
 
     # Now we could try to broadcast it..

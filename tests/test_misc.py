@@ -405,14 +405,15 @@ def test_listspendtxs_check_indexes(revault_network, bitcoind):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listonchaintransactions(revault_network):
     """Just a small sanity check of the API"""
-    revault_network.deploy(2, 1)
-    vaultA = revault_network.fund(0.2222221)
-    vaultB = revault_network.fund(122.88881)
+    rn = revault_network
+    rn.deploy(2, 1, csv=5)
+    vaultA = rn.fund(0.2222221)
+    vaultB = rn.fund(122.88881)
     depositA = f"{vaultA['txid']}:{vaultA['vout']}"
     depositB = f"{vaultB['txid']}:{vaultB['vout']}"
 
     # Sanity check the API
-    for w in revault_network.participants():
+    for w in rn.participants():
         w.wait_for_deposits([depositA, depositB])
         res = w.rpc.listonchaintransactions([depositA, depositB])[
             "onchain_transactions"
@@ -425,7 +426,53 @@ def test_listonchaintransactions(revault_network):
         assert res["cancel"] is None
         assert res["emergency"] is None
         assert res["unvault_emergency"] is None
+        assert res["spend"] is None
 
+    for v in [vaultA, vaultB]:
+        rn.secure_vault(v)
+        rn.activate_vault(v)
+    rn.spend_vaults_anyhow([vaultA, vaultB])
+
+    for w in rn.participants():
+        res = w.rpc.listonchaintransactions([depositA, depositB])[
+            "onchain_transactions"
+        ][0]
+        assert res["deposit"]["blockheight"] is not None
+        assert res["deposit"]["received_at"] is not None
+        assert res["deposit"]["hex"] is not None
+        assert res["unvault"]["blockheight"] is not None
+        assert res["unvault"]["received_at"] is not None
+        assert res["unvault"]["hex"] is not None
+        assert res["cancel"] is None
+        assert res["emergency"] is None
+        assert res["unvault_emergency"] is None
+        assert res["spend"]["blockheight"] is not None
+        assert res["spend"]["received_at"] is not None
+        assert res["spend"]["hex"] is not None
+
+    vaultC = rn.fund(23)
+    depositC = f"{vaultC['txid']}:{vaultC['vout']}"
+    rn.secure_vault(vaultC)
+    rn.activate_vault(vaultC)
+    rn.unvault_vaults_anyhow([vaultC])
+    rn.cancel_vault(vaultC)
+
+    for w in rn.participants():
+        res = w.rpc.listonchaintransactions([depositC])[
+            "onchain_transactions"
+        ][0]
+        assert res["deposit"]["blockheight"] is not None
+        assert res["deposit"]["received_at"] is not None
+        assert res["deposit"]["hex"] is not None
+        assert res["unvault"]["blockheight"] is not None
+        assert res["unvault"]["received_at"] is not None
+        assert res["unvault"]["hex"] is not None
+        assert res["cancel"]["blockheight"] is not None
+        assert res["cancel"]["received_at"] is not None
+        assert res["cancel"]["hex"] is not None
+        assert res["emergency"] is None
+        assert res["unvault_emergency"] is None
+        assert res["spend"] is None
 
 def psbt_add_input(psbt_str):
     psbt = serializations.PSBT()

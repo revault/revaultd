@@ -419,7 +419,12 @@ pub fn onchain_txs(
                     unvault_emergency =
                         bitcoind_wallet_tx(bitcoind_tx, unemer.into_psbt().extract_tx().txid())?;
                 }
-                let spend = None; // TODO!
+
+                let spend = if let Some(spend_txid) = db_vault.spend_txid {
+                    bitcoind_wallet_tx(bitcoind_tx, spend_txid)?
+                } else {
+                    None
+                };
 
                 (unvault, cancel, emergency, unvault_emergency, spend)
             }

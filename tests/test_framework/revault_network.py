@@ -493,6 +493,8 @@ class RevaultNetwork:
         """
         Spend these {vaults} to these {destinations} (mapping of addresses to amounts), not
         confirming the Spend transaction.
+        Make sure to call this only with revault deployment with a low (<500) CSV, or you'll encounter
+        an ugly timeout from bitcoinlib.
 
         :return: the list of spent deposits along with the Spend PSBT.
         """
@@ -531,6 +533,8 @@ class RevaultNetwork:
     def spend_vaults(self, vaults, destinations, feerate):
         """
         Spend these {vaults} to these {destinations} (mapping of addresses to amounts).
+        Make sure to call this only with revault deployment with a low (<500) CSV, or you'll encounter
+        an ugly timeout from bitcoinlib.
 
         :return: the list of spent deposits along with the Spend PSBT.
         """

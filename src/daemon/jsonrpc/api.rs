@@ -5,9 +5,10 @@
 use crate::{
     control::{
         announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
-        check_spend_signatures, check_unvault_signatures, fetch_cosigs_signatures,
-        finalized_emer_txs, listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
-        share_unvault_signatures, vaults_from_deposits, ListSpendEntry, ListSpendStatus, RpcUtils,
+        check_spend_signatures, check_spend_transaction_size, check_unvault_signatures,
+        fetch_cosigs_signatures, finalized_emer_txs, listvaults_from_db, onchain_txs,
+        presigned_txs, share_rev_signatures, share_unvault_signatures, vaults_from_deposits,
+        ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -980,12 +981,17 @@ impl RpcApi for RpcImpl {
         )
         .map_err(|e| {
             JsonRpcError::invalid_params(format!("Error while building spend transaction: {}", e))
-        })?
-        .as_psbt_string();
+        })?;
+
+        if !check_spend_transaction_size(&revaultd, tx_res.clone()) {
+            return Err(JsonRpcError::invalid_params(format!(
+                "Spend transaction is too large, try spending less outpoints"
+            )));
+        };
         log::debug!("Final Spend transaction: '{:?}'", tx_res);
 
         Ok(json!({
-            "spend_tx": tx_res,
+            "spend_tx": tx_res.as_psbt_string(),
         }))
     }
 
@@ -1171,6 +1177,13 @@ impl RpcApi for RpcImpl {
             ))
         })?;
 
+        // Check that we can actually send the tx to the coordinator...
+        if !check_spend_transaction_size(&revaultd, spend_tx.psbt.clone()) {
+            return Err(JsonRpcError::invalid_params(format!(
+                "Spend transaction is too large, try spending less outpoints"
+            )));
+        };
+
         // Now we can ask all the cosigning servers for their signatures
         log::debug!("Fetching signatures from Cosigning servers");
         fetch_cosigs_signatures(&revaultd, &mut spend_tx.psbt).map_err(|e| {
@@ -1189,7 +1202,7 @@ impl RpcApi for RpcImpl {
         })?;
 
         // And then announce it to the Coordinator
-        let deposit_outpoints = spent_vaults
+        let deposit_outpoints: Vec<_> = spent_vaults
             .values()
             .map(|db_vault| db_vault.deposit_outpoint)
             .collect();

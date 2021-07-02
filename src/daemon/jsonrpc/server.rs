@@ -488,20 +488,12 @@ pub fn rpcserver_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, RpcUtils, UserRole,
-    };
-    use crate::{
-        revaultd::RevaultD,
-        threadmessages::{BitcoindMessageOut, SigFetcherMessageOut},
-    };
-    use common::config::Config;
+    use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, UserRole};
+    use crate::utils::test_utils::{dummy_rpcutil, test_datadir};
 
     use std::{
         fs,
         io::{Cursor, Read, Write},
-        path::PathBuf,
-        sync::{mpsc, Arc, RwLock},
         thread,
         time::Duration,
     };
@@ -511,98 +503,12 @@ mod tests {
     #[cfg(windows)]
     use uds_windows::UnixStream;
 
-    // Get a dummy handle for the RPC calls. We don't actually test RPC calls requiring it here but
-    // we need to because types.
-    // FIXME: we could do something cleaner at some point
-    fn dummy_rpcutil() -> RpcUtils {
-        let repo_root = PathBuf::from(file!())
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let datadir_path: PathBuf = [
-            repo_root.to_str().unwrap(),
-            "test_data",
-            "scratch_datadir_jsonrpc",
-        ]
-        .iter()
-        .collect();
-
-        fs::remove_dir_all(&datadir_path).unwrap_or_else(|_| ());
-
-        let toml_str = r#"
-            daemon = false
-            log_level = "trace"
-            data_dir = "/home/wizardsardine/dummy/folder/"
-
-            coordinator_host = "127.0.0.1:1"
-            coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
-
-            [scripts_config]
-cpfp_descriptor = "wsh(thresh(1,pk(xpub6BhQvtXJmw6hi2ALFeWMi9m7G8rGterJnMTNRqUm29uvB6dVTELvnEs7hfxyN3JM48FR2oh4t8chsvw7bRRRukkyhqp9WZD4oB9UvxAMpqC/*)))#c6th4le3"
-deposit_descriptor = "wsh(multi(2,xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ/*,xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa/*))#wu049esu"
-unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6De9kLSb2vvujzLqBbQvcnfaNfCGv8vBKNikWsvu3yDL6CpdNEE5CKH9J6TpT6ARFsiAdTpH7iJdA8tgAwNeo46FH9CSTv6CURBJSCPAeUu/*)),and_v(v:multi(2,0332e5c86d0938a83ed80d13c5644ec92fd16b9d7184bb35d6ead8227b4ad47803,02807e5c4f7b228aa9f1aef77effde768356480f5268376644464e714d0205eb1c),older(6)),thresh(2,pkh(xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ/*),a:pkh(xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa/*))))#ef5vfw3p"
-
-
-            [bitcoind_config]
-            network = "bitcoin"
-            cookie_path = "/home/user/.bitcoin/.cookie"
-            addr = "127.0.0.1:8332"
-            poll_interval_secs = 12
-
-            # We are one of the above managers
-            [manager_config]
-            xpub = "xpub6De9kLSb2vvujzLqBbQvcnfaNfCGv8vBKNikWsvu3yDL6CpdNEE5CKH9J6TpT6ARFsiAdTpH7iJdA8tgAwNeo46FH9CSTv6CURBJSCPAeUu"
-            cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]
-            # We are one of the above stakeholders
-            [stakeholder_config]
-            xpub = "xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ"
-            watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
-            emergency_address = "bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej"
-        "#;
-        let mut config: Config =
-            toml::from_str(toml_str).expect("Valid from common/config unit test");
-        config.data_dir = Some(datadir_path);
-        let revaultd = Arc::from(RwLock::from(RevaultD::from_config(config).unwrap()));
-
-        let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
-        let (sigfetcher_tx, sigfetcher_rx) = mpsc::channel();
-
-        let bitcoind_thread = Arc::from(RwLock::from(thread::spawn(move || {
-            for msg in bitcoind_rx {
-                match msg {
-                    BitcoindMessageOut::Shutdown => return,
-                    _ => unreachable!(),
-                }
-            }
-        })));
-        let sigfetcher_thread = Arc::from(RwLock::from(thread::spawn(move || {
-            for msg in sigfetcher_rx {
-                match msg {
-                    SigFetcherMessageOut::Shutdown => return,
-                }
-            }
-        })));
-
-        RpcUtils {
-            revaultd,
-            bitcoind_tx,
-            bitcoind_thread,
-            sigfetcher_tx,
-            sigfetcher_thread,
-        }
-    }
-
     // Redundant with functional tests but useful for testing the Windows loop
     // until the functional tests suite can run on it.
     #[test]
     fn simple_write_recv() {
-        let rpcutils = dummy_rpcutil();
+        let datadir = test_datadir();
+        let rpcutils = dummy_rpcutil(datadir.clone(), UserRole::ManagerStakeholder);
         let revaultd_datadir = rpcutils.revaultd.read().unwrap().data_dir.clone();
         let mut rpc_socket_path = revaultd_datadir.clone();
         rpc_socket_path.push("revaultd_rpc");
@@ -682,7 +588,7 @@ unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6De9kLSb2vvujzLqBbQvcnfaNfCGv8vB
         drop(sock);
         server_loop_thread.join().unwrap();
 
-        fs::remove_dir_all(&revaultd_datadir).unwrap();
+        fs::remove_dir_all(&datadir).unwrap();
     }
 
     #[test]

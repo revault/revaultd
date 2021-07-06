@@ -70,8 +70,7 @@ addr = "127.0.0.1:8332"
         RevaultD::from_config(config).expect("Creating state from config")
     }
 
-    // Get a dummy handle for the RPC calls. We don't actually test RPC calls requiring it here but
-    // we need to because types.
+    // Get a dummy handle for the RPC calls.
     // FIXME: we could do something cleaner at some point
     pub fn dummy_rpcutil(datadir: PathBuf, role: UserRole) -> RpcUtils {
         let revaultd = Arc::from(RwLock::from(dummy_revaultd(datadir, role)));

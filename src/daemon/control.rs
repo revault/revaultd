@@ -508,7 +508,7 @@ pub fn presigned_tx_sighash(
     hashtype: SigHashType,
 ) -> Result<secp256k1::Message, SigError> {
     // Presigned transactions only have one input when handled by revaultd.
-    if !tx.inner_tx().global.unsigned_tx.input.len() == 1 {
+    if tx.inner_tx().global.unsigned_tx.input.len() != 1 {
         return Err(SigError::InsaneTransaction);
     }
 

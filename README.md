@@ -5,7 +5,7 @@
 [Revault](https://github.com/revault/practical-revault/blob/master/revault.pdf) is a
 Bitcoin vault architecture for multi-party situations.
 
-Join `#revault` on freenode for discussing Revault development.
+Join [`#revault` on Libera](https://web.libera.chat/?channels=#revault) for discussing Revault development.
 
 ## About revaultd
 

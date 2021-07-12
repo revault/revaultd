@@ -896,13 +896,21 @@ mod test {
         setup_db,
         utils::test_utils::{dummy_revaultd, test_datadir},
     };
-    use revault_net::bitcoin::{
-        blockdata::transaction::OutPoint, hash_types::Txid, util::amount::Amount,
-        util::bip32::ChildNumber,
-    };
-    use revault_tx::transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+    use revault_tx::{
+        bitcoin::{
+            blockdata::transaction::OutPoint,
+            hash_types::Txid,
+            hashes::hex::FromHex,
+            network::constants::Network,
+            secp256k1,
+            util::{amount::Amount, bip143::SigHashCache, bip32::ChildNumber},
+            PrivateKey as BitcoinPrivKey, PublicKey as BitcoinPubKey, SigHashType,
+        },
+        miniscript::descriptor::{DescriptorPublicKey, DescriptorSinglePub},
+        transactions::{
+            CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+            UnvaultEmergencyTransaction, UnvaultTransaction,
+        },
     };
     use std::{fs, str::FromStr};
 
@@ -1698,5 +1706,702 @@ mod test {
         assert!(txs.contains(&unvault_emer3));
 
         fs::remove_dir_all(&datadir).unwrap();
+    }
+
+    #[test]
+    fn test_presigned_tx_sighash() {
+        let datadir = test_datadir();
+        let revaultd = dummy_revaultd(datadir, UserRole::ManagerStakeholder);
+
+        // A RevaultTransaction with multiple inputs
+        let tx = CancelTransaction::from_psbt_str("cHNidP8BAIcCAAAAAiusDp4Hqco8rCil4hFJ7XdB0zPYQ0+ndoczpxjmLweRAAAAAAD9////K6wOngepyjysKKXiEUntd0HTM9hDT6d2hzOnGOYvB5EAAAAAAP3///8Bes3LHQAAAAAiACAiB1URdpLbPVOgR361M5byVJWUrSorRzKB9ls5e4WZEQAAAAAAAQErpg/MHQAAAAAiACD81LIaR5tvZke/RiX8d1TzDKcJHsnQr7Y8HRBh/Txh8SICAryqF/aeT6OwqH48wpkNaKu5BZqcZXzgyl4Z758P0YuESDBFAiEAxTjt2+FUGQYvyk4s22KffTBG6EUyMenpGZ9gPeKPM6ECIDQ1Bxds9DZjpTGAHgmIZtru1HA9WGeStbgKH7cQUeq6gSICAxjzGCXfRtFhIh3oMXqXJGNnIAASdnv3ew8UlNfn7N5ZSDBFAiEA/FXZdFvem9r9Rgj/ndhW/5k9nhA1GbpAUx15BItV4PgCICy+YnzAFGiXPZVR3um6GW/T0uxt3Wzhi289nqUaHXFDgQEDBIEAAAABBaghAgPHSfAloH4bK1PlRN6K+IzAbbxkf/YS1Ki1aS+XwQe7rFGHZHapFKH2KeYE3b7EwzjxOTdU46doSmy3iKxrdqkUmEKNXQMQl/KOoGRty6RxMQ5QrgeIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQEfNgAAAAAAAAAWABQAAAAAAAAAAAAAAAAAAAAAAAAAAAEDBAEAAAAAAQFHUiECvKoX9p5Po7CofjzCmQ1oq7kFmpxlfODKXhnvnw/Ri4QhAxjzGCXfRtFhIh3oMXqXJGNnIAASdnv3ew8UlNfn7N5ZUq4A").unwrap();
+        assert!(presigned_tx_sighash(&tx, SigHashType::AllPlusAnyoneCanPay)
+            .unwrap_err()
+            .to_string()
+            .contains(&SigError::InsaneTransaction.to_string()));
+
+        // A RevaultTransaction already finalized
+        let mut tx = UnvaultTransaction::from_psbt_str("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").unwrap();
+        tx.finalize(&revaultd.secp_ctx).unwrap();
+        assert!(presigned_tx_sighash(&tx, SigHashType::All)
+            .unwrap_err()
+            .to_string()
+            .contains(&SigError::InsaneTransaction.to_string()));
+
+        // A RevaultTransaction with the wrong SigHashType
+        let tx = UnvaultTransaction::from_psbt_str("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").unwrap();
+        assert!(presigned_tx_sighash(&tx, SigHashType::Single)
+            .unwrap_err()
+            .to_string()
+            .contains(&SigError::InvalidSighash.to_string()));
+
+        // And finally, a proper RevaultTransaction :)
+        let tx = UnvaultTransaction::from_psbt_str("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").unwrap();
+        presigned_tx_sighash(&tx, SigHashType::All).unwrap();
+    }
+
+    fn create_keys(
+        ctx: &secp256k1::Secp256k1<secp256k1::All>,
+        secret_slice: &[u8],
+    ) -> (BitcoinPrivKey, BitcoinPubKey) {
+        let secret_key = secp256k1::SecretKey::from_slice(secret_slice).unwrap();
+        let private_key = BitcoinPrivKey {
+            compressed: true,
+            network: Network::Regtest,
+            key: secret_key,
+        };
+        let public_key = BitcoinPubKey::from_private_key(&ctx, &private_key);
+        (private_key, public_key)
+    }
+
+    #[test]
+    fn test_check_signature() {
+        let revaultds = [
+            dummy_revaultd(test_datadir(), UserRole::Manager),
+            dummy_revaultd(test_datadir(), UserRole::ManagerStakeholder),
+            dummy_revaultd(test_datadir(), UserRole::Stakeholder),
+        ];
+
+        // We need a ctx that can sign as well (revaultd context is verify only)
+        let ctx = secp256k1::Secp256k1::new();
+
+        let (private_key, public_key) =
+            create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+
+        // Let's create a valid signature
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BAKgCAAAAAWQYLaJLKOGr2VUPYwlZz5UStWUr7SlxGT+K8S8ubTM1AAAAAAADAAAAA6BCAAAAAAAAIgAg6eJKGnlvCyzkIYItHMBwQDkooqkNDi9RvlVWyl+rYTGA8PoCAAAAABYAFCgf4ZTSb/CpYwWa+Wp0yRMIJoVYf4D4AgAAAAAiACB18mkXdMgWd4MYRrAoIgDiiLLFlxC1j3Qxg9SSVQfbxQAAAAAAAQErybfzBQAAAAAiACCoQFnKMvBMFQZ1py8aLwPpRU6pUCx/LKGU9VMp//zoOwEDBAEAAAABBaghAgKTOrEDfq0KpKeFjG1J1nBeH7O8X2awCRive58A7NUmrFGHZHapFHKpXyKvmhuuuFL5qVJy+MIdmPJkiKxrdqkUtsmtuJyMk3Jsg+KhtdlHidd7lWGIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQK1323qfhEH7yMqxloxMQOfxx7VhZrl5zso8JRdkhBfH6xRhwAAAQFHUiECWC3tv0T0ZWTl2M2wZ1NtYOvjTNHRgBz/Ubv516wom0MhA0cE3stVtaqI/9HvXQY2YkjBMU4ZZVETb/FOq4u6SkkOUq4A").unwrap();
+        let sighash = presigned_tx_sighash(&tx, SigHashType::All).unwrap();
+        let sig = ctx.sign(&sighash, &private_key.key);
+
+        // Happy path: everything works :)
+        for revaultd in &revaultds {
+            check_signature(
+                &revaultd.secp_ctx,
+                &tx,
+                public_key.clone(),
+                &sig,
+                SigHashType::All,
+            )
+            .unwrap();
+        }
+
+        // If the signature is valid, adding it to the tx won't cause any troubles...
+        tx.add_signature(0, public_key, (sig, SigHashType::All))
+            .unwrap();
+
+        // Now, onto with the sad paths...
+
+        // The signature is correct, but signed with SigHashType::All and checked against
+        // SigHashType::None
+        for revaultd in &revaultds {
+            assert!(check_signature(
+                &revaultd.secp_ctx,
+                &tx,
+                public_key.clone(),
+                &sig,
+                SigHashType::AllPlusAnyoneCanPay,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Signature verification error"));
+        }
+
+        // The signature is correct, but signed by another key
+        let (_, another_public_key) =
+            create_keys(&ctx, &[3; secp256k1::constants::SECRET_KEY_SIZE]);
+        for revaultd in &revaultds {
+            assert!(check_signature(
+                &revaultd.secp_ctx,
+                &tx,
+                another_public_key,
+                &sig,
+                SigHashType::All,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Signature verification error"));
+        }
+
+        // The signature is correct, but signs a completely different tx
+        let another_tx = UnvaultTransaction::from_psbt_str("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").unwrap();
+        for revaultd in &revaultds {
+            assert!(check_signature(
+                &revaultd.secp_ctx,
+                &another_tx,
+                public_key.clone(),
+                &sig,
+                SigHashType::All,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Signature verification error"));
+        }
+
+        // Checking against a completely different signature
+        let hex = Vec::<u8>::from_hex("304402203d81027376dbad3ed5632ceb3769b2020d0eae90c0f9543828048c3eeb1b825a02201b988847ee7d18930644eab0a0906799fdc68a0fb639270edf3ed0889b597fee").unwrap();
+        let another_sig = secp256k1::Signature::from_der(&hex).unwrap();
+        for revaultd in &revaultds {
+            assert!(check_signature(
+                &revaultd.secp_ctx,
+                &tx,
+                public_key,
+                &another_sig,
+                SigHashType::All,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Signature verification error"));
+        }
+    }
+
+    #[test]
+    fn test_check_revocation_signatures() {
+        let revaultds = [
+            dummy_revaultd(test_datadir(), UserRole::Manager),
+            dummy_revaultd(test_datadir(), UserRole::ManagerStakeholder),
+            dummy_revaultd(test_datadir(), UserRole::Stakeholder),
+        ];
+
+        // We need a ctx that can sign as well (revaultd context is verify only)
+        let ctx = secp256k1::Secp256k1::new();
+
+        let (private_key, public_key) =
+            create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+
+        // Let's create a valid signature
+        let tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoAAA=").unwrap();
+        let psbt = tx.inner_tx();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let sighash = cache.signature_hash(
+            0,
+            &script_code,
+            prev_value,
+            SigHashType::AllPlusAnyoneCanPay,
+        );
+        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
+        let mut sig = ctx
+            .sign(&sighash, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
+        let mut sigs = BTreeMap::new();
+        sigs.insert(public_key, sig.clone());
+
+        // Happy path: everything works :)
+        for revaultd in &revaultds {
+            check_revocation_signatures(&revaultd.secp_ctx, &tx, &sigs).unwrap();
+        }
+
+        // Now, onto with the sad paths...
+
+        // Signature is empty? Wtf?
+        let mut wrong_sigs = BTreeMap::new();
+        wrong_sigs.insert(public_key, vec![]);
+        for revaultd in &revaultds {
+            assert!(
+                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&SigError::InvalidLength.to_string())
+            );
+        }
+
+        // Signature is not a valid der-encoded string
+        let mut wrong_sig = vec![1, 2, 3];
+        wrong_sig.push(SigHashType::All as u8);
+        let mut wrong_sigs = BTreeMap::new();
+        wrong_sigs.insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(
+                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&SigError::InvalidSighash.to_string())
+            );
+        }
+
+        // I signed with the right sighash_type but pushed the wrong one
+        let mut wrong_sig = ctx
+            .sign(&sighash, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        wrong_sig.push(SigHashType::All as u8);
+        let mut wrong_sigs = BTreeMap::new();
+        wrong_sigs.insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(
+                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&SigError::InvalidSighash.to_string())
+            );
+        }
+
+        // I signed with the wrong sighash_type but pushed the right one
+        let wrong_sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+        let wrong_sighash = secp256k1::Message::from_slice(&wrong_sighash).unwrap();
+        let mut wrong_sig = ctx
+            .sign(&wrong_sighash, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
+        let mut wrong_sigs = BTreeMap::new();
+        wrong_sigs.insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(
+                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Signature verification error")
+            );
+        }
+
+        // The signature is correct, but signed by another key
+        let (_, another_public_key) =
+            create_keys(&ctx, &[3; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut wrong_sigs = BTreeMap::new();
+        wrong_sigs.insert(another_public_key, sig.clone());
+        for revaultd in &revaultds {
+            assert!(
+                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Signature verification error")
+            );
+        }
+
+        // The signature is correct, but signs a completely different message
+        let wrong_msg = secp256k1::Message::from_slice(&[1; 32]).unwrap();
+        let mut wrong_sig = ctx
+            .sign(&wrong_msg, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
+        let mut wrong_sigs = BTreeMap::new();
+        wrong_sigs.insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(
+                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Signature verification error")
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_unvault_signatures() {
+        let revaultds = [
+            dummy_revaultd(test_datadir(), UserRole::Manager),
+            dummy_revaultd(test_datadir(), UserRole::ManagerStakeholder),
+            dummy_revaultd(test_datadir(), UserRole::Stakeholder),
+        ];
+
+        // We need a ctx that can sign as well (revaultd context is verify only)
+        let ctx = secp256k1::Secp256k1::new();
+
+        let (private_key, public_key) =
+            create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+
+        // No sigs, everything is fine
+        for revaultd in &revaultds {
+            check_unvault_signatures(&revaultd.secp_ctx, &tx).unwrap();
+        }
+
+        // Let's forge a valid signature
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
+        let mut sig = ctx
+            .sign(&sighash, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        sig.push(SigHashType::All as u8);
+        psbt.inputs[0].partial_sigs.insert(public_key, sig.clone());
+
+        // Happy path: everything works :)
+        for revaultd in &revaultds {
+            check_unvault_signatures(&revaultd.secp_ctx, &tx).unwrap();
+        }
+
+        // Now, onto with the sad paths...
+
+        // A tx without inputs??
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+        tx.inner_tx_mut().inputs.remove(0);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string().contains("Error in transaction management: \'Revault input satisfaction error: \'Index out of bounds of inputs list\'\'"));
+        }
+
+        // The error is a bit different if there are no inputs in the unsigned_tx...
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+        tx.inner_tx_mut().global.unsigned_tx.input.remove(0);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string()
+                .contains(&SigError::InsaneTransaction.to_string()));
+        }
+
+        // Signature is empty? Wtf?
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+        tx.inner_tx_mut().inputs[0]
+            .partial_sigs
+            .insert(public_key, vec![]);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string()
+                .contains(&SigError::InvalidLength.to_string()));
+        }
+
+        // Signature is not a valid der-encoded string
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+        let mut wrong_sig = vec![1, 2, 3];
+        wrong_sig.push(SigHashType::All as u8);
+        tx.inner_tx_mut().inputs[0]
+            .partial_sigs
+            .insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string()
+                .contains("Signature verification error"));
+        }
+
+        // I signed with the right sighash_type but pushed the wrong one
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
+        let mut wrong_sig = ctx
+            .sign(&sighash, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
+        tx.inner_tx_mut().inputs[0]
+            .partial_sigs
+            .insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string()
+                .contains(&SigError::InvalidSighash.to_string()));
+        }
+
+        // I signed with the wrong sighash_type but pushed the right one
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let wrong_sighash = cache.signature_hash(
+            0,
+            &script_code,
+            prev_value,
+            SigHashType::AllPlusAnyoneCanPay,
+        );
+        let wrong_sighash = secp256k1::Message::from_slice(&wrong_sighash).unwrap();
+        let mut wrong_sig = ctx
+            .sign(&wrong_sighash, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        wrong_sig.push(SigHashType::All as u8);
+        tx.inner_tx_mut().inputs[0]
+            .partial_sigs
+            .insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string()
+                .contains("Signature verification error"));
+        }
+
+        // The signature is correct, but signed by another key
+        let (_, another_public_key) =
+            create_keys(&ctx, &[3; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuAAEBqCEC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrysUYdkdqkU7Z2S439eLSNatPPmcqCBKbrjKlmIrGt2qRSShVi8fyPmCsiF3DZsAtMsOvbjfYisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAwMP2nhloxevl/eBAfL2jOTIHpt8z0WcFtm2ihnyZuPSrFGHAA==").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
+        let mut sig = ctx
+            .sign(&sighash, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        sig.push(SigHashType::All as u8);
+        tx.inner_tx_mut().inputs[0]
+            .partial_sigs
+            .insert(another_public_key, sig);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string()
+                .contains("Signature verification error"));
+        }
+
+        // The signature is correct, but signs a completely different message
+        let wrong_msg = secp256k1::Message::from_slice(&[1; 32]).unwrap();
+        let mut wrong_sig = ctx
+            .sign(&wrong_msg, &private_key.key)
+            .serialize_der()
+            .to_vec();
+        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
+        tx.inner_tx_mut().inputs[0]
+            .partial_sigs
+            .insert(public_key, wrong_sig);
+        for revaultd in &revaultds {
+            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
+                .unwrap_err()
+                .to_string()
+                .contains("Signature verification error"));
+        }
+    }
+
+    #[test]
+    fn test_check_spend_signatures() {
+        let mut revaultds = [
+            dummy_revaultd(test_datadir(), UserRole::Manager),
+            dummy_revaultd(test_datadir(), UserRole::ManagerStakeholder),
+            dummy_revaultd(test_datadir(), UserRole::Stakeholder),
+        ];
+        setup_db(&mut revaultds[0]).unwrap();
+        let vaults = create_vaults(&revaultds[0]);
+        let vaults = vaults
+            .into_iter()
+            .map(|v| (v.db_vault.deposit_outpoint.txid, v.db_vault))
+            .collect();
+
+        // We need a ctx that can sign as well (revaultd context is verify only)
+        let ctx = secp256k1::Secp256k1::new();
+
+        let manager_keychains: Vec<_> = (1..3)
+            .into_iter()
+            .map(|i| create_keys(&ctx, &[i; secp256k1::constants::SECRET_KEY_SIZE]))
+            .collect();
+        let managers_pubkeys: Vec<_> = manager_keychains
+            .clone()
+            .into_iter()
+            .map(|(_, key)| {
+                DescriptorPublicKey::SinglePub(DescriptorSinglePub { origin: None, key })
+            })
+            .collect();
+
+        // Happy path: everything works :)
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BAN0CAAAAAvvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAA++dB6m0P8+mSh3Xlvb3R66/EtnXnZ+75QbpIvpKf+soDAAAAAAMAAAADoEUAAAAAAAAiACDg+GlvXbP0TV3DYoQNm7MNXPm5oOuWroc/9w6DzxIO6ADh9QUAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDujfcPMFAAAAACIAIKdjkv/h5NjyHOPSensxUoTK3V1lFzGvS6zsG04Xdfs8AAAAAAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAlg43AlKAoXb47H4rxKCu40jBgz7l1svOSFK+N+gIKOdrFGHAAABAUdSIQL7lssn6CH7Mq08DaEfDfNM0gXXyaxn3/g/VygUS+2hBSECQxaOYH36+LE6Tj73COOcK91bVQk4f8sP0ogiWgiI4ldSrgA=").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        for input in &mut psbt.inputs {
+            let prev_value = input.witness_utxo.as_ref().unwrap().value;
+            let script_code = input.witness_script.as_ref().unwrap();
+            let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+            let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
+            for keychain in &manager_keychains {
+                let mut sig = ctx.sign(&sighash, &keychain.0.key).serialize_der().to_vec();
+                sig.push(SigHashType::All as u8);
+                input.partial_sigs.insert(keychain.1, sig.clone());
+            }
+        }
+        for revaultd in &revaultds {
+            check_spend_signatures(&revaultd.secp_ctx, &tx, managers_pubkeys.clone(), &vaults)
+                .unwrap();
+        }
+
+        // Already finalized PSBT
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BAKgCAAAAARU919uuOZ2HHyRUrQsCrT2s98u7j8/xW6DXMzO7+eYFAAAAAAADAAAAA6BCAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDuiAlpgAAAAAABYAFPAj0esIbomyGAolRR1U/vYas0RxhspQCwAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZCICAgKTOrEDfq0KpKeFjG1J1nBeH7O8X2awCRive58A7NUmRzBEAiB3KkDDMDY+tFDP/NEp0Qvl7ndg0zeah+aeWC8pcrLedQIgCRgErTVJbFpEXY//cEejA/35u9DDR9Odx0B6CyIETHABIgICA8dJ8CWgfhsrU+VE3or4jMBtvGR/9hLUqLVpL5fBB7tIMEUCIQDlxg6DwLX1ilz36a1aSydMfTCz/Cj5jgDgqk1gogDxiAIgHn85138uFwbEpAI4dfqdaOE4FTjg10c/JepCMJ75nGIBIgICBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DlIMEUCIQCNVIPcowRztg4naOv4SkLlsWE/JK6txS1rhrdEFjgzGwIgd7TQy9C/HytCj46Xr7AShn4lm9AKsIwhcDK+ZRYCZP4BIgICEUcipBjtxtFxFXI6CYvMq/KXtJxTVJETq5tRILViovxIMEUCIQCq1nTvhPAEqpwvT83E7l903TZfeA0wwBd1sdIAaMrzlQIgR7v+TYZxt5GOADgDqMHd20E9ps9yjt38Xx5FEMeRpIEBIgICq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5HMEQCIDs+EJm+1ahGgXUteU0UpiD+pF+byHKgcXuCAGK2cr+dAiAXLnVdMLBT06XA1PNT7pzRYn8YwRuagHsqdFZn1/kqGQEiAgLKu0S06bTqM58ay1TmFWXs+3OwjYhNK8e07OGWSCCnNEgwRQIhAPf5MXo44ra2oHhiS2+mrigZsVwlBHeI8TIUa8nkFsg0AiApIhymkAPpbh1iX5HhKhv7ZSnpDFZCf2MAG0XdKUaA+gEiAgLoIlcyuneynTYaX6GkPZgd6S7+s33mK+GmsoFNFj4f0kcwRAIgZ1LcuP3qnxzMPLDSJKPnKxW9NUEr2FEPxypmfy5Axx0CIEhDmU61ffHePcWxwRB01k9nh1UNjjZcwWv6/7lLReThASICAvbewaqhppKhJmJCtUrXIa2E4HIeghNYUe3jdZpOPyWsRzBEAiB+YisdkzDamRmocVNY1L78iYs6NPTXdXRr9PcXeqYJmQIgcgs1E2bsopySlAlVHNmXVI2AgYNiPK8cFFqR09CQIAwBIgIC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrxIMEUCIQD0B7BRPDeDOsmvnc0ndozXLlYJgATXvahWi6WtI1loXQIgfxw7aGb7rXyKnL0cCtOt2Mo2shV8mXbYvyIZhVEeP44BIgIDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lpHMEQCIF9+ZZO4AoFaz0WVZbLXNONf0S4pPQJrqRBrTII/nfxmAiBMppaQlftKQNtw2AcmvbFnxdqfXys+TwM0I+Env+0YzQEiAgM10BzuiowG8+zoJisSnHBWMbB2Z7eaB/4FoNWsJyvU9EcwRAIgY/4i6WCy9dKm4bIIFVgo+RmNwMOCxpGBn4o8pmYrqpcCIAM7hMX+az0D10wg0gzwc1ltYuf/JRkCNJfAN3AvA3XgASICA05t+3A0/e1NLMTAIYAg3jdEy4ofmtzSh8emoXMoeusXSDBFAiEAnWN8RXH69QweNR3T3VKpdNEHugiVTL6cIvXcnK6P+AMCIEZy/RkyUxcsXW80/hY4c71KZsCbwIyTcvhhgflGaXGwASICA06OB5pRHoR9/LWGTHq6Sy4Ugc85I1tQyEymGej6/fiNRzBEAiBAXayRXgy0xZ2lR6xTwN8iaDCr//SxLz/biRmdYG1usAIgf9l3przSfZcX2wnkKQPQLFzCeseLvy+w14tOQ/fABjYBIgIDwCr2aH/yTKugv5gL94kaje+nlTukczWC88/V6l4oDo5HMEQCIHzww7Pq/oCNpS1R9aEPGF3AHBlCrx6NE32CA4ZThxCcAiBtsieXalS5Bd4i/+JxytFVn2Le/Pf7/7ko7zhQDE4gUgEBAwQBAAAAAQWoIQIGcwwFZVqf0EVFaTWYlQmxQ4oTCIkj+5KOstDoG1vgOaxRh2R2qRRvoS9lQLcmcOnmhvvrvSYgPxBG3oisa3apFEWuYAoAKnNlB7Zvc0vqNpOAwYMciKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoAAEBJSECWDjcCUoChdvjsfivEoK7jSMGDPuXWy85IUr436Ago52sUYcAAAEBR1IhAvuWyyfoIfsyrTwNoR8N80zSBdfJrGff+D9XKBRL7aEFIQJDFo5gffr4sTpOPvcI45wr3VtVCTh/yw/SiCJaCIjiV1KuAA==").unwrap();
+        tx.finalize(&revaultds[0].secp_ctx).unwrap();
+        for revaultd in &revaultds {
+            assert!(check_spend_signatures(
+                &revaultd.secp_ctx,
+                &tx,
+                managers_pubkeys.clone(),
+                &vaults
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(&SigError::InsaneTransaction.to_string()));
+        }
+
+        // Someone didn't sign here...
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BALQCAAAAAfvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAAA6BFAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDugA4fUFAAAAACIAIOD4aW9ds/RNXcNihA2bsw1c+bmg65auhz/3DoPPEg7o33DzBQAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
+        for keychain in &manager_keychains[1..] {
+            let mut sig = ctx.sign(&sighash, &keychain.0.key).serialize_der().to_vec();
+            sig.push(SigHashType::All as u8);
+            psbt.inputs[0].partial_sigs.insert(keychain.1, sig.clone());
+        }
+        for revaultd in &revaultds {
+            assert!(check_spend_signatures(
+                &revaultd.secp_ctx,
+                &tx,
+                managers_pubkeys.clone(),
+                &vaults
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(&SigError::MissingSignature(manager_keychains[0].1).to_string()));
+        }
+
+        // An empty signature?! Wtf?!
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BALQCAAAAAfvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAAA6BFAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDugA4fUFAAAAACIAIOD4aW9ds/RNXcNihA2bsw1c+bmg65auhz/3DoPPEg7o33DzBQAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
+        let psbt = tx.inner_tx_mut();
+        psbt.inputs[0]
+            .partial_sigs
+            .insert(manager_keychains[0].1, vec![]);
+        for revaultd in &revaultds {
+            assert!(check_spend_signatures(
+                &revaultd.secp_ctx,
+                &tx,
+                vec![managers_pubkeys[0].clone()],
+                &vaults,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(&SigError::InvalidLength.to_string()));
+        }
+
+        // I signed with the right sighash_type but pushed the wrong one
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BALQCAAAAAfvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAAA6BFAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDugA4fUFAAAAACIAIOD4aW9ds/RNXcNihA2bsw1c+bmg65auhz/3DoPPEg7o33DzBQAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let wrong_sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+        let wrong_sighash = secp256k1::Message::from_slice(&wrong_sighash).unwrap();
+        for keychain in &manager_keychains {
+            let mut wrong_sig = ctx
+                .sign(&wrong_sighash, &keychain.0.key)
+                .serialize_der()
+                .to_vec();
+            wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
+            psbt.inputs[0].partial_sigs.insert(keychain.1, wrong_sig);
+        }
+        for revaultd in &revaultds {
+            assert!(check_spend_signatures(
+                &revaultd.secp_ctx,
+                &tx,
+                managers_pubkeys.clone(),
+                &vaults
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(&SigError::InvalidSighash.to_string()));
+        }
+
+        // I signed with the wrong sighash_type but pushed the right one
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BALQCAAAAAfvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAAA6BFAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDugA4fUFAAAAACIAIOD4aW9ds/RNXcNihA2bsw1c+bmg65auhz/3DoPPEg7o33DzBQAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let wrong_sighash = cache.signature_hash(
+            0,
+            &script_code,
+            prev_value,
+            SigHashType::AllPlusAnyoneCanPay,
+        );
+        let wrong_sighash = secp256k1::Message::from_slice(&wrong_sighash).unwrap();
+        for keychain in &manager_keychains {
+            let mut wrong_sig = ctx
+                .sign(&wrong_sighash, &keychain.0.key)
+                .serialize_der()
+                .to_vec();
+            wrong_sig.push(SigHashType::All as u8);
+            psbt.inputs[0].partial_sigs.insert(keychain.1, wrong_sig);
+        }
+        for revaultd in &revaultds {
+            assert!(check_spend_signatures(
+                &revaultd.secp_ctx,
+                &tx,
+                managers_pubkeys.clone(),
+                &vaults
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Signature verification error"));
+        }
+
+        // The signature is correct, but signed by another key
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BALQCAAAAAfvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAAA6BFAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDugA4fUFAAAAACIAIOD4aW9ds/RNXcNihA2bsw1c+bmg65auhz/3DoPPEg7o33DzBQAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
+        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
+        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
+        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
+        let mut sig = ctx
+            .sign(&sighash, &manager_keychains[0].0.key)
+            .serialize_der()
+            .to_vec();
+        sig.push(SigHashType::All as u8);
+        psbt.inputs[0]
+            .partial_sigs
+            .insert(manager_keychains[1].1, sig.clone());
+        for revaultd in &revaultds {
+            assert!(check_spend_signatures(
+                &revaultd.secp_ctx,
+                &tx,
+                vec![managers_pubkeys[1].clone()],
+                &vaults,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Signature verification error"));
+        }
+
+        // The signature is correct, but signs a completely different message
+        let mut tx = SpendTransaction::from_psbt_str("cHNidP8BALQCAAAAAfvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAAA6BFAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDugA4fUFAAAAACIAIOD4aW9ds/RNXcNihA2bsw1c+bmg65auhz/3DoPPEg7o33DzBQAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
+        let psbt = tx.inner_tx_mut();
+        let wrong_msg = secp256k1::Message::from_slice(&[1; 32]).unwrap();
+        let mut sig = ctx
+            .sign(&wrong_msg, &manager_keychains[0].0.key)
+            .serialize_der()
+            .to_vec();
+        sig.push(SigHashType::All as u8);
+        psbt.inputs[0]
+            .partial_sigs
+            .insert(manager_keychains[0].1, sig.clone());
+        for revaultd in &revaultds {
+            assert!(check_spend_signatures(
+                &revaultd.secp_ctx,
+                &tx,
+                vec![managers_pubkeys[0].clone()],
+                &vaults,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Signature verification error"));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Must be present")]
+    fn test_check_spend_signatures_panic() {
+        let datadir = test_datadir();
+        let revaultd = dummy_revaultd(datadir, UserRole::ManagerStakeholder);
+
+        // check_spend_signatures will panic if db_vaults doesn't contain an entry
+        // for each input
+        let tx = SpendTransaction::from_psbt_str("cHNidP8BAKgCAAAAARU919uuOZ2HHyRUrQsCrT2s98u7j8/xW6DXMzO7+eYFAAAAAAADAAAAA6BCAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDuiAlpgAAAAAABYAFPAj0esIbomyGAolRR1U/vYas0RxhspQCwAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
+        check_spend_signatures(&revaultd.secp_ctx, &tx, vec![], &HashMap::new()).unwrap();
     }
 }

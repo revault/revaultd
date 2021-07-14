@@ -201,6 +201,9 @@ class RevaultNetwork:
                 }
             )
 
+        # Start daemons in parallel, as it takes a few seconds for each
+        start_jobs = []
+
         # Spin up the stakeholders wallets and their cosigning servers
         for i, stk in enumerate(stkonly_keychains):
             datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
@@ -229,7 +232,7 @@ class RevaultNetwork:
                 self.bitcoind,
                 stk_config,
             )
-            revaultd.start()
+            start_jobs.append(self.executor.submit(revaultd.start))
             self.stk_wallets.append(revaultd)
 
             datadir = os.path.join(self.root_dir, f"cosignerd-stk-{i}")
@@ -242,7 +245,7 @@ class RevaultNetwork:
                 stkonly_cosigners_ports[i],
                 man_noisepubs + stkman_noisepubs,
             )
-            cosignerd.start()
+            start_jobs.append(self.executor.submit(cosignerd.start))
             self.daemons.append(cosignerd)
 
         # Spin up the stakeholder-managers wallets and their cosigning servers
@@ -278,7 +281,7 @@ class RevaultNetwork:
                 stk_config,
                 man_config,
             )
-            revaultd.start()
+            start_jobs.append(self.executor.submit(revaultd.start))
             self.stkman_wallets.append(revaultd)
 
             datadir = os.path.join(self.root_dir, f"cosignerd-stkman-{i}")
@@ -291,7 +294,7 @@ class RevaultNetwork:
                 stkman_cosigners_ports[i],
                 man_noisepubs + stkman_noisepubs,
             )
-            cosignerd.start()
+            start_jobs.append(self.executor.submit(cosignerd.start))
             self.daemons.append(cosignerd)
 
         # Spin up the managers (only) wallets
@@ -311,8 +314,11 @@ class RevaultNetwork:
                 self.bitcoind,
                 man_config,
             )
-            daemon.start()
+            start_jobs.append(self.executor.submit(daemon.start))
             self.man_wallets.append(daemon)
+
+        for j in start_jobs:
+            j.result(TIMEOUT)
 
         self.daemons += self.stk_wallets + self.stkman_wallets + self.man_wallets
 
@@ -635,12 +641,14 @@ class RevaultNetwork:
             )
 
     def stop_wallets(self):
-        for w in self.participants():
-            assert w.stop() == 0
+        jobs = [self.executor.submit(w.stop) for w in self.participants()]
+        for j in jobs:
+            j.result(TIMEOUT)
 
     def start_wallets(self):
-        for w in self.participants():
-            w.start()
+        jobs = [self.executor.submit(w.start) for w in self.participants()]
+        for j in jobs:
+            j.result(TIMEOUT)
 
     def cleanup(self):
         for n in self.daemons:

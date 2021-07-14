@@ -452,7 +452,7 @@ class TailableProc(object):
         for line in itertools.chain(iter(out, ""), iter(err, "")):
             if len(line) == 0:
                 break
-            if self.log_filter(line.decode("ASCII")):
+            if self.log_filter(line.decode("utf-8")):
                 continue
             if self.verbose:
                 logging.debug(f"{self.prefix}: {line.decode().rstrip()}")

@@ -1930,7 +1930,7 @@ def test_large_spends(revault_network, bitcoind, executor):
     revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
-    n_outputs = random.randint(1, 5)
+    n_outputs = random.randint(1, 3)
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
     destinations = {
         bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs

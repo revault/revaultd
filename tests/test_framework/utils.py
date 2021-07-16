@@ -22,7 +22,7 @@ from typing import Optional
 
 TIMEOUT = int(os.getenv("TIMEOUT", 60))
 TEST_DEBUG = os.getenv("TEST_DEBUG", "0") == "1"
-EXECUTOR_WORKERS = os.getenv("EXECUTOR_WORKERS", 10)
+EXECUTOR_WORKERS = int(os.getenv("EXECUTOR_WORKERS", 20))
 POSTGRES_USER = os.getenv("POSTGRES_USER", "")
 POSTGRES_PASS = os.getenv("POSTGRES_PASS", "")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
@@ -452,7 +452,7 @@ class TailableProc(object):
         for line in itertools.chain(iter(out, ""), iter(err, "")):
             if len(line) == 0:
                 break
-            if self.log_filter(line.decode("ASCII")):
+            if self.log_filter(line.decode("utf-8")):
                 continue
             if self.verbose:
                 logging.debug(f"{self.prefix}: {line.decode().rstrip()}")

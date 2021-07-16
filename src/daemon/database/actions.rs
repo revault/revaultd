@@ -759,46 +759,14 @@ pub fn db_mark_rebroadcastable_spend(
 mod test {
     use super::*;
     use crate::database::schema::DbSpendTransaction;
-    use crate::revaultd::RevaultD;
-    use common::config::Config;
+    use crate::jsonrpc::UserRole;
+    use crate::utils::test_utils::{dummy_revaultd, test_datadir};
     use revault_tx::{
         bitcoin::{Network, OutPoint, PublicKey},
         transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
     };
 
-    use std::{fs, path::PathBuf, str::FromStr};
-
-    // Create a RevaultD state instance using a scratch data directory, trying to be portable
-    // across UNIX, MacOS, and Windows
-    fn dummy_revaultd() -> RevaultD {
-        let repo_root = PathBuf::from(file!())
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let datadir_path: PathBuf = [repo_root.to_str().unwrap(), "test_data", "scratch_datadir"]
-            .iter()
-            .collect();
-        let config_path = [
-            repo_root.to_str().unwrap(),
-            "test_data",
-            "db_test_config.toml",
-        ]
-        .iter()
-        .collect();
-
-        // Just in case there is a leftover from a previous run
-        fs::remove_dir_all(&datadir_path).unwrap_or_else(|_| ());
-
-        let mut config = Config::from_file(Some(config_path)).expect("Parsing valid config file");
-        config.data_dir = Some(datadir_path);
-        RevaultD::from_config(config).expect("Creating state from config")
-    }
+    use std::{fs, str::FromStr};
 
     fn revault_tx_add_dummy_sig(tx: &mut impl RevaultTransaction, input_index: usize) {
         let pubkey = PublicKey::from_str(
@@ -817,7 +785,8 @@ mod test {
     }
 
     fn test_db_creation() {
-        let mut revaultd = dummy_revaultd();
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
 
         create_db(&mut revaultd).unwrap();
         // There must be a wallet entry now, and there is only one so its id must
@@ -840,11 +809,12 @@ mod test {
         .unwrap();
         check_db(&mut revaultd).unwrap_err();
 
-        fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
     fn test_db_fetch_deposits() {
-        let mut revaultd = dummy_revaultd();
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
         let db_path = revaultd.db_file();
 
         setup_db(&mut revaultd).unwrap();
@@ -951,11 +921,12 @@ mod test {
         assert!(deposit_outpoints.contains(&second_deposit_outpoint));
         assert!(deposit_outpoints.contains(&third_deposit_outpoint));
 
-        fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
     fn test_db_store_presigned_txs() {
-        let mut revaultd = dummy_revaultd();
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
         let db_path = revaultd.db_file();
 
         setup_db(&mut revaultd).unwrap();
@@ -1169,14 +1140,15 @@ mod test {
         assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
         assert_eq!(db_signed_unemer_txs(&db_path).unwrap().len(), 1);
 
-        fs::remove_dir_all(&revaultd.data_dir).unwrap_or_else(|_| ());
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
     // There we trigger a concurrent write access to the database by inserting a deposit and
     // updating its presigned transaction in two different thread. It should be fine and one of
     // them just lock thanks to the unlock_notify feature of SQLite https://sqlite.org/unlock_notify.html
     fn test_db_concurrent_write() {
-        let mut revaultd = dummy_revaultd();
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
         let db_path = revaultd.db_file();
 
         setup_db(&mut revaultd).unwrap();
@@ -1249,10 +1221,12 @@ mod test {
             .unwrap();
         }
         handle.join().unwrap();
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
     fn test_db_spend_storage() {
-        let mut revaultd = dummy_revaultd();
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
         let db_path = revaultd.db_file();
         let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoAAEBR1IhA9+bpoeRoYk6Fehku5U6JFn6v0b8vq0SPVzELn/n6DqBIQPRrV6R4VL8XI/QyVm2kb8+fQjbDMB9jRL5kWvIHNlkZFKuAA==").unwrap();
         let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAfF2iPeJqz13zFlW6eLAM+uDu5IhUqcQxtMWQx7z5Y8lAAAAAAD9////AkANAwAAAAAAIgAgKb0SdnuqeHAJpRuZTbk3r81qbXpuHrMEmxT9Kph47HQwdQAAAAAAACIAIIMbpoIz4DI+aB1p/EJLyqjyDdDeZ7gG8kPhRIDiWaY8AAAAAAABASuIlAMAAAAAACIAIA9CgZ1cg/hn3iy3buDZvU5zUnQ9NzutToR/r42YZyu3AQMEAQAAAAEFR1IhA9P6hV8yf6HkNofzleom06eqkUxZayWHJnOMNlMtqvD3IQJo5Mj6Wf3ktrwEB3IQXFmgApibojplpNykg0hA8XV6SFKuAAEBqiEDH7uO3i4mHhzemNwtVZNHJIJlonzMuSFIWjx2zRC1fd2sUYdkdqkU7YhsQQ+SqzEEFOlBsds7CjDH+pyIrGt2qRQgyrXvSLg3hdA+BgPyUVDV+MYLfoisbJNSh2dSIQM0zz54678zxZovq2jUerGPFk7dSjbrFcKfNrlnm81g8CECpdtZmV+1gEIUb3YYcKlALkHyHpoPc5EwgsjEPkPAlRVSrwKlAbJoAAEBJSEDH7uO3i4mHhzemNwtVZNHJIJlonzMuSFIWjx2zRC1fd2sUYcA").unwrap();
@@ -1507,6 +1481,7 @@ mod test {
         })
         .unwrap();
         assert!(db_spend_transaction(&db_path, &txid_b).unwrap().is_none());
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
     // We disabled #[test] for the above, as they may erase the db concurrently.

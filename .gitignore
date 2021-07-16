@@ -8,4 +8,4 @@ test*.py
 venv/
 pytest.log
 TODO
-test_data/scratch_datadir/
+scratch_test_*

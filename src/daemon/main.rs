@@ -5,6 +5,7 @@ mod jsonrpc;
 mod revaultd;
 mod sigfetcher;
 mod threadmessages;
+mod utils;
 
 use crate::{
     bitcoind::{bitcoind_main_loop, start_bitcoind},

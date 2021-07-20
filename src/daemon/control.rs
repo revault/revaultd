@@ -1353,19 +1353,28 @@ mod test {
         );
 
         // Returning an error if one of the vaults has an invalid status
-        vaults_from_deposits(&db_file, &outpoints, &vec![VaultStatus::Unconfirmed]).unwrap_err();
+        assert!(
+            vaults_from_deposits(&db_file, &outpoints, &vec![VaultStatus::Unconfirmed])
+                .unwrap_err()
+                .to_string()
+                .contains(
+                    &RpcControlError::InvalidStatus(VaultStatus::Unconfirmed, outpoints[0])
+                        .to_string()
+                )
+        );
 
         // Returning an error if the outpoint is unknown
-        vaults_from_deposits(
-            &db_file,
-            &vec![OutPoint::new(
-                Txid::from_str("abababababababababababababababababababababababababababababababab")
-                    .unwrap(),
-                2,
-            )],
-            &vec![],
-        )
-        .unwrap_err();
+        let wrong_outpoint = OutPoint::new(
+            Txid::from_str("abababababababababababababababababababababababababababababababab")
+                .unwrap(),
+            2,
+        );
+        assert!(
+            vaults_from_deposits(&db_file, &vec![wrong_outpoint], &vec![],)
+                .unwrap_err()
+                .to_string()
+                .contains(&RpcControlError::UnknownOutPoint(wrong_outpoint).to_string())
+        );
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
@@ -1379,7 +1388,12 @@ mod test {
         let vaults = create_vaults(&stake_revaultd);
 
         // vault[0] is not confirmed, no presigned txs here!
-        presigned_txs(&stake_revaultd, vec![vaults[0].db_vault.clone()]).unwrap_err();
+        assert!(
+            presigned_txs(&stake_revaultd, vec![vaults[0].db_vault.clone()])
+                .unwrap_err()
+                .to_string()
+                .contains("Database error: No unvault tx in db")
+        );
 
         // vault[1] is funded, no txs is final
         // The stakeholder has all the txs

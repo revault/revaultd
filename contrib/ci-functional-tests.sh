@@ -27,4 +27,7 @@ cd tests/servers/cosignerd && cargo build && cd "$REPO_ROOT"
 python3 -m venv venv
 . venv/bin/activate
 pip install -r tests/requirements.txt
-EXECUTOR_WORKERS=10 VERBOSE=1 LOG_LEVEL=debug TIMEOUT=120 TEST_DEBUG=1 POSTGRES_USER="test" POSTGRES_PASS="test" pytest -n3 -vvv --log-cli-level=DEBUG --timeout=1800 tests/
+for i in $(seq 10); do
+    echo "\n\n\n\n=========== Run $i ==============\n\n\n\n"
+    EXECUTOR_WORKERS=10 VERBOSE=1 LOG_LEVEL=debug TIMEOUT=120 TEST_DEBUG=1 POSTGRES_USER="test" POSTGRES_PASS="test" pytest -n5 -vvv --log-cli-level=DEBUG --timeout=1800 tests/
+done

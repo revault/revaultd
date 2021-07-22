@@ -8,7 +8,7 @@ contribution before it's ready for merge.
 
 ## Communication
 
-Most of the communication is done on GitHub or on the `#revault` IRC channel on freenode.
+Most of the communication is done on GitHub or on the `#revault` IRC channel on Libera.
 
 Don't hesitate to open issues to ask questions or conceptually discuss a change
 before going forward with the implementation if it is non-trivial.

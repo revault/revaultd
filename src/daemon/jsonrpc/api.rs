@@ -605,7 +605,9 @@ impl RpcApi for RpcImpl {
 
         // Share them with our felow stakeholders.
         share_rev_signatures(
-            &revaultd,
+            revaultd.coordinator_host,
+            &revaultd.noise_secret,
+            &revaultd.coordinator_noisekey,
             (&cancel_tx, cancel_sigs),
             (&emergency_tx, emer_sigs),
             (&unvault_emergency_tx, unvault_emer_sigs),
@@ -738,7 +740,13 @@ impl RpcApi for RpcImpl {
             secp_ctx,
         )
         .map_err(|e| internal_error!(e))?;
-        share_unvault_signatures(&revaultd, &unvault_tx).map_err(|e| {
+        share_unvault_signatures(
+            revaultd.coordinator_host,
+            &revaultd.noise_secret,
+            &revaultd.coordinator_noisekey,
+            &unvault_tx,
+        )
+        .map_err(|e| {
             JsonRpcError::invalid_params(format!(
                 "Communication error while sharing Unvault signatures with coordinator: '{}'",
                 e
@@ -1173,7 +1181,12 @@ impl RpcApi for RpcImpl {
 
         // Now we can ask all the cosigning servers for their signatures
         log::debug!("Fetching signatures from Cosigning servers");
-        fetch_cosigs_signatures(&revaultd, &mut spend_tx.psbt).map_err(|e| {
+        fetch_cosigs_signatures(
+            &revaultd.noise_secret,
+            &mut spend_tx.psbt,
+            revaultd.cosigs.as_ref().expect("We are manager"),
+        )
+        .map_err(|e| {
             JsonRpcError::invalid_params(format!(
                 "Communication error while fetching cosigner signatures: {}",
                 e,
@@ -1193,7 +1206,14 @@ impl RpcApi for RpcImpl {
             .values()
             .map(|db_vault| db_vault.deposit_outpoint)
             .collect();
-        announce_spend_transaction(&revaultd, finalized_spend, deposit_outpoints).map_err(|e| {
+        announce_spend_transaction(
+            revaultd.coordinator_host,
+            &revaultd.noise_secret,
+            &revaultd.coordinator_noisekey,
+            finalized_spend,
+            deposit_outpoints,
+        )
+        .map_err(|e| {
             JsonRpcError::invalid_params(format!(
                 "Communication error while announcing the Spend transaction: {}",
                 e

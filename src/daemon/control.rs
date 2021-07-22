@@ -728,7 +728,9 @@ fn send_sig_msg(
 
 /// Send the signatures for the 3 revocation txs to the Coordinator
 pub fn share_rev_signatures(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     cancel: (&CancelTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
     emer: (&EmergencyTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
     unvault_emer: (
@@ -738,11 +740,7 @@ pub fn share_rev_signatures(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // We would not spam the coordinator, would we?
     assert!(!cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty());
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
     let cancel_txid = cancel.0.txid();
     send_sig_msg(&mut transport, cancel_txid, cancel.1)?;
@@ -756,14 +754,12 @@ pub fn share_rev_signatures(
 
 /// Send the unvault signature to the Coordinator
 pub fn share_unvault_signatures(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     unvault_tx: &UnvaultTransaction,
 ) -> Result<(), CommunicationError> {
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
     let sigs = &unvault_tx
         .inner_tx()
@@ -777,12 +773,10 @@ pub fn share_unvault_signatures(
 }
 
 /// Make the cosigning servers sign this Spend transaction.
-///
-/// # Panic
-/// - if not called by a manager
 pub fn fetch_cosigs_signatures(
-    revaultd: &RevaultD,
+    noise_secret: &revault_net::noise::SecretKey,
     spend_tx: &mut SpendTransaction,
+    cosigs: &[(std::net::SocketAddr, revault_net::noise::PublicKey)],
 ) -> Result<(), CommunicationError> {
     // Strip the signatures before polling the Cosigning Server. It does not check them
     // anyways, and it makes us hit the Noise message size limit fairly quickly.
@@ -791,9 +785,9 @@ pub fn fetch_cosigs_signatures(
         psbtin.partial_sigs.clear();
     }
 
-    for (host, noise_key) in revaultd.cosigs.as_ref().expect("We are manager").iter() {
+    for (host, noise_key) in cosigs {
         // FIXME: connect should take a reference... This copy is useless
-        let mut transport = KKTransport::connect(*host, &revaultd.noise_secret, &noise_key)?;
+        let mut transport = KKTransport::connect(*host, noise_secret, noise_key)?;
         let msg = SignRequest {
             tx: stripped_tx.clone(),
         };
@@ -827,15 +821,13 @@ pub fn fetch_cosigs_signatures(
 
 /// Sends the spend transaction for a certain outpoint to the coordinator
 pub fn announce_spend_transaction(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     spend_tx: SpendTransaction,
     deposit_outpoints: Vec<OutPoint>,
 ) -> Result<(), CommunicationError> {
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
     let msg = SetSpendTx::from_spend_tx(deposit_outpoints, spend_tx);
     log::debug!("Sending Spend tx to Coordinator: '{:?}'", msg);
@@ -850,15 +842,14 @@ pub fn announce_spend_transaction(
 
 /// Get the signatures for this presigned transaction from the Coordinator.
 pub fn get_presigs(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     txid: Txid,
 ) -> Result<BTreeMap<secp256k1::PublicKey, secp256k1::Signature>, CommunicationError> {
     let getsigs_msg = GetSigs { id: txid };
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport =
+        KKTransport::connect(coordinator_host, &noise_secret, &coordinator_noisekey)?;
 
     log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
     let resp: Sigs = transport.send_req(&getsigs_msg.into())?;

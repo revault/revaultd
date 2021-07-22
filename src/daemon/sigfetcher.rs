@@ -82,7 +82,12 @@ fn get_sigs(
     let db_path = &revaultd.db_file();
     let secp_ctx = &revaultd.secp_ctx;
 
-    let signatures = get_presigs(revaultd, tx.txid())?;
+    let signatures = get_presigs(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+        tx.txid(),
+    )?;
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {
             compressed: true,

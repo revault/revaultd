@@ -911,18 +911,31 @@ fn unvault_spender(
     }
 
     // Second, check if it was spent by an UnvaultEmergency if we are able to, it's as cheap.
-    if let Some(unemer_txid) = unemer_txid(revaultd, &vault)? {
+    let unemer_txid = unemer_txid(revaultd, &vault)?;
+    if let Some(unemer_txid) = unemer_txid {
         if bitcoind.is_current(&unemer_txid)? {
             return Ok(Some(UnvaultSpender::Emergency(unemer_txid)));
         }
     }
 
-    // Finally, fetch the spending transaction and assume it's a Spend.
-    if let Some(spend_txid) = bitcoind.get_spender_txid(&unvault_outpoint, &previous_tip.hash)? {
+    // Finally, fetch the spending transaction
+    if let Some(spender_txid) = bitcoind.get_spender_txid(&unvault_outpoint, &previous_tip.hash)? {
         // FIXME: be smarter, all the information are in the previous call, no need for a
         // second one.
-        if bitcoind.is_current(&spend_txid)? {
-            return Ok(Some(UnvaultSpender::Spend(spend_txid)));
+
+        // Let's double-check that we didn't fetch the cancel, nor the unemer
+        // In theory (read edge cases), the Cancel and UnEmer could have not been
+        // current at the last bitcoind poll but could be now.
+        // Be sure to not wrongly mark a Cancel or UnEmer as a Spend!
+        if spender_txid == cancel_txid || Some(spender_txid) == unemer_txid {
+            // Alright, the spender is the cancel or the unemer,
+            // but we just checked and they weren't current. We'll return None
+            // so the checker will call this function again.
+            return Ok(None);
+        }
+
+        if bitcoind.is_current(&spender_txid)? {
+            return Ok(Some(UnvaultSpender::Spend(spender_txid)));
         }
     }
 
@@ -1019,8 +1032,9 @@ fn handle_spent_unvault(
             }
         }
         None => {
-            log::error!(
-                "Unvault at '{}' was spent by an unknown transaction.",
+            // We don't remove it from the cache, so we'll check this outpoint at the next poll
+            log::info!(
+                "Could not find a current transaction spending the Unvault txo at '{}', will check again at next poll",
                 unvault_outpoint
             );
 

@@ -596,7 +596,7 @@ fn comprehensive_rescan(
 
     // Try to get the last tip
     loop {
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(5));
         let maybe_new_tip = bitcoind.get_tip()?;
         if tip == maybe_new_tip {
             break;
@@ -611,6 +611,10 @@ fn comprehensive_rescan(
                 vault.deposit_outpoint
             );
             continue;
+        }
+
+        if bitcoind.get_tip()? != tip {
+            return comprehensive_rescan(revaultd, db_tx, bitcoind, deposits_cache, unvaults_cache);
         }
 
         // bitcoind's wallet will always keep track of our transaction, even in case of reorg.
@@ -633,8 +637,7 @@ fn comprehensive_rescan(
             continue;
         };
 
-        // Edge case: what if our tip is actually not up to date anymore?
-        if dep_height > tip.height {
+        if bitcoind.get_tip()? != tip {
             return comprehensive_rescan(revaultd, db_tx, bitcoind, deposits_cache, unvaults_cache);
         }
 
@@ -679,6 +682,16 @@ fn comprehensive_rescan(
                     continue;
                 }
             };
+
+            if bitcoind.get_tip()? != tip {
+                return comprehensive_rescan(
+                    revaultd,
+                    db_tx,
+                    bitcoind,
+                    deposits_cache,
+                    unvaults_cache,
+                );
+            }
             let (_, blockheight, _) = bitcoind.get_wallet_transaction(&emer_txid)?;
             if let Some(height) = blockheight {
                 log::debug!(
@@ -721,6 +734,16 @@ fn comprehensive_rescan(
                 }
             };
             let unvault_txid = unvault_tx.txid();
+
+            if bitcoind.get_tip()? != tip {
+                return comprehensive_rescan(
+                    revaultd,
+                    db_tx,
+                    bitcoind,
+                    deposits_cache,
+                    unvaults_cache,
+                );
+            }
             let (_, blockheight, _) = bitcoind.get_wallet_transaction(&unvault_txid)?;
 
             let unv_height = if let Some(height) = blockheight {
@@ -754,6 +777,16 @@ fn comprehensive_rescan(
             // we just mark it as such. The bitcoind wallet will take care of the rebroadcast.
             if matches!(vault.status, VaultStatus::Spent) {
                 let spend_txid = &vault.spend_txid.expect("Must be Some in 'spent'");
+
+                if bitcoind.get_tip()? != tip {
+                    return comprehensive_rescan(
+                        revaultd,
+                        db_tx,
+                        bitcoind,
+                        deposits_cache,
+                        unvaults_cache,
+                    );
+                }
                 let (_, blockheight, _) = bitcoind.get_wallet_transaction(spend_txid)?;
                 if let Some(height) = blockheight {
                     log::debug!(
@@ -775,6 +808,16 @@ fn comprehensive_rescan(
             // Same for the Cancel transaction
             if matches!(vault.status, VaultStatus::Canceled) {
                 let cancel_txid = cancel_txid(revaultd, &vault)?;
+
+                if bitcoind.get_tip()? != tip {
+                    return comprehensive_rescan(
+                        revaultd,
+                        db_tx,
+                        bitcoind,
+                        deposits_cache,
+                        unvaults_cache,
+                    );
+                }
                 let (_, blockheight, _) = bitcoind.get_wallet_transaction(&cancel_txid)?;
                 if let Some(height) = blockheight {
                     log::debug!(
@@ -805,6 +848,16 @@ fn comprehensive_rescan(
                         continue;
                     }
                 };
+
+                if bitcoind.get_tip()? != tip {
+                    return comprehensive_rescan(
+                        revaultd,
+                        db_tx,
+                        bitcoind,
+                        deposits_cache,
+                        unvaults_cache,
+                    );
+                }
                 let (_, blockheight, _) = bitcoind.get_wallet_transaction(&unemer_txid)?;
                 if let Some(height) = blockheight {
                     log::debug!(

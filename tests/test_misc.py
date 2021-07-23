@@ -386,6 +386,7 @@ def test_listspendtxs(revault_network, bitcoind):
     # Status of the spend is still broadcasted, even if the transaction is canceled
     assert len(rn.man(1).rpc.listspendtxs(["broadcasted"])["spend_txs"]) == 2
 
+
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listspendtxs_check_indexes(revault_network, bitcoind):
     # Spending with the change output
@@ -458,9 +459,7 @@ def test_listonchaintransactions(revault_network):
     rn.cancel_vault(vaultC)
 
     for w in rn.participants():
-        res = w.rpc.listonchaintransactions([depositC])[
-            "onchain_transactions"
-        ][0]
+        res = w.rpc.listonchaintransactions([depositC])["onchain_transactions"][0]
         assert res["deposit"]["blockheight"] is not None
         assert res["deposit"]["received_at"] is not None
         assert res["deposit"]["hex"] is not None
@@ -473,6 +472,7 @@ def test_listonchaintransactions(revault_network):
         assert res["emergency"] is None
         assert res["unvault_emergency"] is None
         assert res["spend"] is None
+
 
 def psbt_add_input(psbt_str):
     psbt = serializations.PSBT()
@@ -1016,7 +1016,7 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
             "Rescan of all vaults in db done.",
         ]
     )
-    assert stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed"
+    wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed")
 
     # Reorg it again, it's already unconfirmed so nothing to do, but since we
     # mined a new block it's now confirmed!
@@ -1029,7 +1029,7 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
             f"Vault at {deposit} is now confirmed",
         ]
     )
-    assert stk.rpc.listvaults()["vaults"][0]["status"] == "funded"
+    wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "funded")
 
     # Now try to completely evict it from the chain with a 6-blocks reorg. We
     # should mark it as unconfirmed (but it's not the same codepath).
@@ -1041,7 +1041,7 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
             "Rescan of all vaults in db done.",
         ]
     )
-    assert stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed"
+    wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed")
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -1914,6 +1914,9 @@ def test_large_spends(revault_network, bitcoind, executor):
     revault_network.deploy(17, 8, csv=CSV)
     man = revault_network.man(0)
 
+    # Get some more funds
+    bitcoind.generate_block(1)
+
     vaults = []
     deposits = []
     deriv_indexes = []
@@ -2463,7 +2466,9 @@ def test_retrieve_vault_status(revault_network, bitcoind):
 
     stks[0].rpc.emergency()
     wait_for(
-        lambda: len(stks[0].rpc.listvaults(["unvaultemergencyvaulting"], [deposit])["vaults"])
+        lambda: len(
+            stks[0].rpc.listvaults(["unvaultemergencyvaulting"], [deposit])["vaults"]
+        )
         == 1
     )
 
@@ -2472,7 +2477,9 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     stks[0].start()
     deposit = f"{vault['txid']}:{vault['vout']}"
     wait_for(
-        lambda: len(stks[0].rpc.listvaults(["unvaultemergencyvaulting"], [deposit])["vaults"])
+        lambda: len(
+            stks[0].rpc.listvaults(["unvaultemergencyvaulting"], [deposit])["vaults"]
+        )
         == 1
     )
 

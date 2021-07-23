@@ -516,7 +516,7 @@ fn unconfirm_vault(
     match bitcoind.rebroadcast_wallet_tx(&deposit_txid) {
         Ok(()) => {}
         Err(e) => log::debug!(
-            "Error re-broadcasting Unvault tx '{}': '{}'",
+            "Error re-broadcasting Deposit tx '{}': '{}'",
             deposit_txid,
             e
         ),

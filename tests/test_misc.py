@@ -1914,6 +1914,9 @@ def test_large_spends(revault_network, bitcoind, executor):
     revault_network.deploy(17, 8, csv=CSV)
     man = revault_network.man(0)
 
+    # Get some more funds
+    bitcoind.generate_block(1)
+
     vaults = []
     deposits = []
     deriv_indexes = []

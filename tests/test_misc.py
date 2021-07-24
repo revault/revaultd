@@ -1930,7 +1930,7 @@ def test_large_spends(revault_network, bitcoind, executor):
     revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
-    n_outputs = random.randint(1, 5)
+    n_outputs = random.randint(1, 3)
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
     destinations = {
         bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
@@ -1983,6 +1983,55 @@ def test_large_spends(revault_network, bitcoind, executor):
     wait_for(
         lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
     )
+
+# Tests that getspendtx returns an error when trying to build a spend too big
+# (it wouldn't be possible to announce it to the coordinator when fully signed)
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_not_announceable_spend(revault_network, bitcoind, executor):
+    CSV = 2016  # 2 weeks :tm:
+    revault_network.deploy(17, 8, csv=CSV)
+    man = revault_network.man(0)
+
+    vaults = []
+    deposits = []
+    deriv_indexes = []
+    total_amount = 0
+    for i in range(10):
+        amount = random.randint(5, 5000) / 100
+        vaults.append(revault_network.fund(amount))
+        deposits.append(f"{vaults[i]['txid']}:{vaults[i]['vout']}")
+        deriv_indexes.append(vaults[i]["derivation_index"])
+        total_amount += vaults[i]["amount"]
+    revault_network.activate_fresh_vaults(vaults)
+
+    feerate = 1
+    n_outputs = 4
+    fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
+    destinations = {
+        bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
+        for _ in range(n_outputs)
+    }
+
+    # Hey, this spend is huge!
+    with pytest.raises(
+        RpcError, match="Spend transaction is too large, try spending less outpoints'"
+    ):
+        man.rpc.getspendtx(deposits, destinations, feerate)
+
+    # One less output is ok though
+    n_outputs -= 1
+    destinations = {
+        bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
+        for _ in range(n_outputs)
+    }
+    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+    for man in revault_network.mans():
+        spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
+        man.rpc.updatespendtx(spend_tx)
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+    man.rpc.setspendtx(spend_psbt.tx.hash)
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

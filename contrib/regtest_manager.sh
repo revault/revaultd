@@ -145,9 +145,16 @@ stop_regtest () {
 
 # Start a single revault wallet daemon
 start_revaultd () {
-	# FIXME: write the config to the PREFIX_DIR ourselves..
-	if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="./config_regtest.toml";fi
-	cargo run --bin revaultd -- --conf "$REVAULTD_CONFIG_PATH";
+	if [ -z "$PREFIX_DIR" ]; then PREFIX_DIR="$PWD/regtest";fi
+
+	if [ -z "$REVAULTD_CONFIG_PATH" ];then
+		REVAULTD_CONFIG_PATH="./config_regtest.toml"
+		cp contrib/config_regtest.toml $REVAULTD_CONFIG_PATH || echo "start_revaultd must be used at the root of the repo"; return 1
+		sed -i "s|/path/to/your/datadir/revault|$PREFIX_DIR/revaultd|g" $REVAULTD_CONFIG_PATH
+		sed -i "s|/path/to/your/cookie/path/.cookie|$PREFIX_DIR/bcdir1/regtest/.cookie|g" $REVAULTD_CONFIG_PATH
+	fi
+
+	cargo run --bin revaultd -- --conf $REVAULTD_CONFIG_PATH;
 	alias re="cargo run --bin revault-cli -- --conf $REVAULTD_CONFIG_PATH";
 }
 

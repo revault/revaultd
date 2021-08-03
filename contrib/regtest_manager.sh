@@ -8,6 +8,10 @@ fi
 # Just spin up two nodes by default
 n_nodes=2
 
+function _bcli() {
+	bitcoin-cli -regtest -datadir="$bc_dir" -rpcwallet="test" $*
+}
+
 start_regtest () {
 	# Use the global env bitcoind by default
 	if [ -z "$BITCOIND_PATH" ];then BITCOIND_PATH="/usr/local/bin/bitcoind";fi
@@ -24,7 +28,7 @@ start_regtest () {
 		bc_dir="$PREFIX_DIR/bcdir$i"
 
 		mkdir -p "$bc_dir"
-		cat <<EOF > $bc_dir/bitcoin.conf
+		cat <<EOF > "$bc_dir/bitcoin.conf"
 regtest=1
 [regtest]
 connect=127.0.0.1:$(($bc_port - 1))
@@ -41,15 +45,15 @@ EOF
 		alias "bdreg$i"="$BITCOIND_PATH -datadir=\"$bc_dir\""
 		echo "Started bitcoind #$i with P2P port $bc_port, RPC port $bc_rpc and datadir $bc_dir"
 
-		bcli="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=\"test\""
-		while [ $($bcli getblockchaininfo &> /dev/null; echo $?) -ne 0 ];do
+		while [ $(_bcli getblockchaininfo &> /dev/null; echo $?) -ne 0 ];do
+			echo "$(_bcli getblockchaininfo)"
 			echo "Waiting for bitcoind to warmup.."
 			sleep 0.5
 		done
-		if [ $($bcli -named createwallet wallet_name="test" descriptors=true load_on_startup=true &> /dev/null; echo $?) -eq 0 ];then
+		if [ $(_bcli -named createwallet wallet_name="test" descriptors=true load_on_startup=true &> /dev/null; echo $?) -eq 0 ];then
 			echo "Created descriptor wallet 'test'";
 		fi
-		alias "bcreg$i"="$bcli"
+		alias "bcreg$i"="bitcoin-cli -regtest -datadir=\"$bc_dir\" -rpcwallet=\"test\""
 		echo ""
 	done
 
@@ -62,8 +66,7 @@ generate_regtest () {
 	while true;do
 		for i in $(seq $n_nodes);do
 			bc_dir="$PREFIX_DIR/bcdir$i"
-			bcli="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=\"test\""
-			if [ $($bcli generatetoaddress 1 $($bcli getnewaddress 2> /dev/null) &> /dev/null; echo $?) -ne 0 ];then
+			if [ $(_bcli generatetoaddress 1 $(_bcli getnewaddress 2> /dev/null) &> /dev/null; echo $?) -ne 0 ];then
 				return
 			fi
 			sleep 3
@@ -91,7 +94,7 @@ fund_regtest () {
 	echo "Getting some bitcoins on each bitcoin daemon"
 	# Use the first node as the block generator
 	bc_dir="$PREFIX_DIR/bcdir1"
-	miner="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=test"
+	miner="bitcoin-cli -regtest -datadir=\"$bc_dir\" -rpcwallet=test"
 	for n in $(seq 110);do
 		if [ "$n" = "1" ];then
 			while [ $($miner getblockchaininfo > /dev/null; echo $?) -ne 0 ];do
@@ -101,8 +104,7 @@ fund_regtest () {
 		fi
 		for i in $(seq $n_nodes);do
 			bc_dir="$PREFIX_DIR/bcdir$i"
-			bcli="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=test"
-			$miner generatetoaddress 1 $($bcli getnewaddress 2>/dev/null) > /dev/null
+			$miner generatetoaddress 1 $(_bcli getnewaddress 2>/dev/null) > /dev/null
 			sleep 0.001
 		done
 		echo -en "\r$n/110 blocks generated"
@@ -112,8 +114,7 @@ fund_regtest () {
 	tip=$($miner getbestblockhash)
 	for node in $(seq $n_nodes);do
 		bc_dir="$PREFIX_DIR/bcdir$i"
-		bcli="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=\"test\""
-		our_tip=$($bcli getbestblockhash)
+		our_tip=$(_bcli getbestblockhash)
 		while test "$our_tip" != "$tip"; do sleep 0.05;done
 	done
 	echo ""
@@ -144,26 +145,26 @@ stop_regtest () {
 
 # Start a single revault wallet daemon
 start_revaultd () {
-    # FIXME: write the config to the PREFIX_DIR ourselves..
-    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="./config_regtest.toml";fi
-    cargo run --bin revaultd -- --conf "$REVAULTD_CONFIG_PATH";
-    alias re="cargo run --bin revault-cli -- --conf $REVAULTD_CONFIG_PATH";
+	# FIXME: write the config to the PREFIX_DIR ourselves..
+	if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="./config_regtest.toml";fi
+	cargo run --bin revaultd -- --conf "$REVAULTD_CONFIG_PATH";
+	alias re="cargo run --bin revault-cli -- --conf $REVAULTD_CONFIG_PATH";
 }
 
 # Fund a new vault, optionally takes an amount
 fund_vault () {
-    if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="./config_regtest.toml";fi
-    amount=10;
-    if [ "$#" == "1" ];then
-        amount=$1;
-    fi
+	if [ -z "$REVAULTD_CONFIG_PATH" ];then REVAULTD_CONFIG_PATH="./config_regtest.toml";fi
+	amount=10;
+	if [ "$#" == "1" ];then
+		amount=$1;
+	fi
 
-    addr=$(cargo run --bin revault-cli -- --conf "$REVAULTD_CONFIG_PATH" getdepositaddress|jq -r .result.address);
-    bc_dir="$PREFIX_DIR/bcdir1";
-    miner="bitcoin-cli -regtest -datadir=$bc_dir -rpcwallet=test";
-    $miner sendtoaddress $addr $amount;
-    sleep 0.5;
-    $miner generatetoaddress 6 $($bcli getnewaddress 2> /dev/null) &> /dev/null;
+	addr=$(cargo run --bin revault-cli -- --conf "$REVAULTD_CONFIG_PATH" getdepositaddress|jq -r .result.address);
+	bc_dir="$PREFIX_DIR/bcdir1";
+	miner="bitcoin-cli -regtest -datadir=\"$bc_dir\" -rpcwallet=test";
+	$miner sendtoaddress $addr $amount;
+	sleep 0.5;
+	$miner generatetoaddress 6 $(_bcli getnewaddress 2> /dev/null) &> /dev/null;
 }
 
 # Deletes the root parent of all datadirs

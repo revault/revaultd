@@ -326,12 +326,15 @@ impl RpcApi for RpcImpl {
             })
             .count();
 
+        let managers_threshold = meta.rpc_utils.revaultd.read().unwrap().managers_threshold();
+
         Ok(json!({
             "version": VERSION.to_string(),
             "network": revaultd.bitcoind_config.network.to_string(),
             "blockheight": blockheight,
             "sync": progress,
             "vaults": number_of_vaults,
+            "managers_threshold": managers_threshold,
         }))
     }
 

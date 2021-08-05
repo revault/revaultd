@@ -22,6 +22,8 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["sync"] == 1.0
     assert res["version"] == "0.0.2"
     assert res["vaults"] == 0
+    # revaultd_manager always deploys with N = 2, M = 3, threshold = M
+    assert res["managers_threshold"] == 3
 
     wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] > 0)
     height = revaultd_manager.rpc.call("getinfo")["blockheight"]

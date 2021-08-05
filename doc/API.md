@@ -35,13 +35,14 @@ Display general information about the current daemon state.
 
 #### Response
 
-| Field         | Type    | Description                                                     |
-| ------------- | ------- | --------------------------------------------------------------- |
-| `blockheight` | integer | Current block height                                            |
-| `network`     | string  | Answer can be `mainnet`, `testnet`, `regtest`                   |
-| `sync`        | float   | The synchronization progress as percentage (`0 < sync < 1`)     |
-| `version`     | string  | Version following the [SimVer](http://www.simver.org/) format   |
-| `vaults`      | integer | Current number of vaults (unconfirmed are included)             |
+| Field                | Type    | Description                                                     |
+| -------------------- | ------- | --------------------------------------------------------------- |
+| `blockheight`        | integer | Current block height                                            |
+| `network`            | string  | Answer can be `mainnet`, `testnet`, `regtest`                   |
+| `sync`               | float   | The synchronization progress as percentage (`0 < sync < 1`)     |
+| `version`            | string  | Version following the [SimVer](http://www.simver.org/) format   |
+| `vaults`             | integer | Current number of vaults (unconfirmed are included)             |
+| `managers_threshold` | integer | Number of managers needed for spending the `unvault_tx`         |
 
 
 ### `getdepositaddress`

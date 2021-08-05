@@ -1640,7 +1640,7 @@ def test_spendtx_management(revault_network, bitcoind):
     spend_psbt.deserialize(spend_tx_b)
     spend_psbt.tx.calc_sha256()
     with pytest.raises(
-        RpcError, match="Error checking Spend transaction signature: 'Missing signature"
+            RpcError, match=f"Error checking Spend transaction signature: 'Not enough signatures, needed: {len(revault_network.mans())}, current: 0"
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 

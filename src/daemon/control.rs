@@ -470,7 +470,7 @@ pub enum SigError {
     InvalidLength,
     InvalidSighash,
     VerifError(secp256k1::Error),
-    MissingSignature(BitcoinPubKey),
+    NotEnoughSignatures(usize, usize),
     /// Transaction for which we check the sigs does not pass sanity checks
     InsaneTransaction,
     Tx(revault_tx::Error),
@@ -482,7 +482,13 @@ impl std::fmt::Display for SigError {
             Self::InvalidLength => write!(f, "Invalid length of signature"),
             Self::InvalidSighash => write!(f, "Invalid SIGHASH type"),
             Self::VerifError(e) => write!(f, "Signature verification error: '{}'", e),
-            Self::MissingSignature(pk) => write!(f, "Missing signature for '{}'", pk),
+            Self::NotEnoughSignatures(needed, current) => {
+                write!(
+                    f,
+                    "Not enough signatures, needed: {}, current: {}",
+                    needed, current
+                )
+            }
             Self::InsaneTransaction => write!(f, "Insane transaction"),
             Self::Tx(e) => write!(f, "Error in transaction management: '{}'", e),
         }
@@ -580,6 +586,7 @@ pub fn check_unvault_signatures(
 /// If `db_vaults` does not contain an entry for each input.
 pub fn check_spend_signatures(
     secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    managers_threshold: usize,
     psbt: &SpendTransaction,
     managers_pubkeys: Vec<DescriptorPublicKey>,
     db_vaults: &HashMap<Txid, DbVault>,
@@ -593,6 +600,7 @@ pub fn check_spend_signatures(
     }
 
     for (i, psbtin) in psbt.psbt().inputs.iter().enumerate() {
+        let mut valid_sigs = 0;
         let sighash = psbt
             .signature_hash(i, sighash_type)
             .expect("In bounds, and we just checked it was not finalized");
@@ -610,17 +618,22 @@ pub fn check_spend_signatures(
                     .derive_public_key(secp),
                 "We just derived a non hardened index"
             );
-            let sig = psbtin
-                .partial_sigs
-                .get(&pubkey)
-                .ok_or(SigError::MissingSignature(pubkey))?;
+            if let Some(sig) = psbtin.partial_sigs.get(&pubkey) {
+                let (given_sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
+                if *given_sighash_type != sighash_type as u8 {
+                    return Err(SigError::InvalidSighash);
+                }
 
-            let (given_sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
-            if *given_sighash_type != sighash_type as u8 {
-                return Err(SigError::InvalidSighash);
+                secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
+                valid_sigs += 1;
             }
+        }
 
-            secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
+        if valid_sigs < managers_threshold {
+            return Err(SigError::NotEnoughSignatures(
+                managers_threshold,
+                valid_sigs,
+            ));
         }
     }
 
@@ -2156,8 +2169,20 @@ mod test {
             }
         }
         for revaultd in &revaultds {
-            check_spend_signatures(&revaultd.secp_ctx, &tx, managers_pubkeys.clone(), &vaults)
-                .unwrap();
+            // FIXME: here we're passing managers_pubkeys.len() instead of
+            // revaultd.managers_threshold() because this tests are costructed
+            // in a very hacky way: we have revaultd but the descriptors actually contain
+            // different keys from the managers_xpubs that we're using for testing!
+            // Hopefully in the future this tests won't be that hacky, and we'll be able
+            // to call managers_threshold here as well
+            check_spend_signatures(
+                &revaultd.secp_ctx,
+                managers_pubkeys.len(),
+                &tx,
+                managers_pubkeys.clone(),
+                &vaults,
+            )
+            .unwrap();
         }
 
         // Already finalized PSBT
@@ -2166,6 +2191,7 @@ mod test {
         for revaultd in &revaultds {
             assert!(check_spend_signatures(
                 &revaultd.secp_ctx,
+                managers_pubkeys.len(),
                 &tx,
                 managers_pubkeys.clone(),
                 &vaults
@@ -2191,13 +2217,17 @@ mod test {
         for revaultd in &revaultds {
             assert!(check_spend_signatures(
                 &revaultd.secp_ctx,
+                managers_pubkeys.len(),
                 &tx,
                 managers_pubkeys.clone(),
                 &vaults
             )
             .unwrap_err()
             .to_string()
-            .contains(&SigError::MissingSignature(manager_keychains[0].1).to_string()));
+            .contains(
+                &SigError::NotEnoughSignatures(managers_pubkeys.len(), managers_pubkeys.len() - 1)
+                    .to_string()
+            ));
         }
 
         // An empty signature?! Wtf?!
@@ -2209,6 +2239,7 @@ mod test {
         for revaultd in &revaultds {
             assert!(check_spend_signatures(
                 &revaultd.secp_ctx,
+                managers_pubkeys.len(),
                 &tx,
                 vec![managers_pubkeys[0].clone()],
                 &vaults,
@@ -2237,6 +2268,7 @@ mod test {
         for revaultd in &revaultds {
             assert!(check_spend_signatures(
                 &revaultd.secp_ctx,
+                managers_pubkeys.len(),
                 &tx,
                 managers_pubkeys.clone(),
                 &vaults
@@ -2270,6 +2302,7 @@ mod test {
         for revaultd in &revaultds {
             assert!(check_spend_signatures(
                 &revaultd.secp_ctx,
+                managers_pubkeys.len(),
                 &tx,
                 managers_pubkeys.clone(),
                 &vaults
@@ -2298,6 +2331,7 @@ mod test {
         for revaultd in &revaultds {
             assert!(check_spend_signatures(
                 &revaultd.secp_ctx,
+                managers_pubkeys.len(),
                 &tx,
                 vec![managers_pubkeys[1].clone()],
                 &vaults,
@@ -2322,6 +2356,7 @@ mod test {
         for revaultd in &revaultds {
             assert!(check_spend_signatures(
                 &revaultd.secp_ctx,
+                managers_pubkeys.len(),
                 &tx,
                 vec![managers_pubkeys[0].clone()],
                 &vaults,
@@ -2341,6 +2376,6 @@ mod test {
         // check_spend_signatures will panic if db_vaults doesn't contain an entry
         // for each input
         let tx = SpendTransaction::from_psbt_str("cHNidP8BAKgCAAAAARU919uuOZ2HHyRUrQsCrT2s98u7j8/xW6DXMzO7+eYFAAAAAAADAAAAA6BCAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDuiAlpgAAAAAABYAFPAj0esIbomyGAolRR1U/vYas0RxhspQCwAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
-        check_spend_signatures(&revaultd.secp_ctx, &tx, vec![], &HashMap::new()).unwrap();
+        check_spend_signatures(&revaultd.secp_ctx, 0, &tx, vec![], &HashMap::new()).unwrap();
     }
 }

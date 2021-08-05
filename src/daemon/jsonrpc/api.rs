@@ -307,28 +307,28 @@ impl RpcApi for RpcImpl {
             .map_err(|e| internal_error!(e))?;
         let progress = bitrep_rx.recv().map_err(|e| internal_error!(e))?;
 
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+
         // This means blockheight == 0 for IBD.
         let BlockchainTip {
             height: blockheight,
             ..
-        } = db_tip(&meta.rpc_utils.revaultd.read().unwrap().db_file())
-            .map_err(|e| internal_error!(e))?;
+        } = db_tip(&revaultd.db_file()).map_err(|e| internal_error!(e))?;
 
-        let number_of_vaults =
-            listvaults_from_db(&meta.rpc_utils.revaultd.read().unwrap(), None, None)
-                .map_err(|e| internal_error!(e))?
-                .iter()
-                .filter(|l| {
-                    l.status != VaultStatus::Spent
-                        && l.status != VaultStatus::Canceled
-                        && l.status != VaultStatus::Unvaulted
-                        && l.status != VaultStatus::EmergencyVaulted
-                })
-                .count();
+        let number_of_vaults = listvaults_from_db(&revaultd, None, None)
+            .map_err(|e| internal_error!(e))?
+            .iter()
+            .filter(|l| {
+                l.status != VaultStatus::Spent
+                    && l.status != VaultStatus::Canceled
+                    && l.status != VaultStatus::Unvaulted
+                    && l.status != VaultStatus::EmergencyVaulted
+            })
+            .count();
 
         Ok(json!({
             "version": VERSION.to_string(),
-            "network": meta.rpc_utils.revaultd.read().unwrap().bitcoind_config.network.to_string(),
+            "network": revaultd.bitcoind_config.network.to_string(),
             "blockheight": blockheight,
             "sync": progress,
             "vaults": number_of_vaults,
@@ -1193,6 +1193,7 @@ impl RpcApi for RpcImpl {
         }
         check_spend_signatures(
             &revaultd.secp_ctx,
+            revaultd.managers_threshold(),
             &spend_tx.psbt,
             revaultd.managers_xpubs(),
             &spent_vaults,

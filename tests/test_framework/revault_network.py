@@ -50,13 +50,26 @@ class RevaultNetwork:
         self.csv = None
         self.emergency_address = None
 
-    def deploy(self, n_stakeholders, n_managers, n_stkmanagers=0, csv=None):
+    def deploy(
+        self,
+        n_stakeholders,
+        n_managers,
+        n_stkmanagers=0,
+        csv=None,
+        managers_threshold=None,
+    ):
         """
         Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
         managers.
         """
+        # They didn't provide it, defaults to n_managers
+        # PS: No I can't just managers_threshold=n_managers in the method's signature :(
+        if managers_threshold == None:
+            managers_threshold = n_managers + n_stkmanagers
+
         assert n_stakeholders + n_stkmanagers >= 2, "Not enough stakeholders"
         assert n_managers + n_stkmanagers >= 1, "Not enough managers"
+        assert managers_threshold <= n_managers + n_stkmanagers, "Invalid threshold"
 
         (
             stkonly_keychains,
@@ -84,7 +97,7 @@ class RevaultNetwork:
         cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs_keychains]
         mans_xpubs = [man.get_xpub() for man in mans_keychains]
         (deposit_desc, unvault_desc, cpfp_desc) = get_descriptors(
-            stks_xpubs, cosigs_keys, mans_xpubs, len(mans_xpubs), cpfp_xpubs, csv
+            stks_xpubs, cosigs_keys, mans_xpubs, managers_threshold, cpfp_xpubs, csv
         )
         # Generate a dummy 2of2 to be used as our Emergency address
         bitcoin.SelectParams("regtest")

@@ -226,6 +226,7 @@ fn main() {
             stdout_file: Some(log_file.clone()),
             stderr_file: Some(log_file),
             chdir: Some(revaultd.data_dir.clone()),
+            append: true,
             ..Daemonize::default()
         };
         daemon.doit().unwrap_or_else(|e| {

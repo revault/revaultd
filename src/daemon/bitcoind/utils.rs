@@ -155,7 +155,8 @@ pub fn unvault_txin_from_deposit(
     } else {
         let deposit_descriptor = revaultd.derived_deposit_descriptor(db_vault.derivation_index);
 
-        let deposit_txo = DepositTxOut::new(deposit_utxo.value, &deposit_descriptor);
+        let deposit_txo =
+            DepositTxOut::new(Amount::from_sat(deposit_utxo.value), &deposit_descriptor);
         let deposit_txin = DepositTxIn::new(*deposit_outpoint, deposit_txo);
 
         let cpfp_descriptor = revaultd.derived_cpfp_descriptor(db_vault.derivation_index);

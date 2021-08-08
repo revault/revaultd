@@ -184,7 +184,7 @@ fn mark_unvaulted(
     let unvault_txin = unvault_tx.revault_unvault_txin(&unvault_descriptor);
     let unvault_outpoint = unvault_txin.outpoint();
 
-    db_confirm_unvault(&db_path, &unvault_tx.inner_tx().global.unsigned_tx.txid())?;
+    db_confirm_unvault(&db_path, &unvault_tx.tx().txid())?;
 
     let txo = unvault_txin.into_txout().into_txout();
     unvaults_cache.insert(

@@ -1984,6 +1984,7 @@ def test_large_spends(revault_network, bitcoind, executor):
         lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
     )
 
+
 # Tests that getspendtx returns an error when trying to build a spend too big
 # (it wouldn't be possible to announce it to the coordinator when fully signed)
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

@@ -2,6 +2,10 @@ set -xe
 
 REPO_ROOT=$(pwd)
 
+# Do the linter check early for quicker feedback
+pip install black
+black --check tests/ tests/test_misc.py
+
 # Build the revaultd binary
 cargo build --release
 

@@ -1,4 +1,4 @@
 pub mod config;
 pub mod utils;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = "0.0.2";

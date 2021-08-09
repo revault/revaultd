@@ -2,11 +2,15 @@ set -xe
 
 REPO_ROOT=$(pwd)
 
+# Do the linter check early for quicker feedback
+pip install black
+black --check tests/ tests/test_misc.py
+
 # Build the revaultd binary
 cargo build --release
 
 # Download the bitcoind binary
-BITCOIND_VERSION="0.21.0"
+BITCOIND_VERSION="0.21.1"
 DIR_NAME="bitcoin-$BITCOIND_VERSION"
 ARCHIVE_NAME="$DIR_NAME.tar.gz"
 curl https://bitcoincore.org/bin/bitcoin-core-$BITCOIND_VERSION/bitcoin-$BITCOIND_VERSION-x86_64-linux-gnu.tar.gz -o $ARCHIVE_NAME

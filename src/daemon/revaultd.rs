@@ -555,6 +555,12 @@ impl RevaultD {
                 .public_key
         })
     }
+
+    pub fn managers_threshold(&self) -> usize {
+        self.unvault_descriptor
+            .managers_threshold()
+            .unwrap_or(self.managers_xpubs().len())
+    }
 }
 
 #[cfg(test)]

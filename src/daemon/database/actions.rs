@@ -291,9 +291,9 @@ macro_rules! db_store_unsigned_transactions {
             $(
                 // We store the transactions without any feebump input. Note that this assertion
                 // would fail if/when we implement multi-inputs Unvaults.
-                assert_eq!($tx.inner_tx().inputs.len(), 1);
+                assert_eq!($tx.psbt().inputs.len(), 1);
                 // They must be freshly generated..
-                assert!($tx.inner_tx().inputs[0].partial_sigs.is_empty());
+                assert!($tx.psbt().inputs[0].partial_sigs.is_empty());
 
                 let tx_type = TransactionType::from($tx);
                 let txid = $tx.txid();
@@ -572,7 +572,7 @@ fn revault_tx_merge_sigs(
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
     secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
 ) -> Result<(bool, Vec<u8>), DatabaseError> {
-    tx.inner_tx_mut().inputs[0].partial_sigs.extend(sigs);
+    tx.psbt_mut().inputs[0].partial_sigs.extend(sigs);
     let fully_signed = tx.is_finalizable(secp_ctx);
     let raw_psbt = tx.as_psbt_serialized();
     Ok((fully_signed, raw_psbt))
@@ -779,7 +779,7 @@ mod test {
             61, 121, 165, 139, 95, 6, 255, 221, 169, 135, 102, 29, 158, 231, 222, 117, 31, 200, 27,
             178, 145, 230, 171, 54, 181, 12, 196, 182, 23, 175, 86, 129,
         ];
-        tx.inner_tx_mut().inputs[input_index]
+        tx.psbt_mut().inputs[input_index]
             .partial_sigs
             .insert(pubkey, sig);
     }
@@ -981,71 +981,71 @@ mod test {
         let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        assert_eq!(stored_cancel_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut cancel_tx = fresh_cancel_tx.clone();
         revault_tx_add_dummy_sig(&mut cancel_tx, 0);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
             tx_db_id,
-            cancel_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            cancel_tx.psbt().inputs[0].partial_sigs.clone(),
             &revaultd.secp_ctx,
         )
         .unwrap();
         let (_, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_cancel_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+        assert_eq!(stored_cancel_tx.psbt().inputs[0].partial_sigs.len(), 1);
 
         let (tx_db_id, stored_emer_tx) =
             db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
-        assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        assert_eq!(stored_emer_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut emer_tx = fresh_emer_tx.clone();
         revault_tx_add_dummy_sig(&mut emer_tx, 0);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
             tx_db_id,
-            emer_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            emer_tx.psbt().inputs[0].partial_sigs.clone(),
             &revaultd.secp_ctx,
         )
         .unwrap();
         let (_, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
-        assert_eq!(stored_emer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+        assert_eq!(stored_emer_tx.psbt().inputs[0].partial_sigs.len(), 1);
 
         let (tx_db_id, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        assert_eq!(stored_unemer_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut unemer_tx = fresh_unemer_tx.clone();
         revault_tx_add_dummy_sig(&mut unemer_tx, 0);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
             tx_db_id,
-            unemer_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            unemer_tx.psbt().inputs[0].partial_sigs.clone(),
             &revaultd.secp_ctx,
         )
         .unwrap();
         let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_unemer_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+        assert_eq!(stored_unemer_tx.psbt().inputs[0].partial_sigs.len(), 1);
 
         let (tx_db_id, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
-        assert_eq!(stored_unvault_tx.inner_tx().inputs[0].partial_sigs.len(), 0);
+        assert_eq!(stored_unvault_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut unvault_tx = fresh_unvault_tx.clone();
         revault_tx_add_dummy_sig(&mut unvault_tx, 0);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
             tx_db_id,
-            unvault_tx.inner_tx().inputs[0].partial_sigs.clone(),
+            unvault_tx.psbt().inputs[0].partial_sigs.clone(),
             &revaultd.secp_ctx,
         )
         .unwrap();
         let (_, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
-        assert_eq!(stored_unvault_tx.inner_tx().inputs[0].partial_sigs.len(), 1);
+        assert_eq!(stored_unvault_tx.psbt().inputs[0].partial_sigs.len(), 1);
 
         // They can also be queried
         assert_eq!(
@@ -1203,7 +1203,7 @@ mod test {
                         &db_path,
                         db_vault.id,
                         tx_db_id,
-                        cancel_tx.inner_tx().inputs[0].partial_sigs.clone(),
+                        cancel_tx.psbt().inputs[0].partial_sigs.clone(),
                         &secp,
                     )
                     .unwrap();
@@ -1215,7 +1215,7 @@ mod test {
                 &db_path,
                 db_vault.id,
                 tx_db_id,
-                cancel_tx.inner_tx().inputs[0].partial_sigs.clone(),
+                cancel_tx.psbt().inputs[0].partial_sigs.clone(),
                 &revaultd.secp_ctx,
             )
             .unwrap();
@@ -1269,16 +1269,14 @@ mod test {
             &db_path,
             db_vault.id,
             db_unvault_transaction(&db_path, db_vault.id).unwrap().0,
-            fullysigned_unvault_tx.inner_tx().inputs[0]
-                .partial_sigs
-                .clone(),
+            fullysigned_unvault_tx.psbt().inputs[0].partial_sigs.clone(),
             &revaultd.secp_ctx,
         )
         .unwrap();
 
         // We can store a Spend tx spending a single unvault and query it
         let spend_tx = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAciTbKS43sH49TJWX6xJ+MxqWfNQhRl+vkttRZ9sLUkHAAAAAAClAQAAAoAyAAAAAAAAIgAggxumgjPgMj5oHWn8QkvKqPIN0N5nuAbyQ+FEgOJZpjygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgKb0SdnuqeHAJpRuZTbk3r81qbXpuHrMEmxT9Kph47HQBAwQBAAAAAQWqIQMfu47eLiYeHN6Y3C1Vk0ckgmWifMy5IUhaPHbNELV93axRh2R2qRTtiGxBD5KrMQQU6UGx2zsKMMf6nIisa3apFCDKte9IuDeF0D4GA/JRUNX4xgt+iKxsk1KHZ1IhAzTPPnjrvzPFmi+raNR6sY8WTt1KNusVwp82uWebzWDwIQKl21mZX7WAQhRvdhhwqUAuQfIemg9zkTCCyMQ+Q8CVFVKvAqUBsmgAAQElIQMfu47eLiYeHN6Y3C1Vk0ckgmWifMy5IUhaPHbNELV93axRhwAA").unwrap();
-        let spend_tx_inputs = &spend_tx.inner_tx().global.unsigned_tx.input;
+        let spend_tx_inputs = &spend_tx.tx().input;
         assert_eq!(spend_tx_inputs.len(), 1);
         let (_, db_unvault) =
             db_vault_by_unvault_txid(&db_path, &spend_tx_inputs[0].previous_output.txid)
@@ -1359,15 +1357,13 @@ mod test {
             &db_path,
             db_vault.id,
             db_unvault_transaction(&db_path, db_vault.id).unwrap().0,
-            fullysigned_unvault_tx.inner_tx().inputs[0]
-                .partial_sigs
-                .clone(),
+            fullysigned_unvault_tx.psbt().inputs[0].partial_sigs.clone(),
             &revaultd.secp_ctx,
         )
         .unwrap();
 
         let spend_tx_b = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAXHqOcTAJnPyXEF1cxFATe4S6yHLGZm+s0aj9mUTtKgVAAAAAACHGwAAAoAyAAAAAAAAIgAgAYLPNnsrzQaSg7aZR0JUgXHtO6bnZRehvxqxyzW5m5ygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4BAwQBAAAAAQWqIQLbrZUUxHTNBLySX7XjBBa5auxTfjuUSHxE3vJ1JXfdlaxRh2R2qRS8iuykW8lDZdRWXgK4UY0gLAkjX4isa3apFJ+lQ0Ybj4Eig7391TEtxikgP4DDiKxsk1KHZ1IhAqTEmYMxdjLU50wj/Hw9X2Pf7WRDSCnO4P4qpJ5h+PNOIQO2p8sldVsHhhEimy+ZW0E1L3vX5d9mqQ0d01XVdx3DWVKvAocbsmgAAQElIQLbrZUUxHTNBLySX7XjBBa5auxTfjuUSHxE3vJ1JXfdlaxRhwAA").unwrap();
-        let spend_tx_b_inputs = &spend_tx_b.inner_tx().global.unsigned_tx.input;
+        let spend_tx_b_inputs = &spend_tx_b.tx().input;
         assert_eq!(spend_tx_b_inputs.len(), 1);
         let (_, db_unvault_b) =
             db_vault_by_unvault_txid(&db_path, &spend_tx_b_inputs[0].previous_output.txid)

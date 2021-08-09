@@ -20,7 +20,7 @@ use revault_tx::{
     bitcoin::{
         secp256k1,
         util::bip32::{ChildNumber, ExtendedPubKey},
-        Address, BlockHash, Script, TxOut,
+        Address, BlockHash, PublicKey as BitcoinPublicKey, Script, TxOut,
     },
     miniscript::descriptor::{DescriptorPublicKey, DescriptorTrait},
     scripts::{
@@ -533,6 +533,33 @@ impl RevaultD {
                 }
             })
             .collect()
+    }
+
+    pub fn stakeholders_xpubs_at(&self, index: ChildNumber) -> Vec<BitcoinPublicKey> {
+        self.deposit_descriptor
+            .xpubs()
+            .into_iter()
+            .map(|desc_xpub| {
+                desc_xpub
+                    .derive(index.into())
+                    .derive_public_key(&self.secp_ctx)
+                    .expect("Is derived, and there is never any hardened path")
+            })
+            .collect()
+    }
+
+    pub fn our_stk_xpub_at(&self, index: ChildNumber) -> Option<BitcoinPublicKey> {
+        self.our_stk_xpub.map(|xpub| {
+            xpub.derive_pub(&self.secp_ctx, &[index])
+                .expect("The derivation index stored in the database is sane (unhardened)")
+                .public_key
+        })
+    }
+
+    pub fn managers_threshold(&self) -> usize {
+        self.unvault_descriptor
+            .managers_threshold()
+            .unwrap_or(self.managers_xpubs().len())
     }
 }
 

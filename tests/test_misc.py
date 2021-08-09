@@ -22,6 +22,8 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["sync"] == 1.0
     assert res["version"] == "0.0.2"
     assert res["vaults"] == 0
+    # revaultd_manager always deploys with N = 2, M = 3, threshold = M
+    assert res["managers_threshold"] == 3
 
     wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] > 0)
     height = revaultd_manager.rpc.call("getinfo")["blockheight"]
@@ -555,7 +557,7 @@ def test_revocationtxs(revault_network):
         )
 
     # We can't mix up PSBTS (the Cancel can even be detected at parsing time)
-    with pytest.raises(RpcError, match="Invalid Revault transaction"):
+    with pytest.raises(RpcError, match="Invalid Cancel tx: db wtxid"):
         stks[0].rpc.revocationtxs(
             deposit,
             psbts["emergency_tx"],  # here
@@ -600,15 +602,15 @@ def test_revocationtxs(revault_network):
         psbts["emergency_unvault_tx"], child_index
     )
 
-    # We refuse any random invalid signature
+    # We refuse any random garbage signature
     mal_cancel = psbt_add_invalid_sig(cancel_psbt)
-    with pytest.raises(RpcError, match="Invalid signature in Cancel"):
+    with pytest.raises(RpcError, match="Unknown key in Cancel"):
         stks[0].rpc.revocationtxs(deposit, mal_cancel, emer_psbt, unemer_psbt)
     mal_emer = psbt_add_invalid_sig(emer_psbt)
-    with pytest.raises(RpcError, match="Invalid signature in Emergency"):
+    with pytest.raises(RpcError, match="Unknown key in Emergency"):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, mal_emer, unemer_psbt)
     mal_unemer = psbt_add_invalid_sig(unemer_psbt)
-    with pytest.raises(RpcError, match="Invalid signature in Unvault Emergency"):
+    with pytest.raises(RpcError, match="Unknown key in UnvaultEmergency"):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, mal_unemer)
 
     # If we input valid presigned transactions, it will acknowledge that *we* already
@@ -680,10 +682,10 @@ def test_unvaulttx(revault_network):
         stks[0].rpc.unvaulttx(deposit, unvault_psbt)
     unvault_psbt = stks[0].stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
 
-    # We refuse any random invalid signature
+    # We refuse any random garbage signature
     mal_unvault = psbt_add_invalid_sig(unvault_psbt)
     unvault_psbt = stks[0].stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
-    with pytest.raises(RpcError, match="Invalid signature"):
+    with pytest.raises(RpcError, match="Unknown key"):
         stks[0].rpc.unvaulttx(deposit, mal_unvault)
 
     # Get all stakeholders to share their sig, this makes the vault active
@@ -1640,7 +1642,8 @@ def test_spendtx_management(revault_network, bitcoind):
     spend_psbt.deserialize(spend_tx_b)
     spend_psbt.tx.calc_sha256()
     with pytest.raises(
-        RpcError, match="Error checking Spend transaction signature: 'Missing signature"
+        RpcError,
+        match=f"Error checking Spend transaction signature: 'Not enough signatures, needed: {len(revault_network.mans())}, current: 0",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
@@ -1907,6 +1910,110 @@ def test_spends_conflicting(revault_network, bitcoind):
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_spend_threshold(revault_network, bitcoind, executor):
+    CSV = 20
+    managers_threshold = 3
+    revault_network.deploy(17, 8, csv=CSV, managers_threshold=managers_threshold)
+    man = revault_network.man(0)
+
+    # Get some more funds
+    bitcoind.generate_block(1)
+
+    vaults = []
+    deposits = []
+    deriv_indexes = []
+    total_amount = 0
+    for i in range(5):
+        amount = random.randint(5, 5000) / 100
+        vaults.append(revault_network.fund(amount))
+        deposits.append(f"{vaults[i]['txid']}:{vaults[i]['vout']}")
+        deriv_indexes.append(vaults[i]["derivation_index"])
+        total_amount += vaults[i]["amount"]
+    revault_network.activate_fresh_vaults(vaults)
+
+    feerate = 1
+    n_outputs = 3
+    fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
+    destinations = {
+        bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
+        for _ in range(n_outputs)
+    }
+    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+
+    # Trying to broadcast when managers_threshold - 1 managers signed
+    for man in revault_network.mans()[: managers_threshold - 1]:
+        spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
+    man.rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+
+    # Revaultd didn't like it
+    with pytest.raises(
+        RpcError,
+        match=f"Error checking Spend transaction signature: 'Not enough signatures, needed: {managers_threshold}, current: {managers_threshold - 1}'",
+    ):
+        man.rpc.setspendtx(spend_psbt.tx.hash)
+
+    # Killing the daemon and restart shouldn't cause any issue
+    for m in revault_network.mans():
+        m.stop()
+        m.start()
+
+    # Alright, I'll make the last manager sign...
+    man = revault_network.mans()[managers_threshold]
+    spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
+    man.rpc.updatespendtx(spend_tx)
+
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_tx)
+    spend_psbt.tx.calc_sha256()
+
+    # All good now?
+    man.rpc.setspendtx(spend_psbt.tx.hash)
+
+    for m in revault_network.mans():
+        wait_for(
+            lambda: len(m.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # Killing the daemon and restart it while unvaulting shouldn't cause
+    # any issue
+    for m in revault_network.mans():
+        m.stop()
+        m.start()
+
+    # We need a single confirmation to consider the Unvault transaction confirmed
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    for m in revault_network.mans():
+        wait_for(
+            lambda: len(m.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # We'll broadcast the Spend transaction as soon as it's valid
+    bitcoind.generate_block(CSV)
+    man.wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
+    )
+    for m in revault_network.mans():
+        wait_for(
+            lambda: len(m.rpc.listvaults(["spending"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+    # And will mark it as spent after a single confirmation of the Spend tx
+    bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
+    for m in revault_network.mans():
+        wait_for(
+            lambda: len(m.rpc.listvaults(["spent"], deposits)["vaults"])
+            == len(deposits)
+        )
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_large_spends(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
     # FIXME: the bottleneck here on the number of participants is the announcement
@@ -1983,6 +2090,7 @@ def test_large_spends(revault_network, bitcoind, executor):
     wait_for(
         lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
     )
+
 
 # Tests that getspendtx returns an error when trying to build a spend too big
 # (it wouldn't be possible to announce it to the coordinator when fully signed)

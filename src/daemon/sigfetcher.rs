@@ -1,19 +1,16 @@
 ///! Background thread that will poll the coordinator for signatures
 use crate::{
-    control::{check_signature, get_presigs, CommunicationError},
+    control::{get_presigs, CommunicationError},
     database::{
         actions::db_update_presigned_tx,
-        interface::db_transactions_sig_missing,
+        interface::{db_transactions_sig_missing, db_vault},
         schema::{DbTransaction, RevaultTx, TransactionType},
         DatabaseError,
     },
     revaultd::RevaultD,
     threadmessages::SigFetcherMessageOut,
 };
-use revault_tx::{
-    bitcoin::{PublicKey as BitcoinPubKey, SigHashType},
-    transactions::RevaultTransaction,
-};
+use revault_tx::{bitcoin::PublicKey as BitcoinPubKey, transactions::RevaultTransaction};
 
 use std::{
     sync::mpsc,
@@ -81,6 +78,8 @@ fn get_sigs(
 ) -> Result<(), SignatureFetcherError> {
     let db_path = &revaultd.db_file();
     let secp_ctx = &revaultd.secp_ctx;
+    let db_vault = db_vault(&db_path, vault_id)?.expect("Presigned transactions without vault?");
+    let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
 
     let signatures = get_presigs(revaultd, tx.txid())?;
     for (key, sig) in signatures {
@@ -88,8 +87,21 @@ fn get_sigs(
             compressed: true,
             key,
         };
+        if !stk_keys.contains(&pubkey) {
+            // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
+            // keys something dodgy's happening.
+            log::warn!(
+                "Coordinator answered to 'getsigs' for tx '{}' with a key '{}' that is \
+                 not part of the stakeholders pubkeys '{:?}'",
+                tx.txid(),
+                key,
+                stk_keys
+            );
+            continue;
+        }
+
         // FIXME: don't blindly assume 0 here..
-        if tx.inner_tx().inputs[0].partial_sigs.contains_key(&pubkey) {
+        if tx.psbt().inputs[0].partial_sigs.contains_key(&pubkey) {
             continue;
         }
 
@@ -99,24 +111,11 @@ fn get_sigs(
             pubkey,
             tx_type
         );
-        let hashtype = match tx_type {
-            TransactionType::Unvault => SigHashType::All,
-            TransactionType::Cancel
-            | TransactionType::Emergency
-            | TransactionType::UnvaultEmergency => SigHashType::AllPlusAnyoneCanPay,
-        };
-        if let Err(e) = check_signature(secp_ctx, &tx, pubkey, &sig, hashtype) {
+        if let Err(e) = tx.add_signature(0, pubkey.key, sig, secp_ctx) {
             // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
             // signatures something shady's happening.
-            log::warn!(
-                "Invalid revocation signature '{:?}' sent by coordinator: '{}'",
-                sig,
-                e
-            );
-            continue;
-        }
-        if let Err(e) = tx.add_signature(0, pubkey, (sig, hashtype)) {
             log::error!("Error while adding signature for presigned tx: '{}'", e);
+            continue;
         }
         // This will atomically set the vault as 'Secured' if all revocations transactions
         // were signed, and as 'Active' if the Unvault transaction was.
@@ -126,7 +125,7 @@ fn get_sigs(
             db_path,
             vault_id,
             tx_db_id,
-            tx.inner_tx().inputs[0].partial_sigs.clone(),
+            tx.psbt().inputs[0].partial_sigs.clone(),
             secp_ctx,
         ) {
             log::error!("Error while updating presigned tx: '{}'", e);

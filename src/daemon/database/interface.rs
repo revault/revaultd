@@ -262,6 +262,17 @@ impl TryFrom<&Row<'_>> for DbVault {
     }
 }
 
+/// Get a vault from it id. Returns None if we never heard of such a vault.
+pub fn db_vault(db_path: &Path, vault_id: u32) -> Result<Option<DbVault>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM vaults WHERE id = (?1)",
+        params![vault_id],
+        |row| row.try_into(),
+    )
+    .map(|mut vault_list| vault_list.pop())
+}
+
 /// Get all the vaults we know about from the db, sorted by last update
 pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(
@@ -740,7 +751,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
             .expect("We store it with as_psbt_serialized");
 
         debug_assert_eq!(
-            psbt.inner_tx().global.unsigned_tx.txid().to_vec(),
+            psbt.tx().txid().to_vec(),
             row.get::<_, Vec<u8>>(2)?,
             "Insane db, txid in column is not the same as psbt's one",
         );
@@ -775,7 +786,7 @@ pub fn db_list_spends(
             let vout: u32 = row.get(5)?;
             let deposit_outpoint = OutPoint { txid, vout };
 
-            let spend_txid = db_spend.psbt.inner_tx().global.unsigned_tx.txid();
+            let spend_txid = db_spend.psbt.tx().txid();
 
             if res.contains_key(&spend_txid) {
                 let (_, outpoints) = res.get_mut(&spend_txid).unwrap();

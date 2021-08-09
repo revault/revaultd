@@ -29,14 +29,16 @@ use crate::{
 use common::VERSION;
 
 use revault_tx::{
-    bitcoin::{util::bip32, Address, OutPoint, Transaction as BitcoinTransaction, TxOut, Txid},
+    bitcoin::{
+        util::bip32, Address, Amount, OutPoint, Transaction as BitcoinTransaction, TxOut, Txid,
+    },
     miniscript::DescriptorTrait,
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
         RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
     txins::DepositTxIn,
-    txouts::{DepositTxOut, ExternalTxOut, SpendTxOut},
+    txouts::{DepositTxOut, SpendTxOut},
 };
 
 use std::{
@@ -305,31 +307,34 @@ impl RpcApi for RpcImpl {
             .map_err(|e| internal_error!(e))?;
         let progress = bitrep_rx.recv().map_err(|e| internal_error!(e))?;
 
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+
         // This means blockheight == 0 for IBD.
         let BlockchainTip {
             height: blockheight,
             ..
-        } = db_tip(&meta.rpc_utils.revaultd.read().unwrap().db_file())
-            .map_err(|e| internal_error!(e))?;
+        } = db_tip(&revaultd.db_file()).map_err(|e| internal_error!(e))?;
 
-        let number_of_vaults =
-            listvaults_from_db(&meta.rpc_utils.revaultd.read().unwrap(), None, None)
-                .map_err(|e| internal_error!(e))?
-                .iter()
-                .filter(|l| {
-                    l.status != VaultStatus::Spent
-                        && l.status != VaultStatus::Canceled
-                        && l.status != VaultStatus::Unvaulted
-                        && l.status != VaultStatus::EmergencyVaulted
-                })
-                .count();
+        let number_of_vaults = listvaults_from_db(&revaultd, None, None)
+            .map_err(|e| internal_error!(e))?
+            .iter()
+            .filter(|l| {
+                l.status != VaultStatus::Spent
+                    && l.status != VaultStatus::Canceled
+                    && l.status != VaultStatus::Unvaulted
+                    && l.status != VaultStatus::EmergencyVaulted
+            })
+            .count();
+
+        let managers_threshold = meta.rpc_utils.revaultd.read().unwrap().managers_threshold();
 
         Ok(json!({
             "version": VERSION.to_string(),
-            "network": meta.rpc_utils.revaultd.read().unwrap().bitcoind_config.network.to_string(),
+            "network": revaultd.bitcoind_config.network.to_string(),
             "blockheight": blockheight,
             "sync": progress,
             "vaults": number_of_vaults,
+            "managers_threshold": managers_threshold,
         }))
     }
 
@@ -475,8 +480,8 @@ impl RpcApi for RpcImpl {
         let (cancel_db_id, db_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
             .map_err(|e| internal_error!(e))?
             .expect("must be here if at least in 'Funded' state");
-        let rpc_txid = cancel_tx.inner_tx().global.unsigned_tx.wtxid();
-        let db_txid = db_cancel_tx.inner_tx().global.unsigned_tx.wtxid();
+        let rpc_txid = cancel_tx.tx().wtxid();
+        let db_txid = db_cancel_tx.tx().wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Cancel tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -487,8 +492,8 @@ impl RpcApi for RpcImpl {
         let (emer_db_id, db_emergency_tx) = db_emer_transaction(&revaultd.db_file(), db_vault.id)
             .map_err(|e| internal_error!(e))?
             .expect("Must be here if 'funded'");
-        let rpc_txid = emergency_tx.inner_tx().global.unsigned_tx.wtxid();
-        let db_txid = db_emergency_tx.inner_tx().global.unsigned_tx.wtxid();
+        let rpc_txid = emergency_tx.tx().wtxid();
+        let db_txid = db_emergency_tx.tx().wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -500,8 +505,8 @@ impl RpcApi for RpcImpl {
             db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)
                 .map_err(|e| internal_error!(e))?
                 .expect("Must be here if 'funded'");
-        let rpc_txid = unvault_emergency_tx.inner_tx().global.unsigned_tx.wtxid();
-        let db_txid = db_unemergency_tx.inner_tx().global.unsigned_tx.wtxid();
+        let rpc_txid = unvault_emergency_tx.tx().wtxid();
+        let db_txid = db_unemergency_tx.tx().wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Unvault Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -511,21 +516,21 @@ impl RpcApi for RpcImpl {
 
         let deriv_index = db_vault.derivation_index;
         let cancel_sigs = cancel_tx
-            .inner_tx()
+            .psbt()
             .inputs
             .get(0)
             .expect("Cancel tx has a single input, inbefore fee bumping.")
             .partial_sigs
             .clone();
         let emer_sigs = emergency_tx
-            .inner_tx()
+            .psbt()
             .inputs
             .get(0)
             .expect("Emergency tx has a single input, inbefore fee bumping.")
             .partial_sigs
             .clone();
         let unvault_emer_sigs = unvault_emergency_tx
-            .inner_tx()
+            .psbt()
             .inputs
             .get(0)
             .expect("UnvaultEmergency tx has a single input, inbefore fee bumping.")
@@ -534,11 +539,8 @@ impl RpcApi for RpcImpl {
 
         // They must have included *at least* a signature for our pubkey
         let our_pubkey = revaultd
-            .our_stk_xpub
-            .expect("We are a stakeholder")
-            .derive_pub(secp_ctx, &[deriv_index])
-            .expect("The derivation index stored in the database is sane (unhardened)")
-            .public_key;
+            .our_stk_xpub_at(deriv_index)
+            .expect("We are a stakeholder, checked at the beginning of the call.");
         if !cancel_sigs.contains_key(&our_pubkey) {
             return Err(JsonRpcError::invalid_params(format!(
                 "No signature for ourselves ({}) in Cancel transaction",
@@ -556,6 +558,33 @@ impl RpcApi for RpcImpl {
             return Err(JsonRpcError::invalid_params(
                 "No signature for ourselves in UnvaultEmergency transaction".to_string(),
             ));
+        }
+
+        // There is no reason for them to include an unnecessary signature, so be strict.
+        let stk_keys = revaultd.stakeholders_xpubs_at(deriv_index);
+        for (ref key, _) in cancel_sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in Cancel transaction signatures: {}",
+                    key
+                )));
+            }
+        }
+        for (ref key, _) in emer_sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in Emergency transaction signatures: {}",
+                    key
+                )));
+            }
+        }
+        for (ref key, _) in unvault_emer_sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in UnvaultEmergency transaction signatures: {}",
+                    key
+                )));
+            }
         }
 
         // Don't share anything if we were given invalid signatures. This
@@ -646,7 +675,7 @@ impl RpcApi for RpcImpl {
             .derive(vault.derivation_index, &revaultd.secp_ctx);
         let deposit_txin = DepositTxIn::new(
             outpoint,
-            DepositTxOut::new(vault.amount.as_sat(), &deposit_descriptor),
+            DepositTxOut::new(vault.amount, &deposit_descriptor),
         );
         let unvault_descriptor = revaultd
             .unvault_descriptor
@@ -693,8 +722,8 @@ impl RpcApi for RpcImpl {
         // Sanity check they didn't send us a garbaged PSBT
         let (unvault_db_id, db_unvault_tx) =
             db_unvault_transaction(&db_path, db_vault.id).map_err(|e| internal_error!(e))?;
-        let rpc_txid = unvault_tx.inner_tx().global.unsigned_tx.wtxid();
-        let db_txid = db_unvault_tx.inner_tx().global.unsigned_tx.wtxid();
+        let rpc_txid = unvault_tx.tx().wtxid();
+        let db_txid = db_unvault_tx.tx().wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Unvault tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -703,23 +732,32 @@ impl RpcApi for RpcImpl {
         }
 
         let sigs = &unvault_tx
-            .inner_tx()
+            .psbt()
             .inputs
             .get(0)
             .expect("UnvaultTransaction always has 1 input")
             .partial_sigs;
-        // They must have included *at least* a signature for our pubkey
-        let our_pubkey = revaultd
-            .our_stk_xpub
-            .expect("We are a stakeholder")
-            .derive_pub(secp_ctx, &[db_vault.derivation_index])
-            .expect("The derivation index stored in the database is sane (unhardened)")
-            .public_key;
-        if !sigs.contains_key(&our_pubkey) {
+        let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
+        let our_key = revaultd
+            .our_stk_xpub_at(db_vault.derivation_index)
+            .expect("We are a stakeholder, checked at the beginning.");
+        // They must have included *at least* a signature for our pubkey, and must not include an
+        // unnecessary signature.
+        if !sigs.contains_key(&our_key) {
             return Err(JsonRpcError::invalid_params(format!(
                 "No signature for ourselves ({}) in Unvault transaction",
-                our_pubkey
+                our_key
             )));
+        }
+
+        // There is no reason for them to include an unnecessary signature, so be strict.
+        for (ref key, _) in sigs.iter() {
+            if !stk_keys.contains(key) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown key in Cancel transaction signatures: {}",
+                    key
+                )));
+            }
         }
 
         // Of course, don't send a PSBT with an invalid signature
@@ -879,10 +917,10 @@ impl RpcApi for RpcImpl {
             .into_iter()
             .map(|(addr, value)| {
                 let script_pubkey = addr.script_pubkey();
-                SpendTxOut::Destination(ExternalTxOut::new(TxOut {
+                SpendTxOut::Destination(TxOut {
                     value,
                     script_pubkey,
-                }))
+                })
             })
             .collect();
 
@@ -958,7 +996,7 @@ impl RpcApi for RpcImpl {
             if change_value > revault_tx::transactions::DUST_LIMIT + cpfp_overhead {
                 let change_txo = DepositTxOut::new(
                     // arithmetic checked above
-                    change_value - cpfp_overhead,
+                    Amount::from_sat(change_value - cpfp_overhead),
                     &revaultd
                         .deposit_descriptor
                         .derive(change_index, &revaultd.secp_ctx),
@@ -1003,10 +1041,10 @@ impl RpcApi for RpcImpl {
         manager_only!(meta);
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
         let db_path = revaultd.db_file();
-        let spend_txid = spend_tx.inner_tx().global.unsigned_tx.txid();
+        let spend_txid = spend_tx.tx().txid();
 
         // Fetch the Unvault it spends from the DB
-        let spend_inputs = &spend_tx.inner_tx().global.unsigned_tx.input;
+        let spend_inputs = &spend_tx.tx().input;
         let mut db_unvaults = Vec::with_capacity(spend_inputs.len());
         for txin in spend_inputs.iter() {
             let (db_vault, db_unvault) =
@@ -1102,15 +1140,7 @@ impl RpcApi for RpcImpl {
                 .script_pubkey();
             let mut cpfp_index = None;
             let mut change_index = None;
-            for (i, txout) in db_spend
-                .psbt
-                .inner_tx()
-                .global
-                .unsigned_tx
-                .output
-                .iter()
-                .enumerate()
-            {
+            for (i, txout) in db_spend.psbt.tx().output.iter().enumerate() {
                 if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
                     cpfp_index = Some(i);
                 }
@@ -1149,7 +1179,7 @@ impl RpcApi for RpcImpl {
         // Then check all our fellow managers already signed it
         let spent_vaults =
             db_vaults_from_spend(&db_path, &spend_txid).map_err(|e| internal_error!(e))?;
-        let tx = &spend_tx.psbt.inner_tx().global.unsigned_tx;
+        let tx = &spend_tx.psbt.tx();
         if spent_vaults.len() < tx.input.len() {
             return Err(JsonRpcError::invalid_params(
                 "Spend transaction refers to an already spent vault".to_string(),
@@ -1166,6 +1196,7 @@ impl RpcApi for RpcImpl {
         }
         check_spend_signatures(
             &revaultd.secp_ctx,
+            revaultd.managers_threshold(),
             &spend_tx.psbt,
             revaultd.managers_xpubs(),
             &spent_vaults,

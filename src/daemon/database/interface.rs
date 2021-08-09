@@ -262,6 +262,17 @@ impl TryFrom<&Row<'_>> for DbVault {
     }
 }
 
+/// Get a vault from it id. Returns None if we never heard of such a vault.
+pub fn db_vault(db_path: &Path, vault_id: u32) -> Result<Option<DbVault>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM vaults WHERE id = (?1)",
+        params![vault_id],
+        |row| row.try_into(),
+    )
+    .map(|mut vault_list| vault_list.pop())
+}
+
 /// Get all the vaults we know about from the db, sorted by last update
 pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(

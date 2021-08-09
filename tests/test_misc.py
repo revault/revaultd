@@ -600,15 +600,15 @@ def test_revocationtxs(revault_network):
         psbts["emergency_unvault_tx"], child_index
     )
 
-    # We refuse any random invalid signature
+    # We refuse any random garbage signature
     mal_cancel = psbt_add_invalid_sig(cancel_psbt)
-    with pytest.raises(RpcError, match="Invalid signature in Cancel"):
+    with pytest.raises(RpcError, match="Unknown key in Cancel"):
         stks[0].rpc.revocationtxs(deposit, mal_cancel, emer_psbt, unemer_psbt)
     mal_emer = psbt_add_invalid_sig(emer_psbt)
-    with pytest.raises(RpcError, match="Invalid signature in Emergency"):
+    with pytest.raises(RpcError, match="Unknown key in Emergency"):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, mal_emer, unemer_psbt)
     mal_unemer = psbt_add_invalid_sig(unemer_psbt)
-    with pytest.raises(RpcError, match="Invalid signature in Unvault Emergency"):
+    with pytest.raises(RpcError, match="Unknown key in UnvaultEmergency"):
         stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, mal_unemer)
 
     # If we input valid presigned transactions, it will acknowledge that *we* already
@@ -680,10 +680,10 @@ def test_unvaulttx(revault_network):
         stks[0].rpc.unvaulttx(deposit, unvault_psbt)
     unvault_psbt = stks[0].stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
 
-    # We refuse any random invalid signature
+    # We refuse any random garbage signature
     mal_unvault = psbt_add_invalid_sig(unvault_psbt)
     unvault_psbt = stks[0].stk_keychain.sign_unvault_psbt(unvault_psbt, child_index)
-    with pytest.raises(RpcError, match="Invalid signature"):
+    with pytest.raises(RpcError, match="Unknown key"):
         stks[0].rpc.unvaulttx(deposit, mal_unvault)
 
     # Get all stakeholders to share their sig, this makes the vault active

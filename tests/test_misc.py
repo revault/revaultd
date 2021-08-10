@@ -289,7 +289,7 @@ def test_listspendtxs(revault_network, bitcoind):
     rn.deploy(n_stakeholders=2, n_managers=2, n_stkmanagers=0, csv=5)
     man = rn.man(0)
 
-    vaults = rn.fundmany([1, 2])
+    vaults = rn.fundmany([1, 2, 3, 1])
     for v in vaults:
         rn.secure_vault(v)
         rn.activate_vault(v)
@@ -311,6 +311,19 @@ def test_listspendtxs(revault_network, bitcoind):
         assert len(spend_txs) == 1
         assert spend_txs[0]["change_index"] is None
         assert spend_txs[0]["cpfp_index"] is not None
+
+    # FIXME: remove this test after demo release
+    # Test the deposit outpoints are in the same order as the Spend PSBT inputs
+    spend_psbt = serializations.PSBT()
+    spend_psbt.deserialize(spend_txs[0]["psbt"])
+    for i, txin in enumerate(spend_psbt.tx.vin):
+        unvault_psbt_str = man.rpc.listpresignedtransactions(
+            [spend_txs[0]["deposit_outpoints"][i]]
+        )["presigned_transactions"][0]["unvault"]["psbt"]
+        unvault_psbt = serializations.PSBT()
+        unvault_psbt.deserialize(unvault_psbt_str)
+        unvault_psbt.tx.calc_sha256()
+        assert hex(txin.prevout.hash) == f"0x{str(unvault_psbt.tx.hash)}"
 
     spend_psbt = serializations.PSBT()
     spend_psbt.deserialize(spend_tx)

@@ -8,7 +8,8 @@ jobs:
       matrix:
         # We don't have a MSRV (yet?)
         toolchain:
-          - stable
+          - 1.43
+          - nightly
         os:
           - ubuntu-latest
           - macOS-latest
@@ -28,7 +29,7 @@ jobs:
       - name: Test on Rust ${{ matrix.toolchain }}
         run: cargo test --verbose --color always
       - name: Functional tests
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.toolchain == 'nightly'
         run: ./contrib/ci-functional-tests.sh
         env:
           RUST_BACKTRACE: 1

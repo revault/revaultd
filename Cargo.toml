@@ -1,6 +1,6 @@
 [package]
 name = "revaultd"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 repository = "https://github.com/revault/revaultd"
@@ -39,7 +39,7 @@ jsonrpc = "0.12"
 # We use it for the cookie file
 base64 = "0.13"
 
-# We us TOML for the config and JSON for connections
+# We use TOML for the config and JSON for connections
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
 serde_json = { version = "1.0", features = ["raw_value"] }

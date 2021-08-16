@@ -44,6 +44,10 @@ Testing is performed both with Unit Tests directly integrated in the source (`ca
 [Python functional testing framework](tests/) permitting to test more complex scenarii in "blackbox"
 (hitting only the RPC interface).
 
+### Minimum Supported Rust Version
+
+`revaultd` should always compile and pass tests using **Rust 1.43**.
+
 
 ## Hacking around
 

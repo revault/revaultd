@@ -55,7 +55,13 @@ be reviewed first on the conceptual level before focusing on code style or gramm
 fixes.
 
 
-# Style
+# Code
+
+## Minimum Supported Rust Version
+
+`revaultd` should always compile and pass tests using **Rust 1.43**.
+
+## Style
 
 To avoid endless bikeshedding, just use [`rustfmt`](https://github.com/rust-lang/rustfmt).
 

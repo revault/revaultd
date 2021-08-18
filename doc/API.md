@@ -22,6 +22,7 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`listspendtxs`](#listspendtxs)                             | List all stored Spend transactions                   |
 | [`gethistory`](#gethistory)                                 | Retrieve history of funds                            |
 | [`emergency`](#emergency)                                   | Broadcast all Emergency signed transactions          |
+| [`getserverstatus`](#getserverstatus)                       | Retrieve the status of the servers                   |
 
 
 
@@ -430,6 +431,30 @@ of inflows and outflows net of any change amount (that is technically a transact
 None; the `result` field will be set to the empty object `{}`. Any value should be
 disregarded for forward compatibility.
 
+
+### `getserverstatus`
+
+Retrieve the status of the servers, such as the coordinator, the cosigners, the watchtowers
+
+#### Request
+
+| Field          | Type   | Description                                    |
+| -------------- | ------ | ---------------------------------------------- |
+
+#### Response
+
+| Field          | Type   | Description                                         |
+| -------------- | ------ | --------------------------------------------------- |
+| `coordinator`  | object | [Server status](#server-status) for the coordinator |
+| `cosigners`    | array  | Array of [Server status](#server-status)            |
+| `watchtowers`  | array  | Array of [Server status](#server-status)            |
+
+##### Server status
+
+| Field       | Type   | Description                                                 |
+| ----------- | ------ | ----------------------------------------------------------- |
+| `reachable` | bool   | Can the server be reached?                                  |
+| `host`      | string | Hostname and port of the server                             |
 
 ## User flows
 

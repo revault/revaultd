@@ -2728,3 +2728,61 @@ def test_stkman_only(revault_network, bitcoind):
         rn.activate_vault(v)
     rn.unvault_vaults_anyhow(vaults)
     rn.cancel_vault(vaults[0])
+
+
+def test_getserverstatus(revault_network, bitcoind):
+    rn = revault_network
+    rn.deploy(n_stakeholders=2, n_managers=1)
+
+    # The coordinator is alive
+    for w in rn.participants():
+        res = w.rpc.call("getserverstatus")
+        assert res["coordinator"]["reachable"]
+        assert res["coordinator"]["host"] == f"127.0.0.1:{rn.coordinator_port}"
+
+    # The cosigners are alive, but only the managers see them
+    for w in rn.mans():
+        res = w.rpc.call("getserverstatus")
+        for cosigner in res["cosigners"]:
+            assert cosigner["reachable"]
+            # Sadly we don't persist the cosigner ports
+            assert cosigner["host"].startswith("127.0.0.1:")
+
+    # Stakeholders don't have cosigners info
+    for w in rn.stks():
+        res = w.rpc.call("getserverstatus")
+        assert res["cosigners"] == []
+
+    # Only stakeholders have info about the watchtowers...
+    for w in rn.stks():
+        res = w.rpc.call("getserverstatus")
+        # ...And well, they're dead
+        for watchtower in res["watchtowers"]:
+            assert not watchtower["reachable"]
+
+    # Managers don't have watchtowers info
+    for w in rn.mans():
+        res = w.rpc.call("getserverstatus")
+        assert res["watchtowers"] == []
+
+    # Alright, let's kill everything :D
+
+    # Hacky... We actually don't want to kill the wallets,
+    # so we kill the first N + 1 servers, which happen to be the
+    # coordinator and the N cosigners
+    for server in rn.daemons[: 1 + len(rn.stks())]:
+        server.stop()
+
+    # The coordinator is dead
+    for w in rn.participants():
+        res = w.rpc.call("getserverstatus")
+        assert not res["coordinator"]["reachable"]
+        assert res["coordinator"]["host"] == f"127.0.0.1:{rn.coordinator_port}"
+
+    # The cosigners are dead as well
+    for w in rn.mans():
+        res = w.rpc.call("getserverstatus")
+        for cosigner in res["cosigners"]:
+            assert not cosigner["reachable"]
+            # Sadly we don't persist the cosigner ports
+            assert cosigner["host"].startswith("127.0.0.1:")

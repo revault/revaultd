@@ -6,9 +6,10 @@ use crate::{
     control::{
         announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
         check_spend_signatures, check_spend_transaction_size, check_unvault_signatures,
-        fetch_cosigs_signatures, finalized_emer_txs, listvaults_from_db, onchain_txs,
-        presigned_txs, share_rev_signatures, share_unvault_signatures, vaults_from_deposits,
-        ListSpendEntry, ListSpendStatus, RpcUtils,
+        coordinator_status, cosigners_status, fetch_cosigs_signatures, finalized_emer_txs,
+        listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
+        share_unvault_signatures, vaults_from_deposits, watchtowers_status, ListSpendEntry,
+        ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -216,6 +217,9 @@ pub trait RpcApi {
 
     #[rpc(meta, name = "emergency")]
     fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+
+    #[rpc(meta, name = "getserverstatus")]
+    fn getserverstatus(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 // TODO: we should probably make these proc macros and apply them above?
@@ -1462,5 +1466,17 @@ impl RpcApi for RpcImpl {
         bitcoind_broadcast(bitcoind_tx, emers).map_err(|e| internal_error!(e))?;
 
         Ok(json!({}))
+    }
+
+    fn getserverstatus(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+        let coordinator = coordinator_status(&revaultd);
+        let cosigners = cosigners_status(&revaultd);
+        let watchtowers = watchtowers_status(&revaultd);
+        Ok(json!({
+            "coordinator": coordinator,
+            "cosigners": cosigners,
+            "watchtowers": watchtowers,
+        }))
     }
 }

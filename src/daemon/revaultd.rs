@@ -273,6 +273,9 @@ pub struct RevaultD {
     /// The ip:port (TODO: Tor) and Noise public key of each cosigning server, only set if we are
     /// a manager.
     pub cosigs: Option<Vec<(SocketAddr, NoisePubKey)>>,
+    /// The ip:port (TODO: Tor) and Noise public key of each watchtower, only set if we are
+    /// a stakeholder.
+    pub watchtowers: Option<Vec<(SocketAddr, NoisePubKey)>>,
 
     // 'Wallet' stuff
     /// A map from a scriptPubKey to a derivation index. Used to retrieve the actual public
@@ -318,7 +321,10 @@ impl RevaultD {
         let deposit_descriptor = config.scripts_config.deposit_descriptor;
         let unvault_descriptor = config.scripts_config.unvault_descriptor;
         let cpfp_descriptor = config.scripts_config.cpfp_descriptor;
-        let emergency_address = config.stakeholder_config.map(|x| x.emergency_address);
+        let emergency_address = config
+            .stakeholder_config
+            .clone()
+            .map(|x| x.emergency_address);
 
         let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
         data_dir.push(config.bitcoind_config.network.to_string());
@@ -352,6 +358,14 @@ impl RevaultD {
                 .collect()
         });
 
+        let watchtowers = config.stakeholder_config.map(|config| {
+            config
+                .watchtowers
+                .into_iter()
+                .map(|config| (config.host, config.noise_key))
+                .collect()
+        });
+
         let daemon = !matches!(config.daemon, Some(false));
 
         let secp_ctx = secp256k1::Secp256k1::verification_only();
@@ -371,6 +385,7 @@ impl RevaultD {
             coordinator_noisekey,
             coordinator_poll_interval,
             cosigs,
+            watchtowers,
             lock_time: 0,
             min_conf: config.min_conf,
             bitcoind_config: config.bitcoind_config,

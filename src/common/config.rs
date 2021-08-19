@@ -91,8 +91,9 @@ pub struct ScriptsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WatchtowerConfig {
-    pub host: String,
-    pub noise_key: String,
+    pub host: SocketAddr,
+    #[serde(deserialize_with = "deserialize_noisepubkey")]
+    pub noise_key: NoisePubkey,
 }
 
 /// If we are a stakeholder, we need to connect to our watchtower(s)

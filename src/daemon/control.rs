@@ -929,9 +929,18 @@ pub fn cosigners_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
     cosigners
 }
 
-pub fn watchtowers_status(_revaultd: &RevaultD) -> Vec<ServerStatus> {
-    // TODO we still don't have watchtowers :)
-    let watchtowers = Vec::new();
+pub fn watchtowers_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
+    let mut watchtowers = Vec::new();
+    if let Some(w) = &revaultd.watchtowers {
+        for (host, key) in w {
+            let reachable = KKTransport::connect(*host, &revaultd.noise_secret, &key).is_ok();
+
+            watchtowers.push(ServerStatus {
+                host: host.to_string(),
+                reachable,
+            });
+        }
+    }
 
     watchtowers
 }

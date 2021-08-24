@@ -91,6 +91,10 @@ pub trait RpcApi {
     #[rpc(meta, name = "getinfo")]
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
 
+    /// Print all available commands
+    #[rpc(meta, name = "help")]
+    fn help(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+
     /// Get a list of current vaults, which can be sorted by txids or status
     #[rpc(meta, name = "listvaults")]
     fn listvaults(
@@ -331,6 +335,105 @@ impl RpcApi for RpcImpl {
             "sync": progress,
             "vaults": number_of_vaults,
         }))
+    }
+
+    fn help(&self, _: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
+        Ok(json!(
+        {
+            "commands": [
+                {
+                  "name": "getinfo",
+                  "parameters": [],
+                  "description": "Display general information",
+                },
+                {
+                    "name": "getrevocationtxs",
+                    "parameters": [
+                        "outpoint"
+                    ],
+                    "description": "Retrieve the Revault revocation transactions to sign",
+                },
+                {
+                    "name": "getunvaulttx",
+                    "parameters": [
+                        "outpoint"
+                    ],
+                    "description": "Retrieve the Revault unvault transaction to sign"
+                },
+                {
+                    "name": "getspendtx",
+                    "parameters": [
+                        "outpoints",
+                        "outputs",
+                        "feerate",
+                    ],
+                    "description": "Retrieve the Revault spend transaction to sign"
+                },
+                {
+                    "name": "listpresignedtransactions",
+                    "parameters": [
+                        "[outpoints]"
+                    ],
+                    "description": "List presigned transactions of a confirmed vault"
+                },
+                {
+                    "name": "listonchaintransactions",
+                    "parameters": [
+                        "[outpoints]"
+                    ],
+                    "description": "List broadcast transactions of a vault"
+                },
+                {
+                    "name": "listvaults",
+                    "parameters": [
+                        "[status]",
+                        "[outpoints]"
+                    ],
+                    "description": "Display a paginated list of vaults"
+                },
+                {
+                    "name": "revocationtxs",
+                    "parameters": [],
+                    "description": "Give back the revocation transactions signed"
+                },
+                {
+                    "name": "unvaulttx",
+                    "parameters": [],
+                    "description": "Give back the unvault transaction signed"
+                },
+                {
+                    "name": "updatespendtx",
+                    "parameters": [],
+                    "description": "Store or update the stored Spend transaction"
+                },
+                {
+                    "name": "delspendtx",
+                    "parameters": [],
+                    "description": "Delete a stored Spend transaction"
+                },
+                {
+                    "name": "setspendtx",
+                    "parameters": [],
+                    "description": "Announce and broadcast this Spend transaction"
+                },
+                {
+                    "name": "listspendtxs",
+                    "parameters": [],
+                    "description": "List all stored Spend transactions"
+                },
+                {
+                    "name": "gethistory",
+                    "parameters": [],
+                    "description": "Retrieve history of funds"
+                },
+                {
+                    "name": "emergency",
+                    "parameters": [],
+                    "description": "Broadcast all Emergency signed transactions"
+                }
+            ]
+        }
+        ))
     }
 
     fn listvaults(

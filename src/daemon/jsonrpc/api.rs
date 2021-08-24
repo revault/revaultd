@@ -1105,7 +1105,7 @@ impl RpcApi for RpcImpl {
 
         let spend_tx_map = db_list_spends(&db_path).map_err(|e| internal_error!(e))?;
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
-        for (_, (db_spend, dep_outpoints)) in spend_tx_map {
+        for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
             // Filter by status
             if let Some(s) = &status {
                 let status = if let Some(true) = db_spend.broadcasted {
@@ -1123,41 +1123,6 @@ impl RpcApi for RpcImpl {
 
             let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
                 .map_err(|e| internal_error!(e))?;
-
-            // FIXME: a temporary hack for the GUI to be able to use its signer properly. Remove
-            // after the demo release in favour of having the derivation indexes in the PSBT.
-            let mut deposit_outpoints = dep_outpoints.clone();
-            for v in spent_vaults.values() {
-                let deposit_descriptor = revaultd
-                    .deposit_descriptor
-                    .derive(v.derivation_index, &revaultd.secp_ctx);
-                let deposit_txin = DepositTxIn::new(
-                    v.deposit_outpoint,
-                    DepositTxOut::new(v.amount, &deposit_descriptor),
-                );
-                let unvault_descriptor = revaultd
-                    .unvault_descriptor
-                    .derive(v.derivation_index, &revaultd.secp_ctx);
-                let cpfp_descriptor = revaultd
-                    .cpfp_descriptor
-                    .derive(v.derivation_index, &revaultd.secp_ctx);
-
-                let unvault_tx = UnvaultTransaction::new(
-                    deposit_txin,
-                    &unvault_descriptor,
-                    &cpfp_descriptor,
-                    revaultd.lock_time,
-                )
-                .map_err(|e| internal_error!(e))?;
-                let i = db_spend
-                    .psbt
-                    .tx()
-                    .input
-                    .iter()
-                    .position(|i| i.previous_output.txid == unvault_tx.txid())
-                    .expect("Must be there, deposit_outpoints are queried by spend_tx");
-                deposit_outpoints[i] = v.deposit_outpoint;
-            }
 
             let derivation_index = spent_vaults
                 .values()

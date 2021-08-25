@@ -7,6 +7,7 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 
 | Command                                                     | Description                                          |
 | ----------------------------------------------------------- | ---------------------------------------------------- |
+| [`help`](#help)                                             | Display all available commands                       |
 | [`getinfo`](#getinfo)                                       | Display general information                          |
 | [`getrevocationtxs`](#getrevocationtxs)                     | Retrieve the Revault revocation transactions to sign |
 | [`getunvaulttx`](#getunvaulttx)                             | Retrieve the Revault unvault transaction to sign     |
@@ -28,6 +29,25 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 # Reference
 
 ## General
+
+### `help`
+
+Display all available commands.
+
+#### Response
+
+| Field      | Type  | Description                                 |
+| ---------- | ----- | ------------------------------------------- |
+| `commands` | array | Array of [help resource](#Help-resource)    |
+
+##### Help resource
+
+| Field         | Type   | Description                                                                                          |
+| ------------- | ------ | ---------------------------------------------------------------------------------------------------- |
+| `name`        | string | The name of the command                                                                              |
+| `parameters`  | array  | The command parameters as strings, optional ones are enclosed in brackets (ie `[optional argument]`) |
+| `description` | string | A description of the command                                                                         |
+
 
 ### `getinfo`
 

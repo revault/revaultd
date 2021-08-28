@@ -313,6 +313,10 @@ impl RpcApi for RpcImpl {
 
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
 
+        let deposit_desc = &revaultd.deposit_descriptor.to_string();
+        let cpfp_desc = &revaultd.cpfp_descriptor.to_string();
+        let unvault_desc = &revaultd.unvault_descriptor.to_string();
+
         // This means blockheight == 0 for IBD.
         let BlockchainTip {
             height: blockheight,
@@ -339,6 +343,11 @@ impl RpcApi for RpcImpl {
             "sync": progress,
             "vaults": number_of_vaults,
             "managers_threshold": managers_threshold,
+            "descriptors": {
+                "deposit": deposit_desc,
+                "unvault": unvault_desc,
+                "cpfp": cpfp_desc,
+            },
         }))
     }
 

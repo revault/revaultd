@@ -1,5 +1,6 @@
 import copy
 import logging
+from test_framework import revaultd
 import pytest
 import random
 import os
@@ -24,6 +25,10 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["vaults"] == 0
     # revaultd_manager always deploys with N = 2, M = 3, threshold = M
     assert res["managers_threshold"] == 3
+    # test descriptors: RPC call & which Revaultd's were configured
+    assert res["descriptors"]["cpfp"] == revaultd_manager.cpfp_desc
+    assert res["descriptors"]["deposit"] == revaultd_manager.deposit_desc
+    assert res["descriptors"]["unvault"] == revaultd_manager.unvault_desc
 
     wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] > 0)
     height = revaultd_manager.rpc.call("getinfo")["blockheight"]

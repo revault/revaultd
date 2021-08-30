@@ -24,6 +24,11 @@ class Revaultd(TailableProc):
         stk_config=None,
         man_config=None,
     ):
+        # set descriptors
+        self.cpfp_desc = cpfp_desc
+        self.deposit_desc = deposit_desc
+        self.unvault_desc = unvault_desc
+
         assert stk_config is not None or man_config is not None
         TailableProc.__init__(self, datadir, verbose=VERBOSE)
 

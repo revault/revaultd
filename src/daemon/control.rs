@@ -134,6 +134,12 @@ pub enum ListSpendStatus {
     Broadcasted,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ServerStatus {
+    pub host: String,
+    pub reachable: bool,
+}
+
 /// Error specific to calls that originated from the RPC server.
 #[derive(Debug)]
 pub enum RpcControlError {
@@ -892,6 +898,51 @@ pub fn get_presigs(
     log::debug!("Got sigs {:?} from coordinator.", resp);
 
     Ok(resp.signatures)
+}
+
+pub fn coordinator_status(revaultd: &RevaultD) -> ServerStatus {
+    let reachable = KKTransport::connect(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+    )
+    .is_ok();
+
+    ServerStatus {
+        host: revaultd.coordinator_host.to_string(),
+        reachable,
+    }
+}
+
+pub fn cosigners_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
+    let mut cosigners = Vec::new();
+    if let Some(c) = &revaultd.cosigs {
+        for (host, key) in c {
+            let reachable = KKTransport::connect(*host, &revaultd.noise_secret, &key).is_ok();
+
+            cosigners.push(ServerStatus {
+                host: host.to_string(),
+                reachable,
+            });
+        }
+    }
+    cosigners
+}
+
+pub fn watchtowers_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
+    let mut watchtowers = Vec::new();
+    if let Some(w) = &revaultd.watchtowers {
+        for (host, key) in w {
+            let reachable = KKTransport::connect(*host, &revaultd.noise_secret, &key).is_ok();
+
+            watchtowers.push(ServerStatus {
+                host: host.to_string(),
+                reachable,
+            });
+        }
+    }
+
+    watchtowers
 }
 
 #[derive(Clone)]

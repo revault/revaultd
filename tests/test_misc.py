@@ -2034,8 +2034,6 @@ def test_spend_threshold(revault_network, bitcoind, executor):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_large_spends(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
-    # FIXME: the bottleneck here on the number of participants is the announcement
-    # to the Coordinator
     revault_network.deploy(17, 8, csv=CSV)
     man = revault_network.man(0)
 
@@ -2115,7 +2113,7 @@ def test_large_spends(revault_network, bitcoind, executor):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_not_announceable_spend(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
-    revault_network.deploy(17, 8, csv=CSV)
+    revault_network.deploy(17, 16, csv=CSV)
     man = revault_network.man(0)
 
     vaults = []
@@ -2131,7 +2129,7 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
-    n_outputs = 4
+    n_outputs = 250
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
     destinations = {
         bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
@@ -2158,6 +2156,37 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
     man.rpc.setspendtx(spend_psbt.tx.hash)
+
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+        == len(deposits)
+    )
+    # We need a single confirmation to consider the Unvault transaction confirmed
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+        == len(deposits)
+    )
+
+    # We'll broadcast the Spend transaction as soon as it's valid
+    # Note that bitcoind's RPC socket may timeout if it needs to generate too many
+    # blocks at once. So, spread them a bit.
+    for _ in range(10):
+        bitcoind.generate_block(CSV // 10)
+    bitcoind.generate_block(CSV % 10 - 1)
+    man.wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
+    )
+    wait_for(
+        lambda: len(man.rpc.listvaults(["spending"], deposits)["vaults"])
+        == len(deposits)
+    )
+
+    # And will mark it as spent after a single confirmation of the Spend tx
+    bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
+    wait_for(
+        lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
+    )
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

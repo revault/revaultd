@@ -45,9 +45,11 @@ class Revaultd(TailableProc):
         os.makedirs(self.datadir_with_network, exist_ok=True)
 
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [REVAULTD_PATH, "--conf", f"{self.conf_file}"]
+        self.cmd_line = [REVAULTD_PATH, "--conf", self.conf_file]
         socket_path = os.path.join(self.datadir_with_network, "revaultd_rpc")
-        self.rpc = UnixDomainSocketRpc(socket_path)
+        self.rpc = UnixDomainSocketRpc(
+            socket_path=socket_path, config_file=self.conf_file
+        )
 
         noise_secret_file = os.path.join(self.datadir_with_network, "noise_secret")
         with open(noise_secret_file, "wb") as f:

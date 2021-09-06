@@ -11,13 +11,41 @@ and adapted.
 
 ### Test dependencies
 
+**Windows** Checklist before running the functional tests:
+* Install [`Git`](https://git-scm.com/download/win)
+* Install [`VS Code`](https://code.visualstudio.com/Download)
+* Install [`Python`](https://www.python.org/downloads/)
+* Install [`Microsoft C++ Build tools`](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 
+* Install [`Rust`](https://www.rust-lang.org/tools/install)
+* Install [`Bitcoin Core`](https://bitcoin.org/en/download)
+
+*Please don't forget to add "C:\Program Files\Bitcoin\daemon\" in the path of the environment variables.*
+
 Functional tests dependencies can be installed like for any Python project.
 ```
+(Unix)
 # Create a new virtual environment, preferably.
 python3 -m venv venv
 . venv/bin/activate
 # Get the deps
 pip install -r tests/requirements.txt
+cargo build
+```
+
+```
+(Windows)
+# Please ensure the execution policy for the current session is set to Remote Signed by entering the below command in Powershell.
+Get-ExecutionPolicy
+#If it is not set then enter:
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned
+
+# Create a new virtual environment, preferably.
+pip install virtualenv
+virtualenv venv
+.\venv\Scripts\activate  
+# Get the deps
+pip install -r tests/requirements.txt
+cargo build
 ```
 
 ### Test modes
@@ -48,6 +76,8 @@ servers:
 ```
 # Adapt `-n`, `-v`, `timeout` and other environment variables to your needs
 pytest tests/ -vvv -n4 --ignore tests/servers/
+# To run a specific test:
+pytest -vvv -k test_name
 ```
 
 #### With the servers

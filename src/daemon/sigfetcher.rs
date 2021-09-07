@@ -81,7 +81,12 @@ fn get_sigs(
     let db_vault = db_vault(&db_path, vault_id)?.expect("Presigned transactions without vault?");
     let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
 
-    let signatures = get_presigs(revaultd, tx.txid())?;
+    let signatures = get_presigs(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+        tx.txid(),
+    )?;
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {
             compressed: true,

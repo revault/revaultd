@@ -731,7 +731,9 @@ fn send_sig_msg(
 
 /// Send the signatures for the 3 revocation txs to the Coordinator
 pub fn share_rev_signatures(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     cancel: (&CancelTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
     emer: (&EmergencyTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
     unvault_emer: (
@@ -741,11 +743,7 @@ pub fn share_rev_signatures(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // We would not spam the coordinator, would we?
     assert!(!cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty());
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
     let cancel_txid = cancel.0.txid();
     send_sig_msg(&mut transport, cancel_txid, cancel.1)?;
@@ -759,14 +757,12 @@ pub fn share_rev_signatures(
 
 /// Send the unvault signature to the Coordinator
 pub fn share_unvault_signatures(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     unvault_tx: &UnvaultTransaction,
 ) -> Result<(), CommunicationError> {
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
     // FIXME: don't blindly assume the index here..
     let sigs = &unvault_tx
@@ -781,12 +777,10 @@ pub fn share_unvault_signatures(
 }
 
 /// Make the cosigning servers sign this Spend transaction.
-///
-/// # Panic
-/// - if not called by a manager
 pub fn fetch_cosigs_signatures(
-    revaultd: &RevaultD,
+    noise_secret: &revault_net::noise::SecretKey,
     spend_tx: &mut SpendTransaction,
+    cosigs: &[(std::net::SocketAddr, revault_net::noise::PublicKey)],
 ) -> Result<(), CommunicationError> {
     // Strip the signatures before polling the Cosigning Server. It does not check them
     // anyways, and it makes us hit the Noise message size limit fairly quickly.
@@ -795,9 +789,9 @@ pub fn fetch_cosigs_signatures(
         psbtin.partial_sigs.clear();
     }
 
-    for (host, noise_key) in revaultd.cosigs.as_ref().expect("We are manager").iter() {
+    for (host, noise_key) in cosigs {
         // FIXME: connect should take a reference... This copy is useless
-        let mut transport = KKTransport::connect(*host, &revaultd.noise_secret, &noise_key)?;
+        let mut transport = KKTransport::connect(*host, noise_secret, noise_key)?;
         let msg = SignRequest {
             tx: stripped_tx.clone(),
         };
@@ -860,15 +854,13 @@ pub fn check_spend_transaction_size(revaultd: &RevaultD, spend_tx: SpendTransact
 
 /// Sends the spend transaction for a certain outpoint to the coordinator
 pub fn announce_spend_transaction(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     spend_tx: SpendTransaction,
     deposit_outpoints: Vec<OutPoint>,
 ) -> Result<(), CommunicationError> {
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
     let msg = SetSpendTx::from_spend_tx(deposit_outpoints, spend_tx);
     log::debug!("Sending Spend tx to Coordinator: '{:?}'", msg);
@@ -883,15 +875,14 @@ pub fn announce_spend_transaction(
 
 /// Get the signatures for this presigned transaction from the Coordinator.
 pub fn get_presigs(
-    revaultd: &RevaultD,
+    coordinator_host: std::net::SocketAddr,
+    noise_secret: &revault_net::noise::SecretKey,
+    coordinator_noisekey: &revault_net::noise::PublicKey,
     txid: Txid,
 ) -> Result<BTreeMap<secp256k1::PublicKey, secp256k1::Signature>, CommunicationError> {
     let getsigs_msg = GetSigs { id: txid };
-    let mut transport = KKTransport::connect(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-    )?;
+    let mut transport =
+        KKTransport::connect(coordinator_host, &noise_secret, &coordinator_noisekey)?;
 
     log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
     let resp: Sigs = transport.send_req(&getsigs_msg.into())?;
@@ -974,6 +965,10 @@ mod test {
         setup_db,
         utils::test_utils::{dummy_revaultd, test_datadir},
     };
+    use revault_net::{
+        message, sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair,
+        transport::KKTransport,
+    };
     use revault_tx::{
         bitcoin::{
             blockdata::transaction::OutPoint,
@@ -989,7 +984,7 @@ mod test {
             UnvaultEmergencyTransaction, UnvaultTransaction,
         },
     };
-    use std::{fs, str::FromStr};
+    use std::{collections::BTreeMap, fs, net::TcpListener, str::FromStr, thread};
 
     #[test]
     fn test_check_spend_transaction_size() {
@@ -2428,5 +2423,806 @@ mod test {
         // for each input
         let tx = SpendTransaction::from_psbt_str("cHNidP8BAKgCAAAAARU919uuOZ2HHyRUrQsCrT2s98u7j8/xW6DXMzO7+eYFAAAAAAADAAAAA6BCAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDuiAlpgAAAAAABYAFPAj0esIbomyGAolRR1U/vYas0RxhspQCwAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZAEDBAEAAAABBaghAgZzDAVlWp/QRUVpNZiVCbFDihMIiSP7ko6y0OgbW+A5rFGHZHapFG+hL2VAtyZw6eaG++u9JiA/EEbeiKxrdqkURa5gCgAqc2UHtm9zS+o2k4DBgxyIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
         check_spend_signatures(&revaultd.secp_ctx, 0, &tx, vec![], &HashMap::new()).unwrap();
+    }
+
+    // This time the coordinator won't ack our signatures :(
+    #[test]
+    fn test_send_sig_msg_not_acked() {
+        let txid =
+            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                .unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut sigs = BTreeMap::new();
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        sigs.insert(public_key, signature.clone());
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
+                .expect("Client channel connecting");
+            assert!(send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone())
+                .unwrap_err()
+                .to_string()
+                .contains(&CommunicationError::SignatureStorage.to_string()));
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: txid
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: false },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    // This time the server likes our signatures! :tada:
+    #[test]
+    fn test_send_sig_msg() {
+        let txid =
+            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                .unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut sigs = BTreeMap::new();
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        sigs.insert(public_key, signature.clone());
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
+                .expect("Client channel connecting");
+            send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: txid
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: true },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "They must provide valid signatures")]
+    fn test_send_sig_msg_invalid_signature() {
+        let txid =
+            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                .unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut sigs = BTreeMap::new();
+        // This signature is invalid
+        let signature = vec![];
+        sigs.insert(public_key, signature.clone());
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let _server_transport =
+                KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                    .expect("Server channel binding and accepting");
+        });
+
+        let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
+            .expect("Client channel connecting");
+
+        // This call will panic because the signature has invalid lenght
+        send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "assertion failed: *sigtype == SigHashType::AllPlusAnyoneCanPay as u8 ||\\n    *sigtype == SigHashType::All as u8"
+    )]
+    fn test_send_sig_msg_invalid_sighash_type() {
+        let txid =
+            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                .unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut sigs = BTreeMap::new();
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d02").unwrap();
+        sigs.insert(public_key, signature.clone());
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let _server_transport =
+                KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                    .expect("Server channel binding and accepting");
+        });
+        let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
+            .expect("Client channel connecting");
+
+        // This call will fail as the signature has the wrong sighash
+        send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_share_rev_signatures_not_acked() {
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut sigs = BTreeMap::new();
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        sigs.insert(public_key, signature.clone());
+        let cancel =
+                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaAABAUdSIQOO/iUanbfqJaBaLJWvYVlGFX+WECg27quCjtdyUuOSoCEDCnC1swAcW//WAUHvmyUVt796JvEtizTBlCkqeSvj0PtSrgA=").unwrap();
+        let emer =
+                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4AAA==").unwrap();
+        let unvault_emer =
+                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaAAA").unwrap();
+        // Rust newbie: I need the txs but they're moved inside the closure, so I'm cloning
+        // them now
+        let other_cancel = cancel.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            assert!(share_rev_signatures(
+                addr,
+                &client_privkey,
+                &server_pubkey,
+                (&cancel, sigs.clone()),
+                (&emer, sigs.clone()),
+                (&unvault_emer, sigs.clone()),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(&CommunicationError::SignatureStorage.to_string()));
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: other_cancel.txid(),
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: false },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_share_rev_signatures() {
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut sigs = BTreeMap::new();
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        sigs.insert(public_key, signature.clone());
+        let cancel =
+                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaAABAUdSIQOO/iUanbfqJaBaLJWvYVlGFX+WECg27quCjtdyUuOSoCEDCnC1swAcW//WAUHvmyUVt796JvEtizTBlCkqeSvj0PtSrgA=").unwrap();
+        let emer =
+                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4AAA==").unwrap();
+        let unvault_emer =
+                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaAAA").unwrap();
+        // Rust newbie: I need the txs but they're moved inside the closure, so I'm cloning
+        // them now
+        let other_cancel = cancel.clone();
+        let other_emer = emer.clone();
+        let other_unvault_emer = unvault_emer.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            share_rev_signatures(
+                addr,
+                &client_privkey,
+                &server_pubkey,
+                (&cancel, sigs.clone()),
+                (&emer, sigs.clone()),
+                (&unvault_emer, sigs.clone()),
+            )
+            .unwrap();
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: other_cancel.txid(),
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: true },
+                ))
+            })
+            .unwrap();
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: other_emer.txid(),
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: true },
+                ))
+            })
+            .unwrap();
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: other_unvault_emer.txid(),
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: true },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "assertion failed: !cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty()"
+    )]
+    fn test_share_rev_signatures_empty() {
+        // Let's try to give empty sigs to the coordinator
+        let sigs = BTreeMap::new();
+        let cancel =
+                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaAABAUdSIQOO/iUanbfqJaBaLJWvYVlGFX+WECg27quCjtdyUuOSoCEDCnC1swAcW//WAUHvmyUVt796JvEtizTBlCkqeSvj0PtSrgA=").unwrap();
+        let emer =
+                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4AAA==").unwrap();
+        let unvault_emer =
+                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaAAA").unwrap();
+        let ((_, client_privkey), (server_pubkey, _)) = (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        share_rev_signatures(
+            addr,
+            &client_privkey,
+            &server_pubkey,
+            (&cancel, sigs.clone()),
+            (&emer, sigs.clone()),
+            (&unvault_emer, sigs.clone()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_share_unvault_signatures() {
+        let mut unvault =
+                UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////ArhhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnAwdQAAAAAAACIAILKCCA/RbV3QMPMrwwQmk4Ark4w1WyElM27WtBgftq6ZAAAAAAABASsA6aQ1AAAAACIAIPQJ3LCGXPIO5iXX0/Yp3wHlpao7cQbPd4q3gxp0J/w2AQMEAQAAAAEFR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuAAEBqSEDFZRKIedJWrDIXHcJ65pwqdkTpRmOQqx/h7cUJn2Q2dOsUYdkdqkUvyDVF9Qmj+z25+RprRmLtsIKo5yIrGt2qRTv5HHqvMqPcOvYOFVbZRQH+9/ak4isbJNSh2dSIQJ3XX14tzd/APmhEO+LFHXrle7IPti94o04zBzBAH6t3CEC1j/ehao3wuaikJAtloWG2yycdRWzUgI7JzH8A5ytIw9SrwESsmgAAQElIQOO/iUanbfqJaBaLJWvYVlGFX+WECg27quCjtdyUuOSoKxRhwA=").unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        unvault
+            .inner_tx_mut()
+            .inputs
+            .get_mut(0)
+            .unwrap()
+            .partial_sigs
+            .insert(public_key, signature.clone());
+        // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
+        // it now
+        let other_unvault = unvault.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            share_unvault_signatures(addr, &client_privkey, &server_pubkey, &unvault).unwrap();
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: other_unvault.txid(),
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: true },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_share_unvault_signatures_not_acked() {
+        let mut unvault =
+                UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////ArhhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnAwdQAAAAAAACIAILKCCA/RbV3QMPMrwwQmk4Ark4w1WyElM27WtBgftq6ZAAAAAAABASsA6aQ1AAAAACIAIPQJ3LCGXPIO5iXX0/Yp3wHlpao7cQbPd4q3gxp0J/w2AQMEAQAAAAEFR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuAAEBqSEDFZRKIedJWrDIXHcJ65pwqdkTpRmOQqx/h7cUJn2Q2dOsUYdkdqkUvyDVF9Qmj+z25+RprRmLtsIKo5yIrGt2qRTv5HHqvMqPcOvYOFVbZRQH+9/ak4isbJNSh2dSIQJ3XX14tzd/APmhEO+LFHXrle7IPti94o04zBzBAH6t3CEC1j/ehao3wuaikJAtloWG2yycdRWzUgI7JzH8A5ytIw9SrwESsmgAAQElIQOO/iUanbfqJaBaLJWvYVlGFX+WECg27quCjtdyUuOSoKxRhwA=").unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        unvault
+            .inner_tx_mut()
+            .inputs
+            .get_mut(0)
+            .unwrap()
+            .partial_sigs
+            .insert(public_key, signature.clone());
+        // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
+        // it now
+        let other_unvault = unvault.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            assert!(
+                share_unvault_signatures(addr, &client_privkey, &server_pubkey, &unvault,)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&CommunicationError::SignatureStorage.to_string())
+            );
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::CoordSig(Sig {
+                        pubkey: public_key.key,
+                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        id: other_unvault.txid(),
+                    }),
+                );
+                Some(message::ResponseResult::Sig(
+                    message::coordinator::SigResult { ack: false },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_fetch_cosigs_signatures() {
+        let mut spend = SpendTransaction::from_psbt_str("cHNidP8BAN0CAAAAAvvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAA++dB6m0P8+mSh3Xlvb3R66/EtnXnZ+75QbpIvpKf+soDAAAAAAMAAAADoEUAAAAAAAAiACDg+GlvXbP0TV3DYoQNm7MNXPm5oOuWroc/9w6DzxIO6ADh9QUAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDujfcPMFAAAAACIAIKdjkv/h5NjyHOPSensxUoTK3V1lFzGvS6zsG04Xdfs8AAAAAAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAlg43AlKAoXb47H4rxKCu40jBgz7l1svOSFK+N+gIKOdrFGHAAABAUdSIQL7lssn6CH7Mq08DaEfDfNM0gXXyaxn3/g/VygUS+2hBSECQxaOYH36+LE6Tj73COOcK91bVQk4f8sP0ogiWgiI4ldSrgA=").unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        // Rust newbie: I need the spend but it's moved inside the closure, so I'm cloning
+        // it now
+        let mut other_spend = spend.clone();
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cosigs = vec![(addr, server_pubkey)];
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            // Our spend has no partial sigs...
+            assert_eq!(
+                spend.inner_tx().inputs.get(0).unwrap().partial_sigs.len(),
+                0
+            );
+            fetch_cosigs_signatures(&client_privkey, &mut spend, &cosigs).unwrap();
+            // Now our spend has one :)
+            assert_eq!(
+                spend.inner_tx().inputs.get(0).unwrap().partial_sigs.len(),
+                1
+            );
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::Sign(SignRequest {
+                        tx: other_spend.clone(),
+                    }),
+                );
+                other_spend
+                    .inner_tx_mut()
+                    .inputs
+                    .get_mut(0)
+                    .unwrap()
+                    .partial_sigs
+                    .insert(public_key, signature);
+                Some(message::ResponseResult::SignResult(
+                    message::cosigner::SignResult {
+                        tx: Some(other_spend),
+                    },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_fetch_cosigs_signatures_cosigner_already_signed() {
+        let mut spend = SpendTransaction::from_psbt_str("cHNidP8BAN0CAAAAAvvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAA++dB6m0P8+mSh3Xlvb3R66/EtnXnZ+75QbpIvpKf+soDAAAAAAMAAAADoEUAAAAAAAAiACDg+GlvXbP0TV3DYoQNm7MNXPm5oOuWroc/9w6DzxIO6ADh9QUAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDujfcPMFAAAAACIAIKdjkv/h5NjyHOPSensxUoTK3V1lFzGvS6zsG04Xdfs8AAAAAAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAlg43AlKAoXb47H4rxKCu40jBgz7l1svOSFK+N+gIKOdrFGHAAABAUdSIQL7lssn6CH7Mq08DaEfDfNM0gXXyaxn3/g/VygUS+2hBSECQxaOYH36+LE6Tj73COOcK91bVQk4f8sP0ogiWgiI4ldSrgA=").unwrap();
+        // Rust newbie: I need the spend but it's moved inside the closure, so I'm cloning
+        // it now
+        let other_spend = spend.clone();
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cosigs = vec![(addr, server_pubkey)];
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            assert!(
+                fetch_cosigs_signatures(&client_privkey, &mut spend, &cosigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&CommunicationError::CosigAlreadySigned.to_string())
+            );
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::Sign(SignRequest {
+                        tx: other_spend.clone(),
+                    }),
+                );
+                Some(message::ResponseResult::SignResult(
+                    message::cosigner::SignResult { tx: None },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    /// The cosigner will send us the wrong psbt
+    #[test]
+    fn test_fetch_cosigs_signatures_wrong_psbt() {
+        let mut spend = SpendTransaction::from_psbt_str("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").unwrap();
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cosigs = vec![(addr, server_pubkey)];
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            assert!(
+                fetch_cosigs_signatures(&client_privkey, &mut spend, &cosigs)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&CommunicationError::CosigInsanePsbt.to_string())
+            );
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|_| {
+                // A wrong spend with a lot of inputs oh no
+                let wrong_spend = SpendTransaction::from_psbt_str("cHNidP8BANECAAAAAgCBrJhMMfmbeduvwORkcXJ+i62lc0bfESF6KsY65K1ZAAAAAAADAAAAFT3X2645nYcfJFStCwKtPaz3y7uPz/FboNczM7v55gUAAAAAAAMAAAADgGUAAAAAAAAiACB5yf095F9/oZvdOKv8Kuyrvrc3t+bmRZJcO0USW+5VrwDh9QUAAAAAFgAUefCHGBbKAyFkomVGv3zEHogcN1g8b78jAAAAACIAIOGZuFp0tV0NvxHotlwZKOnk/VO3u9eX2JGQKcUYQXuJAAAAAAABAStEFMwdAAAAACIAIEjYYprca1eK0kWFUtsoAzhz1/TzAgYCkWtiVNy8rjMJAQMEAQAAAAEFqCEDNdAc7oqMBvPs6CYrEpxwVjGwdme3mgf+BaDVrCcr1PSsUYdkdqkUEOAB3CycgewfZUiMPeLLPyKT3YiIrGt2qRT5hYgD/WwDmtwfqJDY6+ejmELoR4isbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAgJudzAiIAIVDP51SCuTRCmIXI2rg8nRQ/XllpTM0bVSrFGHAAABAUdSIQKDqmHHYQNXHCf1qWD6yw62fQ+CbcPfX10K1ZhRLLt4JyECo1wRHjs/Yw5mrI1MIJyE4c2w+4uFMCs36YnQie3tBGtSrgA=").unwrap();
+                Some(message::ResponseResult::SignResult(
+                    message::cosigner::SignResult { tx: Some(wrong_spend) },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion failed: tx.is_finalized()")]
+    fn test_announce_spend_transaction_not_finalized() {
+        let spend = SpendTransaction::from_psbt_str("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").unwrap();
+
+        let outpoints = vec![
+            OutPoint::new(
+                Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                    .unwrap(),
+                0,
+            ),
+            OutPoint::new(
+                Txid::from_str("617eab1fc0b03ee7f82ba70166725291783461f1a0e7975eaf8b5f8f674234f2")
+                    .unwrap(),
+                1,
+            ),
+            OutPoint::new(
+                Txid::from_str("a9735f42110ce529386f612194a1e137a2a2679ac0e789ad7f470cd70c3c2c24")
+                    .unwrap(),
+                2,
+            ),
+            OutPoint::new(
+                Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
+                    .unwrap(),
+                3,
+            ),
+        ];
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+        });
+
+        announce_spend_transaction(addr, &client_privkey, &server_pubkey, spend, outpoints)
+            .unwrap();
+
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_announce_spend_transaction_not_acked() {
+        let mut spend = SpendTransaction::from_psbt_str("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").unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        spend.finalize(&ctx).unwrap();
+
+        let outpoints = vec![
+            OutPoint::new(
+                Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                    .unwrap(),
+                0,
+            ),
+            OutPoint::new(
+                Txid::from_str("617eab1fc0b03ee7f82ba70166725291783461f1a0e7975eaf8b5f8f674234f2")
+                    .unwrap(),
+                1,
+            ),
+            OutPoint::new(
+                Txid::from_str("a9735f42110ce529386f612194a1e137a2a2679ac0e789ad7f470cd70c3c2c24")
+                    .unwrap(),
+                2,
+            ),
+            OutPoint::new(
+                Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
+                    .unwrap(),
+                3,
+            ),
+        ];
+
+        let other_spend = spend.clone();
+        let other_outpoints = outpoints.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            assert!(announce_spend_transaction(
+                addr,
+                &client_privkey,
+                &server_pubkey,
+                spend,
+                outpoints,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(&CommunicationError::SpendTxStorage.to_string()));
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::SetSpendTx(SetSpendTx::from_spend_tx(
+                        other_outpoints,
+                        other_spend,
+                    ))
+                );
+                Some(message::ResponseResult::SetSpend(
+                    message::coordinator::SetSpendResult { ack: false },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_announce_spend_transaction() {
+        let mut spend = SpendTransaction::from_psbt_str("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").unwrap();
+        let ctx = secp256k1::Secp256k1::new();
+        spend.finalize(&ctx).unwrap();
+
+        let outpoints = vec![
+            OutPoint::new(
+                Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                    .unwrap(),
+                0,
+            ),
+            OutPoint::new(
+                Txid::from_str("617eab1fc0b03ee7f82ba70166725291783461f1a0e7975eaf8b5f8f674234f2")
+                    .unwrap(),
+                1,
+            ),
+            OutPoint::new(
+                Txid::from_str("a9735f42110ce529386f612194a1e137a2a2679ac0e789ad7f470cd70c3c2c24")
+                    .unwrap(),
+                2,
+            ),
+            OutPoint::new(
+                Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
+                    .unwrap(),
+                3,
+            ),
+        ];
+
+        let other_spend = spend.clone();
+        let other_outpoints = outpoints.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            announce_spend_transaction(addr, &client_privkey, &server_pubkey, spend, outpoints)
+                .unwrap();
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::SetSpendTx(SetSpendTx::from_spend_tx(
+                        other_outpoints,
+                        other_spend,
+                    ))
+                );
+                Some(message::ResponseResult::SetSpend(
+                    message::coordinator::SetSpendResult { ack: true },
+                ))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_get_presigs() {
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature = Signature::from_der(&Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap()).unwrap();
+        let mut sigs = BTreeMap::new();
+        sigs.insert(public_key.key, signature);
+        let other_sigs = sigs.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let txid =
+            Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
+                .unwrap();
+        let another_txid = txid.clone();
+
+        // client thread
+        let cli_thread = thread::spawn(move || {
+            let signatures = get_presigs(addr, &client_privkey, &server_pubkey, txid).unwrap();
+            assert_eq!(signatures, sigs);
+        });
+
+        let mut server_transport =
+            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                .expect("Server channel binding and accepting");
+
+        server_transport
+            .read_req(|params| {
+                assert_eq!(
+                    &params,
+                    &message::RequestParams::GetSigs(GetSigs { id: another_txid })
+                );
+                Some(message::ResponseResult::Sigs(message::coordinator::Sigs {
+                    signatures: other_sigs,
+                }))
+            })
+            .unwrap();
+        cli_thread.join().unwrap();
     }
 }

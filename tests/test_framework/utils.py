@@ -74,7 +74,7 @@ class User(Participant):
         super(User, self).__init__()
 
     def get_xpub(self):
-        return self.hd.get_master_xpub()
+        return self.hd.get_xpub()
 
     def sign_revocation_psbt(self, psbt_str, deriv_index):
         """Attach an ACP signature to the PSBT with the key at {deriv_index}"""

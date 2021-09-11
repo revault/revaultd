@@ -974,6 +974,7 @@ mod test {
         bitcoin::{
             blockdata::transaction::OutPoint,
             hash_types::Txid,
+            hashes::hex::FromHex,
             network::constants::Network,
             secp256k1,
             util::{amount::Amount, bip143::SigHashCache, bip32::ChildNumber},
@@ -2771,7 +2772,7 @@ mod test {
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
         unvault
-            .inner_tx_mut()
+            .psbt_mut()
             .inputs
             .get_mut(0)
             .unwrap()
@@ -2821,7 +2822,7 @@ mod test {
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
         unvault
-            .inner_tx_mut()
+            .psbt_mut()
             .inputs
             .get_mut(0)
             .unwrap()
@@ -2886,16 +2887,10 @@ mod test {
         // client thread
         let cli_thread = thread::spawn(move || {
             // Our spend has no partial sigs...
-            assert_eq!(
-                spend.inner_tx().inputs.get(0).unwrap().partial_sigs.len(),
-                0
-            );
+            assert_eq!(spend.psbt().inputs.get(0).unwrap().partial_sigs.len(), 0);
             fetch_cosigs_signatures(&ctx, &client_privkey, &mut spend, &cosigs).unwrap();
             // Now our spend has one :)
-            assert_eq!(
-                spend.inner_tx().inputs.get(0).unwrap().partial_sigs.len(),
-                1
-            );
+            assert_eq!(spend.psbt().inputs.get(0).unwrap().partial_sigs.len(), 1);
         });
 
         let mut server_transport =
@@ -2911,7 +2906,7 @@ mod test {
                     }),
                 );
                 other_spend
-                    .inner_tx_mut()
+                    .psbt_mut()
                     .inputs
                     .get_mut(0)
                     .unwrap()

@@ -1378,6 +1378,7 @@ impl RpcApi for RpcImpl {
         // Now we can ask all the cosigning servers for their signatures
         log::debug!("Fetching signatures from Cosigning servers");
         fetch_cosigs_signatures(
+            &revaultd.secp_ctx,
             &revaultd.noise_secret,
             &mut spend_tx.psbt,
             revaultd.cosigs.as_ref().expect("We are manager"),

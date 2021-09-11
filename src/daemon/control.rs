@@ -777,7 +777,8 @@ pub fn share_unvault_signatures(
 }
 
 /// Make the cosigning servers sign this Spend transaction.
-pub fn fetch_cosigs_signatures(
+pub fn fetch_cosigs_signatures<C: secp256k1::Verification>(
+    secp: &secp256k1::Secp256k1<C>,
     noise_secret: &revault_net::noise::SecretKey,
     spend_tx: &mut SpendTransaction,
     cosigs: &[(std::net::SocketAddr, revault_net::noise::PublicKey)],
@@ -814,7 +815,7 @@ pub fn fetch_cosigs_signatures(
                 let sig = secp256k1::Signature::from_der(&rawsig)
                     .map_err(|_| CommunicationError::CosigInsanePsbt)?;
                 spend_tx
-                    .add_signature(i, key.key, sig, &revaultd.secp_ctx)
+                    .add_signature(i, key.key, sig, secp)
                     .map_err(|_| CommunicationError::CosigInsanePsbt)?;
             }
         }
@@ -2889,7 +2890,7 @@ mod test {
                 spend.inner_tx().inputs.get(0).unwrap().partial_sigs.len(),
                 0
             );
-            fetch_cosigs_signatures(&client_privkey, &mut spend, &cosigs).unwrap();
+            fetch_cosigs_signatures(&ctx, &client_privkey, &mut spend, &cosigs).unwrap();
             // Now our spend has one :)
             assert_eq!(
                 spend.inner_tx().inputs.get(0).unwrap().partial_sigs.len(),
@@ -2928,6 +2929,7 @@ mod test {
 
     #[test]
     fn test_fetch_cosigs_signatures_cosigner_already_signed() {
+        let secp = secp256k1::Secp256k1::verification_only();
         let mut spend = SpendTransaction::from_psbt_str("cHNidP8BAN0CAAAAAvvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAADAAAA++dB6m0P8+mSh3Xlvb3R66/EtnXnZ+75QbpIvpKf+soDAAAAAAMAAAADoEUAAAAAAAAiACDg+GlvXbP0TV3DYoQNm7MNXPm5oOuWroc/9w6DzxIO6ADh9QUAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDujfcPMFAAAAACIAIKdjkv/h5NjyHOPSensxUoTK3V1lFzGvS6zsG04Xdfs8AAAAAAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASvQp+kLAAAAACIAIPEeGS8d2X/wO1TnGez7QM4Ui6OaJZKqmD/r6CwkRZ9kAQMEAQAAAAEFqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaAABASUhAlg43AlKAoXb47H4rxKCu40jBgz7l1svOSFK+N+gIKOdrFGHAAABAUdSIQL7lssn6CH7Mq08DaEfDfNM0gXXyaxn3/g/VygUS+2hBSECQxaOYH36+LE6Tj73COOcK91bVQk4f8sP0ogiWgiI4ldSrgA=").unwrap();
         // Rust newbie: I need the spend but it's moved inside the closure, so I'm cloning
         // it now
@@ -2941,7 +2943,7 @@ mod test {
         // client thread
         let cli_thread = thread::spawn(move || {
             assert!(
-                fetch_cosigs_signatures(&client_privkey, &mut spend, &cosigs)
+                fetch_cosigs_signatures(&secp, &client_privkey, &mut spend, &cosigs)
                     .unwrap_err()
                     .to_string()
                     .contains(&CommunicationError::CosigAlreadySigned.to_string())
@@ -2971,6 +2973,7 @@ mod test {
     /// The cosigner will send us the wrong psbt
     #[test]
     fn test_fetch_cosigs_signatures_wrong_psbt() {
+        let secp = secp256k1::Secp256k1::verification_only();
         let mut spend = SpendTransaction::from_psbt_str("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").unwrap();
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2981,7 +2984,7 @@ mod test {
         // client thread
         let cli_thread = thread::spawn(move || {
             assert!(
-                fetch_cosigs_signatures(&client_privkey, &mut spend, &cosigs)
+                fetch_cosigs_signatures(&secp, &client_privkey, &mut spend, &cosigs)
                     .unwrap_err()
                     .to_string()
                     .contains(&CommunicationError::CosigInsanePsbt.to_string())

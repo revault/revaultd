@@ -2557,8 +2557,10 @@ mod test {
     }
 
     #[test]
+    // We trim the assertion message here because windows and the rest of the world handle \n
+    // in different ways :/
     #[should_panic(
-        expected = "assertion failed: *sigtype == SigHashType::AllPlusAnyoneCanPay as u8 ||\\n    *sigtype == SigHashType::All as u8"
+        expected = "assertion failed: *sigtype == SigHashType::AllPlusAnyoneCanPay as u8 ||"
     )]
     fn test_send_sig_msg_invalid_sighash_type() {
         let txid =

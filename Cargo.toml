@@ -9,18 +9,13 @@ keywords = ["revault", "bitcoin", "vault"]
 description = "Revault wallet daemon"
 exclude = [".github/"]
 
-
-[lib]
-name = "common"
-path = "src/common/lib.rs"
-
 [[bin]]
 name = "revaultd"
-path = "src/daemon/main.rs"
+path = "src/bin/daemon.rs"
 
 [[bin]]
 name = "revault-cli"
-path = "src/cli/main.rs"
+path = "src/bin/cli.rs"
 
 
 [dependencies]

@@ -1,12 +1,12 @@
 #[cfg(test)]
 pub mod test_utils {
-    use crate::{
+    use crate::common::config::Config;
+    use crate::daemon::{
         jsonrpc::UserRole,
         revaultd::RevaultD,
         threadmessages::{BitcoindMessageOut, SigFetcherMessageOut},
         RpcUtils,
     };
-    use common::config::Config;
 
     use std::{
         fs,

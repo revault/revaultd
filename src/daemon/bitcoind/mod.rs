@@ -2,12 +2,13 @@ pub mod interface;
 pub mod poller;
 pub mod utils;
 
-use crate::{
+use crate::assume_ok;
+use crate::common::config::BitcoindConfig;
+use crate::daemon::{
     database::DatabaseError,
     revaultd::RevaultD,
     threadmessages::{BitcoindMessageOut, WalletTransaction},
 };
-use common::{assume_ok, config::BitcoindConfig};
 use interface::BitcoinD;
 use poller::poller_main;
 use revault_tx::bitcoin::{Network, Txid};

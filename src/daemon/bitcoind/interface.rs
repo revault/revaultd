@@ -1,5 +1,5 @@
-use crate::{bitcoind::BitcoindError, revaultd::BlockchainTip};
-use common::config::BitcoindConfig;
+use crate::common::config::BitcoindConfig;
+use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
     bitcoin::{consensus::encode, Address, Amount, BlockHash, OutPoint, Transaction, TxOut, Txid},
     transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},

@@ -2,7 +2,7 @@
 //! with servers, with bitcoind, ..). Requests may originate from the RPC server or the signature
 //! fetcher thread.
 
-use crate::{
+use crate::daemon::{
     bitcoind::BitcoindError,
     database::{
         interface::{
@@ -16,7 +16,7 @@ use crate::{
     threadmessages::*,
 };
 
-use common::assume_ok;
+use crate::assume_ok;
 use revault_net::{
     message::{
         coordinator::{GetSigs, SetSpendResult, SetSpendTx, Sig, SigResult, Sigs},
@@ -956,7 +956,7 @@ pub struct RpcUtils {
 
 #[cfg(test)]
 mod test {
-    use crate::{
+    use crate::daemon::{
         control::*,
         database::{
             actions::{

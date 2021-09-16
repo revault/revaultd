@@ -1,4 +1,4 @@
-use crate::revaultd::VaultStatus;
+use crate::daemon::revaultd::VaultStatus;
 use revault_tx::{
     bitcoin::{
         util::bip32::{ChildNumber, ExtendedPubKey},

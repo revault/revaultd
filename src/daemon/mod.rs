@@ -7,7 +7,8 @@ mod sigfetcher;
 mod threadmessages;
 mod utils;
 
-use crate::{
+use crate::assume_ok;
+use crate::daemon::{
     bitcoind::{bitcoind_main_loop, start_bitcoind},
     control::RpcUtils,
     database::actions::setup_db,
@@ -15,40 +16,19 @@ use crate::{
         server::{rpcserver_loop, rpcserver_setup},
         UserRole,
     },
-    revaultd::RevaultD,
     sigfetcher::signature_fetcher_loop,
 };
-use common::{assume_ok, config::Config};
-use revault_net::sodiumoxide;
-use revault_tx::bitcoin::hashes::hex::ToHex;
+
+pub use crate::daemon::revaultd::RevaultD;
 
 use std::{
-    env,
     io::{self, Write},
-    panic,
-    path::PathBuf,
-    process,
+    panic, process,
     sync::{mpsc, Arc, RwLock},
     thread, time,
 };
 
-use daemonize_simple::Daemonize;
-
-fn parse_args(args: Vec<String>) -> Option<PathBuf> {
-    if args.len() == 1 {
-        return None;
-    }
-
-    if args.len() != 3 {
-        eprintln!("Unknown arguments '{:?}'.", args);
-        eprintln!("Only '--conf <configuration file path>' is supported.");
-        process::exit(1);
-    }
-
-    Some(PathBuf::from(args[2].to_owned()))
-}
-
-fn daemon_main(mut revaultd: RevaultD) {
+pub fn daemon_main(mut revaultd: RevaultD) {
     let user_role = match (revaultd.is_stakeholder(), revaultd.is_manager()) {
         (true, false) => UserRole::Stakeholder,
         (false, true) => UserRole::Manager,
@@ -137,7 +117,7 @@ fn daemon_main(mut revaultd: RevaultD) {
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout
 // if None is given
-fn setup_logger(log_level: log::LevelFilter) -> Result<(), fern::InitError> {
+pub fn setup_logger(log_level: log::LevelFilter) -> Result<(), fern::InitError> {
     let dispatcher = fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -162,7 +142,7 @@ fn setup_logger(log_level: log::LevelFilter) -> Result<(), fern::InitError> {
 }
 
 // A panic in any thread should stop the main thread, and print the panic.
-fn setup_panic_hook() {
+pub fn setup_panic_hook() {
     panic::set_hook(Box::new(move |panic_info| {
         let file = panic_info
             .location()
@@ -181,60 +161,4 @@ fn setup_panic_hook() {
 
         process::exit(1);
     }));
-}
-
-fn main() {
-    let args = env::args().collect();
-    let conf_file = parse_args(args);
-
-    // We use libsodium for Noise keys and Noise channels (through revault_net)
-    sodiumoxide::init().unwrap_or_else(|_| {
-        eprintln!("Error init'ing libsodium");
-        process::exit(1);
-    });
-
-    let config = Config::from_file(conf_file).unwrap_or_else(|e| {
-        eprintln!("Error parsing config: {}", e);
-        process::exit(1);
-    });
-    setup_logger(config.log_level).unwrap_or_else(|e| {
-        eprintln!("Error setting up logger: {}", e);
-        process::exit(1);
-    });
-    // FIXME: should probably be from_db(), would allow us to not use Option members
-    let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
-        log::error!("Error creating global state: {}", e);
-        process::exit(1);
-    });
-
-    log::info!(
-        "Using Noise static public key: '{}'",
-        revaultd.noise_pubkey().0.to_hex()
-    );
-    log::debug!(
-        "Coordinator static public key: '{}'",
-        revaultd.coordinator_noisekey.0.to_hex()
-    );
-
-    setup_panic_hook();
-
-    if revaultd.daemon {
-        let log_file = revaultd.log_file();
-        let daemon = Daemonize {
-            // TODO: Make this configurable for inits
-            pid_file: Some(revaultd.pid_file()),
-            stdout_file: Some(log_file.clone()),
-            stderr_file: Some(log_file),
-            chdir: Some(revaultd.data_dir.clone()),
-            append: true,
-            ..Daemonize::default()
-        };
-        daemon.doit().unwrap_or_else(|e| {
-            eprintln!("Error daemonizing: {}", e);
-            process::exit(1);
-        });
-        println!("Started revaultd daemon");
-    }
-
-    daemon_main(revaultd);
 }

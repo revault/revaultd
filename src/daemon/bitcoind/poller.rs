@@ -1,4 +1,5 @@
-use crate::{
+use crate::common::config::BitcoindConfig;
+use crate::daemon::{
     bitcoind::{
         interface::{BitcoinD, OnchainDescriptorState, SyncInfo, UtxoInfo},
         utils::{
@@ -27,7 +28,6 @@ use crate::{
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
-use common::config::BitcoindConfig;
 use revault_tx::{
     bitcoin::{Amount, OutPoint, Txid},
     transactions::{RevaultTransaction, UnvaultTransaction},

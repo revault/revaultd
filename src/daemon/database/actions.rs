@@ -1,4 +1,4 @@
-use crate::{
+use crate::daemon::{
     database::{
         interface::*,
         schema::{DbTransaction, RevaultTx, TransactionType, SCHEMA},
@@ -758,9 +758,9 @@ pub fn db_mark_rebroadcastable_spend(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::database::schema::DbSpendTransaction;
-    use crate::jsonrpc::UserRole;
-    use crate::utils::test_utils::{dummy_revaultd, test_datadir};
+    use crate::daemon::database::schema::DbSpendTransaction;
+    use crate::daemon::jsonrpc::UserRole;
+    use crate::daemon::utils::test_utils::{dummy_revaultd, test_datadir};
     use revault_tx::{
         bitcoin::{Network, OutPoint, PublicKey},
         transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},

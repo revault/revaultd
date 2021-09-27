@@ -1,4 +1,4 @@
-use crate::bitcoind::BitcoindError;
+use crate::daemon::bitcoind::BitcoindError;
 use revault_tx::bitcoin::{Transaction as BitcoinTransaction, Txid};
 
 use std::sync::mpsc::SyncSender;

@@ -2,7 +2,8 @@
 //! *valid* JSONRPC2 commands here. All the communication and parsing is done in the
 //! `server` mod.
 
-use crate::{
+use crate::common::VERSION;
+use crate::daemon::{
     control::{
         announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
         check_spend_signatures, check_spend_transaction_size, check_unvault_signatures,
@@ -27,7 +28,6 @@ use crate::{
     revaultd::{BlockchainTip, VaultStatus},
     threadmessages::*,
 };
-use common::VERSION;
 
 use revault_tx::{
     bitcoin::{

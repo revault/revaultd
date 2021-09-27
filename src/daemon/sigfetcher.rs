@@ -1,5 +1,5 @@
 ///! Background thread that will poll the coordinator for signatures
-use crate::{
+use crate::daemon::{
     control::{get_presigs, CommunicationError},
     database::{
         actions::db_update_presigned_tx,

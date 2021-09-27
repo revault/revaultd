@@ -2,13 +2,15 @@
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
 use crate::{
-    control::RpcUtils,
-    jsonrpc::{
-        api::{JsonRpcMetaData, RpcApi, RpcImpl},
-        UserRole,
+    assume_some,
+    daemon::{
+        control::RpcUtils,
+        jsonrpc::{
+            api::{JsonRpcMetaData, RpcApi, RpcImpl},
+            UserRole,
+        },
     },
 };
-use common::assume_some;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -489,7 +491,7 @@ pub fn rpcserver_loop(
 #[cfg(test)]
 mod tests {
     use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, UserRole};
-    use crate::utils::test_utils::{dummy_rpcutil, test_datadir};
+    use crate::daemon::utils::test_utils::{dummy_rpcutil, test_datadir};
 
     use std::{
         fs,

@@ -38,7 +38,7 @@ DEFAULT_COORD_PATH = os.path.join(
     "..",
     "servers",
     "coordinatord",
-    "target/debug/revault_coordinatord",
+    "target/debug/main",
 )
 COORDINATORD_PATH = os.getenv("COORDINATORD_PATH", DEFAULT_COORD_PATH)
 DEFAULT_COSIG_PATH = os.path.join(

@@ -15,7 +15,6 @@ import subprocess
 import threading
 import time
 
-from ephemeral_port_reserve import reserve
 from test_framework import serializations
 from typing import Optional
 
@@ -30,6 +29,28 @@ POSTGRES_IS_SETUP = POSTGRES_USER and POSTGRES_PASS and POSTGRES_HOST
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "trace")
 assert LOG_LEVEL in ["trace", "debug", "info", "warn", "error"]
+DEFAULT_REV_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "target/debug/revaultd"
+)
+REVAULTD_PATH = os.getenv("REVAULTD_PATH", DEFAULT_REV_PATH)
+DEFAULT_COORD_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "servers",
+    "coordinatord",
+    "target/debug/revault_coordinatord",
+)
+COORDINATORD_PATH = os.getenv("COORDINATORD_PATH", DEFAULT_COORD_PATH)
+DEFAULT_COSIG_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "servers",
+    "cosignerd",
+    "target/debug/cosignerd",
+)
+COSIGNERD_PATH = os.getenv("COSIGNERD_PATH", DEFAULT_COSIG_PATH)
+DEFAULT_BITCOIND_PATH = "bitcoind"
+BITCOIND_PATH = os.getenv("BITCOIND_PATH", DEFAULT_BITCOIND_PATH)
 
 
 def wait_for(success, timeout=TIMEOUT, debug_fn=None):

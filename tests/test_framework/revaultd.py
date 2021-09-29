@@ -7,6 +7,7 @@ from test_framework.utils import (
     UnixDomainSocketRpc,
     LOG_LEVEL,
     wait_for,
+    REVAULTD_PATH,
 )
 
 
@@ -39,11 +40,8 @@ class Revaultd(TailableProc):
         self.datadir_with_network = os.path.join(datadir, "regtest")
         os.makedirs(self.datadir_with_network, exist_ok=True)
 
-        bin = os.path.join(
-            os.path.dirname(__file__), "..", "..", "target/debug/revaultd"
-        )
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [bin, "--conf", f"{self.conf_file}"]
+        self.cmd_line = [REVAULTD_PATH, "--conf", f"{self.conf_file}"]
         socket_path = os.path.join(self.datadir_with_network, "revaultd_rpc")
         self.rpc = UnixDomainSocketRpc(socket_path)
 

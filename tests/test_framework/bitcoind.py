@@ -5,7 +5,7 @@ import os
 from bitcoin.rpc import RawProxy as BitcoinProxy
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
-from test_framework.utils import TailableProc, wait_for, TIMEOUT
+from test_framework.utils import TailableProc, wait_for, TIMEOUT, BITCOIND_PATH
 
 
 class SimpleBitcoinProxy:
@@ -69,7 +69,7 @@ class BitcoinD(TailableProc):
             os.makedirs(regtestdir)
 
         self.cmd_line = [
-            "bitcoind",
+            BITCOIND_PATH,
             "-datadir={}".format(bitcoin_dir),
             "-printtoconsole",
             "-server",

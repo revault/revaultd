@@ -1,10 +1,10 @@
 import os
-import psycopg2
 
 from test_framework.utils import (
     TailableProc,
     VERBOSE,
     LOG_LEVEL,
+    COSIGNERD_PATH,
 )
 
 
@@ -18,15 +18,8 @@ class Cosignerd(TailableProc):
         managers_noisekeys,
     ):
         TailableProc.__init__(self, datadir, verbose=VERBOSE)
-        bin = os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "servers",
-            "cosignerd",
-            "target/debug/cosignerd",
-        )
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [bin, "--conf", f"{self.conf_file}"]
+        self.cmd_line = [COSIGNERD_PATH, "--conf", f"{self.conf_file}"]
         self.prefix = "cosignerd"
 
         noise_secret_file = os.path.join(datadir, "noise_secret")

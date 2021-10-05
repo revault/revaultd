@@ -1,11 +1,7 @@
 import os
 import psycopg2
 
-from test_framework.utils import (
-    TailableProc,
-    VERBOSE,
-    LOG_LEVEL,
-)
+from test_framework.utils import TailableProc, VERBOSE, LOG_LEVEL, COORDINATORD_PATH
 
 
 class Coordinatord(TailableProc):
@@ -23,15 +19,8 @@ class Coordinatord(TailableProc):
     ):
         # FIXME: reduce DEBUG log load
         TailableProc.__init__(self, datadir, verbose=VERBOSE)
-        bin = os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "servers",
-            "coordinatord",
-            "target/debug/revault_coordinatord",
-        )
         self.conf_file = os.path.join(datadir, "config.toml")
-        self.cmd_line = [bin, "--conf", f"{self.conf_file}"]
+        self.cmd_line = [COORDINATORD_PATH, "--conf", f"{self.conf_file}"]
         self.prefix = "coordinatord"
 
         self.postgres_user = postgres_user

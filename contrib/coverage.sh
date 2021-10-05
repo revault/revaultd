@@ -12,6 +12,7 @@ fi
 
 cargo clean
 
+rm -f "revaultd_coverage_*.profraw"
 LLVM_PROFILE_FILE="revaultd_coverage_%m.profraw" RUSTFLAGS="-Zinstrument-coverage" RUSTDOCFLAGS="$RUSTFLAGS -Z unstable-options --persist-doctests target/debug/doctestbins" cargo +nightly build --all-features
 LLVM_PROFILE_FILE="revaultd_coverage_%m.profraw" RUSTFLAGS="-Zinstrument-coverage" RUSTDOCFLAGS="$RUSTFLAGS -Z unstable-options --persist-doctests target/debug/doctestbins" cargo +nightly test --all-features
 POSTGRES_PASS=revault POSTGRES_USER=revault pytest -n $JOBS

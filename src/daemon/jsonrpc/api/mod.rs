@@ -2,6 +2,9 @@
 //! *valid* JSONRPC2 commands here. All the communication and parsing is done in the
 //! `server` mod.
 
+mod error;
+use error::Error;
+
 use crate::common::VERSION;
 use crate::daemon::{
     control::{
@@ -262,16 +265,6 @@ macro_rules! parse_vault_status {
     };
 }
 
-macro_rules! internal_error {
-    ($error: expr) => {
-        JsonRpcError {
-            code: jsonrpc_core::types::error::ErrorCode::InternalError,
-            message: $error.to_string(),
-            data: None,
-        }
-    };
-}
-
 macro_rules! unknown_outpoint {
     ($outpoint: expr) => {
         JsonRpcError::invalid_params(format!("No vault at '{}'", $outpoint))
@@ -297,11 +290,11 @@ impl RpcApi for RpcImpl {
         meta.rpc_utils
             .bitcoind_tx
             .send(BitcoindMessageOut::Shutdown)
-            .map_err(|e| internal_error!(e))?;
+            .map_err(|e| Error::from(e))?;
         meta.rpc_utils
             .sigfetcher_tx
             .send(SigFetcherMessageOut::Shutdown)
-            .map_err(|e| internal_error!(e))?;
+            .map_err(|e| Error::from(e))?;
         meta.shutdown();
 
         Ok(())
@@ -312,8 +305,8 @@ impl RpcApi for RpcImpl {
         meta.rpc_utils
             .bitcoind_tx
             .send(BitcoindMessageOut::SyncProgress(bitrep_tx))
-            .map_err(|e| internal_error!(e))?;
-        let progress = bitrep_rx.recv().map_err(|e| internal_error!(e))?;
+            .map_err(|e| Error::from(e))?;
+        let progress = bitrep_rx.recv().map_err(|e| Error::from(e))?;
 
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
 
@@ -325,10 +318,10 @@ impl RpcApi for RpcImpl {
         let BlockchainTip {
             height: blockheight,
             ..
-        } = db_tip(&revaultd.db_file()).map_err(|e| internal_error!(e))?;
+        } = db_tip(&revaultd.db_file()).map_err(|e| Error::from(e))?;
 
         let number_of_vaults = listvaults_from_db(&revaultd, None, None)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .iter()
             .filter(|l| {
                 l.status != VaultStatus::Spent
@@ -482,7 +475,7 @@ impl RpcApi for RpcImpl {
             statuses,
             outpoints,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
 
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
@@ -529,7 +522,7 @@ impl RpcApi for RpcImpl {
 
         // First, make sure the vault exists and is confirmed.
         let vault = db_vault_by_deposit(db_file, &outpoint)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .ok_or_else(|| {
                 JsonRpcError::invalid_params(format!(
                     "'{}' does not refer to a known and confirmed vault",
@@ -559,7 +552,7 @@ impl RpcApi for RpcImpl {
             revaultd.lock_time,
             &revaultd.secp_ctx,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
 
         Ok(json!({
             "cancel_tx": cancel_tx.as_psbt_string(),
@@ -585,7 +578,7 @@ impl RpcApi for RpcImpl {
         // They may only send revocation transactions for confirmed and not-yet-presigned
         // vaults.
         let db_vault = db_vault_by_deposit(&db_path, &outpoint)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .ok_or_else(|| unknown_outpoint!(outpoint))?;
         if !matches!(db_vault.status, VaultStatus::Funded) {
             return Err(invalid_status!(db_vault.status, VaultStatus::Funded));
@@ -594,7 +587,7 @@ impl RpcApi for RpcImpl {
         // Sanity check they didn't send us garbaged PSBTs
         // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
         let (cancel_db_id, db_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .expect("must be here if at least in 'Funded' state");
         let rpc_txid = cancel_tx.tx().wtxid();
         let db_txid = db_cancel_tx.tx().wtxid();
@@ -606,7 +599,7 @@ impl RpcApi for RpcImpl {
         }
         // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
         let (emer_db_id, db_emergency_tx) = db_emer_transaction(&revaultd.db_file(), db_vault.id)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .expect("Must be here if 'funded'");
         let rpc_txid = emergency_tx.tx().wtxid();
         let db_txid = db_emergency_tx.tx().wtxid();
@@ -619,7 +612,7 @@ impl RpcApi for RpcImpl {
         // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
         let (unvault_emer_db_id, db_unemergency_tx) =
             db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)
-                .map_err(|e| internal_error!(e))?
+                .map_err(|e| Error::from(e))?
                 .expect("Must be here if 'funded'");
         let rpc_txid = unvault_emergency_tx.tx().wtxid();
         let db_txid = db_unemergency_tx.tx().wtxid();
@@ -731,7 +724,7 @@ impl RpcApi for RpcImpl {
             cancel_sigs.clone(),
             secp_ctx,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
         db_update_presigned_tx(
             &revaultd.db_file(),
             db_vault.id,
@@ -739,7 +732,7 @@ impl RpcApi for RpcImpl {
             emer_sigs.clone(),
             secp_ctx,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
         db_update_presigned_tx(
             &revaultd.db_file(),
             db_vault.id,
@@ -747,7 +740,7 @@ impl RpcApi for RpcImpl {
             unvault_emer_sigs.clone(),
             secp_ctx,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
 
         // Share them with our felow stakeholders.
         share_rev_signatures(
@@ -764,7 +757,7 @@ impl RpcApi for RpcImpl {
 
         // NOTE: it will only mark it as 'securing' if it was 'funded', not if it was
         // marked as 'secured' by db_update_presigned_tx() !
-        db_mark_securing_vault(&db_path, db_vault.id).map_err(|e| internal_error!(e))?;
+        db_mark_securing_vault(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }
@@ -781,7 +774,7 @@ impl RpcApi for RpcImpl {
         // We allow the call for Funded 'only' as unvaulttx would later fail if it's
         // not 'secured'.
         let vault = db_vault_by_deposit(db_file, &outpoint)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .ok_or_else(|| unknown_outpoint!(outpoint))?;
         if matches!(vault.status, VaultStatus::Unconfirmed) {
             return Err(invalid_status!(vault.status, VaultStatus::Funded));
@@ -808,7 +801,7 @@ impl RpcApi for RpcImpl {
             &cpfp_descriptor,
             revaultd.lock_time,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
 
         Ok(json!({
             "unvault_tx": unvault_tx.as_psbt_string(),
@@ -831,7 +824,7 @@ impl RpcApi for RpcImpl {
         // If the vault is already active (or more) there is no point in spamming the
         // coordinator.
         let db_vault = db_vault_by_deposit(&db_path, &outpoint)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .ok_or_else(|| unknown_outpoint!(outpoint))?;
         if !matches!(db_vault.status, VaultStatus::Secured) {
             return Err(invalid_status!(db_vault.status, VaultStatus::Funded));
@@ -839,7 +832,7 @@ impl RpcApi for RpcImpl {
 
         // Sanity check they didn't send us a garbaged PSBT
         let (unvault_db_id, db_unvault_tx) =
-            db_unvault_transaction(&db_path, db_vault.id).map_err(|e| internal_error!(e))?;
+            db_unvault_transaction(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
         let rpc_txid = unvault_tx.tx().wtxid();
         let db_txid = db_unvault_tx.tx().wtxid();
         if rpc_txid != db_txid {
@@ -894,7 +887,7 @@ impl RpcApi for RpcImpl {
             sigs.clone(),
             secp_ctx,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
         share_unvault_signatures(
             revaultd.coordinator_host,
             &revaultd.noise_secret,
@@ -910,7 +903,7 @@ impl RpcApi for RpcImpl {
 
         // NOTE: it will only mark it as 'unvaulting' if it was 'secured', not if it was
         // marked as 'activated' by db_update_presigned_tx() !
-        db_mark_activating_vault(&db_path, db_vault.id).map_err(|e| internal_error!(e))?;
+        db_mark_activating_vault(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }
@@ -928,9 +921,9 @@ impl RpcApi for RpcImpl {
             vaults_from_deposits(&db_path, &outpoints, &[VaultStatus::Unconfirmed])
                 .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?
         } else {
-            db_vaults_min_status(&db_path, VaultStatus::Funded).map_err(|e| internal_error!(e))?
+            db_vaults_min_status(&db_path, VaultStatus::Funded).map_err(|e| Error::from(e))?
         };
-        let vaults = presigned_txs(&revaultd, db_vaults).map_err(|e| internal_error!(e))?;
+        let vaults = presigned_txs(&revaultd, db_vaults).map_err(|e| Error::from(e))?;
 
         let vaults: Vec<serde_json::Value> = vaults
             .into_iter()
@@ -962,14 +955,14 @@ impl RpcApi for RpcImpl {
             vaults_from_deposits(&db_path, &outpoints, &[])
                 .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?
         } else {
-            db_vaults(&db_path).map_err(|e| internal_error!(e))?
+            db_vaults(&db_path).map_err(|e| Error::from(e))?
         };
         let vaults = onchain_txs(
             &meta.rpc_utils.revaultd.read().unwrap(),
             &meta.rpc_utils.bitcoind_tx,
             db_vaults,
         )
-        .map_err(|e| internal_error!(e))?;
+        .map_err(|e| Error::from(e))?;
 
         fn wallet_tx_to_json(tx: WalletTransaction) -> serde_json::Value {
             json!({
@@ -1024,7 +1017,7 @@ impl RpcApi for RpcImpl {
         let mut change_index = bip32::ChildNumber::from(0);
         for outpoint in outpoints.iter() {
             let vault = db_vault_by_deposit(db_file, &outpoint)
-                .map_err(|e| internal_error!(e))?
+                .map_err(|e| Error::from(e))?
                 .ok_or_else(|| unknown_outpoint!(outpoint))?;
             if matches!(vault.status, VaultStatus::Active) {
                 if vault.derivation_index > change_index {
@@ -1176,7 +1169,7 @@ impl RpcApi for RpcImpl {
         for txin in spend_inputs.iter() {
             let (db_vault, db_unvault) =
                 db_vault_by_unvault_txid(&db_path, &txin.previous_output.txid)
-                    .map_err(|e| internal_error!(e))?
+                    .map_err(|e| Error::from(e))?
                     .ok_or_else(|| {
                         JsonRpcError::invalid_params(format!(
                             "Spend transaction refers an unknown Unvault: '{}'",
@@ -1192,14 +1185,14 @@ impl RpcApi for RpcImpl {
         }
 
         if db_spend_transaction(&db_path, &spend_txid)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .is_some()
         {
             log::debug!("Updating Spend transaction '{}'", spend_txid);
-            db_update_spend(&db_path, &spend_tx).map_err(|e| internal_error!(e))?;
+            db_update_spend(&db_path, &spend_tx).map_err(|e| Error::from(e))?;
         } else {
             log::debug!("Storing new Spend transaction '{}'", spend_txid);
-            db_insert_spend(&db_path, &db_unvaults, &spend_tx).map_err(|e| internal_error!(e))?;
+            db_insert_spend(&db_path, &db_unvaults, &spend_tx).map_err(|e| Error::from(e))?;
         }
 
         Ok(json!({}))
@@ -1230,7 +1223,7 @@ impl RpcApi for RpcImpl {
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
         let db_path = revaultd.db_file();
 
-        let spend_tx_map = db_list_spends(&db_path).map_err(|e| internal_error!(e))?;
+        let spend_tx_map = db_list_spends(&db_path).map_err(|e| Error::from(e))?;
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
         for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
             // Filter by status
@@ -1249,7 +1242,7 @@ impl RpcApi for RpcImpl {
             }
 
             let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
-                .map_err(|e| internal_error!(e))?;
+                .map_err(|e| Error::from(e))?;
 
             let derivation_index = spent_vaults
                 .values()
@@ -1301,12 +1294,12 @@ impl RpcApi for RpcImpl {
 
         // Get the Spend they reference from DB
         let mut spend_tx = db_spend_transaction(&db_path, &spend_txid)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .ok_or_else(|| JsonRpcError::invalid_params("Unknown Spend transaction".to_string()))?;
 
         // Then check all our fellow managers already signed it
         let spent_vaults =
-            db_vaults_from_spend(&db_path, &spend_txid).map_err(|e| internal_error!(e))?;
+            db_vaults_from_spend(&db_path, &spend_txid).map_err(|e| Error::from(e))?;
         let tx = &spend_tx.psbt.tx();
         if spent_vaults.len() < tx.input.len() {
             return Err(JsonRpcError::invalid_params(
@@ -1384,7 +1377,7 @@ impl RpcApi for RpcImpl {
                 e
             ))
         })?;
-        db_update_spend(&db_path, &spend_tx.psbt).map_err(|e| internal_error!(e))?;
+        db_update_spend(&db_path, &spend_tx.psbt).map_err(|e| Error::from(e))?;
 
         // Finally we can broadcast the Unvault(s) transaction(s) and store the Spend
         // transaction for later broadcast
@@ -1396,18 +1389,16 @@ impl RpcApi for RpcImpl {
             .values()
             .into_iter()
             .map(|db_vault| {
-                let (_, mut unvault_tx) = db_unvault_transaction(&db_path, db_vault.id)
-                    .map_err(|e| internal_error!(e))?;
+                let (_, mut unvault_tx) =
+                    db_unvault_transaction(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
                 unvault_tx
                     .finalize(&revaultd.secp_ctx)
-                    .map_err(|e| internal_error!(e))?;
+                    .map_err(|e| Error::from(e))?;
                 Ok(unvault_tx.into_psbt().extract_tx())
             })
             .collect::<Result<Vec<BitcoinTransaction>, JsonRpcError>>()?;
-        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, bitcoin_txs).map_err(|e| {
-            internal_error!(format!("Broadcasting Unvault transaction(s): '{}'", e))
-        })?;
-        db_mark_broadcastable_spend(&db_path, &spend_txid).map_err(|e| internal_error!(e))?;
+        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, bitcoin_txs).map_err(|e| Error::from(e))?;
+        db_mark_broadcastable_spend(&db_path, &spend_txid).map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }
@@ -1423,7 +1414,7 @@ impl RpcApi for RpcImpl {
         // Checking that the vault is secured, otherwise we don't have the cancel
         // transaction
         let vault = db_vault_by_deposit(&db_path, &deposit_outpoint)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .ok_or_else(|| unknown_outpoint!(deposit_outpoint))?;
 
         if !matches!(
@@ -1434,19 +1425,19 @@ impl RpcApi for RpcImpl {
         }
 
         let (_, mut cancel_tx) = db_cancel_transaction(&db_path, vault.id)
-            .map_err(|e| internal_error!(e))?
+            .map_err(|e| Error::from(e))?
             .expect("Must be in DB post 'Secured' status");
 
         cancel_tx
             .finalize(&revaultd.secp_ctx)
-            .map_err(|e| internal_error!(e))?;
+            .map_err(|e| Error::from(e))?;
         let transaction = cancel_tx.into_psbt().extract_tx();
         log::debug!(
             "Broadcasting Cancel transactions with id '{:?}'",
             transaction.txid()
         );
         bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, vec![transaction])
-            .map_err(|e| internal_error!(format!("Broadcasting Cancel transaction: '{}'", e)))?;
+            .map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }
@@ -1460,8 +1451,8 @@ impl RpcApi for RpcImpl {
         // bulk method, like broadcasting all Emergency transactions in a thread forever without
         // trying to be smart by differentiating between Emer and UnvaultEmer until we die or all
         // vaults are confirmed in the EDV.
-        let emers = finalized_emer_txs(&revaultd).map_err(|e| internal_error!(e))?;
-        bitcoind_broadcast(bitcoind_tx, emers).map_err(|e| internal_error!(e))?;
+        let emers = finalized_emer_txs(&revaultd).map_err(|e| Error::from(e))?;
+        bitcoind_broadcast(bitcoind_tx, emers).map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }

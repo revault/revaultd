@@ -16,7 +16,6 @@ use crate::daemon::{
     threadmessages::*,
 };
 
-use crate::assume_ok;
 use revault_net::{
     message::{
         coordinator::{GetSigs, SetSpendResult, SetSpendTx, Sig, SigResult, Sigs},
@@ -42,7 +41,7 @@ use revault_tx::{
 
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt, process,
+    fmt,
     sync::{
         mpsc::{self, RecvError, SendError, Sender},
         Arc, RwLock,
@@ -618,12 +617,10 @@ pub fn check_spend_signatures(
 
         // All pubkeys use the same one, fortunately!
         for pubkey in managers_pubkeys.clone().into_iter() {
-            let pubkey = assume_ok!(
-                pubkey
-                    .derive(db_vault.derivation_index.into())
-                    .derive_public_key(secp),
-                "We just derived a non hardened index"
-            );
+            let pubkey = pubkey
+                .derive(db_vault.derivation_index.into())
+                .derive_public_key(secp)
+                .expect("We just derived a non hardened index");
             if let Some(sig) = psbtin.partial_sigs.get(&pubkey) {
                 let (given_sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
                 if *given_sighash_type != sighash_type as u8 {

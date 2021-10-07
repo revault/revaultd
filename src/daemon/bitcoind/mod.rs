@@ -2,7 +2,6 @@ pub mod interface;
 pub mod poller;
 pub mod utils;
 
-use crate::assume_ok;
 use crate::common::config::BitcoindConfig;
 use crate::daemon::{
     database::DatabaseError,
@@ -14,7 +13,6 @@ use poller::poller_main;
 use revault_tx::bitcoin::{Network, Txid};
 
 use std::{
-    process,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::Receiver,
@@ -194,10 +192,10 @@ pub fn bitcoind_main_loop(
             BitcoindMessageOut::Shutdown => {
                 log::info!("Bitcoind received shutdown from main. Exiting.");
                 shutdown.store(true, Ordering::Relaxed);
-                assume_ok!(
-                    assume_ok!(poller_thread.join(), "Joining bitcoind poller thread"),
-                    "Error in bitcoind poller thread"
-                );
+                poller_thread
+                    .join()
+                    .expect("Joining bitcoind poller thread")
+                    .expect("Failed to join bitcoind poller thread");
                 return Ok(());
             }
             BitcoindMessageOut::SyncProgress(resp_tx) => {

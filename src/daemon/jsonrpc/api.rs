@@ -1036,12 +1036,11 @@ impl RpcApi for RpcImpl {
             }
         }
 
-        // Mutable as we *may* add a change output
-        let mut txos: Vec<SpendTxOut> = destinations
+        let txos: Vec<SpendTxOut> = destinations
             .into_iter()
             .map(|(addr, value)| {
                 let script_pubkey = addr.script_pubkey();
-                SpendTxOut::Destination(TxOut {
+                SpendTxOut::new(TxOut {
                     value,
                     script_pubkey,
                 })
@@ -1059,6 +1058,7 @@ impl RpcApi for RpcImpl {
         let nochange_tx = spend_tx_from_deposits(
             txins.clone(),
             txos.clone(),
+            None, // No change :)
             &revaultd.deposit_descriptor,
             &revaultd.unvault_descriptor,
             &revaultd.cpfp_descriptor,
@@ -1102,7 +1102,7 @@ impl RpcApi for RpcImpl {
             // Mental gymnastic: sat/vbyte to sat/wu rounded up
             .checked_mul(feerate_vb + 3)
             .map(|vbyte| vbyte.checked_div(4).unwrap());
-        let change_value = want_fees.map(|f| cur_fees.checked_sub(f));
+        let change_value = want_fees.map(|f| cur_fees.checked_sub(f)).flatten();
         log::debug!(
             "Weight with change: '{}'  --  Fees without change: '{}'  --  Wanted feerate: '{}'  \
                     --  Wanted fees: '{:?}'  --  Change value: '{:?}'",
@@ -1113,7 +1113,7 @@ impl RpcApi for RpcImpl {
             change_value
         );
 
-        if let Some(Some(change_value)) = change_value {
+        let change_txo = change_value.and_then(|change_value| {
             // The overhead incurred to the value of the CPFP output by the change output
             // See https://github.com/revault/practical-revault/blob/master/transactions.md#spend_tx
             let cpfp_overhead = 16 * P2WSH_TXO_WEIGHT;
@@ -1126,14 +1126,17 @@ impl RpcApi for RpcImpl {
                         .derive(change_index, &revaultd.secp_ctx),
                 );
                 log::debug!("Adding a change txo: '{:?}'", change_txo);
-                txos.push(SpendTxOut::Change(change_txo));
+                Some(change_txo)
+            } else {
+                None
             }
-        }
+        });
 
         // Now we can hand them the resulting transaction (sanity checked for insane fees).
         let tx_res = spend_tx_from_deposits(
             txins,
             txos,
+            change_txo,
             &revaultd.deposit_descriptor,
             &revaultd.unvault_descriptor,
             &revaultd.cpfp_descriptor,
@@ -1229,7 +1232,7 @@ impl RpcApi for RpcImpl {
 
         let spend_tx_map = db_list_spends(&db_path).map_err(|e| internal_error!(e))?;
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
-        for (_, (db_spend, dep_outpoints)) in spend_tx_map {
+        for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
             // Filter by status
             if let Some(s) = &status {
                 let status = if let Some(true) = db_spend.broadcasted {
@@ -1247,41 +1250,6 @@ impl RpcApi for RpcImpl {
 
             let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
                 .map_err(|e| internal_error!(e))?;
-
-            // FIXME: a temporary hack for the GUI to be able to use its signer properly. Remove
-            // after the demo release in favour of having the derivation indexes in the PSBT.
-            let mut deposit_outpoints = dep_outpoints.clone();
-            for v in spent_vaults.values() {
-                let deposit_descriptor = revaultd
-                    .deposit_descriptor
-                    .derive(v.derivation_index, &revaultd.secp_ctx);
-                let deposit_txin = DepositTxIn::new(
-                    v.deposit_outpoint,
-                    DepositTxOut::new(v.amount, &deposit_descriptor),
-                );
-                let unvault_descriptor = revaultd
-                    .unvault_descriptor
-                    .derive(v.derivation_index, &revaultd.secp_ctx);
-                let cpfp_descriptor = revaultd
-                    .cpfp_descriptor
-                    .derive(v.derivation_index, &revaultd.secp_ctx);
-
-                let unvault_tx = UnvaultTransaction::new(
-                    deposit_txin,
-                    &unvault_descriptor,
-                    &cpfp_descriptor,
-                    revaultd.lock_time,
-                )
-                .map_err(|e| internal_error!(e))?;
-                let i = db_spend
-                    .psbt
-                    .tx()
-                    .input
-                    .iter()
-                    .position(|i| i.previous_output.txid == unvault_tx.txid())
-                    .expect("Must be there, deposit_outpoints are queried by spend_tx");
-                deposit_outpoints[i] = v.deposit_outpoint;
-            }
 
             let derivation_index = spent_vaults
                 .values()

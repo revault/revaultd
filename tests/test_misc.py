@@ -317,19 +317,6 @@ def test_listspendtxs(revault_network, bitcoind):
         assert spend_txs[0]["change_index"] is None
         assert spend_txs[0]["cpfp_index"] is not None
 
-    # FIXME: remove this test after demo release
-    # Test the deposit outpoints are in the same order as the Spend PSBT inputs
-    spend_psbt = serializations.PSBT()
-    spend_psbt.deserialize(spend_txs[0]["psbt"])
-    for i, txin in enumerate(spend_psbt.tx.vin):
-        unvault_psbt_str = man.rpc.listpresignedtransactions(
-            [spend_txs[0]["deposit_outpoints"][i]]
-        )["presigned_transactions"][0]["unvault"]["psbt"]
-        unvault_psbt = serializations.PSBT()
-        unvault_psbt.deserialize(unvault_psbt_str)
-        unvault_psbt.tx.calc_sha256()
-        assert hex(txin.prevout.hash) == f"0x{str(unvault_psbt.tx.hash)}"
-
     spend_psbt = serializations.PSBT()
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
@@ -575,7 +562,7 @@ def test_revocationtxs(revault_network):
         )
 
     # We can't mix up PSBTS (the Cancel can even be detected at parsing time)
-    with pytest.raises(RpcError, match="Invalid Cancel tx: db wtxid"):
+    with pytest.raises(RpcError, match="Invalid field in output"):
         stks[0].rpc.revocationtxs(
             deposit,
             psbts["emergency_tx"],  # here
@@ -2034,8 +2021,6 @@ def test_spend_threshold(revault_network, bitcoind, executor):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_large_spends(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
-    # FIXME: the bottleneck here on the number of participants is the announcement
-    # to the Coordinator
     revault_network.deploy(17, 8, csv=CSV)
     man = revault_network.man(0)
 
@@ -2115,7 +2100,7 @@ def test_large_spends(revault_network, bitcoind, executor):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_not_announceable_spend(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
-    revault_network.deploy(17, 8, csv=CSV)
+    revault_network.deploy(17, 16, csv=CSV)
     man = revault_network.man(0)
 
     vaults = []
@@ -2131,7 +2116,7 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
-    n_outputs = 4
+    n_outputs = 250
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
     destinations = {
         bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
@@ -2158,6 +2143,37 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
     man.rpc.setspendtx(spend_psbt.tx.hash)
+
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
+        == len(deposits)
+    )
+    # We need a single confirmation to consider the Unvault transaction confirmed
+    bitcoind.generate_block(1, wait_for_mempool=len(deposits))
+    wait_for(
+        lambda: len(man.rpc.listvaults(["unvaulted"], deposits)["vaults"])
+        == len(deposits)
+    )
+
+    # We'll broadcast the Spend transaction as soon as it's valid
+    # Note that bitcoind's RPC socket may timeout if it needs to generate too many
+    # blocks at once. So, spread them a bit.
+    for _ in range(10):
+        bitcoind.generate_block(CSV // 10)
+    bitcoind.generate_block(CSV % 10 - 1)
+    man.wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
+    )
+    wait_for(
+        lambda: len(man.rpc.listvaults(["spending"], deposits)["vaults"])
+        == len(deposits)
+    )
+
+    # And will mark it as spent after a single confirmation of the Spend tx
+    bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
+    wait_for(
+        lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
+    )
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

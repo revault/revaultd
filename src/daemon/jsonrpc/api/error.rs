@@ -2,6 +2,7 @@ use crate::daemon::{
     control::{CommunicationError, RpcControlError},
     database::DatabaseError,
 };
+
 use std::sync::mpsc::{RecvError, SendError};
 
 use jsonrpc_core::{types::error::ErrorCode::ServerError, Error as JsonRpcError};
@@ -24,9 +25,9 @@ impl From<CommunicationError> for Error {
 impl From<RpcControlError> for Error {
     fn from(e: RpcControlError) -> Error {
         let code = match e {
-            RpcControlError::InvalidStatus(..) => ErrorCode::INCOHERENT_VALUE_ERROR,
-            RpcControlError::UnknownOutPoint(_) => ErrorCode::RESOURCE_NOT_FOUND,
-            RpcControlError::Database(_) => ErrorCode::DATABASE_ERROR,
+            RpcControlError::InvalidStatus(..) => ErrorCode::INVALID_STATUS_ERROR,
+            RpcControlError::UnknownOutPoint(_) => ErrorCode::RESOURCE_NOT_FOUND_ERROR,
+            RpcControlError::Database(_) => ErrorCode::INTERNAL_ERROR,
             RpcControlError::Tx(_) => ErrorCode::INTERNAL_ERROR,
             RpcControlError::Bitcoind(_) => ErrorCode::BITCOIND_ERROR,
             RpcControlError::ThreadCommunication(_) => ErrorCode::INTERNAL_ERROR,
@@ -61,7 +62,7 @@ impl From<RecvError> for Error {
 
 impl From<DatabaseError> for Error {
     fn from(e: DatabaseError) -> Error {
-        Error(ErrorCode::DATABASE_ERROR, e.to_string())
+        Error(ErrorCode::INTERNAL_ERROR, e.to_string())
     }
 }
 
@@ -77,24 +78,22 @@ impl From<Error> for JsonRpcError {
 
 #[allow(non_camel_case_types)]
 pub enum ErrorCode {
-    DATABASE_ERROR = 10000,
     /// Internal error
-    INTERNAL_ERROR = 12000,
+    INTERNAL_ERROR = 11000,
     /// An error internal to revault_net, generally a transport error
-    TRANSPORT_ERROR = 13000,
+    TRANSPORT_ERROR = 12000,
     /// The Coordinator told us they could not store our signature
-    COORDINATOR_SIG_STORE_ERROR = 14100,
+    COORDINATOR_SIG_STORE_ERROR = 13100,
     /// The Coordinator told us they could not store our Spend transaction
-    COORDINATOR_SPEND_STORE_ERROR = 14101,
+    COORDINATOR_SPEND_STORE_ERROR = 13101,
     /// The Cosigning Server returned null to our request!
-    COSIGNER_ALREADY_SIGN_ERROR = 14201,
+    COSIGNER_ALREADY_SIGN_ERROR = 13201,
     /// The Cosigning Server tried to fool us!
-    COSIGNER_INSANE_ERROR = 14202,
+    COSIGNER_INSANE_ERROR = 13202,
     /// Bitcoind error
-    BITCOIND_ERROR = 15000,
+    BITCOIND_ERROR = 14000,
     /// Resource not found
-    RESOURCE_NOT_FOUND = 16000,
-    /// Params should have been checked before being processed,
-    /// an invalid value on the control side is then an incoherence.
-    INCOHERENT_VALUE_ERROR = 16001,
+    RESOURCE_NOT_FOUND_ERROR = 15000,
+    /// Vault status was invalid
+    INVALID_STATUS_ERROR = 15001,
 }

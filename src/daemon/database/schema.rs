@@ -108,12 +108,15 @@ CREATE TABLE spend_inputs (
  *  - Not elligible for broadcast (NULL)
  *  - Waiting to be broadcasted (0)
  *  - Already broadcasted (1)
+ * The 'has_priority' column indicates wether a Spend would automatically
+ * be CPFPed if not confirmed in the first block after broadcast
  */
 CREATE TABLE spend_transactions (
     id INTEGER PRIMARY KEY NOT NULL,
     psbt BLOB UNIQUE NOT NULL,
     txid BLOB UNIQUE NOT NULL,
-    broadcasted BOOLEAN CHECK (broadcasted IN (NULL, 0,1))
+    broadcasted BOOLEAN CHECK (broadcasted IN (NULL, 0,1)),
+    has_priority BOOLEAN NOT NULL CHECK (has_priority IN (0,1)) DEFAULT 0
 );
 
 CREATE INDEX vault_status ON vaults (status);
@@ -176,5 +179,6 @@ pub struct DbSpendTransaction {
     pub id: i64,
     pub psbt: SpendTransaction,
     pub broadcasted: Option<bool>,
+    pub has_priority: bool,
     // txid is intentionally not there as it's already part of the psbt
 }

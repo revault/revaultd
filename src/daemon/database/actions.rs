@@ -819,7 +819,7 @@ pub fn db_insert_spend(
 
     db_exec(db_path, |db_tx| {
         db_tx.execute(
-            "INSERT INTO spend_transactions (psbt, txid, broadcasted) VALUES (?1, ?2, NULL)",
+            "INSERT INTO spend_transactions (psbt, txid, broadcasted, has_priority) VALUES (?1, ?2, NULL, false)",
             params![spend_psbt, spend_txid.to_vec()],
         )?;
         let spend_id = db_tx.last_insert_rowid();
@@ -835,14 +835,18 @@ pub fn db_insert_spend(
     })
 }
 
-pub fn db_update_spend(db_path: &Path, spend_tx: &SpendTransaction) -> Result<(), DatabaseError> {
+pub fn db_update_spend(
+    db_path: &Path,
+    spend_tx: &SpendTransaction,
+    has_priority: bool,
+) -> Result<(), DatabaseError> {
     let spend_txid = spend_tx.txid();
     let spend_psbt = spend_tx.as_psbt_serialized();
 
     db_exec(db_path, |db_tx| {
         db_tx.execute(
-            "UPDATE spend_transactions SET psbt = (?1) WHERE txid = (?2)",
-            params![spend_psbt, spend_txid.to_vec()],
+            "UPDATE spend_transactions SET psbt = (?1), has_priority = (?2) WHERE txid = (?3)",
+            params![spend_psbt, has_priority, spend_txid.to_vec()],
         )?;
         Ok(())
     })
@@ -1589,7 +1593,8 @@ mod test {
                 DbSpendTransaction {
                     id: 1,
                     psbt: spend_tx.clone(),
-                    broadcasted: None
+                    broadcasted: None,
+                    has_priority: false,
                 },
                 vec![outpoint]
             ))
@@ -1597,7 +1602,7 @@ mod test {
 
         // We can update it, eg with a Spend with more sigs
         let spend_tx = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAciTbKS43sH49TJWX6xJ+MxqWfNQhRl+vkttRZ9sLUkHAAAAAAClAQAAAoAyAAAAAAAAIgAggxumgjPgMj5oHWn8QkvKqPIN0N5nuAbyQ+FEgOJZpjygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgKb0SdnuqeHAJpRuZTbk3r81qbXpuHrMEmxT9Kph47HQBAwQBAAAAAQWqIQMfu47eLiYeHN6Y3C1Vk0ckgmWifMy5IUhaPHbNELV93axRh2R2qRTtiGxBD5KrMQQU6UGx2zsKMMf6nIisa3apFCDKte9IuDeF0D4GA/JRUNX4xgt+iKxsk1KHZ1IhAzTPPnjrvzPFmi+raNR6sY8WTt1KNusVwp82uWebzWDwIQKl21mZX7WAQhRvdhhwqUAuQfIemg9zkTCCyMQ+Q8CVFVKvAqUBsmgiBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhAx+7jt4uJh4c3pjcLVWTRySCZaJ8zLkhSFo8ds0QtX3drFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        db_update_spend(&db_path, &spend_tx).unwrap();
+        db_update_spend(&db_path, &spend_tx, true).unwrap();
         let spend_txid = spend_tx.txid();
         assert_eq!(
             db_list_spends(&db_path).unwrap().get(&spend_txid),
@@ -1605,11 +1610,14 @@ mod test {
                 DbSpendTransaction {
                     id: 1,
                     psbt: spend_tx.clone(),
-                    broadcasted: None
+                    broadcasted: None,
+                    has_priority: true,
                 },
                 vec![outpoint]
             ))
         );
+        // Not in the CPFPable as it's not broadcasted
+        assert!(!db_cpfpable_spends(&db_path).unwrap().contains(&spend_tx));
 
         // And delete it
         db_delete_spend(&db_path, &spend_tx.txid()).unwrap();
@@ -1619,6 +1627,7 @@ mod test {
 
         // Re-insert the previous one so we have many references to the first Unvault
         db_insert_spend(&db_path, &[db_unvault.clone()], &spend_tx).unwrap();
+        db_update_spend(&db_path, &spend_tx, true).unwrap();
 
         // Same as above with a new vault
         let cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAAc+BIbsSvYK/BWRNOAjazIlLfjlVzCCtXvoyN5/bydgEAAAAAAD9////AdLKAgAAAAAAIgAgFy2HNuxbT516bQQBY3R04IkEja348wJveLmF73Tj/owAAAAAAAEBK0ANAwAAAAAAIgAgZw+cwq8wJzworIDuy6s8cpOo3uF8fYyL5pECqg0UVagBAwSBAAAAAQWrIQLDtCYN0BlQw/h5zAcF0yXft2G7vAjkRsD9B9uoiyr1x6xRh2R2qRTGFACwvLOTrJHUPKb3ifnio7mt0Yisa3apFOZTIiKdGP+9rilwd09H1kOsfB/PiKxsk1KHZ1IhAtGKwcs21FeGy2qY+fzQ9uvI4X5ThtCqkwHsGtKQx0jYIQP93zm1sGAtxTNxsYQTkoXt26FoyKWNh1sx6hmk1yVzYlKvA8aOALJoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQFHUiEDwco8fBTB0TgIyRuiySVtsjqY8/PNWc6ibssXFBu8J9ghAnfnwLjDsJCtzPdRRymjx6qxGfklMzRjSB7kXPcIClLuUq4iAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
@@ -1678,7 +1687,8 @@ mod test {
                 DbSpendTransaction {
                     id: 1,
                     psbt: spend_tx.clone(),
-                    broadcasted: None
+                    broadcasted: None,
+                    has_priority: true,
                 },
                 vec![outpoint]
             ))
@@ -1690,14 +1700,15 @@ mod test {
                 DbSpendTransaction {
                     id: 2,
                     psbt: spend_tx_b.clone(),
-                    broadcasted: None
+                    broadcasted: None,
+                    has_priority: false,
                 },
                 vec![outpoint, outpoint_b]
             ))
         );
 
         let spend_tx_b = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAXHqOcTAJnPyXEF1cxFATe4S6yHLGZm+s0aj9mUTtKgVAAAAAACHGwAAAoAyAAAAAAAAIgAgAYLPNnsrzQaSg7aZR0JUgXHtO6bnZRehvxqxyzW5m5ygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4iAgKkxJmDMXYy1OdMI/x8PV9j3+1kQ0gpzuD+KqSeYfjzTkgwRQIhAMwdbbLXqH49pRfZR6PtSzNg/MB+DuVo1xs7rPTZQ12RAiBDSHEGyQaE1K+wknL2IFnhWXKn+/YSfSMtMg9u4zepNwEiAgLbrZUUxHTNBLySX7XjBBa5auxTfjuUSHxE3vJ1JXfdlUgwRQIhAM0sVhdfZtv9Uofdo2oSfwOqTL5gmveVElUl8zxDgZ9wAiB82EHY4wySIWec9cZHbmhLY72LSwyGrqDANNMTun6JNwEiAgO2p8sldVsHhhEimy+ZW0E1L3vX5d9mqQ0d01XVdx3DWUcwRAIgRhhHxuXx5X2eniy4tMP4wP2xoBD+XZlxMQiF9HoXIDYCIEfKdXOOILXSFKeOZ2v6nomllEQOyjuBUk+0LhK7+55mAQEDBAEAAAABBaohAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHZHapFLyK7KRbyUNl1FZeArhRjSAsCSNfiKxrdqkUn6VDRhuPgSKDvf3VMS3GKSA/gMOIrGyTUodnUiECpMSZgzF2MtTnTCP8fD1fY9/tZENIKc7g/iqknmH4804hA7anyyV1WweGESKbL5lbQTUve9fl32apDR3TVdV3HcNZUq8ChxuyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBJSEC262VFMR0zQS8kl+14wQWuWrsU347lEh8RN7ydSV33ZWsUYciAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
-        db_update_spend(&db_path, &spend_tx_b).unwrap();
+        db_update_spend(&db_path, &spend_tx_b, false).unwrap();
 
         // There are 2 Unvaults referenced by this Spend
         let db_spend = db_spend_transaction(&db_path, &spend_tx_b.txid())
@@ -1748,6 +1759,9 @@ mod test {
             db_broadcastable_spend_transactions(&db_path).unwrap().len(),
             1
         );
+        // Since the spend is broadcastable, its unvaults are cpfpable
+        assert_eq!(db_cpfpable_spends(&db_path).unwrap().len(), 0);
+        assert_eq!(db_cpfpable_unvaults(&db_path).unwrap().len(), 1);
         assert!(!db_spend_transaction(&db_path, &spend_txid)
             .unwrap()
             .unwrap()
@@ -1763,6 +1777,9 @@ mod test {
             .unwrap()
             .broadcasted
             .unwrap());
+        // Now the spend is cpfpable as it's broadcasted
+        assert_eq!(db_cpfpable_spends(&db_path).unwrap().len(), 1);
+        assert_eq!(db_cpfpable_unvaults(&db_path).unwrap().len(), 0);
 
         // And we can delete the transaction
         db_delete_spend(&db_path, &spend_txid).unwrap();

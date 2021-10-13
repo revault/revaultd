@@ -33,10 +33,12 @@ const RPC_SOCKET_TIMEOUT: u64 = 180;
 // Labels used to tag utxos in the watchonly wallet
 const DEPOSIT_UTXOS_LABEL: &str = "revault-deposit";
 const UNVAULT_UTXOS_LABEL: &str = "revault-unvault";
+const CPFP_UTXOS_LABEL: &str = "revault-cpfp";
 
 pub struct BitcoinD {
     node_client: Client,
     watchonly_client: Client,
+    cpfp_client: Client,
 }
 
 macro_rules! params {
@@ -53,6 +55,7 @@ impl BitcoinD {
     pub fn new(
         config: &BitcoindConfig,
         watchonly_wallet_path: String,
+        cpfp_wallet_path: String,
     ) -> Result<BitcoinD, BitcoindError> {
         let cookie_string = fs::read_to_string(&config.cookie_path).map_err(|e| {
             BitcoindError::Custom(format!("Reading cookie file: {}", e.to_string()))
@@ -67,10 +70,20 @@ impl BitcoinD {
                 .build(),
         );
 
-        let url = format!("http://{}/wallet/{}", config.addr, watchonly_wallet_path);
+        let watchonly_url = format!("http://{}/wallet/{}", config.addr, watchonly_wallet_path);
         let watchonly_client = Client::with_transport(
             SimpleHttpTransport::builder()
-                .url(&url)
+                .url(&watchonly_url)
+                .map_err(BitcoindError::from)?
+                .timeout(Duration::from_secs(RPC_SOCKET_TIMEOUT))
+                .cookie_auth(cookie_string.clone())
+                .build(),
+        );
+
+        let cpfp_url = format!("http://{}/wallet/{}", config.addr, cpfp_wallet_path);
+        let cpfp_client = Client::with_transport(
+            SimpleHttpTransport::builder()
+                .url(&cpfp_url)
                 .map_err(BitcoindError::from)?
                 .timeout(Duration::from_secs(RPC_SOCKET_TIMEOUT))
                 .cookie_auth(cookie_string)
@@ -80,6 +93,7 @@ impl BitcoinD {
         Ok(BitcoinD {
             node_client,
             watchonly_client,
+            cpfp_client,
         })
     }
 
@@ -230,6 +244,14 @@ impl BitcoinD {
         self.make_requests(&self.node_client, requests)
     }
 
+    fn make_cpfp_request<'a, 'b>(
+        &self,
+        method: &'a str,
+        params: &'b [Box<serde_json::value::RawValue>],
+    ) -> Result<Json, BitcoindError> {
+        self.make_request(&self.cpfp_client, method, params)
+    }
+
     pub fn getblockchaininfo(&self) -> Result<Json, BitcoindError> {
         self.make_node_request("getblockchaininfo", &[])
     }
@@ -297,13 +319,17 @@ impl BitcoinD {
         })
     }
 
-    pub fn createwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
+    pub fn createwallet_startup(
+        &self,
+        wallet_path: String,
+        watchonly: bool,
+    ) -> Result<(), BitcoindError> {
         let res = self.make_node_request(
             "createwallet",
             &params!(
                 Json::String(wallet_path),
-                Json::Bool(true),             // watchonly
-                Json::Bool(false),            // blank
+                Json::Bool(watchonly),        // watchonly
+                Json::Bool(true),             // blank
                 Json::String("".to_string()), // passphrase,
                 Json::Bool(false),            // avoid_reuse
                 Json::Bool(true),             // descriptors
@@ -406,11 +432,17 @@ impl BitcoinD {
 
     fn bulk_import_descriptors(
         &self,
+        client: &Client,
         descriptors: Vec<String>,
         timestamp: u32,
         label: String,
         fresh_wallet: bool,
+        active: bool,
     ) -> Result<(), BitcoindError> {
+        if !fresh_wallet {
+            log::debug!("Not a fresh wallet, rescan *may* take some time.");
+        }
+
         let all_descriptors: Vec<Json> = descriptors
             .into_iter()
             .map(|desc| {
@@ -423,25 +455,28 @@ impl BitcoinD {
                     if fresh_wallet {
                         Json::String("now".to_string())
                     } else {
-                        log::debug!("Not a fresh wallet, rescan *may* take some time.");
                         Json::Number(serde_json::Number::from(timestamp))
                     },
                 );
                 desc_map.insert("label".to_string(), Json::String(label.clone()));
+                desc_map.insert("active".to_string(), Json::Bool(active));
 
                 Json::Object(desc_map)
             })
             .collect();
 
-        let res = self
-            .make_watchonly_request("importdescriptors", &params!(Json::Array(all_descriptors)))?;
+        let res = self.make_request(
+            &client,
+            "importdescriptors",
+            &params!(Json::Array(all_descriptors)),
+        )?;
         if res.get(0).map(|x| x.get("success")) == Some(Some(&Json::Bool(true))) {
             return Ok(());
         }
 
         Err(BitcoindError::Custom(format!(
             "Error returned from 'importdescriptor': {:?}",
-            res.get("error")
+            res.get(0).map(|r| r.get("error"))
         )))
     }
 
@@ -452,10 +487,12 @@ impl BitcoinD {
         fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
         self.bulk_import_descriptors(
+            &self.watchonly_client,
             descriptors,
             timestamp,
             DEPOSIT_UTXOS_LABEL.to_string(),
             fresh_wallet,
+            false,
         )
     }
 
@@ -466,10 +503,28 @@ impl BitcoinD {
         fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
         self.bulk_import_descriptors(
+            &self.watchonly_client,
             descriptors,
             timestamp,
             UNVAULT_UTXOS_LABEL.to_string(),
             fresh_wallet,
+            false,
+        )
+    }
+
+    pub fn startup_import_cpfp_descriptor(
+        &self,
+        descriptor: String,
+        timestamp: u32,
+        fresh_wallet: bool,
+    ) -> Result<(), BitcoindError> {
+        self.bulk_import_descriptors(
+            &self.cpfp_client,
+            vec![descriptor],
+            timestamp,
+            CPFP_UTXOS_LABEL.to_string(),
+            fresh_wallet,
+            true,
         )
     }
 

@@ -19,7 +19,7 @@ use revault_net::{
 use revault_tx::{
     bitcoin::{
         secp256k1,
-        util::bip32::{ChildNumber, ExtendedPubKey},
+        util::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey},
         Address, BlockHash, PublicKey as BitcoinPublicKey, Script, TxOut,
     },
     miniscript::descriptor::{DescriptorPublicKey, DescriptorTrait},
@@ -155,12 +155,12 @@ impl fmt::Display for VaultStatus {
 
 // An error related to the initialization of communication keys
 #[derive(Debug)]
-enum KeyError {
+enum NoiseKeyError {
     ReadingKey(io::Error),
     WritingKey(io::Error),
 }
 
-impl fmt::Display for KeyError {
+impl fmt::Display for NoiseKeyError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::ReadingKey(e) => write!(f, "Error reading Noise key: '{}'", e),
@@ -169,10 +169,35 @@ impl fmt::Display for KeyError {
     }
 }
 
-impl std::error::Error for KeyError {}
+impl std::error::Error for NoiseKeyError {}
+
+#[derive(Debug)]
+enum CpfpKeyError {
+    ReadingKey(io::Error),
+    InvalidKey(String),
+    KeyNotInDescriptor(String),
+}
+
+impl fmt::Display for CpfpKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::ReadingKey(e) => write!(f, "Error reading CPFP key: '{}'", e),
+            Self::InvalidKey(e) => write!(f, "Invalid CPFP key: '{}'", e),
+            Self::KeyNotInDescriptor(s) => {
+                write!(
+                    f,
+                    "The key provided is not present in the CPFP descriptor: {}",
+                    s
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CpfpKeyError {}
 
 // The communication keys are (for now) hot, so we just create it ourselves on first run.
-fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, KeyError> {
+fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, NoiseKeyError> {
     let mut noise_secret = NoisePrivKey([0; 32]);
 
     if !secret_file.as_path().exists() {
@@ -192,20 +217,38 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, KeyErr
             options = options.mode(0o400).clone();
         }
 
-        let mut fd = options.open(secret_file).map_err(KeyError::WritingKey)?;
+        let mut fd = options
+            .open(secret_file)
+            .map_err(NoiseKeyError::WritingKey)?;
         fd.write_all(&noise_secret.as_ref())
-            .map_err(KeyError::WritingKey)?;
+            .map_err(NoiseKeyError::WritingKey)?;
     } else {
-        let mut noise_secret_fd = fs::File::open(secret_file).map_err(KeyError::ReadingKey)?;
+        let mut noise_secret_fd = fs::File::open(secret_file).map_err(NoiseKeyError::ReadingKey)?;
         noise_secret_fd
             .read_exact(&mut noise_secret.0)
-            .map_err(KeyError::ReadingKey)?;
+            .map_err(NoiseKeyError::ReadingKey)?;
     }
 
     // TODO: have a decent memory management and mlock() the key
 
     assert!(noise_secret.0 != [0; 32]);
     Ok(noise_secret)
+}
+
+fn read_cpfp_key(secret_file: PathBuf) -> Result<Option<ExtendedPrivKey>, CpfpKeyError> {
+    // No file? No key :)
+    let mut cpfp_secret_fd = match fs::File::open(secret_file) {
+        Ok(fd) => fd,
+        Err(_) => return Ok(None),
+    };
+
+    let mut buffer = [0; 78];
+    cpfp_secret_fd
+        .read_exact(&mut buffer)
+        .map_err(CpfpKeyError::ReadingKey)?;
+    ExtendedPrivKey::decode(&buffer)
+        .map(Option::Some)
+        .map_err(|e| CpfpKeyError::InvalidKey(e.to_string()))
 }
 
 /// A vault is defined as a confirmed utxo paying to the Vault Descriptor for which
@@ -260,6 +303,10 @@ pub struct RevaultD {
     pub secp_ctx: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
     /// The locktime to use on all created transaction. Always 0 for now.
     pub lock_time: u32,
+    /// CPFP private key to fee-bump Unvault and Spend transactions.
+    /// In the absence of the key file in the data directory, the automated CPFP mechanism
+    /// is silently disabled.
+    pub cpfp_key: Option<ExtendedPrivKey>,
 
     // Network stuff
     /// The static private key we use to establish connections to servers. We reuse it, but Trevor
@@ -345,6 +392,35 @@ impl RevaultD {
         let noise_secret_file = [data_dir_str, "noise_secret"].iter().collect();
         let noise_secret = read_or_create_noise_key(noise_secret_file)?;
 
+        let cpfp_key = if our_man_xpub.is_some() {
+            let cpfp_key_file = [data_dir_str, "cpfp_secret"].iter().collect();
+            let key = read_cpfp_key(cpfp_key_file)?;
+            if let Some(key) = key {
+                // Checking if the key is in the cpfp descriptor
+                let secp_ctx = secp256k1::Secp256k1::signing_only();
+                let pubkey = ExtendedPubKey::from_private(&secp_ctx, &key);
+                cpfp_descriptor
+                    .xpubs()
+                    .iter()
+                    .find(|k| {
+                        if let DescriptorPublicKey::XPub(k) = k {
+                            k.xkey == pubkey
+                        } else {
+                            unreachable!();
+                        }
+                    })
+                    .ok_or(CpfpKeyError::KeyNotInDescriptor(pubkey.to_string()))?;
+            } else {
+                log::warn!(
+                    "CPFP key not found, consider creating a cpfp_secret file in the datadir. \
+                    Automated CPFP won't be available."
+                );
+            }
+            key
+        } else {
+            None
+        };
+
         // TODO: support hidden services
         let coordinator_host = SocketAddr::from_str(&config.coordinator_host)?;
         let coordinator_noisekey = config.coordinator_noise_key;
@@ -387,6 +463,7 @@ impl RevaultD {
             cosigs,
             watchtowers,
             lock_time: 0,
+            cpfp_key,
             min_conf: config.min_conf,
             bitcoind_config: config.bitcoind_config,
             tip: None,
@@ -430,6 +507,14 @@ impl RevaultD {
             .expect("unvault_descriptor is a wsh")
     }
 
+    pub fn cpfp_address(&self, child_number: ChildNumber) -> Address {
+        self.cpfp_descriptor
+            .derive(child_number, &self.secp_ctx)
+            .inner()
+            .address(self.bitcoind_config.network)
+            .expect("cpfp_descriptor is a wsh")
+    }
+
     pub fn gap_limit(&self) -> u32 {
         100
     }
@@ -437,6 +522,11 @@ impl RevaultD {
     pub fn watchonly_wallet_name(&self) -> Option<String> {
         self.wallet_id
             .map(|ref id| format!("revaultd-watchonly-wallet-{}", id))
+    }
+
+    pub fn cpfp_wallet_name(&self) -> Option<String> {
+        self.wallet_id
+            .map(|ref id| format!("revaultd-cpfp-wallet-{}", id))
     }
 
     pub fn log_file(&self) -> PathBuf {
@@ -453,6 +543,15 @@ impl RevaultD {
 
     pub fn watchonly_wallet_file(&self) -> Option<String> {
         self.watchonly_wallet_name().map(|ref name| {
+            self.file_from_datadir(name)
+                .to_str()
+                .expect("Valid utf-8")
+                .to_string()
+        })
+    }
+
+    pub fn cpfp_wallet_file(&self) -> Option<String> {
+        self.cpfp_wallet_name().map(|ref name| {
             self.file_from_datadir(name)
                 .to_str()
                 .expect("Valid utf-8")

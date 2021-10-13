@@ -29,7 +29,8 @@ use crate::daemon::{
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{Amount, OutPoint, Txid},
+    bitcoin::{secp256k1::Secp256k1, Amount, OutPoint, Txid},
+    miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
     transactions::{RevaultTransaction, UnvaultTransaction},
     txins::RevaultTxIn,
     txouts::RevaultTxOut,
@@ -1508,7 +1509,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
             }
         }
 
-        bitcoind.createwallet_startup(bitcoind_wallet_path)?;
+        bitcoind.createwallet_startup(bitcoind_wallet_path, true)?;
         log::info!("Importing descriptors to bitcoind watchonly wallet.");
 
         // Now, import descriptors.
@@ -1539,6 +1540,48 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
     }
 
+    if let Some(cpfp_key) = revaultd.cpfp_key {
+        let cpfp_wallet_path = revaultd
+            .cpfp_wallet_file()
+            .expect("Wallet id is set at startup in setup_db()");
+
+        if !PathBuf::from(cpfp_wallet_path.clone()).exists() {
+            log::info!("Creating the CPFP wallet");
+            // Remove any leftover. This can happen if we delete the cpfp wallet but don't restart
+            // bitcoind.
+            while bitcoind.listwallets()?.contains(&cpfp_wallet_path) {
+                log::info!("Found a leftover cpfp wallet loaded on bitcoind. Removing it.");
+                if let Err(e) = bitcoind.unloadwallet(cpfp_wallet_path.clone()) {
+                    log::error!("Unloading wallet '{}': '{}'", &cpfp_wallet_path, e);
+                }
+            }
+
+            bitcoind.createwallet_startup(cpfp_wallet_path, false)?;
+            log::info!("Importing descriptors to bitcoind cpfp wallet.");
+
+            // Now, import descriptors.
+            let mut keymap: KeyMap = KeyMap::new();
+            let cpfp_private_key = DescriptorSecretKey::XPrv(DescriptorXKey {
+                xkey: cpfp_key.clone(),
+                origin: None,
+                derivation_path: Default::default(),
+                wildcard: Wildcard::Unhardened,
+            });
+            let sign_ctx = Secp256k1::signing_only();
+            let cpfp_public_key = cpfp_private_key
+                .as_public(&sign_ctx)
+                .expect("We never use hardened");
+            keymap.insert(cpfp_public_key, cpfp_private_key);
+            let cpfp_desc = revaultd
+                .cpfp_descriptor
+                .inner()
+                .to_string_with_secret(&keymap);
+
+            bitcoind.startup_import_cpfp_descriptor(cpfp_desc, wallet.timestamp, fresh_wallet)?;
+        }
+    } else {
+        log::info!("Not creating the CPFP wallet, as we don't have a CPFP key");
+    }
     Ok(())
 }
 

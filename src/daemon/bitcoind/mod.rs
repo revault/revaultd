@@ -126,6 +126,9 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
         revaultd
             .watchonly_wallet_file()
             .expect("Wallet id is set at startup in setup_db()"),
+        revaultd
+            .cpfp_wallet_file()
+            .expect("Wallet id is set at startup in setup_db()"),
     )
     .map_err(|e| {
         BitcoindError::Custom(format!("Could not connect to bitcoind: {}", e.to_string()))

@@ -29,7 +29,6 @@ use std::{
 
 use rusqlite::{
     params, types::FromSqlError, Connection, Row, ToSql, Transaction, TransactionBehavior,
-    NO_PARAMS,
 };
 
 // As the bundled sqlite is compiled with SQLITE_THREADSAFE, quoting sqlite.org:
@@ -65,7 +64,7 @@ fn db_query<'a, P, F, T>(
     f: F,
 ) -> Result<Vec<T>, DatabaseError>
 where
-    P: IntoIterator,
+    P: IntoIterator + rusqlite::Params,
     P::Item: ToSql,
     F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
 {
@@ -93,7 +92,7 @@ fn db_query_tx<'a, P, F, T>(
     f: F,
 ) -> Result<Vec<T>, DatabaseError>
 where
-    P: IntoIterator,
+    P: IntoIterator + rusqlite::Params,
     P::Item: ToSql,
     F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
 {
@@ -109,7 +108,7 @@ where
 
 /// Get the database version
 pub fn db_version(db_path: &Path) -> Result<u32, DatabaseError> {
-    let mut rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT version FROM version", params![], |row| {
         row.get::<_, u32>(0)
     })?;
 
@@ -122,7 +121,7 @@ pub fn db_tip(db_path: &Path) -> Result<BlockchainTip, DatabaseError> {
     let mut rows = db_query(
         db_path,
         "SELECT blockheight, blockhash FROM tip",
-        NO_PARAMS,
+        params![],
         |row| {
             let height = row.get::<_, u32>(0)?;
             let hash: BlockHash = encode::deserialize(&row.get::<_, Vec<u8>>(1)?)
@@ -138,7 +137,7 @@ pub fn db_tip(db_path: &Path) -> Result<BlockchainTip, DatabaseError> {
 
 /// Get the network this DB was created on
 pub fn db_network(db_path: &Path) -> Result<Network, DatabaseError> {
-    let mut rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT network FROM tip", params![], |row| {
         Ok(Network::from_str(&row.get::<_, String>(0)?)
             .expect("We only evert insert from to_string"))
     })?;
@@ -149,7 +148,7 @@ pub fn db_network(db_path: &Path) -> Result<Network, DatabaseError> {
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
 pub fn db_wallet(db_path: &Path) -> Result<DbWallet, DatabaseError> {
-    let mut rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT * FROM wallets", params![], |row| {
         let id = row.get(0)?;
         let timestamp = row.get(1)?;
 
@@ -265,7 +264,7 @@ pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(
         db_path,
         "SELECT * FROM vaults ORDER BY updated_at DESC",
-        NO_PARAMS,
+        params![],
         |row| row.try_into(),
     )
 }
@@ -295,7 +294,7 @@ pub fn db_deposits(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query(
         db_path,
         "SELECT * FROM vaults WHERE status <= (?1) ORDER BY updated_at DESC",
-        &[VaultStatus::Active as u32],
+        params![VaultStatus::Active as u32],
         |row| row.try_into(),
     )
 }
@@ -323,7 +322,7 @@ pub fn db_unvaulted_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults INNER JOIN presigned_transactions as ptx \
          ON ptx.vault_id = vaults.id \
          WHERE ptx.type = (?1) AND vaults.status IN ((?2), (?3))",
-        &[
+        params![
             TransactionType::Unvault as u32,
             VaultStatus::Unvaulted as u32,
             VaultStatus::Unvaulting as u32,
@@ -348,7 +347,7 @@ pub fn db_spending_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::Spending as u32,
             TransactionType::Unvault as u32,
         ],
@@ -373,7 +372,7 @@ pub fn db_canceling_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::Canceling as u32,
             TransactionType::Cancel as u32,
         ],
@@ -398,7 +397,7 @@ pub fn db_emering_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::EmergencyVaulting as u32,
             TransactionType::Emergency as u32,
         ],
@@ -423,7 +422,7 @@ pub fn db_unemering_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::UnvaultEmergencyVaulting as u32,
             TransactionType::UnvaultEmergency as u32,
         ],

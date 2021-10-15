@@ -7,7 +7,6 @@ mod sigfetcher;
 mod threadmessages;
 mod utils;
 
-use crate::assume_ok;
 use crate::daemon::{
     bitcoind::{bitcoind_main_loop, start_bitcoind},
     control::RpcUtils,
@@ -38,16 +37,13 @@ pub fn daemon_main(mut revaultd: RevaultD) {
 
     // First and foremost
     log::info!("Setting up database");
-    assume_ok!(setup_db(&mut revaultd), "Error setting up database");
+    setup_db(&mut revaultd).expect("Error setting up database");
 
     log::info!("Setting up bitcoind connection");
-    let bitcoind = assume_ok!(start_bitcoind(&mut revaultd), "Error setting up bitcoind");
+    let bitcoind = start_bitcoind(&mut revaultd).expect("Error setting up bitcoind");
 
     log::info!("Starting JSONRPC server");
-    let socket = assume_ok!(
-        rpcserver_setup(revaultd.rpc_socket_file()),
-        "Setting up JSONRPC server"
-    );
+    let socket = rpcserver_setup(revaultd.rpc_socket_file()).expect("Setting up JSONRPC server");
 
     // We start two threads, the bitcoind one to poll bitcoind for chain updates,
     // and the sigfetcher one to poll the coordinator for missing signatures
@@ -64,18 +60,14 @@ pub fn daemon_main(mut revaultd: RevaultD) {
     let revaultd = Arc::new(RwLock::new(revaultd));
     let bit_revaultd = revaultd.clone();
     let bitcoind_thread = thread::spawn(move || {
-        assume_ok!(
-            bitcoind_main_loop(bitcoind_rx, bit_revaultd, Arc::new(RwLock::new(bitcoind))),
-            "Error in bitcoind main loop"
-        );
+        bitcoind_main_loop(bitcoind_rx, bit_revaultd, Arc::new(RwLock::new(bitcoind)))
+            .expect("Error in bitcoind main loop");
     });
 
     let sigfetcher_revaultd = revaultd.clone();
     let sigfetcher_thread = thread::spawn(move || {
-        assume_ok!(
-            signature_fetcher_loop(sigfetcher_rx, sigfetcher_revaultd),
-            "Error in signature fetcher thread"
-        )
+        signature_fetcher_loop(sigfetcher_rx, sigfetcher_revaultd)
+            .expect("Error in signature fetcher thread")
     });
 
     log::info!(
@@ -93,10 +85,7 @@ pub fn daemon_main(mut revaultd: RevaultD) {
         sigfetcher_tx,
         sigfetcher_thread: sigfetcher_thread.clone(),
     };
-    assume_ok!(
-        rpcserver_loop(socket, user_role, rpc_utils),
-        "Error in the main loop"
-    );
+    rpcserver_loop(socket, user_role, rpc_utils).expect("Error in the main loop");
 
     // If the RPC server loop stops, we've been told to shutdown!
     let bitcoind_thread = unsafe { Arc::into_raw(bitcoind_thread).read().into_inner() };
@@ -112,7 +101,7 @@ pub fn daemon_main(mut revaultd: RevaultD) {
 
     // We are always logging to stdout, should it be then piped to the log file (if daemon) or
     // not. So just make sure that all messages were actually written.
-    assume_ok!(io::stdout().flush(), "Flushing stdout");
+    io::stdout().flush().expect("Flushing stdout");
 }
 
 // This creates the log file automagically if it doesn't exist, and logs on stdout
@@ -153,8 +142,15 @@ pub fn setup_panic_hook() {
             .map(|l| l.line().to_string())
             .unwrap_or_else(|| "'unknown'".to_string());
 
+        let bt = backtrace::Backtrace::new();
         if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            log::error!("panic occurred at line {} of file {}: {:?}", line, file, s);
+            log::error!(
+                "panic occurred at line {} of file {}: {:?}\n{:?}",
+                line,
+                file,
+                s,
+                bt
+            );
         } else {
             log::error!("panic occurred at line {} of file {}", line, file);
         }

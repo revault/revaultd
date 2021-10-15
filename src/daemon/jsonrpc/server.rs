@@ -1,14 +1,11 @@
 //! Here we handle incoming connections and communication on the RPC socket.
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
-use crate::{
-    assume_some,
-    daemon::{
-        control::RpcUtils,
-        jsonrpc::{
-            api::{JsonRpcMetaData, RpcApi, RpcImpl},
-            UserRole,
-        },
+use crate::daemon::{
+    control::RpcUtils,
+    jsonrpc::{
+        api::{JsonRpcMetaData, RpcApi, RpcImpl},
+        UserRole,
     },
 };
 
@@ -16,7 +13,6 @@ use std::{
     collections::{HashMap, VecDeque},
     io::{self, Write},
     path::PathBuf,
-    process,
     sync::{Arc, RwLock},
     thread,
 };
@@ -148,15 +144,13 @@ fn handle_single_request(
     resp_queue: Arc<RwLock<VecDeque<Vec<u8>>>>,
     message: MethodCall,
 ) {
-    let res = assume_some!(
-        jsonrpc_io
-            .read()
-            .unwrap()
-            .handle_call(Call::MethodCall(message), metadata)
-            .wait()
-            .expect("jsonrpc_core says: Handler calls can never fail."),
-        "This is a method call, there is always a response."
-    );
+    let res = jsonrpc_io
+        .read()
+        .unwrap()
+        .handle_call(Call::MethodCall(message), metadata)
+        .wait()
+        .expect("jsonrpc_core says: Handler calls can never fail.")
+        .expect("This is a method call, there is always a response.");
     let resp = Response::Single(res);
     let resp_bytes = serde_json::to_vec(&resp).expect("jsonrpc_core says: This should never fail.");
 
@@ -327,10 +321,9 @@ fn mio_loop(
 
                 if event.is_readable() {
                     log::trace!("Readable event for {:?}", event.token());
-                    let read_cache = assume_some!(
-                        read_cache_map.get_mut(&event.token()),
-                        "Entry is always set when connection_map's entry is"
-                    );
+                    let read_cache = read_cache_map
+                        .get_mut(&event.token())
+                        .expect("Entry is always set when connection_map's entry is");
 
                     read_handle_request(
                         read_cache,

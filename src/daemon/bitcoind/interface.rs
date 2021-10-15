@@ -924,7 +924,7 @@ impl BitcoinD {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WalletTransaction {
     pub hex: String,
     pub received_time: u32,

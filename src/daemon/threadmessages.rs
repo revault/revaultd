@@ -21,7 +21,7 @@ pub enum SigFetcherMessageOut {
     Shutdown,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WalletTransaction {
     pub hex: String,
     // None if unconfirmed

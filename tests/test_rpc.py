@@ -7,6 +7,7 @@ complete test scenarii using these commands belong to another group.
 import copy
 import pytest
 import random
+import time
 
 from fixtures import *
 from test_framework import serializations
@@ -1141,3 +1142,85 @@ def test_getserverstatus(revault_network, bitcoind):
             assert not cosigner["reachable"]
             # Sadly we don't persist the cosigner ports
             assert cosigner["host"].startswith("127.0.0.1:")
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_gethistory(revault_network, bitcoind, executor):
+    """
+    Retrieve the event History and check the presence of some triggered events.
+    """
+
+    CSV = 12
+    revault_network.deploy(2, 2, n_stkmanagers=1, csv=CSV)
+    mans = revault_network.mans()
+    stks = revault_network.stks()
+
+    t1 = int(time.time())
+
+    # Create one canceled vault.
+    canceled_vault = revault_network.fund(0.05)
+    revault_network.secure_vault(canceled_vault)
+    revault_network.activate_vault(canceled_vault)
+    revault_network.spend_vaults_anyhow_unconfirmed([canceled_vault])
+    revault_network.cancel_vault(canceled_vault)
+
+    # We wait a little before and after the timestamp to keep everything
+    # cleanly seperated
+    time.sleep(1)
+    t2 = int(time.time())
+    time.sleep(1)
+
+    events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t2, 20)[
+        "events"
+    ]
+    assert len(events) == 2
+    assert events[0]["kind"] == "cancel"
+    assert events[1]["kind"] == "deposit"
+
+    # Create a spend with a input and a change.
+    spent_vault = revault_network.fund(0.05)
+    revault_network.secure_vault(spent_vault)
+    revault_network.activate_vault(spent_vault)
+
+    address = revault_network.bitcoind.rpc.getnewaddress()
+    revault_network.spend_vaults([spent_vault], {address: 4000000}, 1)
+    spend_txs = revault_network.man(0).rpc.listspendtxs()["spend_txs"]
+    assert len(spend_txs) == 2
+
+    t3 = int(time.time())
+
+    events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t2, 20)[
+        "events"
+    ]
+    assert len(events) == 2
+    assert events[0]["kind"] == "cancel"
+    assert events[1]["kind"] == "deposit"
+
+    events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t2, t3, 20)[
+        "events"
+    ]
+    assert len(events) == 2
+    assert events[0]["kind"] == "spend"
+    assert events[1]["kind"] == "deposit"
+
+    events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t3, 20)[
+        "events"
+    ]
+    assert len(events) == 4
+    assert events[0]["kind"] == "spend"
+    assert events[1]["kind"] == "deposit"
+    assert events[2]["kind"] == "cancel"
+    assert events[3]["kind"] == "deposit"
+
+    events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t3, 2)["events"]
+    assert len(events) == 2
+    assert events[0]["kind"] == "spend"
+    assert events[1]["kind"] == "deposit"
+
+    for w in mans + stks:
+        wait_for(
+            lambda: len(
+                w.rpc.gethistory(["spend", "deposit", "cancel"], t1, t3, 20)["events"]
+            )
+            == 4
+        )

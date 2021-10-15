@@ -854,3 +854,49 @@ pub fn db_vaults_from_spend(
 
     Ok(db_vaults)
 }
+
+/// This function returns the vaults that are deposit, change deposit or spend output of
+/// a limited number of tx which occured between two dates.
+pub fn db_vaults_with_txids_between_date(
+    db_path: &Path,
+    start: u64,
+    end: u64,
+    limit: u64,
+) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query(
+        db_path,
+        "WITH txids AS ( \
+            SELECT DISTINCT(txid) FROM ( \
+                SELECT * from ( \
+                    SELECT deposit_txid AS txid, received_at AS date FROM vaults \
+                    WHERE received_at >= (?1) \
+                    AND received_at <= (?2) \
+                    AND status != (?4) \
+                    ORDER BY received_at DESC LIMIT (?3) \
+                ) \
+                UNION \
+                SELECT * FROM (
+                    SELECT final_txid AS txid, received_at AS date FROM vaults \
+                    WHERE updated_at >= (?1) \
+                    AND updated_at <= (?2) \
+                    AND status IN ((?5), (?6)) \
+                    ORDER BY updated_at DESC LIMIT (?3) \
+                ) \
+                ORDER BY date DESC LIMIT (?3)
+            ) \
+        ) \
+        SELECT * FROM vaults \
+        WHERE deposit_txid IN txids \
+        OR final_txid IN txids \
+        ORDER BY updated_at DESC",
+        params![
+            start,
+            end,
+            limit,
+            VaultStatus::Unconfirmed as u64,
+            VaultStatus::Canceled as u64,
+            VaultStatus::Spent as u64,
+        ],
+        |row| row.try_into(),
+    )
+}

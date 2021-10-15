@@ -9,9 +9,10 @@ use crate::common::VERSION;
 use crate::daemon::{
     control::{
         announce_spend_transaction, check_spend_transaction_size, coordinator_status,
-        cosigners_status, fetch_cosigs_signatures, finalized_emer_txs, listvaults_from_db,
-        onchain_txs, presigned_txs, share_rev_signatures, share_unvault_signatures,
-        vaults_from_deposits, watchtowers_status, ListSpendEntry, ListSpendStatus, RpcUtils,
+        cosigners_status, fetch_cosigs_signatures, finalized_emer_txs, get_history,
+        listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
+        share_unvault_signatures, vaults_from_deposits, watchtowers_status, HistoryEventKind,
+        ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -222,6 +223,17 @@ pub trait RpcApi {
 
     #[rpc(meta, name = "getserverstatus")]
     fn getserverstatus(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+
+    /// Retrieve the accounting history
+    #[rpc(meta, name = "gethistory")]
+    fn gethistory(
+        &self,
+        meta: Self::Metadata,
+        kind: Vec<HistoryEventKind>,
+        start: u64,
+        end: u64,
+        limit: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 // TODO: we should probably make these proc macros and apply them above?
@@ -425,7 +437,7 @@ impl RpcApi for RpcImpl {
                 },
                 {
                     "name": "gethistory",
-                    "parameters": [],
+                    "parameters": ["kind", "upper_limit", "[lower_limit]"],
                     "description": "Retrieve history of funds"
                 },
                 {
@@ -1493,6 +1505,31 @@ impl RpcApi for RpcImpl {
             "coordinator": coordinator,
             "cosigners": cosigners,
             "watchtowers": watchtowers,
+        }))
+    }
+
+    fn gethistory(
+        &self,
+        meta: Self::Metadata,
+        kind: Vec<HistoryEventKind>,
+        start: u64,
+        end: u64,
+        limit: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+
+        let events = get_history(
+            &revaultd.db_file(),
+            &meta.rpc_utils.bitcoind_conn,
+            start,
+            end,
+            limit,
+            kind,
+        )
+        .map_err(|e| Error::from(e))?;
+
+        Ok(json!({
+            "events": events,
         }))
     }
 }

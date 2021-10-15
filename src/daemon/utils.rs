@@ -2,18 +2,29 @@
 pub mod test_utils {
     use crate::common::config::Config;
     use crate::daemon::{
+        bitcoind::BitcoindError,
+        database::interface::db_exec,
         jsonrpc::UserRole,
-        revaultd::RevaultD,
-        threadmessages::{BitcoindMessageOut, BitcoindSender, SigFetcherMessageOut},
+        revaultd::{RevaultD, VaultStatus},
+        threadmessages::{
+            BitcoindMessageOut, BitcoindSender, BitcoindThread, SigFetcherMessageOut,
+            WalletTransaction,
+        },
         RpcUtils,
+    };
+    use revault_tx::bitcoin::{
+        util::bip32::ChildNumber, Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
     };
 
     use std::{
+        collections::HashMap,
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{mpsc, Arc, RwLock},
         thread,
     };
+
+    use rusqlite::params;
 
     pub fn test_datadir() -> PathBuf {
         static mut COUNTER: u64 = 0;
@@ -104,6 +115,72 @@ addr = "127.0.0.1:8332"
             bitcoind_thread,
             sigfetcher_tx,
             sigfetcher_thread,
+        }
+    }
+
+    /// Insert a new vault in the database
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_vault_in_db(
+        db_path: &Path,
+        wallet_id: u32,
+        deposit_outpoint: &OutPoint,
+        amount: &Amount,
+        blockheight: u32,
+        derivation_index: ChildNumber,
+        received_at: u32,
+        updated_at: u32,
+        status: VaultStatus,
+        final_txid: Option<&Txid>,
+    ) {
+        db_exec(db_path, |tx| {
+            let derivation_index: u32 = derivation_index.into();
+            tx.execute(
+            "INSERT INTO vaults ( \
+                wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
+                received_at, updated_at, final_txid \
+            ) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                wallet_id,
+                status as u32,
+                blockheight,
+                deposit_outpoint.txid.to_vec(),
+                deposit_outpoint.vout,
+                amount.as_sat() as i64,
+                derivation_index,
+                received_at,
+                updated_at,
+                final_txid.map(|txid| txid.to_vec())
+            ],
+        )
+        .expect("Must not fail to insert vault in a test database");
+
+            Ok(())
+        }).unwrap()
+    }
+
+    /// MockBitcoindThread implements the BitcoindThread trait as a mock backend.
+    pub struct MockBitcoindThread {
+        txs: HashMap<Txid, WalletTransaction>,
+    }
+
+    impl MockBitcoindThread {
+        pub fn new(txs: HashMap<Txid, WalletTransaction>) -> Self {
+            Self { txs }
+        }
+    }
+
+    impl BitcoindThread for MockBitcoindThread {
+        fn wallet_tx(&self, txid: Txid) -> Result<Option<WalletTransaction>, BitcoindError> {
+            let tx = self.txs.get(&txid).map(|tx| (*tx).clone());
+            Ok(tx)
+        }
+        fn broadcast(&self, _transactions: Vec<BitcoinTransaction>) -> Result<(), BitcoindError> {
+            Ok(())
+        }
+        fn shutdown(&self) {}
+        fn sync_progress(&self) -> f64 {
+            0.0
         }
     }
 }

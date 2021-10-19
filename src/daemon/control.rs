@@ -425,7 +425,7 @@ pub fn onchain_txs(
                         bitcoind_wallet_tx(bitcoind_tx, unemer.into_psbt().extract_tx().txid())?;
                 }
 
-                let spend = if let Some(spend_txid) = db_vault.spend_txid {
+                let spend = if let Some(spend_txid) = db_vault.final_txid {
                     bitcoind_wallet_tx(bitcoind_tx, spend_txid)?
                 } else {
                     None

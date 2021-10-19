@@ -43,9 +43,10 @@ CREATE TABLE wallets (
  * in which case the blockheight will be 0 (FIXME: should be NULL instead?).
  * For any vault entry a deposit transaction MUST be present in bitcoind's
  * wallet.
- * The spend_txid is stored to not harass bitcoind trying to guess the spending
- * txid out of a deposit outpoint. It MUST be NOT NULL if status is 'spending'
- * or 'spent'.
+ * The final_txid is stored to not harass bitcoind trying to guess the
+ * spending txid or the canceling txid out of a deposit outpoint.
+ * It MUST be NOT NULL if status is 'spending', 'spent', 'canceling'
+ * or 'canceled'.
  */
 CREATE TABLE vaults (
     id INTEGER PRIMARY KEY NOT NULL,
@@ -58,7 +59,7 @@ CREATE TABLE vaults (
     derivation_index INTEGER NOT NULL,
     received_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    spend_txid BLOB,
+    final_txid BLOB,
     FOREIGN KEY (wallet_id) REFERENCES wallets (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT
@@ -141,7 +142,7 @@ pub struct DbVault {
     pub derivation_index: ChildNumber,
     pub received_at: u32,
     pub updated_at: u32,
-    pub spend_txid: Option<Txid>,
+    pub final_txid: Option<Txid>,
 }
 
 /// The type of the transaction, as stored in the "presigned_transactions" table

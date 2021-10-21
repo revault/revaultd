@@ -3,7 +3,8 @@ use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
     bitcoin::{
         blockdata::constants::COIN_VALUE,
-        consensus::encode,
+        consensus::{encode, Decodable},
+        hashes::hex::FromHex,
         util::bip32::ChildNumber,
         Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
     },
@@ -716,6 +717,35 @@ impl BitcoinD {
         })
     }
 
+    pub fn sign_psbt(&self, psbt: String) -> Result<(bool, String), BitcoindError> {
+        let res = self.make_cpfp_request("walletprocesspsbt", &params!(Json::String(psbt)))?;
+        let complete = res
+            .get("complete")
+            .expect("API break: no 'complete' in 'walletprocesspsbt' result")
+            .as_bool()
+            .expect("API break: invalid 'complete' in 'walletprocesspsbt' result");
+        let psbt = res
+            .get("psbt")
+            .expect("API break: no 'psbt' in 'walletprocesspsbt' result")
+            .as_str()
+            .expect("API break: invalid 'psbt' in 'walletprocesspsbt' result")
+            .to_string();
+        Ok((complete, psbt))
+    }
+
+    pub fn finalize_psbt(&self, psbt: String) -> Result<Transaction, BitcoindError> {
+        let res = self.make_cpfp_request("finalizepsbt", &params!(Json::String(psbt)))?;
+        let hex_str = res
+            .get("hex")
+            .expect("API break: no 'hex' in 'finalizepsbt' result")
+            .as_str()
+            .expect("API break: invalid 'hex' in 'finalizepsbt' result");
+        let hex = <Vec<u8>>::from_hex(hex_str)
+            .expect("API break: invalid 'hex' in 'finalizepsbt' result");
+        Ok(Transaction::consensus_decode(hex.as_slice())
+            .expect("API break: invalid 'hex' in 'finalizepsbt' result"))
+    }
+
     /// Broadcast a transaction with 'sendrawtransaction', discarding the returned txid
     pub fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), BitcoindError> {
         let tx_hex = encode::serialize_hex(tx);
@@ -865,6 +895,32 @@ impl BitcoinD {
                 }
             }
         }
+    }
+
+    /// Estimates the feerate needed for a tx to make it in the
+    /// next block. Uses estimatesmartfee and, in case it returns an
+    /// error, a default value.
+    /// The value returned is in sats/kWU
+    pub fn estimate_feerate(&self) -> Result<Option<u64>, BitcoindError> {
+        if let Ok(json) = self.make_node_request(
+            "estimatesmartfee",
+            &params!(Json::Number(serde_json::Number::from(2))),
+        ) {
+            if let Some(n) = json.get("feerate") {
+                let btc_kvb = n.as_f64().expect("feerate is f64");
+                // Math is hard
+                // btc/kvbyte -> sats/kbyte
+                let sats_kvb = btc_kvb * Amount::ONE_BTC.as_sat() as f64;
+                // sats/kbyte -> sats/vbyte
+                let sats_vb = sats_kvb / 1000.0;
+                // sats/vbyte -> sats/WU
+                let sats_wu = sats_vb / 4.0;
+                // sats/WU -> msats/WU
+                return Ok(Some((sats_wu * 1000.0) as u64));
+            }
+        }
+        // TODO: Calculate the fallback feerate using the blockchain!
+        Ok(None)
     }
 }
 

@@ -841,6 +841,7 @@ mod test {
             .unwrap();
     }
 
+    #[test]
     fn test_db_creation() {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
@@ -869,6 +870,7 @@ mod test {
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
+    #[test]
     fn test_db_fetch_deposits() {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
@@ -981,6 +983,7 @@ mod test {
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
+    #[test]
     fn test_db_store_presigned_txs() {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
@@ -1214,6 +1217,7 @@ mod test {
     // There we trigger a concurrent write access to the database by inserting a deposit and
     // updating its presigned transaction in two different thread. It should be fine and one of
     // them just lock thanks to the unlock_notify feature of SQLite https://sqlite.org/unlock_notify.html
+    #[test]
     fn test_db_concurrent_write() {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
@@ -1298,6 +1302,7 @@ mod test {
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
+    #[test]
     fn test_db_spend_storage() {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
@@ -1552,16 +1557,5 @@ mod test {
         .unwrap();
         assert!(db_spend_transaction(&db_path, &txid_b).unwrap().is_none());
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
-    }
-
-    // We disabled #[test] for the above, as they may erase the db concurrently.
-    // Instead, run them sequentially.
-    #[test]
-    fn db_sequential_test_runner() {
-        test_db_creation();
-        test_db_fetch_deposits();
-        test_db_store_presigned_txs();
-        test_db_concurrent_write();
-        test_db_spend_storage();
     }
 }

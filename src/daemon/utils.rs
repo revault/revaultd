@@ -16,7 +16,11 @@ pub mod test_utils {
     };
 
     pub fn test_datadir() -> PathBuf {
-        format!("scratch_test_{:?}", std::thread::current().id()).into()
+        static mut COUNTER: u64 = 0;
+        unsafe {
+            COUNTER += 1;
+            format!("scratch_test_{:?}-{}", std::thread::current().id(), COUNTER).into()
+        }
     }
 
     // Create a RevaultD state instance using a scratch data directory, trying to be portable

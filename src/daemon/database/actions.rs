@@ -8,7 +8,8 @@ use crate::daemon::{
 };
 use revault_tx::{
     bitcoin::{
-        secp256k1, util::bip32::ChildNumber, Amount, OutPoint, PublicKey as BitcoinPubKey, Txid,
+        consensus::encode, secp256k1, util::bip32::ChildNumber, Amount, OutPoint,
+        PublicKey as BitcoinPubKey, Txid,
     },
     miniscript::descriptor::DescriptorTrait,
     transactions::{
@@ -591,14 +592,12 @@ pub fn db_mark_activating_vault(db_path: &Path, vault_id: u32) -> Result<(), Dat
 }
 
 fn revault_tx_merge_sigs(
-    tx: &mut impl RevaultTransaction,
+    tx: impl RevaultTransaction,
     sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
-    secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-) -> Result<(bool, Vec<u8>), DatabaseError> {
-    tx.psbt_mut().inputs[0].partial_sigs.extend(sigs);
-    let fully_signed = tx.is_finalizable(secp_ctx);
-    let raw_psbt = tx.as_psbt_serialized();
-    Ok((fully_signed, raw_psbt))
+) -> Result<Vec<u8>, DatabaseError> {
+    let mut psbt = tx.into_psbt();
+    psbt.inputs[0].partial_sigs.extend(sigs);
+    Ok(encode::serialize(&psbt))
 }
 
 /// Update the presigned transaction in-db. If the transaction is valid and no more revocation
@@ -627,14 +626,36 @@ pub fn db_update_presigned_tx(
             })?
             .try_into()?;
         // Now we are safe merging the signatures on what is the latest version of the PSBT
+        // FIXME: refactor this, it's awful
         let (fully_signed, raw_psbt) = match presigned_tx.psbt {
-            RevaultTx::Cancel(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
-            RevaultTx::Emergency(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
-
-            RevaultTx::UnvaultEmergency(mut tx) => revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?,
-            RevaultTx::Unvault(mut tx) => {
+            RevaultTx::Cancel(tx) => {
+                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
+                let fully_signed = CancelTransaction::from_raw_psbt(&raw_psbt)
+                    .expect("We just deserialized it")
+                    .is_finalizable(secp_ctx);
+                (fully_signed, raw_psbt)
+            }
+            RevaultTx::Emergency(tx) => {
+                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
+                let fully_signed = EmergencyTransaction::from_raw_psbt(&raw_psbt)
+                    .expect("We just deserialized it")
+                    .is_finalizable(secp_ctx);
+                (fully_signed, raw_psbt)
+            }
+            RevaultTx::UnvaultEmergency(tx) => {
+                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
+                let fully_signed = UnvaultEmergencyTransaction::from_raw_psbt(&raw_psbt)
+                    .expect("We just deserialized it")
+                    .is_finalizable(secp_ctx);
+                (fully_signed, raw_psbt)
+            }
+            RevaultTx::Unvault(tx) => {
                 is_unvault = true;
-                revault_tx_merge_sigs(&mut tx, sigs, secp_ctx)?
+                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
+                let fully_signed = UnvaultTransaction::from_raw_psbt(&raw_psbt)
+                    .expect("We just deserialized it")
+                    .is_finalizable(secp_ctx);
+                (fully_signed, raw_psbt)
             }
         };
 
@@ -785,26 +806,40 @@ mod test {
     use crate::daemon::jsonrpc::UserRole;
     use crate::daemon::utils::test_utils::{dummy_revaultd, test_datadir};
     use revault_tx::{
-        bitcoin::{Network, OutPoint, PublicKey},
+        bitcoin::{Network, OutPoint, PrivateKey as BitcoinPrivKey, SigHashType},
         transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
     };
 
     use std::{fs, str::FromStr};
 
-    fn revault_tx_add_dummy_sig(tx: &mut impl RevaultTransaction, input_index: usize) {
-        let pubkey = PublicKey::from_str(
-            "022634c3c8001a9e7700905281ae601dd73a4375e0e7801c22ffcc0443f5599935",
-        )
-        .unwrap();
-        let sig = vec![
-            48, 68, 2, 32, 104, 77, 230, 162, 30, 201, 33, 78, 96, 13, 165, 229, 132, 246, 129,
-            200, 125, 122, 177, 58, 8, 201, 76, 192, 149, 116, 228, 71, 144, 48, 41, 92, 2, 32, 30,
-            61, 121, 165, 139, 95, 6, 255, 221, 169, 135, 102, 29, 158, 231, 222, 117, 31, 200, 27,
-            178, 145, 230, 171, 54, 181, 12, 196, 182, 23, 175, 86, 129,
-        ];
-        tx.psbt_mut().inputs[input_index]
-            .partial_sigs
-            .insert(pubkey, sig);
+    fn create_keys(
+        ctx: &secp256k1::Secp256k1<secp256k1::All>,
+        secret_slice: &[u8],
+    ) -> (BitcoinPrivKey, BitcoinPubKey) {
+        let secret_key = secp256k1::SecretKey::from_slice(secret_slice).unwrap();
+        let private_key = BitcoinPrivKey {
+            compressed: true,
+            network: Network::Regtest,
+            key: secret_key,
+        };
+        let public_key = BitcoinPubKey::from_private_key(&ctx, &private_key);
+        (private_key, public_key)
+    }
+
+    fn revault_tx_add_sig(
+        tx: &mut impl RevaultTransaction,
+        input_index: usize,
+        sighash_type: SigHashType,
+        secp_ctx: &secp256k1::Secp256k1<secp256k1::All>,
+    ) {
+        let (privkey, pubkey) =
+            create_keys(secp_ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature_hash =
+            secp256k1::Message::from_slice(&tx.signature_hash(input_index, sighash_type).unwrap())
+                .unwrap();
+        let signature = secp_ctx.sign(&signature_hash, &privkey.key);
+        tx.add_signature(input_index, pubkey.key, signature, secp_ctx)
+            .unwrap();
     }
 
     fn test_db_creation() {
@@ -951,6 +986,7 @@ mod test {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
         let db_path = revaultd.db_file();
+        let secp_ctx = secp256k1::Secp256k1::new();
 
         setup_db(&mut revaultd).unwrap();
 
@@ -1006,7 +1042,7 @@ mod test {
             .unwrap();
         assert_eq!(stored_cancel_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut cancel_tx = fresh_cancel_tx.clone();
-        revault_tx_add_dummy_sig(&mut cancel_tx, 0);
+        revault_tx_add_sig(&mut cancel_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
@@ -1024,7 +1060,7 @@ mod test {
             db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
         assert_eq!(stored_emer_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut emer_tx = fresh_emer_tx.clone();
-        revault_tx_add_dummy_sig(&mut emer_tx, 0);
+        revault_tx_add_sig(&mut emer_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
@@ -1041,7 +1077,7 @@ mod test {
             .unwrap();
         assert_eq!(stored_unemer_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut unemer_tx = fresh_unemer_tx.clone();
-        revault_tx_add_dummy_sig(&mut unemer_tx, 0);
+        revault_tx_add_sig(&mut unemer_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
@@ -1058,7 +1094,7 @@ mod test {
         let (tx_db_id, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
         assert_eq!(stored_unvault_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut unvault_tx = fresh_unvault_tx.clone();
-        revault_tx_add_dummy_sig(&mut unvault_tx, 0);
+        revault_tx_add_sig(&mut unvault_tx, 0, SigHashType::All, &secp_ctx);
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
@@ -1173,6 +1209,7 @@ mod test {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
         let db_path = revaultd.db_file();
+        let secp_ctx = secp256k1::Secp256k1::new();
 
         setup_db(&mut revaultd).unwrap();
 
@@ -1215,7 +1252,7 @@ mod test {
             .unwrap()
             .unwrap();
         let mut cancel_tx = fresh_cancel_tx.clone();
-        revault_tx_add_dummy_sig(&mut cancel_tx, 0);
+        revault_tx_add_sig(&mut cancel_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
         let handle = std::thread::spawn({
             let db_path = db_path.clone();
             let cancel_tx = cancel_tx.clone();

@@ -24,6 +24,9 @@ use serde_json::Value as Json;
 // transaction fee. To have a one-value-fits-all, just take a 5% leeway.
 const MIN_DEPOSIT_VALUE: u64 = (DUST_LIMIT + UNVAULT_CPFP_VALUE) * 105 / 100;
 
+// If bitcoind takes more than 3 minutes to answer one of our queries, fail.
+const RPC_SOCKET_TIMEOUT: u64 = 180;
+
 pub struct BitcoinD {
     node_client: Client,
     watchonly_client: Client,
@@ -52,7 +55,7 @@ impl BitcoinD {
             SimpleHttpTransport::builder()
                 .url(&config.addr.to_string())
                 .map_err(BitcoindError::from)?
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(RPC_SOCKET_TIMEOUT))
                 .cookie_auth(cookie_string.clone())
                 .build(),
         );
@@ -62,7 +65,7 @@ impl BitcoinD {
             SimpleHttpTransport::builder()
                 .url(&url)
                 .map_err(BitcoindError::from)?
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(RPC_SOCKET_TIMEOUT))
                 .cookie_auth(cookie_string)
                 .build(),
         );

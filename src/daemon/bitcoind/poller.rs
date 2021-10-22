@@ -121,7 +121,7 @@ fn mark_confirmed_spends(
             .derived_unvault_descriptor(db_vault.derivation_index);
         let unvault_txin = unvault_tx.revault_unvault_txin(&der_unvault_descriptor);
         let unvault_outpoint = unvault_txin.outpoint();
-        let spend_txid = &db_vault.spend_txid.expect("Must be set for 'spending'");
+        let spend_txid = &db_vault.final_txid.expect("Must be set for 'spending'");
 
         match maybe_confirm_spend(&db_path, bitcoind, &db_vault, &spend_txid) {
             Ok(false) => {}
@@ -776,7 +776,7 @@ fn comprehensive_rescan(
             // Third layer: if the Spend transaction *only* was confirmed and becomes unconfirmed,
             // we just mark it as such. The bitcoind wallet will take care of the rebroadcast.
             if matches!(vault.status, VaultStatus::Spent) {
-                let spend_txid = &vault.spend_txid.expect("Must be Some in 'spent'");
+                let spend_txid = &vault.final_txid.expect("Must be Some in 'spent'");
 
                 if bitcoind.get_tip()? != tip {
                     return comprehensive_rescan(
@@ -1006,7 +1006,7 @@ fn handle_spent_unvault(
 ) -> Result<(), BitcoindError> {
     match unvault_spender(revaultd, bitcoind, previous_tip, &unvault_outpoint)? {
         Some(UnvaultSpender::Cancel(txid)) => {
-            db_cancel_unvault(&db_path, &unvault_outpoint.txid)?;
+            db_cancel_unvault(&db_path, &unvault_outpoint.txid, &txid)?;
             unvaults_cache
                 .remove(&unvault_outpoint)
                 .expect("An unknown unvault got spent?");

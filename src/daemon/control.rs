@@ -394,45 +394,71 @@ pub fn onchain_txs(
         // simplicity bitcoind will tell us (but we could have some optimisation eventually here,
         // eg returning None early on Funded vaults).
         let (unvault, cancel, emergency, unvault_emergency, spend) = match db_vault.status {
-            // We allow the unconfirmed status, for which we don't have any presigned tx in db!
-            VaultStatus::Unconfirmed => (None, None, None, None, None),
-            _ => {
-                let (_, unvault) = db_unvault_transaction(db_path, db_vault.id)?;
-                let unvault =
-                    bitcoind_wallet_tx(bitcoind_tx, unvault.into_psbt().extract_tx().txid())?;
-                // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-                let (_, cancel) = db_cancel_transaction(db_path, db_vault.id)?
-                    .expect("Must be here if not 'unconfirmed'");
-                let cancel =
-                    bitcoind_wallet_tx(bitcoind_tx, cancel.into_psbt().extract_tx().txid())?;
-
-                // Emergencies are only for stakeholders!
-                let mut emergency = None;
-                let mut unvault_emergency = None;
-                if revaultd.is_stakeholder() {
-                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-                    let emer = db_emer_transaction(db_path, db_vault.id)?
-                        .expect("Must be here post 'Funded' state")
-                        .1;
-                    emergency =
-                        bitcoind_wallet_tx(bitcoind_tx, emer.into_psbt().extract_tx().txid())?;
-
-                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-                    let unemer = db_unvault_emer_transaction(db_path, db_vault.id)?
-                        .expect("Must be here if not 'unconfirmed'")
-                        .1;
-                    unvault_emergency =
-                        bitcoind_wallet_tx(bitcoind_tx, unemer.into_psbt().extract_tx().txid())?;
-                }
-
-                let spend = if let Some(spend_txid) = db_vault.spend_txid {
+            VaultStatus::Unvaulting | VaultStatus::Unvaulted => {
+                let unvault = db_unvault_transaction(db_path, db_vault.id)
+                    .map_err(|e| e.into())
+                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                (unvault, None, None, None, None)
+            }
+            VaultStatus::Spending | VaultStatus::Spent => {
+                let unvault = db_unvault_transaction(db_path, db_vault.id)
+                    .map_err(|e| e.into())
+                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                let spend = if let Some(spend_txid) = db_vault.final_txid {
                     bitcoind_wallet_tx(bitcoind_tx, spend_txid)?
                 } else {
                     None
                 };
-
-                (unvault, cancel, emergency, unvault_emergency, spend)
+                (unvault, None, None, None, spend)
             }
+            VaultStatus::Canceling | VaultStatus::Canceled => {
+                let unvault = db_unvault_transaction(db_path, db_vault.id)
+                    .map_err(|e| e.into())
+                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                let cancel = if let Some(cancel_txid) = db_vault.final_txid {
+                    bitcoind_wallet_tx(bitcoind_tx, cancel_txid)?
+                } else {
+                    None
+                };
+                (unvault, cancel, None, None, None)
+            }
+            VaultStatus::EmergencyVaulting | VaultStatus::EmergencyVaulted => {
+                // Emergencies are only for stakeholders!
+                if revaultd.is_stakeholder() {
+                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                    let emergency = db_emer_transaction(db_path, db_vault.id)
+                        .map(|tx| tx.expect("Must be here post 'Funded' state"))
+                        .map_err(|e| e.into())
+                        .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                    (None, None, emergency, None, None)
+                } else {
+                    (None, None, None, None, None)
+                }
+            }
+            VaultStatus::UnvaultEmergencyVaulting | VaultStatus::UnvaultEmergencyVaulted => {
+                let unvault = db_unvault_transaction(db_path, db_vault.id)
+                    .map_err(|e| e.into())
+                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+
+                // Emergencies are only for stakeholders!
+                if revaultd.is_stakeholder() {
+                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
+                    let unvault_emergency = db_unvault_emer_transaction(db_path, db_vault.id)
+                        .map(|tx| tx.expect("Must be here if not 'unconfirmed'"))
+                        .map_err(|e| e.into())
+                        .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                    (unvault, None, None, unvault_emergency, None)
+                } else {
+                    (unvault, None, None, None, None)
+                }
+            }
+            // Other statuses do not have on chain transactions apart the deposit.
+            VaultStatus::Unconfirmed
+            | VaultStatus::Funded
+            | VaultStatus::Securing
+            | VaultStatus::Secured
+            | VaultStatus::Activating
+            | VaultStatus::Active => (None, None, None, None, None),
         };
 
         tx_list.push(VaultOnchainTransactions {

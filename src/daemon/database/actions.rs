@@ -265,7 +265,7 @@ pub fn db_insert_new_unconfirmed_vault(
         tx.execute(
             "INSERT INTO vaults ( \
                 wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
-                received_at, updated_at, spend_txid \
+                received_at, updated_at, final_txid \
             ) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
             params![
@@ -456,6 +456,24 @@ fn db_status_from_unvault_txid(
     })
 }
 
+fn db_status_and_final_txid_from_unvault_txid(
+    db_path: &Path,
+    unvault_txid: &Txid,
+    status: VaultStatus,
+    final_txid: &Txid,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now'), final_txid = (?2) \
+             WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?3))",
+            params![status as u32, final_txid.to_vec(), unvault_txid.to_vec(),],
+        )
+        .map_err(|e| DatabaseError(format!("Updating vault to '{}': {}", status, e.to_string())))?;
+
+        Ok(())
+    })
+}
+
 /// Mark an active vault as being in 'unvaulting' state from the Unvault txid
 pub fn db_unvault_deposit(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
@@ -467,8 +485,17 @@ pub fn db_confirm_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), Dat
 }
 
 /// Mark a vault as being in the 'canceling' state, out of the Unvault txid
-pub fn db_cancel_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Canceling)
+pub fn db_cancel_unvault(
+    db_path: &Path,
+    unvault_txid: &Txid,
+    cancel_txid: &Txid,
+) -> Result<(), DatabaseError> {
+    db_status_and_final_txid_from_unvault_txid(
+        db_path,
+        unvault_txid,
+        VaultStatus::Canceling,
+        cancel_txid,
+    )
 }
 
 /// Mark a vault as being in the 'spending' state, out of the Unvault txid
@@ -477,16 +504,12 @@ pub fn db_spend_unvault(
     unvault_txid: &Txid,
     spend_txid: &Txid,
 ) -> Result<(), DatabaseError> {
-    db_exec(db_path, |tx| {
-        tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now'), spend_txid = (?2) \
-             WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?3))",
-            params![VaultStatus::Spending as u32, spend_txid.to_vec(), unvault_txid.to_vec(),],
-        )
-        .map_err(|e| DatabaseError(format!("Updating vault to 'spending': {}", e.to_string())))?;
-
-        Ok(())
-    })
+    db_status_and_final_txid_from_unvault_txid(
+        db_path,
+        unvault_txid,
+        VaultStatus::Spending,
+        spend_txid,
+    )
 }
 
 /// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid

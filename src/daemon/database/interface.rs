@@ -243,7 +243,7 @@ impl TryFrom<&Row<'_>> for DbVault {
         let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
         let received_at = row.get(8)?;
         let updated_at = row.get(9)?;
-        let spend_txid = row
+        let final_txid = row
             .get::<_, Option<Vec<u8>>>(10)?
             .map(|raw_txid| encode::deserialize(&raw_txid).expect("We only store valid txids"));
 
@@ -257,7 +257,7 @@ impl TryFrom<&Row<'_>> for DbVault {
             derivation_index,
             received_at,
             updated_at,
-            spend_txid,
+            final_txid,
         })
     }
 }

@@ -751,9 +751,7 @@ impl RpcApi for RpcImpl {
             (&emergency_tx, emer_sigs),
             (&unvault_emergency_tx, unvault_emer_sigs),
         )
-        .map_err(|e| {
-            JsonRpcError::invalid_params(format!("Error while sharing signatures: {}", e))
-        })?;
+        .map_err(|e| Error::from(e))?;
 
         // NOTE: it will only mark it as 'securing' if it was 'funded', not if it was
         // marked as 'secured' by db_update_presigned_tx() !

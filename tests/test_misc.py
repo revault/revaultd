@@ -1648,7 +1648,7 @@ def test_spendtx_management(revault_network, bitcoind):
     spend_psbt.tx.calc_sha256()
     with pytest.raises(
         RpcError,
-        match=f"Error checking Spend transaction signature: 'Not enough signatures, needed: {len(revault_network.mans())}, current: 0",
+        match=f"Not enough signatures, needed: {len(revault_network.mans())}, current: 0",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
@@ -1957,7 +1957,7 @@ def test_spend_threshold(revault_network, bitcoind, executor):
     # Revaultd didn't like it
     with pytest.raises(
         RpcError,
-        match=f"Error checking Spend transaction signature: 'Not enough signatures, needed: {managers_threshold}, current: {managers_threshold - 1}'",
+        match=f"Not enough signatures, needed: {managers_threshold}, current: {managers_threshold - 1}",
     ):
         man.rpc.setspendtx(spend_psbt.tx.hash)
 

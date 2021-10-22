@@ -737,7 +737,7 @@ pub fn share_rev_signatures(
         &UnvaultEmergencyTransaction,
         BTreeMap<BitcoinPubKey, Vec<u8>>,
     ),
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CommunicationError> {
     // We would not spam the coordinator, would we?
     assert!(!cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty());
     let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;

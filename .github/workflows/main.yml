@@ -3,10 +3,24 @@ name: CI
 on: [pull_request]
 
 jobs:
-  tests:
+  linter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+            toolchain: stable
+            components: rustfmt
+            override: true
+      - name: rustfmt
+        run: cargo fmt -- --check
+      - name: black (Python linter)
+        run: pip install black && black --check tests/
+
+  unit_tests:
+    needs: linter
     strategy:
       matrix:
-        # We don't have a MSRV (yet?)
         toolchain:
           - 1.43
           - nightly
@@ -24,23 +38,87 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           override: true
           profile: minimal
-      - name: Build on Rust ${{ matrix.toolchain }}
-        run: cargo build --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }}
-        run: cargo test --verbose --color always
-      - name: Functional tests
-        if: matrix.os == 'ubuntu-latest' && matrix.toolchain == 'nightly'
-        run: ./contrib/ci-functional-tests.sh
-        env:
-          RUST_BACKTRACE: 1
+        run: cargo test --verbose --color always -- --nocapture
 
-  rustfmt_check:
+  compile:
+    needs: linter
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v1
-      - uses: actions-rs/toolchain@v1
+      - name: Checkout source code
+        uses: actions/checkout@v2
+      - name: Install Rust nightly
+        uses: actions-rs/toolchain@v1
         with:
-            toolchain: stable
-            components: rustfmt
-            override: true
-      - run: cargo fmt -- --check
+          toolchain: nightly
+          override: true
+          profile: minimal
+      - name: Build revaultd release binary
+        run: cargo build --release
+      - name: Build the servers
+        run: |
+          set -x
+          git submodule update --init
+          cd tests/servers/coordinatord && cargo build && cd ../../../
+          cd tests/servers/cosignerd && cargo build && cd ../../../
+      - name: Pack everything up
+        run: |
+          mkdir binaries
+          mv target/release/revaultd binaries/
+          mv tests/servers/coordinatord/target/debug/main binaries/coordinatord
+          mv tests/servers/cosignerd/target/debug/cosignerd binaries/
+      - name: Upload the binaries
+        uses: actions/upload-artifact@v2
+        with:
+          name: binaries
+          path: ./binaries
+
+  functional_tests:
+    needs: compile
+    strategy:
+      matrix:
+        test_file:
+          - tests/test_chain.py
+          - tests/test_misc.py
+          - tests/test_rpc.py
+          - tests/test_spend.py
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+      - name: Download the binaries
+        uses: actions/download-artifact@v2
+        with:
+          name: binaries
+          path: ./binaries
+      - run: chmod +x binaries/*
+      - name: Run functional tests
+        run: |
+          set -xe
+
+          # Download the bitcoind binary
+          BITCOIND_VERSION="22.0"
+          DIR_NAME="bitcoin-$BITCOIND_VERSION"
+          ARCHIVE_NAME="$DIR_NAME.tar.gz"
+          curl https://bitcoincore.org/bin/bitcoin-core-$BITCOIND_VERSION/bitcoin-$BITCOIND_VERSION-x86_64-linux-gnu.tar.gz -o $ARCHIVE_NAME
+          tar -xzf $ARCHIVE_NAME
+          BITCOIND_PATH=$DIR_NAME/bin/bitcoind
+
+          # Setup the postgres instance for the servers
+          sudo apt update && sudo apt install postgresql-12
+          sudo systemctl start postgresql
+          sudo su -c "psql -c \"CREATE ROLE test CREATEDB LOGIN PASSWORD 'test'\"" - postgres
+
+          # Run the functional tests
+          python3 -m venv venv
+          . venv/bin/activate
+          pip install -r tests/requirements.txt
+          BITCOIND_PATH=$BITCOIND_PATH POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv ${{ matrix.test_file }}
+        env:
+          REVAULTD_PATH: ./binaries/revaultd
+          COORDINATORD_PATH: ./binaries/coordinatord
+          COSIGNERD_PATH: ./binaries/cosignerd
+          EXECUTOR_WORKERS: 1
+          VERBOSE: 1
+          LOG_LEVEL: debug
+          TIMEOUT: 120

@@ -903,11 +903,22 @@ fn update_tip(
 
     if tip.height > current_tip.height {
         // May just be a new (set of) block(s), make sure we are on the same chain
-        let bit_curr_hash = bitcoind.getblockhash(current_tip.height)?;
-        if bit_curr_hash == current_tip.hash || current_tip.height == 0 {
-            // We moved forward, everything is fine.
-            new_tip_event(&revaultd, bitcoind, &tip, unvaults_cache)?;
-            return Ok(current_tip);
+        match bitcoind.getblockhash(current_tip.height) {
+            Ok(bit_curr_hash) => {
+                if bit_curr_hash == current_tip.hash || current_tip.height == 0 {
+                    // We moved forward, everything is fine.
+                    new_tip_event(&revaultd, bitcoind, &tip, unvaults_cache)?;
+                    return Ok(current_tip);
+                }
+            }
+            Err(e) => {
+                // Edge case: the last block *might* (very unlikely but our functional
+                // tests are exercing this) have been reorged out and the call to `getblockhash`
+                // would fail telling the height is out of range.
+                log::error!("Error while fetching block hash in update tip: '{}'", e);
+                thread::sleep(Duration::from_secs(5));
+                return update_tip(revaultd, bitcoind, deposits_cache, unvaults_cache);
+            }
         }
     }
 
@@ -1240,8 +1251,8 @@ fn handle_confirmed_deposit(
     Ok(())
 }
 
-// Called when a deposit UTXO disappears from the listunspent result, ie it was spent. This tries
-// to figure out where it went.
+// Called when a deposit UTXO disappears from the listunspent result, ie it was spent (or reorg'ed
+// out). This tries to figure out where it went.
 fn handle_spent_deposit(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     db_path: &Path,

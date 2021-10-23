@@ -562,11 +562,6 @@ impl BitcoinD {
         let label_json: Json = label.into();
 
         let req = if let Some(min_amount) = min_amount {
-            // FIXME: should we make it static somehow? Re-allocating a constant each time is kinda
-            // ugly..
-            let mut query_options = serde_json::Map::with_capacity(1);
-            query_options.insert("minimumAmount".into(), min_amount.into());
-
             self.make_watchonly_request(
                 "listunspent",
                 &params!(
@@ -574,7 +569,9 @@ impl BitcoinD {
                     Json::Number(9999999.into()), // maxconf (default)
                     Json::Array(vec![]),          // addresses (default)
                     Json::Bool(true),             // include_unsafe (default)
-                    Json::Object(query_options),  // query_options
+                    serde_json::json!({
+                        "minimumAmount": min_amount,
+                    }),                           // query_options
                 ),
             )
         } else {

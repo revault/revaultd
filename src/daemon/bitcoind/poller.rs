@@ -1370,18 +1370,10 @@ fn update_utxos(
 
     // Now, check the Unvault utxos.
     let OnchainDescriptorState {
-        new_unconf: new_unvaults,
+        new_unconf: _,
         new_conf: conf_unvaults,
         new_spent: spent_unvaults,
     } = bitcoind.sync_unvaults(&unvaults_cache)?;
-
-    for (outpoint, utxo) in new_unvaults {
-        // Note that it *might* have actually been confirmed in-between the last poll, but we keep
-        // single transitions, and it's no big deal to mark it confirmed during the next poll.
-        db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint.txid)?;
-        unvaults_cache.insert(outpoint, utxo);
-        log::debug!("Got a new unconfirmed unvault utxo at {} ", outpoint);
-    }
 
     for (outpoint, _) in conf_unvaults {
         db_confirm_unvault(&db_path, &outpoint.txid)?;

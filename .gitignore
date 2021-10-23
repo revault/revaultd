@@ -4,7 +4,6 @@ __pycache__
 config*.toml
 github-merge.py
 regtest/
-test*.py
 venv/
 pytest.log
 TODO

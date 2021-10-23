@@ -9,11 +9,10 @@ use crate::common::VERSION;
 use crate::daemon::{
     control::{
         announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
-        check_spend_signatures, check_spend_transaction_size, check_unvault_signatures,
-        coordinator_status, cosigners_status, fetch_cosigs_signatures, finalized_emer_txs,
-        listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
-        share_unvault_signatures, vaults_from_deposits, watchtowers_status, ListSpendEntry,
-        ListSpendStatus, RpcUtils,
+        check_spend_transaction_size, check_unvault_signatures, coordinator_status,
+        cosigners_status, fetch_cosigs_signatures, finalized_emer_txs, listvaults_from_db,
+        onchain_txs, presigned_txs, share_rev_signatures, share_unvault_signatures,
+        vaults_from_deposits, watchtowers_status, ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -34,7 +33,8 @@ use crate::daemon::{
 
 use revault_tx::{
     bitcoin::{
-        util::bip32, Address, Amount, OutPoint, Transaction as BitcoinTransaction, TxOut, Txid,
+        consensus::encode, secp256k1, util::bip32, Address, Amount, OutPoint,
+        PublicKey as BitcoinPubKey, Transaction as BitcoinTransaction, TxOut, Txid,
     },
     miniscript::DescriptorTrait,
     transactions::{
@@ -1290,12 +1290,10 @@ impl RpcApi for RpcImpl {
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
         let db_path = revaultd.db_file();
 
-        // Get the Spend they reference from DB
+        // Get the referenced Spend and the vaults it spends from the DB
         let mut spend_tx = db_spend_transaction(&db_path, &spend_txid)
             .map_err(|e| Error::from(e))?
             .ok_or_else(|| JsonRpcError::invalid_params("Unknown Spend transaction".to_string()))?;
-
-        // Then check all our fellow managers already signed it
         let spent_vaults =
             db_vaults_from_spend(&db_path, &spend_txid).map_err(|e| Error::from(e))?;
         let tx = &spend_tx.psbt.tx();
@@ -1304,28 +1302,45 @@ impl RpcApi for RpcImpl {
                 "Spend transaction refers to an already spent vault".to_string(),
             ));
         }
-        #[cfg(debug_assertions)]
-        {
-            for i in tx.input.iter() {
-                assert!(
-                    spent_vaults.contains_key(&i.previous_output.txid),
-                    "Insane DB: Spend transaction refers to unknown vaults"
-                );
+
+        // Sanity check the Spend transaction is actually valid before announcing
+        // it. revault_tx already implements the signature checks so don't duplicate
+        // the logic and re-add the signatures to the PSBT.
+        let signatures: Vec<BTreeMap<BitcoinPubKey, Vec<u8>>> = spend_tx
+            .psbt
+            .psbt()
+            .inputs
+            .iter()
+            .map(|i| i.partial_sigs.clone())
+            .collect();
+        let mans_thresh = revaultd.managers_threshold();
+        for (i, sigmap) in signatures.iter().enumerate() {
+            if sigmap.len() < mans_thresh {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Not enough signatures, needed: {}, current: {}",
+                    mans_thresh,
+                    sigmap.len()
+                )));
+            }
+            for (pubkey, sig) in sigmap {
+                let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).map_err(|_| {
+                    JsonRpcError::invalid_params(format!(
+                        "Spend PSBT contains an invalid signature: '{}'",
+                        encode::serialize_hex(&sig)
+                    ))
+                })?;
+                spend_tx
+                    .psbt
+                    .add_signature(i, pubkey.key, sig, &revaultd.secp_ctx)
+                    .map_err(|_| {
+                        JsonRpcError::invalid_params(format!(
+                            "Spend PSBT contains an invalid signature: '{}'",
+                            encode::serialize_hex(&sig.serialize_der().to_vec())
+                        ))
+                    })?
+                    .expect("The signature was already there");
             }
         }
-        check_spend_signatures(
-            &revaultd.secp_ctx,
-            revaultd.managers_threshold(),
-            &spend_tx.psbt,
-            revaultd.managers_xpubs(),
-            &spent_vaults,
-        )
-        .map_err(|e| {
-            JsonRpcError::invalid_params(format!(
-                "Error checking Spend transaction signature: '{}'",
-                e.to_string()
-            ))
-        })?;
 
         // Check that we can actually send the tx to the coordinator...
         if !check_spend_transaction_size(&revaultd, spend_tx.psbt.clone()) {

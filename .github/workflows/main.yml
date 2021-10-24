@@ -121,4 +121,4 @@ jobs:
           EXECUTOR_WORKERS: 1
           VERBOSE: 1
           LOG_LEVEL: debug
-          TIMEOUT: 120
+          TIMEOUT: 180

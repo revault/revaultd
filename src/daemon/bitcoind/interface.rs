@@ -30,6 +30,10 @@ const MIN_DEPOSIT_VALUE: u64 = (DUST_LIMIT + UNVAULT_CPFP_VALUE) * 105 / 100;
 // If bitcoind takes more than 3 minutes to answer one of our queries, fail.
 const RPC_SOCKET_TIMEOUT: u64 = 180;
 
+// Labels used to tag utxos in the watchonly wallet
+const DEPOSIT_UTXOS_LABEL: &str = "revault-deposit";
+const UNVAULT_UTXOS_LABEL: &str = "revault-unvault";
+
 pub struct BitcoinD {
     node_client: Client,
     watchonly_client: Client,
@@ -77,14 +81,6 @@ impl BitcoinD {
             node_client,
             watchonly_client,
         })
-    }
-
-    fn deposit_utxos_label(&self) -> String {
-        "revault-deposit".to_string()
-    }
-
-    fn unvault_utxos_label(&self) -> String {
-        "revault-unvault".to_string()
     }
 
     // Reasonably try to be robust to possible spurious communication error.
@@ -458,7 +454,7 @@ impl BitcoinD {
         self.bulk_import_descriptors(
             descriptors,
             timestamp,
-            self.deposit_utxos_label(),
+            DEPOSIT_UTXOS_LABEL.to_string(),
             fresh_wallet,
         )
     }
@@ -472,7 +468,7 @@ impl BitcoinD {
         self.bulk_import_descriptors(
             descriptors,
             timestamp,
-            self.unvault_utxos_label(),
+            UNVAULT_UTXOS_LABEL.to_string(),
             fresh_wallet,
         )
     }
@@ -502,11 +498,11 @@ impl BitcoinD {
     }
 
     pub fn import_fresh_deposit_descriptor(&self, descriptor: String) -> Result<(), BitcoindError> {
-        self.import_fresh_descriptor(descriptor, self.deposit_utxos_label())
+        self.import_fresh_descriptor(descriptor, DEPOSIT_UTXOS_LABEL.to_string())
     }
 
     pub fn import_fresh_unvault_descriptor(&self, descriptor: String) -> Result<(), BitcoindError> {
-        self.import_fresh_descriptor(descriptor, self.unvault_utxos_label())
+        self.import_fresh_descriptor(descriptor, UNVAULT_UTXOS_LABEL.to_string())
     }
 
     // A routine to get the txid,vout pair out of a listunspent entry
@@ -559,7 +555,7 @@ impl BitcoinD {
         let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
         let mut spent_utxos = deposits_utxos.clone();
-        let label_json: Json = self.deposit_utxos_label().into();
+        let label_json: Json = DEPOSIT_UTXOS_LABEL.to_string().into();
 
         let req = self.make_watchonly_request(
             "listunspent",
@@ -687,7 +683,7 @@ impl BitcoinD {
         //
         // 1. Fetch the Unvault utxos from the watchonly wallet into a
         //    (outpoint, confirmed) mapping
-        let label: Json = self.unvault_utxos_label().into();
+        let label: Json = UNVAULT_UTXOS_LABEL.into();
         let unspent_list: HashMap<OutPoint, bool> = self
             .make_watchonly_request(
                 "listunspent",

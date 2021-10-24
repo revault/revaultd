@@ -1,7 +1,7 @@
 use crate::common::config::BitcoindConfig;
 use crate::daemon::{
     bitcoind::{
-        interface::{BitcoinD, OnchainDescriptorState, SyncInfo, UtxoInfo},
+        interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},
         utils::{
             cancel_txid, emer_txid, populate_deposit_cache, populate_unvaults_cache,
             presigned_transactions, unemer_txid, unvault_txin_from_deposit,
@@ -1342,7 +1342,7 @@ fn update_utxos(
     let db_path = revaultd.read().unwrap().db_file();
 
     // First, let's check our deposits.
-    let OnchainDescriptorState {
+    let DepositsState {
         new_unconf: new_deposits,
         new_conf: conf_deposits,
         new_spent: spent_deposits,
@@ -1369,8 +1369,7 @@ fn update_utxos(
     }
 
     // Now, check the Unvault utxos.
-    let OnchainDescriptorState {
-        new_unconf: _,
+    let UnvaultsState {
         new_conf: conf_unvaults,
         new_spent: spent_unvaults,
     } = bitcoind.sync_unvaults(&unvaults_cache)?;

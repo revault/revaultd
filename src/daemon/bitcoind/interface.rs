@@ -1,7 +1,10 @@
 use crate::common::config::BitcoindConfig;
 use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
-    bitcoin::{consensus::encode, Address, Amount, BlockHash, OutPoint, Transaction, TxOut, Txid},
+    bitcoin::{
+        blockdata::constants::COIN_VALUE, consensus::encode, Address, Amount, BlockHash, OutPoint,
+        Transaction, TxOut, Txid,
+    },
     transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},
 };
 
@@ -547,41 +550,29 @@ impl BitcoinD {
     }
 
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
-    /// We take the currently known utxos, and return both the new and the spent ones for this
-    /// label.
-    fn sync_chainstate(
+    /// We take the currently known deposit utxos, and return the new, confirmed and spent ones.
+    pub fn sync_deposits(
         &self,
-        current_utxos: &HashMap<OutPoint, UtxoInfo>,
-        label: String,
+        deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
         min_conf: u32,
-        min_amount: Option<f64>,
-    ) -> Result<OnchainDescriptorState, BitcoindError> {
+    ) -> Result<DepositsState, BitcoindError> {
         let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
-        let mut spent_utxos = current_utxos.clone();
-        let label_json: Json = label.into();
+        let mut spent_utxos = deposits_utxos.clone();
+        let label_json: Json = self.deposit_utxos_label().into();
 
-        let req = if let Some(min_amount) = min_amount {
-            self.make_watchonly_request(
-                "listunspent",
-                &params!(
-                    Json::Number(0.into()),       // minconf
-                    Json::Number(9999999.into()), // maxconf (default)
-                    Json::Array(vec![]),          // addresses (default)
-                    Json::Bool(true),             // include_unsafe (default)
-                    serde_json::json!({
-                        "minimumAmount": min_amount,
-                    }),                           // query_options
-                ),
-            )
-        } else {
-            self.make_watchonly_request(
-                "listunspent",
-                &params!(
-                    Json::Number(0.into()), // minconf
-                ),
-            )
-        };
+        let req = self.make_watchonly_request(
+            "listunspent",
+            &params!(
+                Json::Number(0.into()),       // minconf
+                Json::Number(9999999.into()), // maxconf (default)
+                Json::Array(vec![]),          // addresses (default)
+                Json::Bool(true),             // include_unsafe (default)
+                serde_json::json!({
+                    "minimumAmount": MIN_DEPOSIT_VALUE / COIN_VALUE,
+                }), // query_options
+            ),
+        );
 
         for utxo in req?.as_array().ok_or_else(|| {
             BitcoindError::Custom("API break, 'listunspent' didn't return an array.".to_string())
@@ -678,31 +669,73 @@ impl BitcoinD {
             );
         }
 
-        Ok(OnchainDescriptorState {
+        Ok(DepositsState {
             new_unconf: new_utxos,
             new_conf: confirmed_utxos,
             new_spent: spent_utxos,
         })
     }
 
-    pub fn sync_deposits(
-        &self,
-        deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
-        min_conf: u32,
-    ) -> Result<OnchainDescriptorState, BitcoindError> {
-        self.sync_chainstate(
-            deposits_utxos,
-            self.deposit_utxos_label(),
-            min_conf,
-            Some(Amount::from_sat(MIN_DEPOSIT_VALUE).as_btc()),
-        )
-    }
-
+    /// Repeatedly called by our main loop to stay in sync with bitcoind.
+    /// We take the currently known unvault utxos, and return both the confirmed and spent ones.
     pub fn sync_unvaults(
         &self,
         unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
-    ) -> Result<OnchainDescriptorState, BitcoindError> {
-        self.sync_chainstate(unvault_utxos, self.unvault_utxos_label(), 1, None)
+    ) -> Result<UnvaultsState, BitcoindError> {
+        // Since we don't need to care about new utxos the logic here is more
+        // straightforward than in sync_deposits.
+        //
+        // 1. Fetch the Unvault utxos from the watchonly wallet into a
+        //    (outpoint, confirmed) mapping
+        let label: Json = self.unvault_utxos_label().into();
+        let unspent_list: HashMap<OutPoint, bool> = self
+            .make_watchonly_request(
+                "listunspent",
+                &params!(
+                    Json::Number(0.into()), // minconf
+                ),
+            )?
+            .as_array()
+            .expect("API break: 'listunspent' didn't return an array?")
+            .iter()
+            .filter_map(|entry| {
+                if entry
+                    .get("label")
+                    .expect("API break: no 'label' in listunspent entry")
+                    == &label
+                {
+                    let op = self
+                        .outpoint_from_utxo(&entry)
+                        .expect("API break: can't get outpoint from listunspent entry");
+                    let confs = entry
+                        .get("confirmations")
+                        .map(|c| c.as_u64())
+                        .flatten()
+                        .expect("API break: invalid 'confirmations' entry in listunpsent entry");
+                    Some((op, confs > 0))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 2. Loop through all known Unvault utxos, check if some confirmed or
+        //    are missing (ie were spent)
+        let (mut new_conf, mut new_spent) = (HashMap::new(), HashMap::new());
+        for (op, utxo_info) in unvault_utxos {
+            if let Some(confirmed) = unspent_list.get(&op) {
+                if *confirmed && !utxo_info.is_confirmed {
+                    new_conf.insert(*op, utxo_info.clone());
+                }
+            } else {
+                new_spent.insert(*op, utxo_info.clone());
+            }
+        }
+
+        Ok(UnvaultsState {
+            new_conf,
+            new_spent,
+        })
     }
 
     // FIXME: this should return a struct not a footguny tuple.
@@ -912,14 +945,21 @@ pub struct UtxoInfo {
     pub is_confirmed: bool,
 }
 
-/// New informations about sets of utxos represented by a descriptor that actually ended
-/// up onchain.
-pub struct OnchainDescriptorState {
-    /// The set of newly "received" utxos
+/// Onchain state of the deposit UTxOs
+pub struct DepositsState {
+    /// The set of newly "received" deposit utxos
     pub new_unconf: HashMap<OutPoint, UtxoInfo>,
-    /// The set of newly confirmed utxos
+    /// The set of newly confirmed deposit utxos
     pub new_conf: HashMap<OutPoint, UtxoInfo>,
-    /// The set of newly spent utxos
+    /// The set of newly spent deposit utxos
+    pub new_spent: HashMap<OutPoint, UtxoInfo>,
+}
+
+/// Onchain state of the Unvault UTxOs
+pub struct UnvaultsState {
+    /// The set of newly confirmed unvault utxos
+    pub new_conf: HashMap<OutPoint, UtxoInfo>,
+    /// The set of newly spent unvault utxos
     pub new_spent: HashMap<OutPoint, UtxoInfo>,
 }
 

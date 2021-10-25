@@ -1349,26 +1349,29 @@ impl RpcApi for RpcImpl {
             )));
         };
 
-        // Now we can ask all the cosigning servers for their signatures
-        log::debug!("Fetching signatures from Cosigning servers");
-        fetch_cosigs_signatures(
-            &revaultd.secp_ctx,
-            &revaultd.noise_secret,
-            &mut spend_tx.psbt,
-            revaultd.cosigs.as_ref().expect("We are manager"),
-        )
-        .map_err(|e| {
-            JsonRpcError::invalid_params(format!(
-                "Communication error while fetching cosigner signatures: {}",
-                e,
-            ))
-        })?;
+        // Now, if needed, we can ask all the cosigning servers for their
+        // signatures
+        let cosigs = revaultd.cosigs.as_ref().expect("We are manager");
+        if !cosigs.is_empty() {
+            log::debug!("Fetching signatures from Cosigning servers");
+            fetch_cosigs_signatures(
+                &revaultd.secp_ctx,
+                &revaultd.noise_secret,
+                &mut spend_tx.psbt,
+                cosigs,
+            )
+            .map_err(|e| {
+                JsonRpcError::invalid_params(format!(
+                    "Communication error while fetching cosigner signatures: {}",
+                    e,
+                ))
+            })?;
+        }
         let mut finalized_spend = spend_tx.psbt.clone();
         finalized_spend.finalize(&revaultd.secp_ctx).map_err(|e| {
             JsonRpcError::invalid_params(format!(
-                "Invalid signature given by the cosigners, psbt: '{}' (error: '{}')",
-                spend_tx.psbt.as_psbt_string(),
-                e
+                "Could not finalize Spend transaction, psbt: '{}' (error: '{}')",
+                spend_tx.psbt, e
             ))
         })?;
 

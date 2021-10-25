@@ -211,3 +211,17 @@ def test_stkman_only(revault_network, bitcoind):
         rn.activate_vault(v)
     rn.unvault_vaults_anyhow(vaults)
     rn.cancel_vault(vaults[0])
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_no_cosig_server(revault_network):
+    """Test a setup with no cosig"""
+    rn = revault_network
+    rn.deploy(n_stakeholders=2, n_managers=1, n_stkmanagers=1, with_cosigs=False, csv=2)
+
+    # Sanity check they can spend and cancel
+    vaults = rn.fundmany([4, 8, 16])
+    rn.activate_fresh_vaults(vaults)
+    rn.spend_vaults_anyhow(vaults[:2])
+    rn.unvault_vaults_anyhow([vaults[-1]])
+    rn.cancel_vault(vaults[-1])

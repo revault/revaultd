@@ -8,11 +8,11 @@ use error::Error;
 use crate::common::VERSION;
 use crate::daemon::{
     control::{
-        announce_spend_transaction, bitcoind_broadcast, check_revocation_signatures,
-        check_spend_transaction_size, check_unvault_signatures, coordinator_status,
-        cosigners_status, fetch_cosigs_signatures, finalized_emer_txs, listvaults_from_db,
-        onchain_txs, presigned_txs, share_rev_signatures, share_unvault_signatures,
-        vaults_from_deposits, watchtowers_status, ListSpendEntry, ListSpendStatus, RpcUtils,
+        announce_spend_transaction, check_revocation_signatures, check_spend_transaction_size,
+        check_unvault_signatures, coordinator_status, cosigners_status, fetch_cosigs_signatures,
+        finalized_emer_txs, listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
+        share_unvault_signatures, vaults_from_deposits, watchtowers_status, ListSpendEntry,
+        ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -28,7 +28,7 @@ use crate::daemon::{
     },
     jsonrpc::UserRole,
     revaultd::{BlockchainTip, VaultStatus},
-    threadmessages::*,
+    threadmessages::{BitcoindSender, BitcoindThread, SigFetcherMessageOut, WalletTransaction},
 };
 
 use revault_tx::{
@@ -50,7 +50,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        Arc,
     },
 };
 
@@ -287,9 +287,8 @@ impl RpcApi for RpcImpl {
     fn stop(&self, meta: JsonRpcMetaData) -> jsonrpc_core::Result<()> {
         log::info!("Stopping revaultd");
 
-        meta.rpc_utils
-            .bitcoind_tx
-            .send(BitcoindMessageOut::Shutdown)
+        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+            .shutdown()
             .map_err(|e| Error::from(e))?;
         meta.rpc_utils
             .sigfetcher_tx
@@ -301,12 +300,9 @@ impl RpcApi for RpcImpl {
     }
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-        meta.rpc_utils
-            .bitcoind_tx
-            .send(BitcoindMessageOut::SyncProgress(bitrep_tx))
+        let progress = BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+            .sync_progress()
             .map_err(|e| Error::from(e))?;
-        let progress = bitrep_rx.recv().map_err(|e| Error::from(e))?;
 
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
 
@@ -957,7 +953,7 @@ impl RpcApi for RpcImpl {
         };
         let vaults = onchain_txs(
             &meta.rpc_utils.revaultd.read().unwrap(),
-            &meta.rpc_utils.bitcoind_tx,
+            &BitcoindSender::from(&meta.rpc_utils.bitcoind_tx),
             db_vaults,
         )
         .map_err(|e| Error::from(e))?;
@@ -1410,7 +1406,9 @@ impl RpcApi for RpcImpl {
                 Ok(unvault_tx.into_psbt().extract_tx())
             })
             .collect::<Result<Vec<BitcoinTransaction>, JsonRpcError>>()?;
-        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, bitcoin_txs).map_err(|e| Error::from(e))?;
+        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+            .broadcast(bitcoin_txs)
+            .map_err(|e| Error::from(e))?;
         db_mark_broadcastable_spend(&db_path, &spend_txid).map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
@@ -1449,7 +1447,8 @@ impl RpcApi for RpcImpl {
             "Broadcasting Cancel transactions with id '{:?}'",
             transaction.txid()
         );
-        bitcoind_broadcast(&meta.rpc_utils.bitcoind_tx, vec![transaction])
+        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+            .broadcast(vec![transaction])
             .map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
@@ -1458,14 +1457,15 @@ impl RpcApi for RpcImpl {
     fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
         stakeholder_only!(meta);
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let bitcoind_tx = &meta.rpc_utils.bitcoind_tx;
 
         // FIXME: there is a ton of edge cases not covered here. We should additionally opt for a
         // bulk method, like broadcasting all Emergency transactions in a thread forever without
         // trying to be smart by differentiating between Emer and UnvaultEmer until we die or all
         // vaults are confirmed in the EDV.
         let emers = finalized_emer_txs(&revaultd).map_err(|e| Error::from(e))?;
-        bitcoind_broadcast(bitcoind_tx, emers).map_err(|e| Error::from(e))?;
+        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+            .broadcast(emers)
+            .map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }

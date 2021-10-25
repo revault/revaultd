@@ -1,6 +1,7 @@
 use crate::daemon::{
     control::{CommunicationError, RpcControlError},
     database::DatabaseError,
+    threadmessages::BitcoindThreadError,
 };
 
 use std::sync::mpsc::{RecvError, SendError};
@@ -31,6 +32,16 @@ impl From<RpcControlError> for Error {
             RpcControlError::Tx(_) => ErrorCode::INTERNAL_ERROR,
             RpcControlError::Bitcoind(_) => ErrorCode::BITCOIND_ERROR,
             RpcControlError::ThreadCommunication(_) => ErrorCode::INTERNAL_ERROR,
+        };
+        Error(code, e.to_string())
+    }
+}
+
+impl From<BitcoindThreadError> for Error {
+    fn from(e: BitcoindThreadError) -> Error {
+        let code = match e {
+            BitcoindThreadError::Bitcoind(_) => ErrorCode::BITCOIND_ERROR,
+            BitcoindThreadError::ThreadCommunication(_) => ErrorCode::INTERNAL_ERROR,
         };
         Error(code, e.to_string())
     }

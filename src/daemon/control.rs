@@ -42,10 +42,7 @@ use revault_tx::{
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{
-        mpsc::{self, RecvError, SendError, Sender},
-        Arc, RwLock,
-    },
+    sync::{mpsc::Sender, Arc, RwLock},
     thread::JoinHandle,
 };
 
@@ -162,21 +159,12 @@ impl From<revault_tx::Error> for RpcControlError {
     }
 }
 
-impl From<BitcoindError> for RpcControlError {
-    fn from(e: BitcoindError) -> Self {
-        Self::Bitcoind(e)
-    }
-}
-
-impl<T> From<SendError<T>> for RpcControlError {
-    fn from(e: SendError<T>) -> Self {
-        Self::ThreadCommunication(format!("Sending to thread: '{}'", e))
-    }
-}
-
-impl From<RecvError> for RpcControlError {
-    fn from(e: RecvError) -> Self {
-        Self::ThreadCommunication(format!("Receiving from thread: '{}'", e))
+impl From<BitcoindThreadError> for RpcControlError {
+    fn from(e: BitcoindThreadError) -> Self {
+        match e {
+            BitcoindThreadError::Bitcoind(e) => RpcControlError::Bitcoind(e),
+            BitcoindThreadError::ThreadCommunication(e) => RpcControlError::ThreadCommunication(e),
+        }
     }
 }
 
@@ -195,38 +183,6 @@ impl fmt::Display for RpcControlError {
             Self::ThreadCommunication(ref e) => write!(f, "Thread communication error: '{}'", e),
         }
     }
-}
-
-// Ask bitcoind for a wallet transaction
-fn bitcoind_wallet_tx(
-    bitcoind_tx: &Sender<BitcoindMessageOut>,
-    txid: Txid,
-) -> Result<Option<WalletTransaction>, RpcControlError> {
-    log::trace!("Sending WalletTx to bitcoind thread for {}", txid);
-
-    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-    bitcoind_tx.send(BitcoindMessageOut::WalletTransaction(txid, bitrep_tx))?;
-    bitrep_rx.recv().map_err(|e| e.into())
-}
-
-/// Have bitcoind broadcast all these transactions
-pub fn bitcoind_broadcast(
-    bitcoind_tx: &Sender<BitcoindMessageOut>,
-    transactions: Vec<BitcoinTransaction>,
-) -> Result<(), RpcControlError> {
-    let (bitrep_tx, bitrep_rx) = mpsc::sync_channel(0);
-
-    if !transactions.is_empty() {
-        // Note: this is a batched call to bitcoind's RPC, any failure will
-        // override all the results.
-        bitcoind_tx.send(BitcoindMessageOut::BroadcastTransactions(
-            transactions,
-            bitrep_tx.clone(),
-        ))?;
-        bitrep_rx.recv()??;
-    }
-
-    Ok(())
 }
 
 /// List the vaults from DB, and filter out the info the RPC wants
@@ -375,9 +331,9 @@ pub fn presigned_txs(
 }
 
 /// List all the onchain transactions from these vaults.
-pub fn onchain_txs(
+pub fn onchain_txs<T: BitcoindThread>(
     revaultd: &RevaultD,
-    bitcoind_tx: &Sender<BitcoindMessageOut>,
+    bitcoind_tx: &T,
     db_vaults: Vec<DbVault>,
 ) -> Result<Vec<VaultOnchainTransactions>, RpcControlError> {
     let db_path = &revaultd.db_file();
@@ -387,7 +343,9 @@ pub fn onchain_txs(
         let outpoint = db_vault.deposit_outpoint;
 
         // If the vault exist, there must always be a deposit transaction available.
-        let deposit = bitcoind_wallet_tx(bitcoind_tx, db_vault.deposit_outpoint.txid)?
+        let deposit = bitcoind_tx
+            .wallet_tx(db_vault.deposit_outpoint.txid)
+            .map_err(|e| RpcControlError::from(e))?
             .expect("Vault exists but not deposit tx?");
 
         // For the other transactions, it depends on the status of the vault. For the sake of
@@ -397,15 +355,23 @@ pub fn onchain_txs(
             VaultStatus::Unvaulting | VaultStatus::Unvaulted => {
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
-                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                    .and_then(|(_, tx)| {
+                        bitcoind_tx
+                            .wallet_tx(tx.txid())
+                            .map_err(|e| RpcControlError::from(e))
+                    })?;
                 (unvault, None, None, None, None)
             }
             VaultStatus::Spending | VaultStatus::Spent => {
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
-                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                    .and_then(|(_, tx)| {
+                        bitcoind_tx
+                            .wallet_tx(tx.txid())
+                            .map_err(|e| RpcControlError::from(e))
+                    })?;
                 let spend = if let Some(spend_txid) = db_vault.final_txid {
-                    bitcoind_wallet_tx(bitcoind_tx, spend_txid)?
+                    bitcoind_tx.wallet_tx(spend_txid)?
                 } else {
                     None
                 };
@@ -414,9 +380,13 @@ pub fn onchain_txs(
             VaultStatus::Canceling | VaultStatus::Canceled => {
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
-                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                    .and_then(|(_, tx)| {
+                        bitcoind_tx
+                            .wallet_tx(tx.txid())
+                            .map_err(|e| RpcControlError::from(e))
+                    })?;
                 let cancel = if let Some(cancel_txid) = db_vault.final_txid {
-                    bitcoind_wallet_tx(bitcoind_tx, cancel_txid)?
+                    bitcoind_tx.wallet_tx(cancel_txid)?
                 } else {
                     None
                 };
@@ -429,7 +399,11 @@ pub fn onchain_txs(
                     let emergency = db_emer_transaction(db_path, db_vault.id)
                         .map(|tx| tx.expect("Must be here post 'Funded' state"))
                         .map_err(|e| e.into())
-                        .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                        .and_then(|(_, tx)| {
+                            bitcoind_tx
+                                .wallet_tx(tx.txid())
+                                .map_err(|e| RpcControlError::from(e))
+                        })?;
                     (None, None, emergency, None, None)
                 } else {
                     (None, None, None, None, None)
@@ -438,7 +412,11 @@ pub fn onchain_txs(
             VaultStatus::UnvaultEmergencyVaulting | VaultStatus::UnvaultEmergencyVaulted => {
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
-                    .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                    .and_then(|(_, tx)| {
+                        bitcoind_tx
+                            .wallet_tx(tx.txid())
+                            .map_err(|e| RpcControlError::from(e))
+                    })?;
 
                 // Emergencies are only for stakeholders!
                 if revaultd.is_stakeholder() {
@@ -446,7 +424,11 @@ pub fn onchain_txs(
                     let unvault_emergency = db_unvault_emer_transaction(db_path, db_vault.id)
                         .map(|tx| tx.expect("Must be here if not 'unconfirmed'"))
                         .map_err(|e| e.into())
-                        .and_then(|(_, tx)| bitcoind_wallet_tx(bitcoind_tx, tx.txid()))?;
+                        .and_then(|(_, tx)| {
+                            bitcoind_tx
+                                .wallet_tx(tx.txid())
+                                .map_err(|e| RpcControlError::from(e))
+                        })?;
                     (unvault, None, None, unvault_emergency, None)
                 } else {
                     (unvault, None, None, None, None)

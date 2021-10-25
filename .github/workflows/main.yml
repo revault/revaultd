@@ -81,7 +81,7 @@ jobs:
           - tests/test_chain.py
           - tests/test_misc.py
           - tests/test_rpc.py
-          - tests/test_spend.py
+          #- tests/test_spend.py
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code

@@ -1,0 +1,65 @@
+task:
+  name: 'Functional tests'
+  container:
+    image: rust:latest
+
+  env:
+    EXECUTOR_WORKERS: 8
+    VERBOSE: 1
+    LOG_LEVEL: debug
+    TIMEOUT: 180
+    BITCOIND_VERSION: 22.0
+    BITCOIND_DIR_NAME: "bitcoin-$BITCOIND_VERSION"
+
+  registry_cache:
+    folder: $CARGO_HOME/registry
+    fingerprint_script: cat Cargo.lock
+  before_cache_script: rm -rf $CARGO_HOME/registry/index
+  target_cache:
+    folder: target
+    fingerprint_script:
+      - rustc --version
+      - cat Cargo.lock
+  bitcoind_cache:
+    folder: $BITCOIND_DIR_NAME
+  coordinatord_cache:
+    folder: tests/servers/coordinatord
+    fingerprint_script:
+      - cd tests/servers/coordinatord && git rev-parse HEAD
+  cosignerd_cache:
+    folder: tests/servers/cosignerd
+    fingerprint_script:
+      - cd tests/servers/cosignerd && git rev-parse HEAD
+
+  test_script: |
+    set -xe
+
+    # Install the dependencies
+    apt update && apt install -y postgresql python3 python3-venv
+
+    # Compile the daemon and the servers
+    cargo build --release
+    export REVAULTD_PATH=$PWD/target/release/revaultd
+    git submodule update --init
+    cd tests/servers
+    cd coordinatord && cargo build
+    export COORDINATORD_PATH=$PWD/target/debug/coordinatord
+    cd ../cosignerd && cargo build
+    export COSIGNERD_PATH=$PWD/target/debug/cosignerd
+    cd ../../../
+
+    # Download the bitcoind binary
+    ARCHIVE_NAME="$BITCOIND_DIR_NAME.tar.gz"
+    curl https://bitcoincore.org/bin/bitcoin-core-$BITCOIND_VERSION/bitcoin-$BITCOIND_VERSION-x86_64-linux-gnu.tar.gz -o $ARCHIVE_NAME
+    tar -xzf $ARCHIVE_NAME
+    export BITCOIND_PATH=$BITCOIND_DIR_NAME/bin/bitcoind
+
+    # Setup the postgres instance for the servers
+    pg_ctlcluster 13 main start
+    su -c "psql -c \"CREATE ROLE test CREATEDB LOGIN PASSWORD 'test'\"" - postgres
+
+    # Run the functional tests
+    python3 -m venv venv
+    . venv/bin/activate
+    pip install -r tests/requirements.txt
+    POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv -n 3 tests/

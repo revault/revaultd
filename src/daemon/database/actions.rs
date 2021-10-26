@@ -832,8 +832,7 @@ mod test {
         sighash_type: SigHashType,
         secp_ctx: &secp256k1::Secp256k1<secp256k1::All>,
     ) {
-        let (privkey, pubkey) =
-            create_keys(secp_ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let (privkey, pubkey) = create_keys(secp_ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let signature_hash =
             secp256k1::Message::from_slice(&tx.signature_hash(input_index, sighash_type).unwrap())
                 .unwrap();
@@ -1042,7 +1041,12 @@ mod test {
             .unwrap();
         assert_eq!(stored_cancel_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut cancel_tx = fresh_cancel_tx.clone();
-        revault_tx_add_sig(&mut cancel_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
+        revault_tx_add_sig(
+            &mut cancel_tx,
+            0,
+            SigHashType::AllPlusAnyoneCanPay,
+            &secp_ctx,
+        );
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
@@ -1077,7 +1081,12 @@ mod test {
             .unwrap();
         assert_eq!(stored_unemer_tx.psbt().inputs[0].partial_sigs.len(), 0);
         let mut unemer_tx = fresh_unemer_tx.clone();
-        revault_tx_add_sig(&mut unemer_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
+        revault_tx_add_sig(
+            &mut unemer_tx,
+            0,
+            SigHashType::AllPlusAnyoneCanPay,
+            &secp_ctx,
+        );
         db_update_presigned_tx(
             &db_path,
             db_vault.id,
@@ -1252,7 +1261,12 @@ mod test {
             .unwrap()
             .unwrap();
         let mut cancel_tx = fresh_cancel_tx.clone();
-        revault_tx_add_sig(&mut cancel_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
+        revault_tx_add_sig(
+            &mut cancel_tx,
+            0,
+            SigHashType::AllPlusAnyoneCanPay,
+            &secp_ctx,
+        );
         let handle = std::thread::spawn({
             let db_path = db_path.clone();
             let cancel_tx = cancel_tx.clone();

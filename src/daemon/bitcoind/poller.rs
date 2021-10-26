@@ -1,7 +1,7 @@
 use crate::common::config::BitcoindConfig;
 use crate::daemon::{
     bitcoind::{
-        interface::{BitcoinD, OnchainDescriptorState, SyncInfo, UtxoInfo},
+        interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},
         utils::{
             cancel_txid, emer_txid, populate_deposit_cache, populate_unvaults_cache,
             presigned_transactions, unemer_txid, unvault_txin_from_deposit,
@@ -1342,7 +1342,7 @@ fn update_utxos(
     let db_path = revaultd.read().unwrap().db_file();
 
     // First, let's check our deposits.
-    let OnchainDescriptorState {
+    let DepositsState {
         new_unconf: new_deposits,
         new_conf: conf_deposits,
         new_spent: spent_deposits,
@@ -1369,19 +1369,10 @@ fn update_utxos(
     }
 
     // Now, check the Unvault utxos.
-    let OnchainDescriptorState {
-        new_unconf: new_unvaults,
+    let UnvaultsState {
         new_conf: conf_unvaults,
         new_spent: spent_unvaults,
     } = bitcoind.sync_unvaults(&unvaults_cache)?;
-
-    for (outpoint, utxo) in new_unvaults {
-        // Note that it *might* have actually been confirmed in-between the last poll, but we keep
-        // single transitions, and it's no big deal to mark it confirmed during the next poll.
-        db_unvault_deposit(&revaultd.read().unwrap().db_file(), &outpoint.txid)?;
-        unvaults_cache.insert(outpoint, utxo);
-        log::debug!("Got a new unconfirmed unvault utxo at {} ", outpoint);
-    }
 
     for (outpoint, _) in conf_unvaults {
         db_confirm_unvault(&db_path, &outpoint.txid)?;

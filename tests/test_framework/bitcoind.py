@@ -40,7 +40,7 @@ class SimpleBitcoinProxy:
 
         # Create a callable to do the actual call
         proxy = BitcoinProxy(
-            btc_conf_file=self.__btc_conf_file__, service_url=service_url
+            btc_conf_file=self.__btc_conf_file__, service_url=service_url, timeout=120
         )
 
         def f(*args):

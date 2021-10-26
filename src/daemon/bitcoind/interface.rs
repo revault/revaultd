@@ -2,8 +2,10 @@ use crate::common::config::BitcoindConfig;
 use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
     bitcoin::{
-        blockdata::constants::COIN_VALUE, consensus::encode, Address, Amount, BlockHash, OutPoint,
-        Transaction, TxOut, Txid,
+        blockdata::constants::COIN_VALUE,
+        consensus::encode,
+        util::bip32::ChildNumber,
+        Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
     },
     transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},
 };
@@ -560,43 +562,77 @@ impl BitcoinD {
         self.import_fresh_descriptor(descriptor, UNVAULT_UTXOS_LABEL.to_string())
     }
 
-    // A routine to get the txid,vout pair out of a listunspent entry
-    fn outpoint_from_utxo(&self, utxo: &Json) -> Result<OutPoint, BitcoindError> {
-        let txid = utxo
-            .get("txid")
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a 'txid'.".to_string(),
-                )
-            })?
-            .as_str()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a string 'txid'.".to_string(),
-                )
-            })?;
-        let txid = Txid::from_str(txid).map_err(|e| {
-            BitcoindError::Custom(format!(
-                "Converting txid from str in 'listunspent': {}.",
-                e.to_string()
-            ))
-        })?;
-        let vout = utxo
-            .get("vout")
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a 'vout'.".to_string(),
-                )
-            })?
-            .as_u64()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a valid 'vout'.".to_string(),
-                )
-            })?;
-        Ok(OutPoint {
-            txid,
-            vout: vout as u32, // Bitcoin makes this safe
+    pub fn list_unspent_deposits(
+        &self,
+        min_amount: Option<u64>,
+    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        self.list_unspent(
+            &self.watchonly_client,
+            min_amount,
+            Some(DEPOSIT_UTXOS_LABEL),
+        )
+    }
+
+    pub fn list_unspent_unvaults(
+        &self,
+        min_amount: Option<u64>,
+    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        self.list_unspent(
+            &self.watchonly_client,
+            min_amount,
+            Some(UNVAULT_UTXOS_LABEL),
+        )
+    }
+
+    pub fn list_unspent_cpfp(&self) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        // For some weird reason, listunspent with the cpfp wallet doesn't return the label
+        // (maybe because we only have one descriptor anyways?), so we pass `None` as a label
+        self.list_unspent(&self.cpfp_client, None, None)
+    }
+
+    fn list_unspent(
+        &self,
+        client: &Client,
+        min_amount: Option<u64>,
+        label: Option<&'static str>,
+    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        let req = if let Some(min_amount) = min_amount {
+            self.make_request(
+                client,
+                "listunspent",
+                &params!(
+                    Json::Number(0.into()),       // minconf
+                    Json::Number(9999999.into()), // maxconf (default)
+                    Json::Array(vec![]),          // addresses (default)
+                    Json::Bool(true),             // include_unsafe (default)
+                    serde_json::json!({
+                        "minimumAmount": min_amount,
+                    }), // query_options
+                ),
+            )
+        } else {
+            self.make_request(
+                client,
+                "listunspent",
+                &params!(
+                    Json::Number(0.into()), // minconf
+                ),
+            )
+        };
+
+        req.map(|r| {
+            r.as_array()
+                .expect("API break, 'listunspent' didn't return an array.")
+                .into_iter()
+                .filter_map(|utxo| {
+                    let utxo = ListUnspentEntry::from(utxo);
+                    if label.or(utxo.label.as_deref()) == utxo.label.as_deref() {
+                        Some(utxo)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         })
     }
 
@@ -610,109 +646,25 @@ impl BitcoinD {
         let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
         let mut spent_utxos = deposits_utxos.clone();
-        let label_json: Json = DEPOSIT_UTXOS_LABEL.to_string().into();
+        let utxos = self.list_unspent_deposits(Some(MIN_DEPOSIT_VALUE / COIN_VALUE))?;
 
-        let req = self.make_watchonly_request(
-            "listunspent",
-            &params!(
-                Json::Number(0.into()),       // minconf
-                Json::Number(9999999.into()), // maxconf (default)
-                Json::Array(vec![]),          // addresses (default)
-                Json::Bool(true),             // include_unsafe (default)
-                serde_json::json!({
-                    "minimumAmount": MIN_DEPOSIT_VALUE / COIN_VALUE,
-                }), // query_options
-            ),
-        );
-
-        for utxo in req?.as_array().ok_or_else(|| {
-            BitcoindError::Custom("API break, 'listunspent' didn't return an array.".to_string())
-        })? {
-            if utxo.get("label") != Some(&label_json) {
-                continue;
-            }
-            let confirmations = utxo
-                .get("confirmations")
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a 'confirmations'."
-                            .to_string(),
-                    )
-                })?
-                .as_u64()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a valid 'confirmations'."
-                            .to_string(),
-                    )
-                })?;
-
-            let outpoint = self.outpoint_from_utxo(&utxo)?;
+        for unspent in utxos {
             // Not obvious at first sight:
             //  - spent_utxos == existing_utxos before the loop
             //  - listunspent won't send duplicated entries
             //  - remove() will return None if it was not present in the map
             // Therefore if there is an utxo at this outpoint, it's an already known deposit
-            if let Some(utxo) = spent_utxos.remove(&outpoint) {
+            if let Some(map_utxo) = spent_utxos.remove(&unspent.outpoint) {
                 // It may be known but still unconfirmed, though.
-                if !utxo.is_confirmed && confirmations >= min_conf as u64 {
-                    confirmed_utxos.insert(outpoint, utxo);
+                if !map_utxo.is_confirmed && unspent.confirmations >= min_conf as u64 {
+                    confirmed_utxos.insert(unspent.outpoint, map_utxo);
                 }
                 continue;
             }
-
-            let address = utxo
-                .get("address")
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain an 'address'.".to_string(),
-                    )
-                })?
-                .as_str()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a string 'address'."
-                            .to_string(),
-                    )
-                })?;
-            let script_pubkey = Address::from_str(address)
-                .map_err(|e| {
-                    BitcoindError::Custom(format!(
-                        "Could not parse 'address' from 'listunspent' entry: {}",
-                        e.to_string()
-                    ))
-                })?
-                .script_pubkey();
-            let amount = utxo
-                .get("amount")
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain an 'amount'.".to_string(),
-                    )
-                })?
-                .as_f64()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a valid 'amount'."
-                            .to_string(),
-                    )
-                })?;
-            let value = Amount::from_btc(amount)
-                .map_err(|e| {
-                    BitcoindError::Custom(format!(
-                        "Could not convert 'listunspent' entry's 'amount' to an Amount: {}",
-                        e.to_string()
-                    ))
-                })?
-                .as_sat();
-
             new_utxos.insert(
-                outpoint,
+                unspent.outpoint,
                 UtxoInfo {
-                    txo: TxOut {
-                        value,
-                        script_pubkey,
-                    },
+                    txo: unspent.txo,
                     // All new utxos are marked as unconfirmed. This allows for a proper state
                     // transition.
                     is_confirmed: false,
@@ -738,36 +690,10 @@ impl BitcoinD {
         //
         // 1. Fetch the Unvault utxos from the watchonly wallet into a
         //    (outpoint, confirmed) mapping
-        let label: Json = UNVAULT_UTXOS_LABEL.into();
         let unspent_list: HashMap<OutPoint, bool> = self
-            .make_watchonly_request(
-                "listunspent",
-                &params!(
-                    Json::Number(0.into()), // minconf
-                ),
-            )?
-            .as_array()
-            .expect("API break: 'listunspent' didn't return an array?")
+            .list_unspent_unvaults(None)?
             .iter()
-            .filter_map(|entry| {
-                if entry
-                    .get("label")
-                    .expect("API break: no 'label' in listunspent entry")
-                    == &label
-                {
-                    let op = self
-                        .outpoint_from_utxo(&entry)
-                        .expect("API break: can't get outpoint from listunspent entry");
-                    let confs = entry
-                        .get("confirmations")
-                        .map(|c| c.as_u64())
-                        .flatten()
-                        .expect("API break: invalid 'confirmations' entry in listunpsent entry");
-                    Some((op, confs > 0))
-                } else {
-                    None
-                }
-            })
+            .map(|utxo| (utxo.outpoint, utxo.confirmations > 0))
             .collect();
 
         // 2. Loop through all known Unvault utxos, check if some confirmed or
@@ -1037,4 +963,89 @@ pub struct SyncInfo {
     pub blocks: u64,
     pub ibd: bool,
     pub progress: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ListUnspentEntry {
+    pub outpoint: OutPoint,
+    pub txo: TxOut,
+    pub label: Option<String>,
+    pub confirmations: u64,
+    pub derivation_index: Option<ChildNumber>,
+}
+
+impl From<&Json> for ListUnspentEntry {
+    fn from(utxo: &Json) -> Self {
+        let txid = utxo
+            .get("txid")
+            .map(|a| a.as_str())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a string 'txid'.");
+        let txid = Txid::from_str(txid).expect("Converting txid from str in 'listunspent': {}.");
+        let vout = utxo
+            .get("vout")
+            .map(|a| a.as_u64())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a valid 'vout'.");
+        let script_pubkey = utxo
+            .get("scriptPubKey")
+            .map(|s| s.as_str())
+            .flatten()
+            .map(|s| {
+                Script::from_str(s)
+                    .expect("API break, 'listunspent' entry didn't contain a valid script_pubkey")
+            })
+            .expect("API break, 'listunspent' entry didn't contain a string script_pubkey.");
+        let amount = utxo
+            .get("amount")
+            .map(|a| a.as_f64())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a valid 'amount'.");
+        let value = Amount::from_btc(amount)
+            .expect("Could not convert 'listunspent' entry's 'amount' to an Amount")
+            .as_sat();
+        let confirmations = utxo
+            .get("confirmations")
+            .map(|a| a.as_u64())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a valid 'confirmations'.");
+        let label = utxo
+            .get("label")
+            .map(|l| l.as_str())
+            .flatten()
+            .map(|l| l.to_string());
+        let mut derivation_index = None;
+        if let Some(d) = utxo.get("desc").map(|d| {
+            d.as_str()
+                .expect("API break, 'listunspent` entry contains a non-string desc")
+        }) {
+            // If we have a descriptor, we derive only once, so the derivation index must be
+            // between `/` and `]`
+            let derivation_index_start = d.find("/");
+            let derivation_index_end = d.find("]");
+            if let Some(s) = derivation_index_start {
+                if let Some(e) = derivation_index_end {
+                    // Also we always use normal derivation
+                    derivation_index = d[s + 1..e]
+                        .parse()
+                        .map(|d| ChildNumber::Normal { index: d })
+                        .ok();
+                }
+            }
+        }
+
+        ListUnspentEntry {
+            outpoint: OutPoint {
+                txid,
+                vout: vout as u32, // Bitcoin makes this safe
+            },
+            txo: TxOut {
+                value,
+                script_pubkey,
+            },
+            confirmations,
+            label,
+            derivation_index,
+        }
+    }
 }

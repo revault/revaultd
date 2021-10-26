@@ -565,7 +565,7 @@ def test_large_spends(revault_network, bitcoind, executor):
 # (it wouldn't be possible to announce it to the coordinator when fully signed)
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_not_announceable_spend(revault_network, bitcoind, executor):
-    CSV = 2016  # 2 weeks :tm:
+    CSV = 2
     revault_network.deploy(17, 16, csv=CSV)
     man = revault_network.man(0)
 
@@ -622,11 +622,7 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     )
 
     # We'll broadcast the Spend transaction as soon as it's valid
-    # Note that bitcoind's RPC socket may timeout if it needs to generate too many
-    # blocks at once. So, spread them a bit.
-    for _ in range(10):
-        bitcoind.generate_block(CSV // 10)
-    bitcoind.generate_block(CSV % 10 - 1)
+    bitcoind.generate_block(CSV)
     man.wait_for_log(
         f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
     )

@@ -574,7 +574,7 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     deriv_indexes = []
     total_amount = 0
     for i in range(10):
-        amount = random.randint(5, 5000) / 100
+        amount = i + 1
         vaults.append(revault_network.fund(amount))
         deposits.append(f"{vaults[i]['txid']}:{vaults[i]['vout']}")
         deriv_indexes.append(vaults[i]["derivation_index"])
@@ -582,7 +582,7 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
-    n_outputs = 250
+    n_outputs = 251
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
     destinations = {
         bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs

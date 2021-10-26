@@ -733,6 +733,16 @@ pub fn share_unvault_signatures(
     send_sig_msg(&mut transport, txid, sigs.clone())
 }
 
+// A hack to workaround the immutability of the SpendTransaction.
+// FIXME: should probably have a helper in revault_tx instead?
+fn strip_signatures(spend_tx: SpendTransaction) -> SpendTransaction {
+    let mut psbt = spend_tx.into_psbt();
+    for psbtin in psbt.inputs.iter_mut() {
+        psbtin.partial_sigs.clear();
+    }
+    SpendTransaction::from_raw_psbt(&encode::serialize(&psbt)).expect("We just deserialized it")
+}
+
 /// Make the cosigning servers sign this Spend transaction.
 /// This method checks that the signatures are valid, but it doesn't
 /// check that the cosigners are returning signatures in the first place.
@@ -744,25 +754,24 @@ pub fn fetch_cosigs_signatures<C: secp256k1::Verification>(
 ) -> Result<(), CommunicationError> {
     // Strip the signatures before polling the Cosigning Server. It does not check them
     // anyways, and it makes us hit the Noise message size limit fairly quickly.
-    let mut stripped_tx = spend_tx.clone();
-    for psbtin in stripped_tx.psbt_mut().inputs.iter_mut() {
-        psbtin.partial_sigs.clear();
-    }
+    let tx = strip_signatures(spend_tx.clone());
+    let msg = SignRequest { tx };
+    log::trace!(
+        "Prepared msg to fetch cosigning servers signatures: '{:?}'",
+        msg
+    );
 
     for (host, noise_key) in cosigs {
         // FIXME: connect should take a reference... This copy is useless
         let mut transport = KKTransport::connect(*host, noise_secret, noise_key)?;
-        let msg = SignRequest {
-            tx: stripped_tx.clone(),
-        };
         log::debug!(
-            "Sending '{:?}' to cosigning server at '{}' (key: '{}')",
-            msg,
+            "Polling cosigning server at '{}' (key: '{}') for spend '{}'",
             host,
-            noise_key.0.to_hex()
+            noise_key.0.to_hex(),
+            spend_tx.txid(),
         );
 
-        let sign_res: SignResult = transport.send_req(&msg.into())?;
+        let sign_res: SignResult = transport.send_req(&msg.clone().into())?;
         let signed_tx = sign_res.tx.ok_or(CommunicationError::CosigAlreadySigned)?;
         log::debug!("Cosigning server returned: '{}'", &signed_tx,);
 
@@ -1969,51 +1978,30 @@ mod test {
             check_unvault_signatures(&revaultd.secp_ctx, &tx).unwrap();
         }
 
-        // Let's forge a valid signature
-        let psbt = tx.psbt_mut();
+        // Let's add a valid signature
+        let psbt = tx.psbt();
         let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
         let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
         let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
         let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
         let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
-        let mut sig = ctx
-            .sign(&sighash, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        sig.push(SigHashType::All as u8);
-        psbt.inputs[0].partial_sigs.insert(public_key, sig.clone());
+        let sig = ctx.sign(&sighash, &private_key.key);
+        tx.add_signature(0, public_key.key, sig.clone(), &ctx)
+            .unwrap();
 
         // Happy path: everything works :)
         for revaultd in &revaultds {
             check_unvault_signatures(&revaultd.secp_ctx, &tx).unwrap();
         }
 
-        // Now, onto with the sad paths...
-
-        // A tx without inputs??
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-        tx.psbt_mut().inputs.remove(0);
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string().contains("Error in transaction management: \'Revault input satisfaction error: \'Index out of bounds of inputs list\'\'"));
-        }
-
-        // The error is a bit different if there are no inputs in the unsigned_tx...
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-        tx.psbt_mut().global.unsigned_tx.input.remove(0);
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string()
-                .contains(&SigError::InsaneTransaction.to_string()));
-        }
+        // Note how the type system prevents us to add a transaction without PSBT inputs or tx
+        // inputs.
 
         // Signature is empty? Wtf?
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-        tx.psbt_mut().inputs[0]
-            .partial_sigs
-            .insert(public_key, vec![]);
+        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
+        psbt.inputs[0].partial_sigs.insert(public_key, vec![]);
+        // FIXME: revault_tx should probably fail here!
+        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
         for revaultd in &revaultds {
             assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
                 .unwrap_err()
@@ -2022,12 +2010,12 @@ mod test {
         }
 
         // Signature is not a valid der-encoded string
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
+        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
         let mut wrong_sig = vec![1, 2, 3];
         wrong_sig.push(SigHashType::All as u8);
-        tx.psbt_mut().inputs[0]
-            .partial_sigs
-            .insert(public_key, wrong_sig);
+        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
+        // FIXME: revault_tx should probably fail here!
+        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
         for revaultd in &revaultds {
             assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
                 .unwrap_err()
@@ -2036,8 +2024,7 @@ mod test {
         }
 
         // I signed with the right sighash_type but pushed the wrong one
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-        let psbt = tx.psbt_mut();
+        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
         let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
         let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
         let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
@@ -2048,9 +2035,9 @@ mod test {
             .serialize_der()
             .to_vec();
         wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
-        tx.psbt_mut().inputs[0]
-            .partial_sigs
-            .insert(public_key, wrong_sig);
+        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
+        // FIXME: revault_tx should probably fail here!
+        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
         for revaultd in &revaultds {
             assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
                 .unwrap_err()
@@ -2059,8 +2046,7 @@ mod test {
         }
 
         // I signed with the wrong sighash_type but pushed the right one
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-        let psbt = tx.psbt_mut();
+        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
         let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
         let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
         let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
@@ -2076,9 +2062,9 @@ mod test {
             .serialize_der()
             .to_vec();
         wrong_sig.push(SigHashType::All as u8);
-        tx.psbt_mut().inputs[0]
-            .partial_sigs
-            .insert(public_key, wrong_sig);
+        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
+        // FIXME: revault_tx should probably fail here!
+        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
         for revaultd in &revaultds {
             assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
                 .unwrap_err()
@@ -2089,8 +2075,7 @@ mod test {
         // The signature is correct, but signed by another key
         let (_, another_public_key) =
             create_keys(&ctx, &[3; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-        let psbt = tx.psbt_mut();
+        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
         let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
         let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
         let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
@@ -2101,9 +2086,9 @@ mod test {
             .serialize_der()
             .to_vec();
         sig.push(SigHashType::All as u8);
-        tx.psbt_mut().inputs[0]
-            .partial_sigs
-            .insert(another_public_key, sig);
+        psbt.inputs[0].partial_sigs.insert(another_public_key, sig);
+        // FIXME: revault_tx should probably fail here!
+        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
         for revaultd in &revaultds {
             assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
                 .unwrap_err()
@@ -2117,10 +2102,11 @@ mod test {
             .sign(&wrong_msg, &private_key.key)
             .serialize_der()
             .to_vec();
-        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
-        tx.psbt_mut().inputs[0]
-            .partial_sigs
-            .insert(public_key, wrong_sig);
+        wrong_sig.push(SigHashType::All as u8);
+        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
+        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
+        // FIXME: revault_tx should probably fail here!
+        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
         for revaultd in &revaultds {
             assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
                 .unwrap_err()
@@ -2473,15 +2459,14 @@ mod test {
         let mut unvault =
                 UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////ArhhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnAwdQAAAAAAACIAILKCCA/RbV3QMPMrwwQmk4Ark4w1WyElM27WtBgftq6ZAAAAAAABASsA6aQ1AAAAACIAIPQJ3LCGXPIO5iXX0/Yp3wHlpao7cQbPd4q3gxp0J/w2AQMEAQAAAAEFR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBJSEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqCsUYciAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
         let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature_hash =
+            secp256k1::Message::from_slice(&unvault.signature_hash(0, SigHashType::All).unwrap())
+                .unwrap();
+        let signature = ctx.sign(&signature_hash, &privkey.key);
         unvault
-            .psbt_mut()
-            .inputs
-            .get_mut(0)
-            .unwrap()
-            .partial_sigs
-            .insert(public_key, signature.clone());
+            .add_signature(0, public_key.key, signature.clone(), &ctx)
+            .unwrap();
         // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
         // it now
         let other_unvault = unvault.clone();
@@ -2506,7 +2491,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: other_unvault.txid(),
                     }),
                 );
@@ -2523,15 +2508,14 @@ mod test {
         let mut unvault =
                 UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////ArhhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnAwdQAAAAAAACIAILKCCA/RbV3QMPMrwwQmk4Ark4w1WyElM27WtBgftq6ZAAAAAAABASsA6aQ1AAAAACIAIPQJ3LCGXPIO5iXX0/Yp3wHlpao7cQbPd4q3gxp0J/w2AQMEAQAAAAEFR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBJSEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqCsUYciAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
         let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
+        let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature_hash =
+            secp256k1::Message::from_slice(&unvault.signature_hash(0, SigHashType::All).unwrap())
+                .unwrap();
+        let signature = ctx.sign(&signature_hash, &privkey.key);
         unvault
-            .psbt_mut()
-            .inputs
-            .get_mut(0)
-            .unwrap()
-            .partial_sigs
-            .insert(public_key, signature.clone());
+            .add_signature(0, public_key.key, signature.clone(), &ctx)
+            .unwrap();
         // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
         // it now
         let other_unvault = unvault.clone();
@@ -2561,7 +2545,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: other_unvault.txid(),
                     }),
                 );
@@ -2579,9 +2563,9 @@ mod test {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let signature = Vec::<u8>::from_hex("3045022100bfdfc4a5c770414645c7b7bf34b9a8607928164a167a457db59f46a24cc16096022070dc95987d9d43db34d4005c2be89b5626b1a1084ec1081be916ea9dbf4ce13e01").unwrap();
-        // Rust newbie: I need the spend but it's moved inside the closure, so I'm cloning
-        // it now
+        let signature = secp256k1::Signature::from_der(&signature[..signature.len() - 1]).unwrap();
         let mut other_spend = spend.clone();
+
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2609,13 +2593,10 @@ mod test {
                         tx: other_spend.clone(),
                     }),
                 );
+                let ctx = secp256k1::Secp256k1::verification_only();
                 other_spend
-                    .psbt_mut()
-                    .inputs
-                    .get_mut(0)
-                    .unwrap()
-                    .partial_sigs
-                    .insert(public_key, signature);
+                    .add_signature(0, public_key.key, signature.clone(), &ctx)
+                    .unwrap();
                 Some(message::ResponseResult::SignResult(
                     message::cosigner::SignResult {
                         tx: Some(other_spend),
@@ -2674,15 +2655,21 @@ mod test {
     fn test_fetch_cosigs_signatures_invalid_signature() {
         let ctx = secp256k1::Secp256k1::new();
         let mut spend = SpendTransaction::from_psbt_str("cHNidP8BAKgCAAAAARU919uuOZ2HHyRUrQsCrT2s98u7j8/xW6DXMzO7+eYFAAAAAAADAAAAA6BCAAAAAAAAIgAg4Phpb12z9E1dw2KEDZuzDVz5uaDrlq6HP/cOg88SDuiAlpgAAAAAABYAFPAj0esIbomyGAolRR1U/vYas0RxhspQCwAAAAAiACCnY5L/4eTY8hzj0np7MVKEyt1dZRcxr0us7BtOF3X7PAAAAAAAAQEr0KfpCwAAAAAiACDxHhkvHdl/8DtU5xns+0DOFIujmiWSqpg/6+gsJEWfZCICAgKTOrEDfq0KpKeFjG1J1nBeH7O8X2awCRive58A7NUmRzBEAiB3KkDDMDY+tFDP/NEp0Qvl7ndg0zeah+aeWC8pcrLedQIgCRgErTVJbFpEXY//cEejA/35u9DDR9Odx0B6CyIETHABIgICA8dJ8CWgfhsrU+VE3or4jMBtvGR/9hLUqLVpL5fBB7tIMEUCIQDlxg6DwLX1ilz36a1aSydMfTCz/Cj5jgDgqk1gogDxiAIgHn85138uFwbEpAI4dfqdaOE4FTjg10c/JepCMJ75nGIBIgICBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DlIMEUCIQCNVIPcowRztg4naOv4SkLlsWE/JK6txS1rhrdEFjgzGwIgd7TQy9C/HytCj46Xr7AShn4lm9AKsIwhcDK+ZRYCZP4BIgICEUcipBjtxtFxFXI6CYvMq/KXtJxTVJETq5tRILViovxIMEUCIQCq1nTvhPAEqpwvT83E7l903TZfeA0wwBd1sdIAaMrzlQIgR7v+TYZxt5GOADgDqMHd20E9ps9yjt38Xx5FEMeRpIEBIgICq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5HMEQCIDs+EJm+1ahGgXUteU0UpiD+pF+byHKgcXuCAGK2cr+dAiAXLnVdMLBT06XA1PNT7pzRYn8YwRuagHsqdFZn1/kqGQEiAgLKu0S06bTqM58ay1TmFWXs+3OwjYhNK8e07OGWSCCnNEgwRQIhAPf5MXo44ra2oHhiS2+mrigZsVwlBHeI8TIUa8nkFsg0AiApIhymkAPpbh1iX5HhKhv7ZSnpDFZCf2MAG0XdKUaA+gEiAgLoIlcyuneynTYaX6GkPZgd6S7+s33mK+GmsoFNFj4f0kcwRAIgZ1LcuP3qnxzMPLDSJKPnKxW9NUEr2FEPxypmfy5Axx0CIEhDmU61ffHePcWxwRB01k9nh1UNjjZcwWv6/7lLReThASICAvbewaqhppKhJmJCtUrXIa2E4HIeghNYUe3jdZpOPyWsRzBEAiB+YisdkzDamRmocVNY1L78iYs6NPTXdXRr9PcXeqYJmQIgcgs1E2bsopySlAlVHNmXVI2AgYNiPK8cFFqR09CQIAwBIgIC+bxQ3ZjFfz+EqcyFoQzGxyhzBpTMJ7WcWlrcFF3fSrxIMEUCIQD0B7BRPDeDOsmvnc0ndozXLlYJgATXvahWi6WtI1loXQIgfxw7aGb7rXyKnL0cCtOt2Mo2shV8mXbYvyIZhVEeP44BIgIDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lpHMEQCIF9+ZZO4AoFaz0WVZbLXNONf0S4pPQJrqRBrTII/nfxmAiBMppaQlftKQNtw2AcmvbFnxdqfXys+TwM0I+Env+0YzQEiAgM10BzuiowG8+zoJisSnHBWMbB2Z7eaB/4FoNWsJyvU9EcwRAIgY/4i6WCy9dKm4bIIFVgo+RmNwMOCxpGBn4o8pmYrqpcCIAM7hMX+az0D10wg0gzwc1ltYuf/JRkCNJfAN3AvA3XgASICA05t+3A0/e1NLMTAIYAg3jdEy4ofmtzSh8emoXMoeusXSDBFAiEAnWN8RXH69QweNR3T3VKpdNEHugiVTL6cIvXcnK6P+AMCIEZy/RkyUxcsXW80/hY4c71KZsCbwIyTcvhhgflGaXGwASICA06OB5pRHoR9/LWGTHq6Sy4Ugc85I1tQyEymGej6/fiNRzBEAiBAXayRXgy0xZ2lR6xTwN8iaDCr//SxLz/biRmdYG1usAIgf9l3przSfZcX2wnkKQPQLFzCeseLvy+w14tOQ/fABjYBIgIDwCr2aH/yTKugv5gL94kaje+nlTukczWC88/V6l4oDo5HMEQCIHzww7Pq/oCNpS1R9aEPGF3AHBlCrx6NE32CA4ZThxCcAiBtsieXalS5Bd4i/+JxytFVn2Le/Pf7/7ko7zhQDE4gUgEBAwQBAAAAAQWoIQIGcwwFZVqf0EVFaTWYlQmxQ4oTCIkj+5KOstDoG1vgOaxRh2R2qRRvoS9lQLcmcOnmhvvrvSYgPxBG3oisa3apFEWuYAoAKnNlB7Zvc0vqNpOAwYMciKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQJYONwJSgKF2+Ox+K8SgruNIwYM+5dbLzkhSvjfoCCjnaxRhwAAAQFHUiEC+5bLJ+gh+zKtPA2hHw3zTNIF18msZ9/4P1coFEvtoQUhAkMWjmB9+vixOk4+9wjjnCvdW1UJOH/LD9KIIloIiOJXUq4A").unwrap();
-        let mut other_spend = spend.clone();
+        let mut psbt = spend.clone().into_psbt();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         // Not a DER signature
-        let signature = Vec::<u8>::from_hex("1234").unwrap();
+        let invalid_signature = Vec::<u8>::from_hex("1234").unwrap();
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let cosigs = vec![(addr, server_pubkey)];
+
+        psbt.inputs[0]
+            .partial_sigs
+            .insert(public_key, invalid_signature);
+        // FIXME: revault_tx should prevent us from doing this
+        let other_spend = SpendTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
 
         // client thread
         let cli_thread = thread::spawn(move || {
@@ -2700,13 +2687,6 @@ mod test {
 
         server_transport
             .read_req(|_| {
-                other_spend
-                    .psbt_mut()
-                    .inputs
-                    .get_mut(0)
-                    .unwrap()
-                    .partial_sigs
-                    .insert(public_key, signature);
                 Some(message::ResponseResult::SignResult(
                     message::cosigner::SignResult {
                         tx: Some(other_spend),

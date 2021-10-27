@@ -4,7 +4,7 @@ pub mod test_utils {
     use crate::daemon::{
         jsonrpc::UserRole,
         revaultd::RevaultD,
-        threadmessages::{BitcoindMessageOut, SigFetcherMessageOut},
+        threadmessages::{BitcoindMessageOut, BitcoindSender, SigFetcherMessageOut},
         RpcUtils,
     };
 
@@ -96,7 +96,7 @@ addr = "127.0.0.1:8332"
 
         RpcUtils {
             revaultd,
-            bitcoind_tx,
+            bitcoind_conn: BitcoindSender::from(bitcoind_tx),
             bitcoind_thread,
             sigfetcher_tx,
             sigfetcher_thread,

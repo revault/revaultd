@@ -39,9 +39,9 @@ pub trait BitcoindThread {
 
 /// Interface to the bitcoind thread using synchronous MPSCs
 #[derive(Clone)]
-pub struct BitcoindSender<'a>(&'a Sender<BitcoindMessageOut>);
+pub struct BitcoindSender(Sender<BitcoindMessageOut>);
 
-impl<'a> BitcoindThread for BitcoindSender<'a> {
+impl<'a> BitcoindThread for BitcoindSender {
     fn wallet_tx(&self, txid: Txid) -> Result<Option<WalletTransaction>, BitcoindError> {
         log::trace!("Sending WalletTx to bitcoind thread for {}", txid);
 
@@ -82,14 +82,12 @@ impl<'a> BitcoindThread for BitcoindSender<'a> {
             .send(BitcoindMessageOut::SyncProgress(bitrep_tx))
             .expect("Sending to bitcoind thread");
 
-        bitrep_rx
-            .recv()
-            .expect("Receiving from bitcoind thread")
+        bitrep_rx.recv().expect("Receiving from bitcoind thread")
     }
 }
 
-impl<'a> From<&'a Sender<BitcoindMessageOut>> for BitcoindSender<'a> {
-    fn from(s: &'a Sender<BitcoindMessageOut>) -> Self {
+impl From<Sender<BitcoindMessageOut>> for BitcoindSender {
+    fn from(s: Sender<BitcoindMessageOut>) -> Self {
         BitcoindSender(s)
     }
 }

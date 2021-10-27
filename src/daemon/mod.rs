@@ -16,6 +16,7 @@ use crate::daemon::{
         UserRole,
     },
     sigfetcher::signature_fetcher_loop,
+    threadmessages::BitcoindSender,
 };
 
 pub use crate::daemon::revaultd::RevaultD;
@@ -80,7 +81,7 @@ pub fn daemon_main(mut revaultd: RevaultD) {
     let sigfetcher_thread = Arc::new(RwLock::new(sigfetcher_thread));
     let rpc_utils = RpcUtils {
         revaultd,
-        bitcoind_tx,
+        bitcoind_conn: BitcoindSender::from(bitcoind_tx),
         bitcoind_thread: bitcoind_thread.clone(),
         sigfetcher_tx,
         sigfetcher_thread: sigfetcher_thread.clone(),

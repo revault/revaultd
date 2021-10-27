@@ -887,7 +887,7 @@ pub fn watchtowers_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
 #[derive(Clone)]
 pub struct RpcUtils {
     pub revaultd: Arc<RwLock<RevaultD>>,
-    pub bitcoind_tx: Sender<BitcoindMessageOut>,
+    pub bitcoind_conn: BitcoindSender,
     pub bitcoind_thread: Arc<RwLock<JoinHandle<()>>>,
     pub sigfetcher_tx: Sender<SigFetcherMessageOut>,
     pub sigfetcher_thread: Arc<RwLock<JoinHandle<()>>>,

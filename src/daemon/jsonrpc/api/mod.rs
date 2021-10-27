@@ -287,9 +287,7 @@ impl RpcApi for RpcImpl {
     fn stop(&self, meta: JsonRpcMetaData) -> jsonrpc_core::Result<()> {
         log::info!("Stopping revaultd");
 
-        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
-            .shutdown()
-            .map_err(|e| Error::from(e))?;
+        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx).shutdown();
         meta.rpc_utils
             .sigfetcher_tx
             .send(SigFetcherMessageOut::Shutdown)
@@ -300,9 +298,7 @@ impl RpcApi for RpcImpl {
     }
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        let progress = BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
-            .sync_progress()
-            .map_err(|e| Error::from(e))?;
+        let progress = BitcoindSender::from(&meta.rpc_utils.bitcoind_tx).sync_progress();
 
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
 

@@ -159,12 +159,9 @@ impl From<revault_tx::Error> for RpcControlError {
     }
 }
 
-impl From<BitcoindThreadError> for RpcControlError {
-    fn from(e: BitcoindThreadError) -> Self {
-        match e {
-            BitcoindThreadError::Bitcoind(e) => RpcControlError::Bitcoind(e),
-            BitcoindThreadError::ThreadCommunication(e) => RpcControlError::ThreadCommunication(e),
-        }
+impl From<BitcoindError> for RpcControlError {
+    fn from(e: BitcoindError) -> Self {
+        Self::Bitcoind(e)
     }
 }
 

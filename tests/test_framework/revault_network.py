@@ -559,7 +559,7 @@ class RevaultNetwork:
         for j in act_jobs:
             j.result(TIMEOUT)
 
-    def broadcast_unvaults(self, vaults, destinations, feerate):
+    def broadcast_unvaults(self, vaults, destinations, feerate, priority=False):
         """
         Broadcast the Unvault transactions for these {vaults}, advertizing a
         Spend tx spending to these {destinations} (mapping of addresses to
@@ -581,14 +581,15 @@ class RevaultNetwork:
         spend_psbt = serializations.PSBT()
         spend_psbt.deserialize(spend_tx)
         spend_psbt.tx.calc_sha256()
-        man.rpc.setspendtx(spend_psbt.tx.hash)
+        man.rpc.setspendtx(spend_psbt.tx.hash, priority)
+        return spend_psbt
 
-    def unvault_vaults(self, vaults, destinations, feerate):
+    def unvault_vaults(self, vaults, destinations, feerate, priority=False):
         """
         Unvault these {vaults}, advertizing a Spend tx spending to these {destinations}
         (mapping of addresses to amounts)
         """
-        self.broadcast_unvaults(vaults, destinations, feerate)
+        spend_psbt = self.broadcast_unvaults(vaults, destinations, feerate, priority)
         deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
         self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
         for w in self.participants():
@@ -596,8 +597,9 @@ class RevaultNetwork:
                 lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
                 == len(deposits)
             )
+        return spend_psbt
 
-    def spend_vaults_unconfirmed(self, vaults, destinations, feerate):
+    def spend_vaults_unconfirmed(self, vaults, destinations, feerate, priority=False):
         """
         Spend these {vaults} to these {destinations} (mapping of addresses to amounts), not
         confirming the Spend transaction.
@@ -625,7 +627,7 @@ class RevaultNetwork:
         spend_psbt = serializations.PSBT()
         spend_psbt.deserialize(spend_tx)
         spend_psbt.tx.calc_sha256()
-        man.rpc.setspendtx(spend_psbt.tx.hash)
+        man.rpc.setspendtx(spend_psbt.tx.hash, priority)
 
         self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
         self.bitcoind.generate_block(self.csv)
@@ -639,7 +641,7 @@ class RevaultNetwork:
 
         return deposits, spend_psbt
 
-    def spend_vaults(self, vaults, destinations, feerate):
+    def spend_vaults(self, vaults, destinations, feerate, priority=False):
         """
         Spend these {vaults} to these {destinations} (mapping of addresses to amounts).
         Make sure to call this only with revault deployment with a low (<500) CSV, or you'll encounter
@@ -648,7 +650,7 @@ class RevaultNetwork:
         :return: the list of spent deposits along with the Spend PSBT.
         """
         deposits, spend_psbt = self.spend_vaults_unconfirmed(
-            vaults, destinations, feerate
+            vaults, destinations, feerate, priority
         )
 
         self.bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
@@ -666,34 +668,34 @@ class RevaultNetwork:
         fees = self.compute_spendtx_fees(feerate, len(vaults), 1)
         return {addr: total_spent - fees}, feerate
 
-    def unvault_vaults_anyhow(self, vaults):
+    def unvault_vaults_anyhow(self, vaults, priority=False):
         """
         Unvault these vaults with a random Spend transaction for a maximum amount and a
         fixed feerate.
         """
         destinations, feerate = self._any_spend_data(vaults)
-        return self.unvault_vaults(vaults, destinations, feerate)
+        return self.unvault_vaults(vaults, destinations, feerate, priority)
 
-    def broadcast_unvaults_anyhow(self, vaults):
+    def broadcast_unvaults_anyhow(self, vaults, priority=False):
         """
         Broadcast the Unvault transactions for these vaults with a random Spend
         transaction for a maximum amount and a fixed feerate.
         """
         destinations, feerate = self._any_spend_data(vaults)
-        return self.broadcast_unvaults(vaults, destinations, feerate)
+        return self.broadcast_unvaults(vaults, destinations, feerate, priority)
 
     def spend_vaults_anyhow(self, vaults):
         """Spend these vaults to a random address for a maximum amount for a fixed feerate"""
         destinations, feerate = self._any_spend_data(vaults)
         return self.spend_vaults(vaults, destinations, feerate)
 
-    def spend_vaults_anyhow_unconfirmed(self, vaults):
+    def spend_vaults_anyhow_unconfirmed(self, vaults, priority=False):
         """
         Spend these vaults to a random address for a maximum amount for a fixed feerate,
         not confirming the Spend transaction.
         """
         destinations, feerate = self._any_spend_data(vaults)
-        return self.spend_vaults_unconfirmed(vaults, destinations, feerate)
+        return self.spend_vaults_unconfirmed(vaults, destinations, feerate, priority)
 
     def compute_spendtx_fees(
         self, spendtx_feerate, n_vaults_spent, n_destinations, with_change=False

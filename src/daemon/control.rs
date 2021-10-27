@@ -341,8 +341,7 @@ pub fn onchain_txs<T: BitcoindThread>(
 
         // If the vault exist, there must always be a deposit transaction available.
         let deposit = bitcoind_conn
-            .wallet_tx(db_vault.deposit_outpoint.txid)
-            .map_err(|e| RpcControlError::from(e))?
+            .wallet_tx(db_vault.deposit_outpoint.txid)?
             .expect("Vault exists but not deposit tx?");
 
         // For the other transactions, it depends on the status of the vault. For the sake of

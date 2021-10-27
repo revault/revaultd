@@ -28,7 +28,7 @@ use crate::daemon::{
     },
     jsonrpc::UserRole,
     revaultd::{BlockchainTip, VaultStatus},
-    threadmessages::{BitcoindSender, BitcoindThread, SigFetcherMessageOut, WalletTransaction},
+    threadmessages::{BitcoindThread, SigFetcherMessageOut, WalletTransaction},
 };
 
 use revault_tx::{
@@ -287,9 +287,7 @@ impl RpcApi for RpcImpl {
     fn stop(&self, meta: JsonRpcMetaData) -> jsonrpc_core::Result<()> {
         log::info!("Stopping revaultd");
 
-        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
-            .shutdown()
-            .map_err(|e| Error::from(e))?;
+        meta.rpc_utils.bitcoind_conn.shutdown();
         meta.rpc_utils
             .sigfetcher_tx
             .send(SigFetcherMessageOut::Shutdown)
@@ -300,9 +298,7 @@ impl RpcApi for RpcImpl {
     }
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        let progress = BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
-            .sync_progress()
-            .map_err(|e| Error::from(e))?;
+        let progress = meta.rpc_utils.bitcoind_conn.sync_progress();
 
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
 
@@ -953,7 +949,7 @@ impl RpcApi for RpcImpl {
         };
         let vaults = onchain_txs(
             &meta.rpc_utils.revaultd.read().unwrap(),
-            &BitcoindSender::from(&meta.rpc_utils.bitcoind_tx),
+            &meta.rpc_utils.bitcoind_conn,
             db_vaults,
         )
         .map_err(|e| Error::from(e))?;
@@ -1406,7 +1402,8 @@ impl RpcApi for RpcImpl {
                 Ok(unvault_tx.into_psbt().extract_tx())
             })
             .collect::<Result<Vec<BitcoinTransaction>, JsonRpcError>>()?;
-        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+        meta.rpc_utils
+            .bitcoind_conn
             .broadcast(bitcoin_txs)
             .map_err(|e| Error::from(e))?;
         db_mark_broadcastable_spend(&db_path, &spend_txid).map_err(|e| Error::from(e))?;
@@ -1447,7 +1444,8 @@ impl RpcApi for RpcImpl {
             "Broadcasting Cancel transactions with id '{:?}'",
             transaction.txid()
         );
-        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+        meta.rpc_utils
+            .bitcoind_conn
             .broadcast(vec![transaction])
             .map_err(|e| Error::from(e))?;
 
@@ -1463,7 +1461,8 @@ impl RpcApi for RpcImpl {
         // trying to be smart by differentiating between Emer and UnvaultEmer until we die or all
         // vaults are confirmed in the EDV.
         let emers = finalized_emer_txs(&revaultd).map_err(|e| Error::from(e))?;
-        BitcoindSender::from(&meta.rpc_utils.bitcoind_tx)
+        meta.rpc_utils
+            .bitcoind_conn
             .broadcast(emers)
             .map_err(|e| Error::from(e))?;
 

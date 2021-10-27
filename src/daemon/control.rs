@@ -159,12 +159,9 @@ impl From<revault_tx::Error> for RpcControlError {
     }
 }
 
-impl From<BitcoindThreadError> for RpcControlError {
-    fn from(e: BitcoindThreadError) -> Self {
-        match e {
-            BitcoindThreadError::Bitcoind(e) => RpcControlError::Bitcoind(e),
-            BitcoindThreadError::ThreadCommunication(e) => RpcControlError::ThreadCommunication(e),
-        }
+impl From<BitcoindError> for RpcControlError {
+    fn from(e: BitcoindError) -> Self {
+        Self::Bitcoind(e)
     }
 }
 
@@ -333,7 +330,7 @@ pub fn presigned_txs(
 /// List all the onchain transactions from these vaults.
 pub fn onchain_txs<T: BitcoindThread>(
     revaultd: &RevaultD,
-    bitcoind_tx: &T,
+    bitcoind_conn: &T,
     db_vaults: Vec<DbVault>,
 ) -> Result<Vec<VaultOnchainTransactions>, RpcControlError> {
     let db_path = &revaultd.db_file();
@@ -343,9 +340,8 @@ pub fn onchain_txs<T: BitcoindThread>(
         let outpoint = db_vault.deposit_outpoint;
 
         // If the vault exist, there must always be a deposit transaction available.
-        let deposit = bitcoind_tx
-            .wallet_tx(db_vault.deposit_outpoint.txid)
-            .map_err(|e| RpcControlError::from(e))?
+        let deposit = bitcoind_conn
+            .wallet_tx(db_vault.deposit_outpoint.txid)?
             .expect("Vault exists but not deposit tx?");
 
         // For the other transactions, it depends on the status of the vault. For the sake of
@@ -356,7 +352,7 @@ pub fn onchain_txs<T: BitcoindThread>(
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
                     .and_then(|(_, tx)| {
-                        bitcoind_tx
+                        bitcoind_conn
                             .wallet_tx(tx.txid())
                             .map_err(|e| RpcControlError::from(e))
                     })?;
@@ -366,12 +362,12 @@ pub fn onchain_txs<T: BitcoindThread>(
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
                     .and_then(|(_, tx)| {
-                        bitcoind_tx
+                        bitcoind_conn
                             .wallet_tx(tx.txid())
                             .map_err(|e| RpcControlError::from(e))
                     })?;
                 let spend = if let Some(spend_txid) = db_vault.final_txid {
-                    bitcoind_tx.wallet_tx(spend_txid)?
+                    bitcoind_conn.wallet_tx(spend_txid)?
                 } else {
                     None
                 };
@@ -381,12 +377,12 @@ pub fn onchain_txs<T: BitcoindThread>(
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
                     .and_then(|(_, tx)| {
-                        bitcoind_tx
+                        bitcoind_conn
                             .wallet_tx(tx.txid())
                             .map_err(|e| RpcControlError::from(e))
                     })?;
                 let cancel = if let Some(cancel_txid) = db_vault.final_txid {
-                    bitcoind_tx.wallet_tx(cancel_txid)?
+                    bitcoind_conn.wallet_tx(cancel_txid)?
                 } else {
                     None
                 };
@@ -400,7 +396,7 @@ pub fn onchain_txs<T: BitcoindThread>(
                         .map(|tx| tx.expect("Must be here post 'Funded' state"))
                         .map_err(|e| e.into())
                         .and_then(|(_, tx)| {
-                            bitcoind_tx
+                            bitcoind_conn
                                 .wallet_tx(tx.txid())
                                 .map_err(|e| RpcControlError::from(e))
                         })?;
@@ -413,7 +409,7 @@ pub fn onchain_txs<T: BitcoindThread>(
                 let unvault = db_unvault_transaction(db_path, db_vault.id)
                     .map_err(|e| e.into())
                     .and_then(|(_, tx)| {
-                        bitcoind_tx
+                        bitcoind_conn
                             .wallet_tx(tx.txid())
                             .map_err(|e| RpcControlError::from(e))
                     })?;
@@ -425,7 +421,7 @@ pub fn onchain_txs<T: BitcoindThread>(
                         .map(|tx| tx.expect("Must be here if not 'unconfirmed'"))
                         .map_err(|e| e.into())
                         .and_then(|(_, tx)| {
-                            bitcoind_tx
+                            bitcoind_conn
                                 .wallet_tx(tx.txid())
                                 .map_err(|e| RpcControlError::from(e))
                         })?;
@@ -890,7 +886,7 @@ pub fn watchtowers_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
 #[derive(Clone)]
 pub struct RpcUtils {
     pub revaultd: Arc<RwLock<RevaultD>>,
-    pub bitcoind_tx: Sender<BitcoindMessageOut>,
+    pub bitcoind_conn: BitcoindSender,
     pub bitcoind_thread: Arc<RwLock<JoinHandle<()>>>,
     pub sigfetcher_tx: Sender<SigFetcherMessageOut>,
     pub sigfetcher_thread: Arc<RwLock<JoinHandle<()>>>,

@@ -61,6 +61,7 @@ class RevaultNetwork:
         managers_threshold=None,
         with_cosigs=True,
         with_watchtowers=True,
+        with_cpfp=True,
         bitcoind_rpc_mocks=[],
     ):
         """
@@ -104,11 +105,15 @@ class RevaultNetwork:
             csv = random.randint(1, 26784)
         self.csv = csv
 
-        # TODO: implement CPFP
-        cpfp_xpubs = [
-            bip32.BIP32.from_seed(os.urandom(32), network="test").get_xpub()
-            for _ in range(len(mans_keychains))
+        man_cpfp_privs = [
+            bip32.BIP32.from_seed(os.urandom(32), network="test")
+            for _ in range(len(manonly_keychains))
         ]
+        stkman_cpfp_privs = [
+            bip32.BIP32.from_seed(os.urandom(32), network="test")
+            for _ in range(len(stkman_man_keychains))
+        ]
+        cpfp_xpubs = [c.get_xpub() for c in man_cpfp_privs + stkman_cpfp_privs]
         stks_xpubs = [stk.get_xpub() for stk in stks_keychains]
         cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs_keychains]
         mans_xpubs = [man.get_xpub() for man in mans_keychains]
@@ -363,6 +368,7 @@ class RevaultNetwork:
                 stk_config,
                 man_config,
                 wt_process=miradord if with_watchtowers else None,
+                cpfp_priv=stkman_cpfp_privs[i].get_xpriv_bytes() if with_cpfp else None,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stkman_wallets.append(revaultd)
@@ -398,6 +404,7 @@ class RevaultNetwork:
                 bitcoind_rpcport,
                 bitcoind_cookie,
                 man_config,
+                man_cpfp_privs[i].get_xpriv_bytes() if with_cpfp else None,
             )
             start_jobs.append(self.executor.submit(daemon.start))
             self.man_wallets.append(daemon)

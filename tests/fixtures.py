@@ -142,7 +142,7 @@ def revaultd_stakeholder(bitcoind, directory):
         "xpub6FD2XRGE3DAJzb69LXMEAiHfj3U4xVqLExMSV4DJXs5zCntHmtdvpkErLwAMGMnKJN2m3LGgaaAMvBELwNNJDAwWvidNMxVgSqLyoC2y2Kc"
     ]
     stks_xpubs = [stk.get_xpub() for stk in stks]
-    cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs]
+    cosigs_keys = []
     mans_xpubs = [man.get_xpub() for man in mans]
     (dep_desc, unv_desc, cpfp_desc) = get_descriptors(
         stks_xpubs, cosigs_keys, mans_xpubs, len(mans_xpubs), cpfp_xpubs, 232
@@ -185,7 +185,7 @@ def revaultd_manager(bitcoind, directory):
         "xpub6FD2XRGE3DAJzb69LXMEAiHfj3U4xVqLExMSV4DJXs5zCntHmtdvpkErLwAMGMnKJN2m3LGgaaAMvBELwNNJDAwWvidNMxVgSqLyoC2y2Kc"
     ]
     stks_xpubs = [stk.get_xpub() for stk in stks]
-    cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs]
+    cosigs_keys = []
     mans_xpubs = [man.get_xpub() for man in mans]
     (dep_desc, unv_desc, cpfp_desc) = get_descriptors(
         stks_xpubs, cosigs_keys, mans_xpubs, len(mans_xpubs), cpfp_xpubs, 232

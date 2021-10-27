@@ -170,7 +170,7 @@ class ManagerRevaultd(Revaultd):
     ):
         """The wallet daemon for a manager.
         Needs to know all xpubs, and needs to be able to connect to the
-        coordinator and the cosigners.
+        coordinator and optionally the cosigning servers.
         """
         super(ManagerRevaultd, self).__init__(
             datadir,

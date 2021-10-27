@@ -62,6 +62,10 @@ fn default_minconf() -> u32 {
     6
 }
 
+fn default_cosig_servers() -> Vec<CosignerConfig> {
+    vec![]
+}
+
 /// Everything we need to know for talking to bitcoind serenely
 #[derive(Debug, Clone, Deserialize)]
 pub struct BitcoindConfig {
@@ -117,6 +121,7 @@ pub struct CosignerConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManagerConfig {
     pub xpub: bip32::ExtendedPubKey,
+    #[serde(default = "default_cosig_servers")]
     pub cosigners: Vec<CosignerConfig>,
 }
 
@@ -343,6 +348,32 @@ mod tests {
             [manager_config]
             xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"
             cosigners = [ { host = "127.0.0.1:1", noise_key = "087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38" } ]
+        "#;
+        toml::from_str::<Config>(toml_str).expect("Deserializing manager toml_str");
+
+        // A valid manager config (no cosigning server)
+        let toml_str = r#"
+            daemon = false
+            log_level = "trace"
+            data_dir = "/home/wizardsardine/custom/folder/"
+
+            coordinator_host = "127.0.0.1:1"
+            coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
+
+            [scripts_config]
+            cpfp_descriptor = "wsh(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)))#cwycq5xu"
+            deposit_descriptor = "wsh(multi(2,xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*,xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))#n3cj9mhy"
+            unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)),and_v(v:multi(2,03b506a1dbe57b4bf48c95e0c7d417b87dd3b4349d290d2e7e9ba72c912652d80a,0295e7f5d12a2061f1fd2286cefec592dff656a19f55f4f01305d6aa56630880ce),older(4)),thresh(2,pkh(xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*),a:pkh(xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))))#532k8uvf"
+
+            [bitcoind_config]
+            network = "bitcoin"
+            cookie_path = "/home/user/.bitcoin/.cookie"
+            addr = "127.0.0.1:8332"
+            poll_interval_secs = 4
+
+            # We are one of the above managers
+            [manager_config]
+            xpub = "xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4"
         "#;
         toml::from_str::<Config>(toml_str).expect("Deserializing manager toml_str");
 

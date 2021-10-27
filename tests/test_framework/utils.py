@@ -177,14 +177,14 @@ class Cosig(Participant):
         return self.hd.get_privkey_from_path(self.static_key_path)
 
 
-def get_participants(n_stk, n_man, n_stkman=0):
+def get_participants(n_stk, n_man, n_stkman=0, with_cosigs=True):
     """Get the configuration entries for each participant."""
     stakeholders = [User() for _ in range(n_stk)]
-    cosigs = [Cosig() for _ in range(n_stk)]
+    cosigs = [Cosig() for _ in range(n_stk)] if with_cosigs else []
     managers = [User() for _ in range(n_man)]
 
     stkman_stk = [User() for _ in range(n_stkman)]
-    stkman_cosig = [Cosig() for _ in range(n_stkman)]
+    stkman_cosig = [Cosig() for _ in range(n_stkman)] if with_cosigs else []
     stkman_man = [User() for _ in range(n_stkman)]
 
     return (

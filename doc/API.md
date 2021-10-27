@@ -398,6 +398,9 @@ You'll have to manually fetch the vaults statuses if you want to know, for examp
 
 ### `setspendtx`
 
+Announce a Spend transaction to be used (after having optionally polled the cosigning servers),
+broadcast its corresponding Unvault transactions and broadcast it as soon as the timelock expires.
+
 #### Request
 
 | Field          | Type   | Description                                    |
@@ -538,7 +541,7 @@ HSM                client                      revaultd
   |                      | <-------vaults---------+ |
   |                      |                          |
   |                      | +-------getspendtx-----> |
-  |                      | <-----psbt or wt nack--+ |
+  |                      | <-------psbt-----------+ |
   | <----sign spend tx-+ |                          |
   | +------sig---------> |                          |
   +                      |                          |
@@ -547,8 +550,7 @@ client 2                 |                          |
   +                      |                          |
   | <---sign psbt------+ |                          |
   | +-----psbt---------> |                          |
-  +                      | +---spendtx------------> | // if ack, cosign server sign
-                         | <---OK or wt nack------+ | // then daemon broadcasts tx
+  +                      | +---setspendtx---------> | // Announce and eventually broadcast this Spend
                          |                          |
                          | +--listvaults----------> | // check vaults are spent
                          + ^------vaults----------+ +

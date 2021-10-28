@@ -47,7 +47,7 @@ servers:
 
 ```
 # Adapt `-n`, `-v`, `timeout` and other environment variables to your needs
-pytest -vvv -n4 --timeout=1800
+pytest tests/ -vvv -n4 --ignore tests/servers/
 ```
 
 #### With the servers

@@ -6,3 +6,7 @@
 	path = tests/servers/cosignerd
 	url = https://github.com/revault/cosignerd
 	branch = master
+[submodule "miradord"]
+	path = tests/servers/miradord
+	url = https://github.com/revault/miradord
+	branch = master

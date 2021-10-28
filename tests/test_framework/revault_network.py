@@ -10,6 +10,7 @@ from nacl.public import PrivateKey as Curve25519Private
 from test_framework import serializations
 from test_framework.coordinatord import Coordinatord
 from test_framework.cosignerd import Cosignerd
+from test_framework.miradord import Miradord
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd, StkManRevaultd
 from test_framework.utils import (
     get_descriptors,
@@ -222,16 +223,33 @@ class RevaultNetwork:
 
         # Spin up the stakeholders wallets and their cosigning servers
         for i, stk in enumerate(stkonly_keychains):
+            datadir = os.path.join(self.root_dir, f"miradord-{i}")
+            os.makedirs(datadir)
+            wt_listen_port = reserve()
+            miradord = Miradord(
+                datadir,
+                deposit_desc,
+                unvault_desc,
+                cpfp_desc,
+                self.emergency_address,
+                wt_listen_port,
+                stkonly_wt_noiseprivs[i],
+                stkonly_noisepubs[i].hex(),
+                coordinator_noisepub.hex(),
+                self.coordinator_port,
+                self.bitcoind,
+            )
+            start_jobs.append(self.executor.submit(miradord.start))
+            self.daemons.append(miradord)
+
             datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
             os.makedirs(datadir, exist_ok=True)
-
             stk_config = {
                 "keychain": stk,
-                # FIXME: Eventually use real ones
                 "watchtowers": [
                     {
-                        "host": "127.0.0.1:1",
-                        "noise_key": os.urandom(32),
+                        "host": f"127.0.0.1:{wt_listen_port}",
+                        "noise_key": stkonly_wt_noisepubs[i].hex(),
                     }
                 ],
                 "emergency_address": self.emergency_address,
@@ -267,16 +285,33 @@ class RevaultNetwork:
 
         # Spin up the stakeholder-managers wallets and their cosigning servers
         for i, stkman in enumerate(stkman_stk_keychains):
+            datadir = os.path.join(self.root_dir, f"miradord-stkman-{i}")
+            os.makedirs(datadir)
+            wt_listen_port = reserve()
+            miradord = Miradord(
+                datadir,
+                deposit_desc,
+                unvault_desc,
+                cpfp_desc,
+                self.emergency_address,
+                wt_listen_port,
+                stkman_wt_noiseprivs[i],
+                stkman_noisepubs[i].hex(),
+                coordinator_noisepub.hex(),
+                self.coordinator_port,
+                self.bitcoind,
+            )
+            start_jobs.append(self.executor.submit(miradord.start))
+            self.daemons.append(miradord)
+
             datadir = os.path.join(self.root_dir, f"revaultd-stkman-{i}")
             os.makedirs(datadir, exist_ok=True)
-
             stk_config = {
                 "keychain": stkman,
-                # FIXME: Eventually use real ones
                 "watchtowers": [
                     {
-                        "host": "127.0.0.1:1",
-                        "noise_key": os.urandom(32),
+                        "host": f"127.0.0.1:{wt_listen_port}",
+                        "noise_key": stkman_wt_noisepubs[i].hex(),
                     }
                 ],
                 "emergency_address": self.emergency_address,

@@ -14,7 +14,7 @@ macro_rules! from_json {
         serde_json::from_str($str).unwrap_or_else(|e| {
             eprintln!("Failed to deserialize '{}' as JSON: '{}'", $str, e);
             process::exit(1);
-        });
+        })
     };
 }
 

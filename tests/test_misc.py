@@ -100,6 +100,7 @@ def test_revocation_sig_sharing(revault_network):
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
 
 
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_raw_broadcast_cancel(revault_network, bitcoind):
     """
     Test broadcasting a dozen of pair of Unvault and Cancel for vaults with

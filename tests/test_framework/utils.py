@@ -33,6 +33,14 @@ DEFAULT_REV_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "target/debug/revaultd"
 )
 REVAULTD_PATH = os.getenv("REVAULTD_PATH", DEFAULT_REV_PATH)
+DEFAULT_MIRADORD_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "servers",
+    "miradord",
+    "target/debug/miradord",
+)
+MIRADORD_PATH = os.getenv("MIRADORD_PATH", DEFAULT_MIRADORD_PATH)
 DEFAULT_COORD_PATH = os.path.join(
     os.path.dirname(__file__),
     "..",

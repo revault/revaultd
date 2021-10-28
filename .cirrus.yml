@@ -55,7 +55,9 @@ task:
     export REVAULTD_PATH=$PWD/target/release/revaultd
     git submodule update --init
     cd tests/servers
-    cd coordinatord && cargo build
+    cd miradord && cargo build
+    export MIRADORD_PATH=$PWD/target/debug/miradord
+    cd ../coordinatord && cargo build
     export COORDINATORD_PATH=$PWD/target/debug/coordinatord
     cd ../cosignerd && cargo build
     export COSIGNERD_PATH=$PWD/target/debug/cosignerd

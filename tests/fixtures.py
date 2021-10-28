@@ -150,7 +150,7 @@ def revaultd_stakeholder(bitcoind, directory):
 
     stk_config = {
         "keychain": stks[0],
-        "watchtowers": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32)}],
+        "watchtowers": [{"host": "127.0.0.1:1", "noise_key": os.urandom(32).hex()}],
         # We use a dummy one since we don't use it anyways
         "emergency_address": "bcrt1qewc2348370pgw8kjz8gy09z8xyh0d9fxde6nzamd3txc9gkmjqmq8m4cdq",
     }

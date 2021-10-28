@@ -78,7 +78,7 @@ class Revaultd(TailableProc):
                 for wt in stk_config["watchtowers"]:
                     f.write(
                         f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
-                        f"\"{wt['noise_key'].hex()}\" }}, "
+                        f"\"{wt['noise_key']}\" }}, "
                     )
                 f.write("]\n")
                 f.write(f"emergency_address = \"{stk_config['emergency_address']}\"\n")

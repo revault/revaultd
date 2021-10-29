@@ -1,13 +1,14 @@
 use crate::daemon::revaultd::VaultStatus;
 use revault_tx::{
     bitcoin::{
+        secp256k1,
         util::bip32::{ChildNumber, ExtendedPubKey},
-        Amount, OutPoint, Txid,
+        Amount, OutPoint, Txid, Wtxid,
     },
     scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
     transactions::{
-        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -182,6 +183,7 @@ tx_type_from_tx!(CancelTransaction, Cancel);
 tx_type_from_tx!(EmergencyTransaction, Emergency);
 tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
 
+// FIXME: move it into its own file
 /// A transaction stored in the 'presigned_transactions' table
 #[derive(Debug, PartialEq, Clone)]
 pub enum RevaultTx {
@@ -191,15 +193,110 @@ pub enum RevaultTx {
     UnvaultEmergency(UnvaultEmergencyTransaction),
 }
 
-/// Boilerplate to get a specific variant of the RevaultTx enum if You Are Confident :TM:
-#[macro_export]
-macro_rules! assert_tx_type {
-    ($tx:expr, $variant:ident, $reason:literal) => {
-        match $tx {
-            RevaultTx::$variant(inner_tx) => inner_tx,
-            _ => unreachable!($reason),
+impl RevaultTx {
+    /// Serialize in the PSBT format
+    pub fn ser(&self) -> Vec<u8> {
+        match self {
+            RevaultTx::Unvault(ref tx) => tx.as_psbt_serialized(),
+            RevaultTx::Cancel(ref tx) => tx.as_psbt_serialized(),
+            RevaultTx::Emergency(ref tx) => tx.as_psbt_serialized(),
+            RevaultTx::UnvaultEmergency(ref tx) => tx.as_psbt_serialized(),
         }
-    };
+    }
+
+    /// Add a signature to a presigned transaction (always first index)
+    pub fn add_signature<C>(
+        &mut self,
+        secp: &secp256k1::Secp256k1<C>,
+        pubkey: secp256k1::PublicKey,
+        sig: secp256k1::Signature,
+    ) -> Result<Option<Vec<u8>>, revault_tx::error::InputSatisfactionError>
+    where
+        C: secp256k1::Verification,
+    {
+        match self {
+            RevaultTx::Unvault(ref mut tx) => tx.add_sig(pubkey, sig, secp),
+            RevaultTx::Cancel(ref mut tx) => tx.add_cancel_sig(pubkey, sig, secp),
+            RevaultTx::Emergency(ref mut tx) => tx.add_emer_sig(pubkey, sig, secp),
+            RevaultTx::UnvaultEmergency(ref mut tx) => tx.add_emer_sig(pubkey, sig, secp),
+        }
+    }
+
+    /// Get the txid of the inner tx of the PSBT
+    pub fn txid(&self) -> Txid {
+        match self {
+            RevaultTx::Unvault(ref tx) => tx.txid(),
+            RevaultTx::Cancel(ref tx) => tx.txid(),
+            RevaultTx::Emergency(ref tx) => tx.txid(),
+            RevaultTx::UnvaultEmergency(ref tx) => tx.txid(),
+        }
+    }
+
+    /// Get the wtxid of the inner tx of the PSBT
+    pub fn wtxid(&self) -> Wtxid {
+        match self {
+            RevaultTx::Unvault(ref tx) => tx.wtxid(),
+            RevaultTx::Cancel(ref tx) => tx.wtxid(),
+            RevaultTx::Emergency(ref tx) => tx.wtxid(),
+            RevaultTx::UnvaultEmergency(ref tx) => tx.wtxid(),
+        }
+    }
+
+    pub fn unwrap_unvault(&self) -> &UnvaultTransaction {
+        match self {
+            RevaultTx::Unvault(ref tx) => tx,
+            _ => unreachable!("It must be an unvault!"),
+        }
+    }
+
+    pub fn unwrap_cancel(&self) -> &CancelTransaction {
+        match self {
+            RevaultTx::Cancel(ref tx) => tx,
+            _ => unreachable!("it must be a cancel!"),
+        }
+    }
+
+    pub fn unwrap_emer(&self) -> &EmergencyTransaction {
+        match self {
+            RevaultTx::Emergency(ref tx) => tx,
+            _ => unreachable!("It must be an emer!"),
+        }
+    }
+
+    pub fn unwrap_unvault_emer(&self) -> &UnvaultEmergencyTransaction {
+        match self {
+            RevaultTx::UnvaultEmergency(ref tx) => tx,
+            _ => unreachable!("It must be an unvaultemer!"),
+        }
+    }
+
+    pub fn assert_unvault(self) -> UnvaultTransaction {
+        match self {
+            RevaultTx::Unvault(tx) => tx,
+            _ => unreachable!("It must be an unvault!"),
+        }
+    }
+
+    pub fn assert_cancel(self) -> CancelTransaction {
+        match self {
+            RevaultTx::Cancel(tx) => tx,
+            _ => unreachable!("it must be a cancel!"),
+        }
+    }
+
+    pub fn assert_emer(self) -> EmergencyTransaction {
+        match self {
+            RevaultTx::Emergency(tx) => tx,
+            _ => unreachable!("It must be an emer!"),
+        }
+    }
+
+    pub fn assert_unvault_emer(self) -> UnvaultEmergencyTransaction {
+        match self {
+            RevaultTx::UnvaultEmergency(tx) => tx,
+            _ => unreachable!("It must be an unvaultemer!"),
+        }
+    }
 }
 
 // FIXME: naming it "db transaction" was ambiguous..

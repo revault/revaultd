@@ -2,7 +2,7 @@
 use crate::daemon::{
     control::{get_presigs, CommunicationError},
     database::{
-        actions::db_update_presigned_tx,
+        actions::{db_update_presigned_txs, db_update_vault_status},
         interface::db_sig_missing,
         schema::{DbTransaction, DbVault, RevaultTx},
         DatabaseError,
@@ -13,7 +13,7 @@ use crate::daemon::{
 use revault_tx::{bitcoin::PublicKey as BitcoinPubKey, transactions::RevaultTransaction};
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     sync::mpsc,
     sync::{Arc, RwLock},
     thread, time,
@@ -62,19 +62,12 @@ impl From<revault_net::Error> for SignatureFetcherError {
 
 // Send a `get_sigs` message to the Coordinator to fetch other stakeholders' signatures for this
 // transaction (https://github.com/revault/practical-revault/blob/master/messages.md#get_sigs).
-// If the Coordinator hands us some new signatures, update the transaction in DB.
-// If this made the transaction valid, maybe update the vault state.
-// NOTE: the vault state update assumes that we will never have all unvault signatures before
-// having all revocation transaction signatures (in which case the vault would get back from
-// 'active' to 'secured'). This assumptions holds as we are never accepting the user to provide
-// their own signature until we gathered all revocation signatures (therefore even if all our peers
-// are sending their unvault transaction to the coordinator and we fetch them, we would never have
-// a fully-valid Unvault transaction until all other signatures have been stored in db).
+// If the Coordinator hands us some new signatures, update the transaction we are passed.
 fn get_sigs(
     revaultd: &RevaultD,
     stk_keys: &[BitcoinPubKey],
     tx: &mut impl RevaultTransaction,
-) -> Result<BTreeMap<BitcoinPubKey, Vec<u8>>, SignatureFetcherError> {
+) -> Result<(), SignatureFetcherError> {
     let secp_ctx = &revaultd.secp_ctx;
     let signatures = get_presigs(
         revaultd.coordinator_host,
@@ -120,55 +113,52 @@ fn get_sigs(
         }
     }
 
-    Ok(tx.psbt().inputs[0].partial_sigs.clone())
+    Ok(())
 }
 
 // Sequentially poll the coordinator for all the `txs` signatures.
-// TODO: poll in parallel, it's worthwile as we are going to proxy the communications
-// through Tor.
+// TODO: consider polling in parallel.
+// TODO: consider only polling for the rev signatures if we are "securing" and for
+// unvault signatures if we are "activating" (ie make this poll indirectly user-triggered,
+// not something we unconditionally do in the background). Wouldn't work for managers.
 fn fetch_all_signatures(
     revaultd: &RevaultD,
     vault_txs: HashMap<DbVault, Vec<DbTransaction>>,
 ) -> Result<(), SignatureFetcherError> {
     let db_path = &revaultd.db_file();
 
-    for (db_vault, db_txs) in vault_txs {
+    for (db_vault, mut db_txs) in vault_txs {
         let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
 
-        for db_tx in db_txs {
-            let db_tx_id = db_tx.id;
-
-            let sigs = match db_tx.psbt {
-                RevaultTx::Unvault(mut unvault_tx) => {
+        for db_tx in &mut db_txs {
+            match db_tx.psbt {
+                RevaultTx::Unvault(ref mut unvault_tx) => {
                     log::debug!("Fetching Unvault signature");
-                    get_sigs(revaultd, &stk_keys, &mut unvault_tx)?
+                    get_sigs(revaultd, &stk_keys, unvault_tx)?;
                 }
-                RevaultTx::Cancel(mut cancel_tx) => {
+                RevaultTx::Cancel(ref mut cancel_tx) => {
                     log::debug!("Fetching Cancel signature");
-                    get_sigs(revaultd, &stk_keys, &mut cancel_tx)?
+                    get_sigs(revaultd, &stk_keys, cancel_tx)?;
                 }
-                RevaultTx::Emergency(mut emer_tx) => {
+                RevaultTx::Emergency(ref mut emer_tx) => {
                     log::debug!("Fetching Emergency signature");
                     debug_assert!(revaultd.is_stakeholder());
-                    get_sigs(revaultd, &stk_keys, &mut emer_tx)?
+                    get_sigs(revaultd, &stk_keys, emer_tx)?;
                 }
-                RevaultTx::UnvaultEmergency(mut unemer_tx) => {
+                RevaultTx::UnvaultEmergency(ref mut unemer_tx) => {
                     log::debug!("Fetching Unvault Emergency signature");
                     debug_assert!(revaultd.is_stakeholder());
-                    get_sigs(revaultd, &stk_keys, &mut unemer_tx)?
+                    get_sigs(revaultd, &stk_keys, unemer_tx)?;
                 }
             };
-
-            // This will atomically set the vault as 'Secured' if all revocations transactions
-            // were signed, and as 'Active' if the Unvault transaction was.
-            // NOTE: In theory, the deposit could have been reorged out and the presigned
-            // transactions wiped from the database. Would be a quite edgy case though.
-            if let Err(e) =
-                db_update_presigned_tx(db_path, db_vault.id, db_tx_id, sigs, &revaultd.secp_ctx)
-            {
-                log::error!("Error while updating presigned tx: '{}'", e);
-            }
         }
+
+        // NOTE: In theory, the deposit could have been reorged out and the presigned
+        // transactions wiped from the database. Would be a quite edgy case though.
+        if let Err(e) = db_update_presigned_txs(db_path, &db_vault, db_txs, &revaultd.secp_ctx) {
+            log::error!("Error while updating presigned tx: '{}'", e);
+        }
+        db_update_vault_status(db_path, &db_vault)?;
     }
 
     Ok(())
@@ -202,7 +192,6 @@ pub fn signature_fetcher_loop(
         if elapsed >= poll_interval {
             // This will ignore emergency transactions if we are manager-only
             let vaults_txs = db_sig_missing(&revaultd.read().unwrap().db_file())?;
-            log::trace!("Fetching transactions for {:#?}", vaults_txs);
             fetch_all_signatures(&revaultd.read().unwrap(), vaults_txs).unwrap_or_else(|e| {
                 log::warn!("Error while fetching signatures: '{}'", e);
             });

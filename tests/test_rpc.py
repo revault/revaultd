@@ -1157,3 +1157,22 @@ def test_getserverstatus(revault_network, bitcoind):
         res = w.rpc.call("getserverstatus")
         for watchtower in res["watchtowers"]:
             assert not watchtower["reachable"]
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_setspendtx_cpfp_not_enabled(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(2, 1, n_stkmanagers=1, csv=CSV, with_cpfp=False)
+    man = revault_network.mans()[1]
+    stks = revault_network.stks()
+    amount = 0.24
+    vault = revault_network.fund(amount)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    with pytest.raises(
+        RpcError,
+        match="Can't read the cpfp key",
+    ):
+        revault_network.broadcast_unvaults_anyhow([vault], priority=True)

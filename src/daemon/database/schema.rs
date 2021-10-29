@@ -131,7 +131,7 @@ pub struct DbWallet {
 }
 
 /// A row of the "vaults" table
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DbVault {
     pub id: u32, // FIXME: should be an i64
     pub wallet_id: u32,

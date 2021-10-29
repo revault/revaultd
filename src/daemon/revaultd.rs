@@ -35,7 +35,7 @@ use revault_tx::{
 
 /// The status of a [Vault], depends both on the block chain and the set of pre-signed
 /// transactions
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VaultStatus {
     /// The deposit transaction has less than 6 confirmations
     Unconfirmed,

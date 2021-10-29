@@ -1144,6 +1144,15 @@ mod test {
             unvault_tx,
             db_unvault_transaction(&db_path, db_vault.id).unwrap().1
         );
+        let sig_mis_map = db_sig_missing(&db_path).unwrap();
+        assert_eq!(sig_mis_map.len(), 1);
+        assert_eq!(
+            sig_mis_map
+                .get(sig_mis_map.keys().next().unwrap())
+                .unwrap()
+                .len(),
+            4
+        );
 
         // And removed, if there is eg a reorg.
         db_exec(&db_path, |db_tx| {
@@ -1197,6 +1206,15 @@ mod test {
         .unwrap();
         assert_eq!(db_signed_emer_txs(&db_path).unwrap().len(), 1);
         assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
+        let sig_mis_map = db_sig_missing(&db_path).unwrap();
+        assert_eq!(sig_mis_map.len(), 1);
+        assert_eq!(
+            sig_mis_map
+                .get(sig_mis_map.keys().next().unwrap())
+                .unwrap()
+                .len(),
+            3
+        );
         // If we mark the UnvaultEmergency transaction as fully signed and the vault as
         // Unvaulting, it'll get returned by the unemer fetcher instead.
         db_unvault_deposit(&db_path, &fresh_unvault_tx.txid()).unwrap();

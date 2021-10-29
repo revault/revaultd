@@ -3,8 +3,8 @@ use crate::daemon::{
     control::{get_presigs, CommunicationError},
     database::{
         actions::db_update_presigned_tx,
-        interface::{db_transactions_sig_missing, db_vault},
-        schema::{DbTransaction, RevaultTx, TransactionType},
+        interface::db_sig_missing,
+        schema::{DbTransaction, DbVault, RevaultTx},
         DatabaseError,
     },
     revaultd::RevaultD,
@@ -13,6 +13,7 @@ use crate::daemon::{
 use revault_tx::{bitcoin::PublicKey as BitcoinPubKey, transactions::RevaultTransaction};
 
 use std::{
+    collections::{BTreeMap, HashMap},
     sync::mpsc,
     sync::{Arc, RwLock},
     thread, time,
@@ -71,22 +72,17 @@ impl From<revault_net::Error> for SignatureFetcherError {
 // a fully-valid Unvault transaction until all other signatures have been stored in db).
 fn get_sigs(
     revaultd: &RevaultD,
-    tx_db_id: u32,
-    vault_id: u32,
-    mut tx: impl RevaultTransaction,
-    tx_type: TransactionType,
-) -> Result<(), SignatureFetcherError> {
-    let db_path = &revaultd.db_file();
+    stk_keys: &[BitcoinPubKey],
+    tx: &mut impl RevaultTransaction,
+) -> Result<BTreeMap<BitcoinPubKey, Vec<u8>>, SignatureFetcherError> {
     let secp_ctx = &revaultd.secp_ctx;
-    let db_vault = db_vault(&db_path, vault_id)?.expect("Presigned transactions without vault?");
-    let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
-
     let signatures = get_presigs(
         revaultd.coordinator_host,
         &revaultd.noise_secret,
         &revaultd.coordinator_noisekey,
         tx.txid(),
     )?;
+
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {
             compressed: true,
@@ -114,7 +110,7 @@ fn get_sigs(
             "Adding revocation signature '{:?}' for pubkey '{}' for ({:?})",
             sig,
             pubkey,
-            tx_type
+            tx.txid()
         );
         if let Err(e) = tx.add_signature(0, pubkey.key, sig, secp_ctx) {
             // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
@@ -122,22 +118,9 @@ fn get_sigs(
             log::error!("Error while adding signature for presigned tx: '{}'", e);
             continue;
         }
-        // This will atomically set the vault as 'Secured' if all revocations transactions
-        // were signed, and as 'Active' if the Unvault transaction was.
-        // NOTE: In theory, the deposit could have been reorged out and the presigned
-        // transactions wiped from the database. Would be a quite edgy case though.
-        if let Err(e) = db_update_presigned_tx(
-            db_path,
-            vault_id,
-            tx_db_id,
-            tx.psbt().inputs[0].partial_sigs.clone(),
-            secp_ctx,
-        ) {
-            log::error!("Error while updating presigned tx: '{}'", e);
-        }
     }
 
-    Ok(())
+    Ok(tx.psbt().inputs[0].partial_sigs.clone())
 }
 
 // Sequentially poll the coordinator for all the `txs` signatures.
@@ -145,29 +128,47 @@ fn get_sigs(
 // through Tor.
 fn fetch_all_signatures(
     revaultd: &RevaultD,
-    mut txs: Vec<DbTransaction>,
+    vault_txs: HashMap<DbVault, Vec<DbTransaction>>,
 ) -> Result<(), SignatureFetcherError> {
-    while let Some(tx) = txs.pop() {
-        match tx.psbt {
-            RevaultTx::Unvault(unvault_tx) => {
-                log::debug!("Fetching Unvault signature");
-                get_sigs(revaultd, tx.id, tx.vault_id, unvault_tx, tx.tx_type)?;
+    let db_path = &revaultd.db_file();
+
+    for (db_vault, db_txs) in vault_txs {
+        let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
+
+        for db_tx in db_txs {
+            let db_tx_id = db_tx.id;
+
+            let sigs = match db_tx.psbt {
+                RevaultTx::Unvault(mut unvault_tx) => {
+                    log::debug!("Fetching Unvault signature");
+                    get_sigs(revaultd, &stk_keys, &mut unvault_tx)?
+                }
+                RevaultTx::Cancel(mut cancel_tx) => {
+                    log::debug!("Fetching Cancel signature");
+                    get_sigs(revaultd, &stk_keys, &mut cancel_tx)?
+                }
+                RevaultTx::Emergency(mut emer_tx) => {
+                    log::debug!("Fetching Emergency signature");
+                    debug_assert!(revaultd.is_stakeholder());
+                    get_sigs(revaultd, &stk_keys, &mut emer_tx)?
+                }
+                RevaultTx::UnvaultEmergency(mut unemer_tx) => {
+                    log::debug!("Fetching Unvault Emergency signature");
+                    debug_assert!(revaultd.is_stakeholder());
+                    get_sigs(revaultd, &stk_keys, &mut unemer_tx)?
+                }
+            };
+
+            // This will atomically set the vault as 'Secured' if all revocations transactions
+            // were signed, and as 'Active' if the Unvault transaction was.
+            // NOTE: In theory, the deposit could have been reorged out and the presigned
+            // transactions wiped from the database. Would be a quite edgy case though.
+            if let Err(e) =
+                db_update_presigned_tx(db_path, db_vault.id, db_tx_id, sigs, &revaultd.secp_ctx)
+            {
+                log::error!("Error while updating presigned tx: '{}'", e);
             }
-            RevaultTx::Cancel(cancel_tx) => {
-                log::debug!("Fetching Cancel signature");
-                get_sigs(revaultd, tx.id, tx.vault_id, cancel_tx, tx.tx_type)?;
-            }
-            RevaultTx::Emergency(emer_tx) => {
-                log::debug!("Fetching Emergency signature");
-                debug_assert!(revaultd.is_stakeholder());
-                get_sigs(revaultd, tx.id, tx.vault_id, emer_tx, tx.tx_type)?;
-            }
-            RevaultTx::UnvaultEmergency(unemer_tx) => {
-                log::debug!("Fetching Unvault Emergency signature");
-                debug_assert!(revaultd.is_stakeholder());
-                get_sigs(revaultd, tx.id, tx.vault_id, unemer_tx, tx.tx_type)?;
-            }
-        };
+        }
     }
 
     Ok(())
@@ -200,9 +201,9 @@ pub fn signature_fetcher_loop(
         // If enough time has elapsed, poll the sigs
         if elapsed >= poll_interval {
             // This will ignore emergency transactions if we are manager-only
-            let txs = db_transactions_sig_missing(&revaultd.read().unwrap().db_file())?;
-            log::trace!("Fetching transactions for {:#?}", txs);
-            fetch_all_signatures(&revaultd.read().unwrap(), txs).unwrap_or_else(|e| {
+            let vaults_txs = db_sig_missing(&revaultd.read().unwrap().db_file())?;
+            log::trace!("Fetching transactions for {:#?}", vaults_txs);
+            fetch_all_signatures(&revaultd.read().unwrap(), vaults_txs).unwrap_or_else(|e| {
                 log::warn!("Error while fetching signatures: '{}'", e);
             });
 

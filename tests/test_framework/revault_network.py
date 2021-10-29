@@ -18,6 +18,7 @@ from test_framework.utils import (
     wait_for,
     RpcError,
     TIMEOUT,
+    WT_PLUGINS_DIR,
 )
 
 
@@ -220,6 +221,11 @@ class RevaultNetwork:
 
         # Start daemons in parallel, as it takes a few seconds for each
         start_jobs = []
+        # By default the watchtower should not revault anything
+        default_wt_plugin = {
+            "path": os.path.join(WT_PLUGINS_DIR, "revault_nothing.py"),
+            "conf": {},
+        }
 
         # Spin up the stakeholders wallets and their cosigning servers
         for i, stk in enumerate(stkonly_keychains):
@@ -238,6 +244,7 @@ class RevaultNetwork:
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
                 self.bitcoind,
+                plugins=[default_wt_plugin],
             )
             start_jobs.append(self.executor.submit(miradord.start))
             self.daemons.append(miradord)
@@ -265,6 +272,7 @@ class RevaultNetwork:
                 self.coordinator_port,
                 self.bitcoind,
                 stk_config,
+                wt_process=miradord,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stk_wallets.append(revaultd)
@@ -300,6 +308,7 @@ class RevaultNetwork:
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
                 self.bitcoind,
+                plugins=[default_wt_plugin],
             )
             start_jobs.append(self.executor.submit(miradord.start))
             self.daemons.append(miradord)
@@ -332,6 +341,7 @@ class RevaultNetwork:
                 self.bitcoind,
                 stk_config,
                 man_config,
+                wt_process=miradord,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stkman_wallets.append(revaultd)

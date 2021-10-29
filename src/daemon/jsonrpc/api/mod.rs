@@ -8,10 +8,11 @@ use error::Error;
 use crate::common::VERSION;
 use crate::daemon::{
     control::{
-        announce_spend_transaction, check_spend_transaction_size, coordinator_status,
-        cosigners_status, fetch_cosigs_signatures, finalized_emer_txs, listvaults_from_db,
-        onchain_txs, presigned_txs, share_rev_signatures, share_unvault_signatures,
-        vaults_from_deposits, watchtowers_status, ListSpendEntry, ListSpendStatus, RpcUtils,
+        announce_spend_transaction, check_spend_transaction_size, coord_share_rev_signatures,
+        coordinator_status, cosigners_status, fetch_cosigs_signatures, finalized_emer_txs,
+        listvaults_from_db, onchain_txs, presigned_txs, share_unvault_signatures,
+        vaults_from_deposits, watchtowers_status, wts_share_emer_signatures, ListSpendEntry,
+        ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -745,10 +746,26 @@ impl RpcApi for RpcImpl {
         let rev_txs = vec![cancel_db_tx, emer_db_tx, unvault_emer_db_tx];
         db_update_presigned_txs(&db_path, &db_vault, rev_txs.clone(), secp_ctx)?;
         db_mark_securing_vault(&db_path, db_vault.id)?;
+
+        // If this made the Emergency fully signed and we are a stakeholder, share
+        // it with our watchtowers.
+        let emer_db_tx =
+            db_emer_transaction(&db_path, db_vault.id)?.ok_or(JsonRpcError::internal_error())?;
+        if !db_vault.emer_shared && emer_db_tx.psbt.unwrap_emer().is_finalizable(secp_ctx) {
+            if let Some(ref watchtowers) = revaultd.watchtowers {
+                wts_share_emer_signatures(
+                    &revaultd.noise_secret,
+                    &watchtowers,
+                    db_vault.deposit_outpoint,
+                    db_vault.derivation_index,
+                    &emer_db_tx,
+                )?;
+            }
+        }
         db_update_vault_status(&db_path, &db_vault)?;
 
         // Share them with our felow stakeholders.
-        share_rev_signatures(
+        coord_share_rev_signatures(
             revaultd.coordinator_host,
             &revaultd.noise_secret,
             &revaultd.coordinator_noisekey,

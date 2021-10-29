@@ -167,6 +167,7 @@ def revaultd_stakeholder(bitcoind, directory):
         reserve(),
         bitcoind,
         stk_config=stk_config,
+        wt_process=None,
     )
     revaultd.start()
 

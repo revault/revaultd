@@ -59,6 +59,7 @@ DEFAULT_COSIG_PATH = os.path.join(
 COSIGNERD_PATH = os.getenv("COSIGNERD_PATH", DEFAULT_COSIG_PATH)
 DEFAULT_BITCOIND_PATH = "bitcoind"
 BITCOIND_PATH = os.getenv("BITCOIND_PATH", DEFAULT_BITCOIND_PATH)
+WT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wtplugins")
 
 
 def wait_for(success, timeout=TIMEOUT, debug_fn=None):

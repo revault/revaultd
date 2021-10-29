@@ -18,8 +18,9 @@ use crate::daemon::{
 
 use revault_net::{
     message::{
-        coordinator::{GetSigs, SetSpendResult, SetSpendTx, Sig, SigResult, Sigs},
+        coordinator::{self, GetSigs, SetSpendResult, SetSpendTx, Sigs},
         cosigner::{SignRequest, SignResult},
+        watchtower,
     },
     transport::KKTransport,
 };
@@ -453,11 +454,29 @@ pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>
         .map_err(|e| e.into())
 }
 
+/// The kind of signature the WT refused
+#[derive(Debug)]
+pub enum WtSigNackKind {
+    Revocation,
+    Unvault,
+}
+
+impl fmt::Display for WtSigNackKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            WtSigNackKind::Revocation => write!(f, "revocation"),
+            WtSigNackKind::Unvault => write!(f, "unvault"),
+        }
+    }
+}
+
 /// An error that occured when talking to a server
 #[derive(Debug)]
 pub enum CommunicationError {
     /// An error internal to revault_net, generally a transport error
     Net(revault_net::Error),
+    /// The watchtower refused to store one of our signatures
+    WatchtowerNack(OutPoint, WtSigNackKind),
     /// The Coordinator told us they could not store our signature
     SignatureStorage,
     /// The Coordinator told us they could not store our Spend transaction
@@ -472,6 +491,11 @@ impl fmt::Display for CommunicationError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Net(e) => write!(f, "Network error: '{}'", e),
+            Self::WatchtowerNack(op, kind) => write!(
+                f,
+                "Watchtower refused to store one of our {} signatures for vault '{}'",
+                kind, op
+            ),
             Self::SignatureStorage => {
                 write!(f, "Coordinator error: it failed to store the signature")
             }
@@ -497,6 +521,39 @@ impl From<revault_net::Error> for CommunicationError {
     }
 }
 
+// Send a `sig` (https://github.com/revault/practical-revault/blob/master/messages.md#sig)
+// message to a watchtower.
+fn send_wt_sig_msg(
+    transport: &mut KKTransport,
+    deposit_outpoint: OutPoint,
+    derivation_index: ChildNumber,
+    txid: Txid,
+    signatures: BTreeMap<secp256k1::PublicKey, secp256k1::Signature>,
+) -> Result<(), CommunicationError> {
+    let sig_msg = watchtower::Sig {
+        signatures,
+        txid,
+        deposit_outpoint,
+        derivation_index,
+    };
+
+    log::debug!("Sending signatures to watchtower: '{:?}'", sig_msg);
+    let sig_result: watchtower::SigResult = transport.send_req(&sig_msg.into())?;
+    log::debug!(
+        "Got response to signatures for '{}' from watchtower: '{:?}'",
+        deposit_outpoint,
+        sig_result
+    );
+    if !sig_result.ack {
+        return Err(CommunicationError::WatchtowerNack(
+            deposit_outpoint,
+            WtSigNackKind::Revocation,
+        ));
+    }
+
+    Ok(())
+}
+
 // Send a `sig` (https://github.com/revault/practical-revault/blob/master/messages.md#sig-1)
 // message to the server for all the sigs of this mapping.
 // Note that we are looping, but most (if not all) will only have a single signature
@@ -504,19 +561,19 @@ impl From<revault_net::Error> for CommunicationError {
 // which generates fresh unsigned transactions.
 //
 // `sigs` MUST contain valid signatures (including the attached sighash type)
-fn send_sig_msg(
+fn send_coord_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
     sigs: BTreeMap<secp256k1::PublicKey, secp256k1::Signature>,
 ) -> Result<(), CommunicationError> {
     for (pubkey, signature) in sigs {
-        let sig_msg = Sig {
+        let sig_msg = coordinator::Sig {
             pubkey,
             signature,
             id,
         };
         log::debug!("Sending sig '{:?}' to sync server", sig_msg,);
-        let sig_result: SigResult = transport.send_req(&sig_msg.into())?;
+        let sig_result: coordinator::SigResult = transport.send_req(&sig_msg.into())?;
         log::debug!("Got from coordinator: '{:?}'", sig_result);
         if !sig_result.ack {
             return Err(CommunicationError::SignatureStorage);
@@ -526,8 +583,36 @@ fn send_sig_msg(
     Ok(())
 }
 
+/// Send the signatures for the Emergency transaction to the Watchtower.
+/// Only sharing the Emergency signature tells the watchtower to be aware of, but
+/// not watch, the vault. Later sharing the UnvaultEmergency and Cancel signatures
+/// will trigger it to watch it.
+// FIXME: better to share all signatures early and to then have another message
+// asking permission before delegating.
+pub fn wts_share_emer_signatures(
+    noise_secret: &revault_net::noise::SecretKey,
+    watchtowers: &[(std::net::SocketAddr, revault_net::noise::PublicKey)],
+    deposit_outpoint: OutPoint,
+    derivation_index: ChildNumber,
+    emer_tx: &DbTransaction,
+) -> Result<(), CommunicationError> {
+    for (wt_host, wt_noisekey) in watchtowers {
+        let mut transport = KKTransport::connect(*wt_host, noise_secret, wt_noisekey)?;
+
+        send_wt_sig_msg(
+            &mut transport,
+            deposit_outpoint,
+            derivation_index,
+            emer_tx.psbt.txid(),
+            emer_tx.psbt.signatures(),
+        )?;
+    }
+
+    Ok(())
+}
+
 /// Send the signatures for the 3 revocation txs to the Coordinator
-pub fn share_rev_signatures(
+pub fn coord_share_rev_signatures(
     coordinator_host: std::net::SocketAddr,
     noise_secret: &revault_net::noise::SecretKey,
     coordinator_noisekey: &revault_net::noise::PublicKey,
@@ -536,7 +621,7 @@ pub fn share_rev_signatures(
     let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
     for tx in rev_txs {
-        send_sig_msg(&mut transport, tx.psbt.txid(), tx.psbt.signatures())?;
+        send_coord_sig_msg(&mut transport, tx.psbt.txid(), tx.psbt.signatures())?;
     }
 
     Ok(())
@@ -551,7 +636,7 @@ pub fn share_unvault_signatures(
 ) -> Result<(), CommunicationError> {
     let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
-    send_sig_msg(
+    send_coord_sig_msg(
         &mut transport,
         unvault_tx.psbt.txid(),
         unvault_tx.psbt.signatures(),
@@ -1657,7 +1742,7 @@ mod tests {
 
     // This time the coordinator won't ack our signatures :(
     #[test]
-    fn test_send_sig_msg_not_acked() {
+    fn test_send_coord_sig_msg_not_acked() {
         let txid =
             Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
                 .unwrap();
@@ -1676,10 +1761,12 @@ mod tests {
         let cli_thread = thread::spawn(move || {
             let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
                 .expect("Client channel connecting");
-            assert!(send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone())
-                .unwrap_err()
-                .to_string()
-                .contains(&CommunicationError::SignatureStorage.to_string()));
+            assert!(
+                send_coord_sig_msg(&mut cli_transport, txid.clone(), sigs.clone())
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&CommunicationError::SignatureStorage.to_string())
+            );
         });
 
         let mut server_transport =
@@ -1690,7 +1777,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
                         id: txid
@@ -1706,7 +1793,7 @@ mod tests {
 
     // This time the server likes our signatures! :tada:
     #[test]
-    fn test_send_sig_msg() {
+    fn test_send_coord_sig_msg() {
         let txid =
             Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
                 .unwrap();
@@ -1725,7 +1812,7 @@ mod tests {
         let cli_thread = thread::spawn(move || {
             let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
                 .expect("Client channel connecting");
-            send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
+            send_coord_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
         });
 
         let mut server_transport =
@@ -1736,7 +1823,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
                         id: txid
@@ -1784,7 +1871,7 @@ mod tests {
         // client thread
         let cli_thread = thread::spawn(move || {
             assert!(
-                share_rev_signatures(addr, &client_privkey, &server_pubkey, &[db_tx])
+                coord_share_rev_signatures(addr, &client_privkey, &server_pubkey, &[db_tx])
                     .unwrap_err()
                     .to_string()
                     .contains(&CommunicationError::SignatureStorage.to_string())
@@ -1799,7 +1886,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
                         id: other_cancel.txid(),
@@ -1884,7 +1971,7 @@ mod tests {
 
         // client thread
         let cli_thread = thread::spawn(move || {
-            share_rev_signatures(
+            coord_share_rev_signatures(
                 addr,
                 &client_privkey,
                 &server_pubkey,
@@ -1901,7 +1988,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature: signature_cancel,
                         id: other_cancel.txid(),
@@ -1917,7 +2004,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature: signature_emer,
                         id: other_emer.txid(),
@@ -1933,7 +2020,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature: signature_unemer,
                         id: other_unvault_emer.txid(),
@@ -1987,7 +2074,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
                         id: other_unvault.txid(),
@@ -2046,7 +2133,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::CoordSig(Sig {
+                    &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
                         id: other_unvault.txid(),

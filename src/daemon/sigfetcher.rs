@@ -1,10 +1,10 @@
 ///! Background thread that will poll the coordinator for signatures
 use crate::daemon::{
-    control::{get_presigs, CommunicationError},
+    control::{get_presigs, wts_share_emer_signatures, CommunicationError},
     database::{
-        actions::{db_update_presigned_txs, db_update_vault_status},
+        actions::{db_mark_emer_shared, db_update_presigned_txs, db_update_vault_status},
         bitcointx::RevaultTx,
-        interface::db_sig_missing,
+        interface::{db_emer_transaction, db_sig_missing},
         schema::{DbTransaction, DbVault},
         DatabaseError,
     },
@@ -19,6 +19,7 @@ use revault_tx::{
 
 use std::{
     collections::HashMap,
+    path,
     sync::mpsc,
     sync::{Arc, RwLock},
     thread, time,
@@ -29,6 +30,7 @@ pub enum SignatureFetcherError {
     DbError(DatabaseError),
     Communication(CommunicationError),
     ChannelDisconnected,
+    MissingTransaction,
 }
 
 impl std::fmt::Display for SignatureFetcherError {
@@ -40,6 +42,9 @@ impl std::fmt::Display for SignatureFetcherError {
             }
             Self::ChannelDisconnected => {
                 write!(f, "Channel disconnected error in sig fetcher thread")
+            }
+            Self::MissingTransaction => {
+                write!(f, "Race: a presigned transaction is missing in DB")
             }
         }
     }
@@ -116,6 +121,48 @@ fn get_sigs<C: secp256k1::Verification>(
     Ok(())
 }
 
+// If we are a stakeholder, share the signatures for the Emergency transaction
+// with all our watchtowers.
+fn maybe_wt_share_signatures(
+    revaultd: &RevaultD,
+    db_path: &path::Path,
+    db_vault: &DbVault,
+) -> Result<(), SignatureFetcherError> {
+    if db_vault.emer_shared {
+        return Ok(());
+    }
+    let watchtowers = match revaultd.watchtowers {
+        Some(ref wt) => wt,
+        None => return Ok(()),
+    };
+
+    // It should always be here, apart from a very edgy race condition.
+    let emer_tx = db_emer_transaction(db_path, db_vault.id)?
+        .ok_or(SignatureFetcherError::MissingTransaction)?;
+    if emer_tx
+        .psbt
+        .unwrap_emer()
+        .is_finalizable(&revaultd.secp_ctx)
+    {
+        log::debug!(
+            "Sharing emergency signatures with watchtowers for vault at '{}'",
+            &db_vault.deposit_outpoint
+        );
+        wts_share_emer_signatures(
+            &revaultd.noise_secret,
+            &watchtowers,
+            db_vault.deposit_outpoint,
+            db_vault.derivation_index,
+            &emer_tx,
+        )?;
+        // FIXME: what if only part of the watchtowers got the sig? The WT should
+        // be less strict on that..
+        db_mark_emer_shared(db_path, db_vault)?;
+    }
+
+    Ok(())
+}
+
 // Sequentially poll the coordinator for all the `txs` signatures.
 // TODO: consider polling in parallel.
 // TODO: consider only polling for the rev signatures if we are "securing" and for
@@ -162,6 +209,17 @@ fn fetch_all_signatures(
         // transactions wiped from the database. Would be a quite edgy case though.
         if let Err(e) = db_update_presigned_txs(db_path, &db_vault, db_txs, &revaultd.secp_ctx) {
             log::error!("Error while updating presigned tx: '{}'", e);
+            continue;
+        }
+        // Check if we can share the Emer signature with the watchtowers
+        if let Err(e) = maybe_wt_share_signatures(revaultd, &db_path, &db_vault) {
+            log::error!(
+                "Error sharing emergency signatures with watchtowers: '{}'",
+                e
+            );
+            // FIXME: we should not discard those new signatures, but still retry
+            // to send them to the watchtowers.
+            continue;
         }
         db_update_vault_status(db_path, &db_vault)?;
     }

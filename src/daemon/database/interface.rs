@@ -686,8 +686,13 @@ pub fn db_sig_missing(
         db_path,
         "SELECT v.*, ptx.* \
          FROM presigned_transactions as ptx INNER JOIN vaults as v ON ptx.vault_id = v.id \
-         WHERE fullysigned = 0",
-        params![],
+         WHERE ptx.fullysigned = 0 AND v.status IN (?1, ?2, ?3, ?4)",
+        params![
+            VaultStatus::Funded as u32,
+            VaultStatus::Securing as u32,
+            VaultStatus::Secured as u32,
+            VaultStatus::Activating as u32
+        ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
             let db_tx: DbTransaction = db_tx_from_row(row, 11)?;

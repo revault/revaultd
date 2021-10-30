@@ -10,6 +10,19 @@ task:
     TIMEOUT: 240
     BITCOIND_VERSION: 22.0
     BITCOIND_DIR_NAME: "bitcoin-$BITCOIND_VERSION"
+  matrix:
+    - name: 'Misc functional tests'
+      env:
+        TEST_GROUP: tests/test_misc.py
+    - name: 'RPC functional tests'
+      env:
+        TEST_GROUP: tests/test_rpc.py
+    - name: 'Chain functional tests'
+      env:
+        TEST_GROUP: tests/test_rpc.py
+    - name: 'Spend functional tests'
+      env:
+        TEST_GROUP: tests/test_spend.py
 
   registry_cache:
     folder: $CARGO_HOME/registry
@@ -57,9 +70,11 @@ task:
     # Setup the postgres instance for the servers
     pg_ctlcluster 13 main start
     su -c "psql -c \"CREATE ROLE test CREATEDB LOGIN PASSWORD 'test'\"" - postgres
+    export POSTGRES_USER=test POSTGRES_PASS=test
 
     # Run the functional tests
     python3 -m venv venv
     . venv/bin/activate
     pip install -r tests/requirements.txt
-    POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv -n 2 tests/
+    # FIXME: somehow cache all the setup work to not re-do it for each task below!
+    pytest $TEST_GROUP -vvv -n 2

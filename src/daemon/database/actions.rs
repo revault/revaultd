@@ -1,7 +1,8 @@
 use crate::daemon::{
     database::{
+        bitcointx::{RevaultTx, TransactionType},
         interface::*,
-        schema::{DbTransaction, DbVault, RevaultTx, TransactionType, SCHEMA},
+        schema::{DbTransaction, DbVault, SCHEMA},
         DatabaseError, DB_VERSION,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},

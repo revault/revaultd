@@ -3,8 +3,9 @@ use crate::daemon::{
     control::{get_presigs, CommunicationError},
     database::{
         actions::{db_update_presigned_txs, db_update_vault_status},
+        bitcointx::RevaultTx,
         interface::db_sig_missing,
-        schema::{DbTransaction, DbVault, RevaultTx},
+        schema::{DbTransaction, DbVault},
         DatabaseError,
     },
     revaultd::RevaultD,

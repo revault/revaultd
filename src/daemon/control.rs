@@ -777,11 +777,12 @@ mod test {
                 db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
                 db_update_presigned_txs,
             },
+            bitcointx::RevaultTx,
             interface::{
                 db_cancel_transaction, db_emer_transaction, db_exec, db_unvault_emer_transaction,
                 db_unvault_transaction, db_vault_by_deposit,
             },
-            schema::{DbTransaction, DbVault, RevaultTx},
+            schema::{DbTransaction, DbVault},
         },
         jsonrpc::UserRole,
         revaultd::{RevaultD, VaultStatus},

@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod bitcointx;
 pub mod interface;
 pub mod schema;
 

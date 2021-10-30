@@ -752,9 +752,7 @@ impl RpcApi for RpcImpl {
             revaultd.coordinator_host,
             &revaultd.noise_secret,
             &revaultd.coordinator_noisekey,
-            (&cancel_tx, cancel_sigs.clone()),
-            (&emergency_tx, emer_sigs.clone()),
-            (&unvault_emergency_tx, unvault_emer_sigs.clone()),
+            &rev_txs,
         )
         .map_err(|e| Error::from(e))?;
 
@@ -897,7 +895,7 @@ impl RpcApi for RpcImpl {
             revaultd.coordinator_host,
             &revaultd.noise_secret,
             &revaultd.coordinator_noisekey,
-            &unvault_tx,
+            &unvault_db_tx,
         )
         .map_err(|e| {
             JsonRpcError::invalid_params(format!(

@@ -9,7 +9,7 @@ use crate::daemon::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
             db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
         },
-        schema::DbVault,
+        schema::{DbTransaction, DbVault},
         DatabaseError,
     },
     revaultd::{RevaultD, VaultStatus},
@@ -25,12 +25,8 @@ use revault_net::{
 };
 use revault_tx::{
     bitcoin::{
-        consensus::encode,
-        hashes::hex::ToHex,
-        secp256k1::{self, Signature},
-        util::bip32::ChildNumber,
-        Address, Amount, OutPoint, PublicKey as BitcoinPubKey, SigHashType,
-        Transaction as BitcoinTransaction, Txid,
+        consensus::encode, hashes::hex::ToHex, secp256k1, util::bip32::ChildNumber, Address,
+        Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
     transactions::{
@@ -511,19 +507,9 @@ impl From<revault_net::Error> for CommunicationError {
 fn send_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
-    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
+    sigs: BTreeMap<secp256k1::PublicKey, secp256k1::Signature>,
 ) -> Result<(), CommunicationError> {
-    for (pubkey, sig) in sigs {
-        let pubkey = pubkey.key;
-        let (sigtype, sig) = sig
-            .split_last()
-            .expect("They must provide valid signatures");
-        assert!(
-            *sigtype == SigHashType::AllPlusAnyoneCanPay as u8
-                || *sigtype == SigHashType::All as u8
-        );
-
-        let signature = Signature::from_der(&sig).expect("They must provide valid signatures");
+    for (pubkey, signature) in sigs {
         let sig_msg = Sig {
             pubkey,
             signature,
@@ -545,23 +531,13 @@ pub fn share_rev_signatures(
     coordinator_host: std::net::SocketAddr,
     noise_secret: &revault_net::noise::SecretKey,
     coordinator_noisekey: &revault_net::noise::PublicKey,
-    cancel: (&CancelTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
-    emer: (&EmergencyTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
-    unvault_emer: (
-        &UnvaultEmergencyTransaction,
-        BTreeMap<BitcoinPubKey, Vec<u8>>,
-    ),
+    rev_txs: &[DbTransaction],
 ) -> Result<(), CommunicationError> {
-    // We would not spam the coordinator, would we?
-    assert!(!cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty());
     let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
-    let cancel_txid = cancel.0.txid();
-    send_sig_msg(&mut transport, cancel_txid, cancel.1)?;
-    let emer_txid = emer.0.txid();
-    send_sig_msg(&mut transport, emer_txid, emer.1)?;
-    let unvault_emer_txid = unvault_emer.0.txid();
-    send_sig_msg(&mut transport, unvault_emer_txid, unvault_emer.1)?;
+    for tx in rev_txs {
+        send_sig_msg(&mut transport, tx.psbt.txid(), tx.psbt.signatures())?;
+    }
 
     Ok(())
 }
@@ -571,20 +547,15 @@ pub fn share_unvault_signatures(
     coordinator_host: std::net::SocketAddr,
     noise_secret: &revault_net::noise::SecretKey,
     coordinator_noisekey: &revault_net::noise::PublicKey,
-    unvault_tx: &UnvaultTransaction,
+    unvault_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
     let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
-    // FIXME: don't blindly assume the index here..
-    let sigs = &unvault_tx
-        .psbt()
-        .inputs
-        .get(0)
-        .expect("Unvault has a single input")
-        .partial_sigs;
-    log::trace!("Sharing unvault sigs {:?}", sigs);
-    let txid = unvault_tx.txid();
-    send_sig_msg(&mut transport, txid, sigs.clone())
+    send_sig_msg(
+        &mut transport,
+        unvault_tx.psbt.txid(),
+        unvault_tx.psbt.signatures(),
+    )
 }
 
 // A hack to workaround the immutability of the SpendTransaction.
@@ -777,7 +748,7 @@ mod test {
                 db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
                 db_update_presigned_txs,
             },
-            bitcointx::RevaultTx,
+            bitcointx::{RevaultTx, TransactionType},
             interface::{
                 db_cancel_transaction, db_emer_transaction, db_exec, db_unvault_emer_transaction,
                 db_unvault_transaction, db_vault_by_deposit,
@@ -1697,8 +1668,8 @@ mod test {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
+        let signature = secp256k1::Signature::from_str("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap();
+        sigs.insert(public_key.key, signature.clone());
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -1725,7 +1696,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: txid
                     }),
                 );
@@ -1746,8 +1717,8 @@ mod test {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
+        let signature = secp256k1::Signature::from_str("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap();
+        sigs.insert(public_key.key, signature.clone());
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -1771,7 +1742,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: txid
                     }),
                 );
@@ -1784,87 +1755,30 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "They must provide valid signatures")]
-    fn test_send_sig_msg_invalid_signature() {
-        let txid =
-            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
-                .unwrap();
-        let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        // This signature is invalid
-        let signature = vec![];
-        sigs.insert(public_key, signature.clone());
-
-        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
-            (gen_keypair(), gen_keypair());
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _server_transport =
-                KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
-                    .expect("Server channel binding and accepting");
-        });
-
-        let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
-            .expect("Client channel connecting");
-
-        // This call will panic because the signature has invalid lenght
-        send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
-        server_thread.join().unwrap();
-    }
-
-    #[test]
-    // We trim the assertion message here because windows and the rest of the world handle \n
-    // in different ways :/
-    #[should_panic(
-        expected = "assertion failed: *sigtype == SigHashType::AllPlusAnyoneCanPay as u8 ||"
-    )]
-    fn test_send_sig_msg_invalid_sighash_type() {
-        let txid =
-            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
-                .unwrap();
-        let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d02").unwrap();
-        sigs.insert(public_key, signature.clone());
-
-        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
-            (gen_keypair(), gen_keypair());
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _server_transport =
-                KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
-                    .expect("Server channel binding and accepting");
-        });
-        let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
-            .expect("Client channel connecting");
-
-        // This call will fail as the signature has the wrong sighash
-        send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
-        server_thread.join().unwrap();
-    }
-
-    #[test]
     fn test_share_rev_signatures_not_acked() {
         let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
-        let cancel =
+        let (private_key, public_key) =
+            create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut cancel =
                 CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let emer =
-                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
-        let unvault_emer =
-                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        // Rust newbie: I need the txs but they're moved inside the closure, so I'm cloning
-        // them now
+        let signature_hash = secp256k1::Message::from_slice(
+            &cancel
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature = ctx.sign(&signature_hash, &private_key.key);
+        cancel
+            .add_cancel_sig(public_key.key, signature, &ctx)
+            .unwrap();
         let other_cancel = cancel.clone();
+        let db_tx = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Cancel,
+            psbt: RevaultTx::Cancel(cancel),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -1873,17 +1787,12 @@ mod test {
 
         // client thread
         let cli_thread = thread::spawn(move || {
-            assert!(share_rev_signatures(
-                addr,
-                &client_privkey,
-                &server_pubkey,
-                (&cancel, sigs.clone()),
-                (&emer, sigs.clone()),
-                (&unvault_emer, sigs.clone()),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains(&CommunicationError::SignatureStorage.to_string()));
+            assert!(
+                share_rev_signatures(addr, &client_privkey, &server_pubkey, &[db_tx])
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&CommunicationError::SignatureStorage.to_string())
+            );
         });
 
         let mut server_transport =
@@ -1896,7 +1805,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: other_cancel.txid(),
                     }),
                 );
@@ -1911,21 +1820,66 @@ mod test {
     #[test]
     fn test_share_rev_signatures() {
         let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
-        let cancel =
+        let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut cancel =
                 CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let emer =
+        let signature_hash = secp256k1::Message::from_slice(
+            &cancel
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature_cancel = ctx.sign(&signature_hash, &privkey.key);
+        cancel
+            .add_cancel_sig(public_key.key, signature_cancel, &ctx)
+            .unwrap();
+        let mut emer =
                 EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
-        let unvault_emer =
+        let signature_hash = secp256k1::Message::from_slice(
+            &emer
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature_emer = ctx.sign(&signature_hash, &privkey.key);
+        emer.add_emer_sig(public_key.key, signature_emer, &ctx)
+            .unwrap();
+        let mut unvault_emer =
                 UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        // Rust newbie: I need the txs but they're moved inside the closure, so I'm cloning
-        // them now
+        let signature_hash = secp256k1::Message::from_slice(
+            &unvault_emer
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature_unemer = ctx.sign(&signature_hash, &privkey.key);
+        unvault_emer
+            .add_emer_sig(public_key.key, signature_unemer, &ctx)
+            .unwrap();
         let other_cancel = cancel.clone();
         let other_emer = emer.clone();
         let other_unvault_emer = unvault_emer.clone();
+        let db_cancel = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Cancel,
+            psbt: RevaultTx::Cancel(cancel),
+            is_fully_signed: false,
+        };
+        let db_emer = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Emergency,
+            psbt: RevaultTx::Emergency(emer),
+            is_fully_signed: false,
+        };
+        let db_unemer = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::UnvaultEmergency,
+            psbt: RevaultTx::UnvaultEmergency(unvault_emer),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -1938,9 +1892,7 @@ mod test {
                 addr,
                 &client_privkey,
                 &server_pubkey,
-                (&cancel, sigs.clone()),
-                (&emer, sigs.clone()),
-                (&unvault_emer, sigs.clone()),
+                &[db_cancel, db_emer, db_unemer],
             )
             .unwrap();
         });
@@ -1955,7 +1907,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature: signature_cancel,
                         id: other_cancel.txid(),
                     }),
                 );
@@ -1971,7 +1923,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature: signature_emer,
                         id: other_emer.txid(),
                     }),
                 );
@@ -1987,7 +1939,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature: signature_unemer,
                         id: other_unvault_emer.txid(),
                     }),
                 );
@@ -1997,34 +1949,6 @@ mod test {
             })
             .unwrap();
         cli_thread.join().unwrap();
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "assertion failed: !cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty()"
-    )]
-    fn test_share_rev_signatures_empty() {
-        // Let's try to give empty sigs to the coordinator
-        let sigs = BTreeMap::new();
-        let cancel =
-                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let emer =
-                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZBQAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZBQAAAAA=").unwrap();
-        let unvault_emer =
-                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        let ((_, client_privkey), (server_pubkey, _)) = (gen_keypair(), gen_keypair());
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        share_rev_signatures(
-            addr,
-            &client_privkey,
-            &server_pubkey,
-            (&cancel, sigs.clone()),
-            (&emer, sigs.clone()),
-            (&unvault_emer, sigs.clone()),
-        )
-        .unwrap();
     }
 
     #[test]
@@ -2040,9 +1964,14 @@ mod test {
         unvault
             .add_signature(0, public_key.key, signature.clone(), &ctx)
             .unwrap();
-        // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
-        // it now
         let other_unvault = unvault.clone();
+        let db_unvault = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Unvault,
+            psbt: RevaultTx::Unvault(unvault),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2051,7 +1980,7 @@ mod test {
 
         // client thread
         let cli_thread = thread::spawn(move || {
-            share_unvault_signatures(addr, &client_privkey, &server_pubkey, &unvault).unwrap();
+            share_unvault_signatures(addr, &client_privkey, &server_pubkey, &db_unvault).unwrap();
         });
 
         let mut server_transport =
@@ -2089,9 +2018,14 @@ mod test {
         unvault
             .add_signature(0, public_key.key, signature.clone(), &ctx)
             .unwrap();
-        // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
-        // it now
         let other_unvault = unvault.clone();
+        let db_unvault = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Unvault,
+            psbt: RevaultTx::Unvault(unvault),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2101,7 +2035,7 @@ mod test {
         // client thread
         let cli_thread = thread::spawn(move || {
             assert!(
-                share_unvault_signatures(addr, &client_privkey, &server_pubkey, &unvault,)
+                share_unvault_signatures(addr, &client_privkey, &server_pubkey, &db_unvault,)
                     .unwrap_err()
                     .to_string()
                     .contains(&CommunicationError::SignatureStorage.to_string())
@@ -2454,7 +2388,7 @@ mod test {
     fn test_get_presigs() {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature = Signature::from_der(&Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap()).unwrap();
+        let signature = secp256k1::Signature::from_der(&Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap()).unwrap();
         let mut sigs = BTreeMap::new();
         sigs.insert(public_key.key, signature);
         let other_sigs = sigs.clone();

@@ -8,7 +8,7 @@ use revault_tx::{
     },
 };
 
-use std::convert::TryFrom;
+use std::{collections, convert::TryFrom};
 
 /// The type of the transaction, as stored in the "presigned_transactions" table
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -104,6 +104,31 @@ impl RevaultTx {
             RevaultTx::Emergency(ref tx) => tx.wtxid(),
             RevaultTx::UnvaultEmergency(ref tx) => tx.wtxid(),
         }
+    }
+
+    /// Get the signatures of this presigned transaction.
+    /// All presigned transactions only have a single input (at least before fee-bumping,
+    /// but such transactions are never stored in our DB).
+    ///
+    /// # Panics
+    /// - If the PSBT doesn't contain at least one PSBT input
+    /// - If the PSBT contains an invalid signature
+    pub fn signatures(&self) -> collections::BTreeMap<secp256k1::PublicKey, secp256k1::Signature> {
+        let sigs = match self {
+            RevaultTx::Unvault(ref tx) => &tx.psbt().inputs[0].partial_sigs,
+            RevaultTx::Cancel(ref tx) => &tx.psbt().inputs[0].partial_sigs,
+            RevaultTx::Emergency(ref tx) => &tx.psbt().inputs[0].partial_sigs,
+            RevaultTx::UnvaultEmergency(ref tx) => &tx.psbt().inputs[0].partial_sigs,
+        };
+
+        sigs.iter()
+            .map(|(pk, sig)| {
+                assert!(!sig.is_empty());
+                let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1])
+                    .expect("DB transaction are assumed to only contain valid sigs");
+                (pk.key, sig)
+            })
+            .collect()
     }
 
     pub fn unwrap_unvault(&self) -> &UnvaultTransaction {

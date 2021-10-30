@@ -7,7 +7,7 @@ task:
     EXECUTOR_WORKERS: 8
     VERBOSE: 1
     LOG_LEVEL: debug
-    TIMEOUT: 180
+    TIMEOUT: 240
     BITCOIND_VERSION: 22.0
     BITCOIND_DIR_NAME: "bitcoin-$BITCOIND_VERSION"
 
@@ -62,4 +62,4 @@ task:
     python3 -m venv venv
     . venv/bin/activate
     pip install -r tests/requirements.txt
-    POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv -n 3 tests/
+    POSTGRES_USER="test" POSTGRES_PASS="test" pytest -vvv -n 2 tests/

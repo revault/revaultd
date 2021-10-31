@@ -7,7 +7,7 @@ task:
     EXECUTOR_WORKERS: 8
     VERBOSE: 1
     LOG_LEVEL: debug
-    TIMEOUT: 240
+    TIMEOUT: 300
     BITCOIND_VERSION: 22.0
     BITCOIND_DIR_NAME: "bitcoin-$BITCOIND_VERSION"
   matrix:

@@ -4,7 +4,7 @@ task:
     image: rust:latest
 
   env:
-    EXECUTOR_WORKERS: 8
+    EXECUTOR_WORKERS: 1
     VERBOSE: 1
     LOG_LEVEL: debug
     TIMEOUT: 300

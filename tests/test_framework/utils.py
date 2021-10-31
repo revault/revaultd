@@ -27,7 +27,7 @@ POSTGRES_PASS = os.getenv("POSTGRES_PASS", "")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_IS_SETUP = POSTGRES_USER and POSTGRES_PASS and POSTGRES_HOST
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
-LOG_LEVEL = os.getenv("LOG_LEVEL", "trace")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "debug")
 assert LOG_LEVEL in ["trace", "debug", "info", "warn", "error"]
 DEFAULT_REV_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "target/debug/revaultd"

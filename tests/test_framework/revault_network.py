@@ -535,10 +535,11 @@ class RevaultNetwork:
         for j in act_jobs:
             j.result(TIMEOUT)
 
-    def unvault_vaults(self, vaults, destinations, feerate):
+    def broadcast_unvaults(self, vaults, destinations, feerate):
         """
-        Unvault these {vaults}, advertizing a Spend tx spending to these {destinations}
-        (mapping of addresses to amounts)
+        Broadcast the Unvault transactions for these {vaults}, advertizing a
+        Spend tx spending to these {destinations} (mapping of addresses to
+        amounts)
         """
         man = self.man(0)
         deposits = []
@@ -558,6 +559,13 @@ class RevaultNetwork:
         spend_psbt.tx.calc_sha256()
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
+    def unvault_vaults(self, vaults, destinations, feerate):
+        """
+        Unvault these {vaults}, advertizing a Spend tx spending to these {destinations}
+        (mapping of addresses to amounts)
+        """
+        self.broadcast_unvaults(vaults, destinations, feerate)
+        deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
         self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
         for w in self.participants():
             wait_for(
@@ -574,6 +582,7 @@ class RevaultNetwork:
 
         :return: the list of spent deposits along with the Spend PSBT.
         """
+        assert len(vaults) > 0
         man = self.man(0)
         deposits = []
         deriv_indexes = []
@@ -640,6 +649,14 @@ class RevaultNetwork:
         """
         destinations, feerate = self._any_spend_data(vaults)
         return self.unvault_vaults(vaults, destinations, feerate)
+
+    def broadcast_unvaults_anyhow(self, vaults):
+        """
+        Broadcast the Unvault transactions for these vaults with a random Spend
+        transaction for a maximum amount and a fixed feerate.
+        """
+        destinations, feerate = self._any_spend_data(vaults)
+        return self.broadcast_unvaults(vaults, destinations, feerate)
 
     def spend_vaults_anyhow(self, vaults):
         """Spend these vaults to a random address for a maximum amount for a fixed feerate"""

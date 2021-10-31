@@ -111,3 +111,10 @@ class Miradord(TailableProc):
         conf["plugins"] += plugins
         open(self.conf_file, "w").write(toml.dumps(conf))
         self.start()
+
+    def remove_plugins(self, plugins_paths):
+        self.stop()
+        conf = toml.loads(open(self.conf_file, "r").read())
+        conf["plugins"] = [p for p in conf["plugins"] if p["path"] not in plugins_paths]
+        open(self.conf_file, "w").write(toml.dumps(conf))
+        self.start()

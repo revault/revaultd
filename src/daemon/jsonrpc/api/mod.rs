@@ -11,8 +11,8 @@ use crate::daemon::{
         announce_spend_transaction, check_spend_transaction_size, coord_share_rev_signatures,
         coordinator_status, cosigners_status, fetch_cosigs_signatures, finalized_emer_txs,
         listvaults_from_db, onchain_txs, presigned_txs, share_unvault_signatures,
-        vaults_from_deposits, watchtowers_status, wts_share_emer_signatures, ListSpendEntry,
-        ListSpendStatus, RpcUtils,
+        vaults_from_deposits, watchtowers_status, wts_share_emer_signatures,
+        wts_share_second_stage_signatures, ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
@@ -902,6 +902,23 @@ impl RpcApi for RpcImpl {
                         sig, e
                     ))
                 })?;
+        }
+
+        // The watchtower(s) MUST have our second-stage (UnvaultEmer, Cancel) signatures
+        // before we share the Unvault one.
+        if let Some(ref watchtowers) = revaultd.watchtowers {
+            let unemer_db_tx = db_unvault_emer_transaction(&db_path, db_vault.id)?
+                .ok_or(JsonRpcError::internal_error())?;
+            let cancel_db_tx = db_cancel_transaction(&db_path, db_vault.id)?
+                .ok_or(JsonRpcError::internal_error())?;
+            wts_share_second_stage_signatures(
+                &revaultd.noise_secret,
+                &watchtowers,
+                db_vault.deposit_outpoint,
+                db_vault.derivation_index,
+                &cancel_db_tx,
+                &unemer_db_tx,
+            )?;
         }
 
         // Sanity checks passed. Store it then share it.

@@ -611,6 +611,41 @@ pub fn wts_share_emer_signatures(
     Ok(())
 }
 
+/// Send the signatures for the UnvaultEmergency and Cancel transactions to all
+/// our watchtowers. This serves as a signal for watchtowers to start watching for
+/// this vault and they may therefore NACK that we delegate it (eg if they don't
+/// have enough fee reserve).
+pub fn wts_share_second_stage_signatures(
+    noise_secret: &revault_net::noise::SecretKey,
+    watchtowers: &[(std::net::SocketAddr, revault_net::noise::PublicKey)],
+    deposit_outpoint: OutPoint,
+    derivation_index: ChildNumber,
+    cancel_tx: &DbTransaction,
+    unvault_emer_tx: &DbTransaction,
+) -> Result<(), CommunicationError> {
+    for (wt_host, wt_noisekey) in watchtowers {
+        let mut transport = KKTransport::connect(*wt_host, noise_secret, wt_noisekey)?;
+
+        // The watchtower enforces a specific sequence in which to exchange transactions
+        send_wt_sig_msg(
+            &mut transport,
+            deposit_outpoint,
+            derivation_index,
+            unvault_emer_tx.psbt.txid(),
+            unvault_emer_tx.psbt.signatures(),
+        )?;
+        send_wt_sig_msg(
+            &mut transport,
+            deposit_outpoint,
+            derivation_index,
+            cancel_tx.psbt.txid(),
+            cancel_tx.psbt.signatures(),
+        )?;
+    }
+
+    Ok(())
+}
+
 /// Send the signatures for the 3 revocation txs to the Coordinator
 pub fn coord_share_rev_signatures(
     coordinator_host: std::net::SocketAddr,

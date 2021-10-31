@@ -60,6 +60,7 @@ class RevaultNetwork:
         csv=None,
         managers_threshold=None,
         with_cosigs=True,
+        with_watchtowers=True,
     ):
         """
         Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
@@ -229,25 +230,26 @@ class RevaultNetwork:
 
         # Spin up the stakeholders wallets and their cosigning servers
         for i, stk in enumerate(stkonly_keychains):
-            datadir = os.path.join(self.root_dir, f"miradord-{i}")
-            os.makedirs(datadir)
-            wt_listen_port = reserve()
-            miradord = Miradord(
-                datadir,
-                deposit_desc,
-                unvault_desc,
-                cpfp_desc,
-                self.emergency_address,
-                wt_listen_port,
-                stkonly_wt_noiseprivs[i],
-                stkonly_noisepubs[i].hex(),
-                coordinator_noisepub.hex(),
-                self.coordinator_port,
-                self.bitcoind,
-                plugins=[default_wt_plugin],
-            )
-            start_jobs.append(self.executor.submit(miradord.start))
-            self.daemons.append(miradord)
+            if with_watchtowers:
+                datadir = os.path.join(self.root_dir, f"miradord-{i}")
+                os.makedirs(datadir)
+                wt_listen_port = reserve()
+                miradord = Miradord(
+                    datadir,
+                    deposit_desc,
+                    unvault_desc,
+                    cpfp_desc,
+                    self.emergency_address,
+                    wt_listen_port,
+                    stkonly_wt_noiseprivs[i],
+                    stkonly_noisepubs[i].hex(),
+                    coordinator_noisepub.hex(),
+                    self.coordinator_port,
+                    self.bitcoind,
+                    plugins=[default_wt_plugin],
+                )
+                start_jobs.append(self.executor.submit(miradord.start))
+                self.daemons.append(miradord)
 
             datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
             os.makedirs(datadir, exist_ok=True)
@@ -258,7 +260,9 @@ class RevaultNetwork:
                         "host": f"127.0.0.1:{wt_listen_port}",
                         "noise_key": stkonly_wt_noisepubs[i].hex(),
                     }
-                ],
+                ]
+                if with_watchtowers
+                else [],
                 "emergency_address": self.emergency_address,
             }
 
@@ -272,7 +276,7 @@ class RevaultNetwork:
                 self.coordinator_port,
                 self.bitcoind,
                 stk_config,
-                wt_process=miradord,
+                wt_process=miradord if with_watchtowers else None,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stk_wallets.append(revaultd)
@@ -293,25 +297,26 @@ class RevaultNetwork:
 
         # Spin up the stakeholder-managers wallets and their cosigning servers
         for i, stkman in enumerate(stkman_stk_keychains):
-            datadir = os.path.join(self.root_dir, f"miradord-stkman-{i}")
-            os.makedirs(datadir)
-            wt_listen_port = reserve()
-            miradord = Miradord(
-                datadir,
-                deposit_desc,
-                unvault_desc,
-                cpfp_desc,
-                self.emergency_address,
-                wt_listen_port,
-                stkman_wt_noiseprivs[i],
-                stkman_noisepubs[i].hex(),
-                coordinator_noisepub.hex(),
-                self.coordinator_port,
-                self.bitcoind,
-                plugins=[default_wt_plugin],
-            )
-            start_jobs.append(self.executor.submit(miradord.start))
-            self.daemons.append(miradord)
+            if with_watchtowers:
+                datadir = os.path.join(self.root_dir, f"miradord-stkman-{i}")
+                os.makedirs(datadir)
+                wt_listen_port = reserve()
+                miradord = Miradord(
+                    datadir,
+                    deposit_desc,
+                    unvault_desc,
+                    cpfp_desc,
+                    self.emergency_address,
+                    wt_listen_port,
+                    stkman_wt_noiseprivs[i],
+                    stkman_noisepubs[i].hex(),
+                    coordinator_noisepub.hex(),
+                    self.coordinator_port,
+                    self.bitcoind,
+                    plugins=[default_wt_plugin],
+                )
+                start_jobs.append(self.executor.submit(miradord.start))
+                self.daemons.append(miradord)
 
             datadir = os.path.join(self.root_dir, f"revaultd-stkman-{i}")
             os.makedirs(datadir, exist_ok=True)
@@ -322,7 +327,9 @@ class RevaultNetwork:
                         "host": f"127.0.0.1:{wt_listen_port}",
                         "noise_key": stkman_wt_noisepubs[i].hex(),
                     }
-                ],
+                ]
+                if with_watchtowers
+                else [],
                 "emergency_address": self.emergency_address,
             }
             man_config = {
@@ -341,7 +348,7 @@ class RevaultNetwork:
                 self.bitcoind,
                 stk_config,
                 man_config,
-                wt_process=miradord,
+                wt_process=miradord if with_watchtowers else None,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stkman_wallets.append(revaultd)

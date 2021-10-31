@@ -109,7 +109,7 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
 def test_reorged_deposit_status(revault_network, bitcoind):
     # A csv of 2 because bitcoind would discard updating the mempool if the reorg is >10
     # blocks long.
-    revault_network.deploy(4, 2, csv=2)
+    revault_network.deploy(4, 2, csv=2, with_watchtowers=False)
     vault = revault_network.fund(0.14)
     revault_network.secure_vault(vault)
     deposit = f"{vault['txid']}:{vault['vout']}"
@@ -283,7 +283,7 @@ def test_reorged_deposit_status(revault_network, bitcoind):
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_unvault(revault_network, bitcoind):
-    revault_network.deploy(4, 2, csv=12)
+    revault_network.deploy(4, 2, csv=12, with_watchtowers=False)
     man = revault_network.man(0)
     vaults = revault_network.fundmany([32, 3])
     deposits = []
@@ -410,7 +410,7 @@ def test_reorged_unvault(revault_network, bitcoind):
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_cancel(revault_network, bitcoind):
-    revault_network.deploy(4, 2, csv=12)
+    revault_network.deploy(4, 2, csv=12, with_watchtowers=False)
     stks = revault_network.stks()
     mans = revault_network.mans()
     vault = revault_network.fund(32)

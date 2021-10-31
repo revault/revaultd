@@ -683,6 +683,10 @@ pub fn db_update_vault_status(db_path: &Path, db_vault: &DbVault) -> Result<(), 
             .query_map(params![db_vault.id], |row| row.try_into())?
             .collect::<rusqlite::Result<Vec<DbTransaction>>>()?;
 
+        if db_transactions.is_empty() {
+            return Ok(());
+        }
+
         let (mut all_signed, mut all_but_unvault_signed) = (true, true);
         for db_tx in db_transactions {
             if !db_tx.is_fully_signed {

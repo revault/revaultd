@@ -1,16 +1,14 @@
 use crate::daemon::{
     database::{
+        bitcointx::{RevaultTx, TransactionType},
         interface::*,
-        schema::{DbTransaction, RevaultTx, TransactionType, SCHEMA},
+        schema::{DbTransaction, DbVault, SCHEMA},
         DatabaseError, DB_VERSION,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{
-        consensus::encode, secp256k1, util::bip32::ChildNumber, Amount, OutPoint,
-        PublicKey as BitcoinPubKey, Txid,
-    },
+    bitcoin::{secp256k1, util::bip32::ChildNumber, Amount, OutPoint, Txid},
     miniscript::descriptor::DescriptorTrait,
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
@@ -19,7 +17,6 @@ use revault_tx::{
 };
 
 use std::{
-    collections::BTreeMap,
     convert::TryInto,
     fs,
     path::Path,
@@ -591,112 +588,131 @@ pub fn db_mark_activating_vault(db_path: &Path, vault_id: u32) -> Result<(), Dat
     })
 }
 
-fn revault_tx_merge_sigs(
-    tx: impl RevaultTransaction,
-    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
-) -> Result<Vec<u8>, DatabaseError> {
-    let mut psbt = tx.into_psbt();
-    psbt.inputs[0].partial_sigs.extend(sigs);
-    Ok(encode::serialize(&psbt))
+// Merge the partial sigs of two transactions of the same type into the first one
+//
+// Returns true if this made the transaction "valid" (fully signed).
+fn revault_txs_merge_sigs<T, S>(tx_a: &mut T, tx_b: &T, secp: &secp256k1::Secp256k1<S>) -> bool
+where
+    T: RevaultTransaction,
+    S: secp256k1::Verification,
+{
+    for (pubkey, sig) in &tx_b.psbt().inputs[0].partial_sigs {
+        let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).expect("From DB");
+        tx_a.add_signature(0, pubkey.key, sig, secp)
+            .expect("From an in-DB PSBT");
+    }
+
+    tx_a.is_finalizable(secp)
 }
 
-/// Update the presigned transaction in-db. If the transaction is valid and no more revocation
-/// transactions are remaining unsigned for this vault, it will update the vault status as well in
-/// the same database transaction.
-pub fn db_update_presigned_tx(
+// Merge the signatures for two transactions into the first one
+//
+// The two transaction MUST be of the same type.
+fn db_txs_merge_sigs(
+    tx_a: &mut DbTransaction,
+    tx_b: &DbTransaction,
+    secp: &secp256k1::Secp256k1<impl secp256k1::Verification>,
+) -> bool {
+    assert_eq!(tx_a.tx_type, tx_b.tx_type);
+
+    match tx_a.psbt {
+        RevaultTx::Unvault(ref mut tx_a) => {
+            revault_txs_merge_sigs(tx_a, tx_b.psbt.unwrap_unvault(), secp)
+        }
+        RevaultTx::Cancel(ref mut tx_a) => {
+            revault_txs_merge_sigs(tx_a, tx_b.psbt.unwrap_cancel(), secp)
+        }
+        RevaultTx::Emergency(ref mut tx_a) => {
+            revault_txs_merge_sigs(tx_a, tx_b.psbt.unwrap_emer(), secp)
+        }
+        RevaultTx::UnvaultEmergency(ref mut tx_a) => {
+            revault_txs_merge_sigs(tx_a, tx_b.psbt.unwrap_unvault_emer(), secp)
+        }
+    }
+}
+
+/// Update the transactions of a given vault with the signatures of the given transactions.
+///
+/// The provided transactions MUST be valid, there signatures aren't checked.
+pub fn db_update_presigned_txs(
     db_path: &Path,
-    vault_id: u32,
-    tx_db_id: u32,
-    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
-    secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    db_vault: &DbVault,
+    transactions: Vec<DbTransaction>,
+    secp: &secp256k1::Secp256k1<impl secp256k1::Verification>,
 ) -> Result<(), DatabaseError> {
     db_exec(db_path, move |db_tx| {
-        let mut is_unvault = false;
-
-        // Fetch the PSBT in the transaction, to avoid someone else to modify it under our feet..
-        let presigned_tx: DbTransaction = db_tx
-            .prepare("SELECT * FROM presigned_transactions WHERE id = (?1)")?
-            .query(params![tx_db_id])?
-            .next()?
-            .ok_or_else(|| {
-                DatabaseError(format!(
-                    "Transaction with id '{}' (vault id '{}') not found in db",
-                    tx_db_id, vault_id
-                ))
-            })?
-            .try_into()?;
-        // Now we are safe merging the signatures on what is the latest version of the PSBT
-        // FIXME: refactor this, it's awful
-        let (fully_signed, raw_psbt) = match presigned_tx.psbt {
-            RevaultTx::Cancel(tx) => {
-                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
-                let fully_signed = CancelTransaction::from_raw_psbt(&raw_psbt)
-                    .expect("We just deserialized it")
-                    .is_finalizable(secp_ctx);
-                (fully_signed, raw_psbt)
-            }
-            RevaultTx::Emergency(tx) => {
-                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
-                let fully_signed = EmergencyTransaction::from_raw_psbt(&raw_psbt)
-                    .expect("We just deserialized it")
-                    .is_finalizable(secp_ctx);
-                (fully_signed, raw_psbt)
-            }
-            RevaultTx::UnvaultEmergency(tx) => {
-                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
-                let fully_signed = UnvaultEmergencyTransaction::from_raw_psbt(&raw_psbt)
-                    .expect("We just deserialized it")
-                    .is_finalizable(secp_ctx);
-                (fully_signed, raw_psbt)
-            }
-            RevaultTx::Unvault(tx) => {
-                is_unvault = true;
-                let raw_psbt = revault_tx_merge_sigs(tx, sigs)?;
-                let fully_signed = UnvaultTransaction::from_raw_psbt(&raw_psbt)
-                    .expect("We just deserialized it")
-                    .is_finalizable(secp_ctx);
-                (fully_signed, raw_psbt)
-            }
-        };
-
-        db_tx.execute(
-            "UPDATE presigned_transactions SET psbt = (?1), fullysigned = (?2) WHERE id = (?3)",
-            params![raw_psbt, fully_signed, tx_db_id],
-        )?;
-
-        if fully_signed {
-            // Are there some remaining unsigned revocation txs?
-            if db_tx
-                .prepare(
-                    "SELECT * FROM presigned_transactions WHERE fullysigned = 0 AND type != (?1) AND vault_id = (?2)",
-                )?
-                // All presigned transactions but the Unvault are revocation txs
-                .query(params![TransactionType::Unvault as u32, vault_id])?
+        for mut transaction in transactions {
+            // Merge the transaction with the in-db ones, in case another thread modified
+            // it under our feet.
+            let db_transaction: DbTransaction = db_tx
+                .prepare("SELECT * FROM presigned_transactions WHERE id = (?1)")?
+                .query(params![transaction.id])?
                 .next()?
-                .is_none()
-            {
-                // Nope. Mark the vault as 'secured'
-                db_tx
-                    .execute(
-                        "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE id = (?2) ",
-                        params![VaultStatus::Secured as u32, vault_id],
-                    )
-                    .map_err(|e| {
-                        DatabaseError(format!("Updating vault to 'secured': {}", e.to_string()))
-                    })?;
-            }
+                // Note this can happen if another thread removed them.
+                .ok_or_else(|| {
+                    DatabaseError(format!(
+                        "Transaction with id '{}' (vault id '{}') not found in db",
+                        transaction.id, db_vault.id
+                    ))
+                })?
+                .try_into()?;
+            let is_fully_signed = db_txs_merge_sigs(&mut transaction, &db_transaction, secp);
+            db_tx.execute(
+                "UPDATE presigned_transactions SET psbt = (?1), fullysigned = (?2) WHERE id = (?3)",
+                params![transaction.psbt.ser(), is_fully_signed, transaction.id],
+            )?;
+        }
 
-            // Was it the unvault that was fully signed ? If so, mark the vault as active.
-            if is_unvault {
-                db_tx
-                    .execute(
-                        "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE id = (?2) ",
-                        params![VaultStatus::Active as u32, vault_id],
-                    )
-                    .map_err(|e| {
-                        DatabaseError(format!("Updating vault to 'active': {}", e.to_string()))
-                    })?;
+        Ok(())
+    })
+}
+
+pub fn db_update_vault_status(db_path: &Path, db_vault: &DbVault) -> Result<(), DatabaseError> {
+    assert!(matches!(
+        db_vault.status,
+        VaultStatus::Unconfirmed
+            | VaultStatus::Funded
+            | VaultStatus::Securing
+            | VaultStatus::Secured
+            | VaultStatus::Activating
+    ));
+
+    db_exec(db_path, |db_tx| {
+        let db_transactions: Vec<DbTransaction> = db_tx
+            .prepare("SELECT * FROM presigned_transactions WHERE vault_id = (?1)")?
+            .query_map(params![db_vault.id], |row| row.try_into())?
+            .collect::<rusqlite::Result<Vec<DbTransaction>>>()?;
+
+        let (mut all_signed, mut all_but_unvault_signed) = (true, true);
+        for db_tx in db_transactions {
+            if !db_tx.is_fully_signed {
+                all_signed = false;
+                if !matches!(db_tx.tx_type, TransactionType::Unvault) {
+                    all_but_unvault_signed = false;
+                    break;
+                }
             }
+        }
+
+        if all_signed {
+            db_tx.execute(
+                "UPDATE vaults \
+                 SET status = (?1), updated_at = strftime('%s','now') \
+                 WHERE vaults.id = (?2)",
+                params![VaultStatus::Active as u32, db_vault.id],
+            )?;
+        } else if all_but_unvault_signed
+            && matches!(
+                db_vault.status,
+                VaultStatus::Unconfirmed | VaultStatus::Funded | VaultStatus::Securing
+            )
+        {
+            db_tx.execute(
+                "UPDATE vaults \
+                 SET status = (?1), updated_at = strftime('%s','now') \
+                 WHERE vaults.id = (?2)",
+                params![VaultStatus::Secured as u32, db_vault.id],
+            )?;
         }
 
         Ok(())
@@ -806,11 +822,14 @@ mod test {
     use crate::daemon::jsonrpc::UserRole;
     use crate::daemon::utils::test_utils::{dummy_revaultd, test_datadir};
     use revault_tx::{
-        bitcoin::{Network, OutPoint, PrivateKey as BitcoinPrivKey, SigHashType},
+        bitcoin::{
+            Network, OutPoint, PrivateKey as BitcoinPrivKey, PublicKey as BitcoinPubKey,
+            SigHashType,
+        },
         transactions::{CancelTransaction, EmergencyTransaction, UnvaultEmergencyTransaction},
     };
 
-    use std::{fs, str::FromStr};
+    use std::{collections, fs, str::FromStr};
 
     fn create_keys(
         ctx: &secp256k1::Secp256k1<secp256k1::All>,
@@ -839,6 +858,35 @@ mod test {
         let signature = secp_ctx.sign(&signature_hash, &privkey.key);
         tx.add_signature(input_index, pubkey.key, signature, secp_ctx)
             .unwrap();
+    }
+
+    fn update_presigned_tx<C>(
+        db_path: &std::path::PathBuf,
+        db_vault: &DbVault,
+        mut db_tx: DbTransaction,
+        sigs: &collections::BTreeMap<BitcoinPubKey, Vec<u8>>,
+        secp: &secp256k1::Secp256k1<C>,
+    ) where
+        C: secp256k1::Verification,
+    {
+        for (key, sig) in sigs {
+            let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).unwrap();
+            match db_tx.psbt {
+                RevaultTx::Unvault(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+                RevaultTx::Cancel(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+                RevaultTx::Emergency(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+                RevaultTx::UnvaultEmergency(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+            }
+        }
+        db_update_presigned_txs(db_path, db_vault, vec![db_tx], secp).unwrap();
     }
 
     #[test]
@@ -1039,10 +1087,15 @@ mod test {
         assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
 
         // Sanity check we can add sigs to them now
-        let (tx_db_id, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
+        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_cancel_tx.psbt().inputs[0].partial_sigs.len(), 0);
+        assert_eq!(
+            stored_cancel_tx.psbt.unwrap_cancel().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            0
+        );
         let mut cancel_tx = fresh_cancel_tx.clone();
         revault_tx_add_sig(
             &mut cancel_tx,
@@ -1050,39 +1103,56 @@ mod test {
             SigHashType::AllPlusAnyoneCanPay,
             &secp_ctx,
         );
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_path,
-            db_vault.id,
-            tx_db_id,
-            cancel_tx.psbt().inputs[0].partial_sigs.clone(),
+            &db_vault,
+            stored_cancel_tx,
+            &cancel_tx.psbt().inputs[0].partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
-        let (_, stored_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
+        );
+        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_cancel_tx.psbt().inputs[0].partial_sigs.len(), 1);
+        assert_eq!(
+            stored_cancel_tx.psbt.unwrap_cancel().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            1
+        );
 
-        let (tx_db_id, stored_emer_tx) =
-            db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
-        assert_eq!(stored_emer_tx.psbt().inputs[0].partial_sigs.len(), 0);
+        let stored_emer_tx = db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
+        assert_eq!(
+            stored_emer_tx.psbt.unwrap_emer().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            0
+        );
         let mut emer_tx = fresh_emer_tx.clone();
         revault_tx_add_sig(&mut emer_tx, 0, SigHashType::AllPlusAnyoneCanPay, &secp_ctx);
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_path,
-            db_vault.id,
-            tx_db_id,
-            emer_tx.psbt().inputs[0].partial_sigs.clone(),
+            &db_vault,
+            stored_emer_tx,
+            &emer_tx.psbt().inputs[0].partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
-        let (_, stored_emer_tx) = db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
-        assert_eq!(stored_emer_tx.psbt().inputs[0].partial_sigs.len(), 1);
+        );
+        let stored_emer_tx = db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
+        assert_eq!(
+            stored_emer_tx.psbt.unwrap_emer().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            1
+        );
 
-        let (tx_db_id, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
+        let stored_unemer_tx = db_unvault_emer_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_unemer_tx.psbt().inputs[0].partial_sigs.len(), 0);
+        assert_eq!(
+            stored_unemer_tx.psbt.unwrap_unvault_emer().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            0
+        );
         let mut unemer_tx = fresh_unemer_tx.clone();
         revault_tx_add_sig(
             &mut unemer_tx,
@@ -1090,33 +1160,50 @@ mod test {
             SigHashType::AllPlusAnyoneCanPay,
             &secp_ctx,
         );
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_path,
-            db_vault.id,
-            tx_db_id,
-            unemer_tx.psbt().inputs[0].partial_sigs.clone(),
+            &db_vault,
+            stored_unemer_tx,
+            &unemer_tx.psbt().inputs[0].partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
-        let (_, stored_unemer_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)
+        );
+        let stored_unemer_tx = db_unvault_emer_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored_unemer_tx.psbt().inputs[0].partial_sigs.len(), 1);
+        assert_eq!(
+            stored_unemer_tx.psbt.unwrap_unvault_emer().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            1
+        );
 
-        let (tx_db_id, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
-        assert_eq!(stored_unvault_tx.psbt().inputs[0].partial_sigs.len(), 0);
+        let stored_unvault_tx = db_unvault_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored_unvault_tx.psbt.unwrap_unvault().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            0
+        );
         let mut unvault_tx = fresh_unvault_tx.clone();
         revault_tx_add_sig(&mut unvault_tx, 0, SigHashType::All, &secp_ctx);
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_path,
-            db_vault.id,
-            tx_db_id,
-            unvault_tx.psbt().inputs[0].partial_sigs.clone(),
+            &db_vault,
+            stored_unvault_tx,
+            &unvault_tx.psbt().inputs[0].partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
-        let (_, stored_unvault_tx) = db_unvault_transaction(&db_path, db_vault.id).unwrap();
-        assert_eq!(stored_unvault_tx.psbt().inputs[0].partial_sigs.len(), 1);
+        );
+        let stored_unvault_tx = db_unvault_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored_unvault_tx.psbt.assert_unvault().psbt().inputs[0]
+                .partial_sigs
+                .len(),
+            1
+        );
 
         // They can also be queried
         assert_eq!(
@@ -1124,25 +1211,41 @@ mod test {
             db_emer_transaction(&db_path, db_vault.id)
                 .unwrap()
                 .unwrap()
-                .1
+                .psbt
+                .assert_emer()
         );
         assert_eq!(
             cancel_tx,
             db_cancel_transaction(&db_path, db_vault.id)
                 .unwrap()
                 .unwrap()
-                .1
+                .psbt
+                .assert_cancel()
         );
         assert_eq!(
             unemer_tx,
             db_unvault_emer_transaction(&db_path, db_vault.id)
                 .unwrap()
                 .unwrap()
-                .1
+                .psbt
+                .assert_unvault_emer()
         );
         assert_eq!(
             unvault_tx,
-            db_unvault_transaction(&db_path, db_vault.id).unwrap().1
+            db_unvault_transaction(&db_path, db_vault.id)
+                .unwrap()
+                .unwrap()
+                .psbt
+                .assert_unvault()
+        );
+        let sig_mis_map = db_sig_missing(&db_path).unwrap();
+        assert_eq!(sig_mis_map.len(), 1);
+        assert_eq!(
+            sig_mis_map
+                .get(sig_mis_map.keys().next().unwrap())
+                .unwrap()
+                .len(),
+            4
         );
 
         // And removed, if there is eg a reorg.
@@ -1160,7 +1263,9 @@ mod test {
         assert!(db_unvault_emer_transaction(&db_path, db_vault.id)
             .unwrap()
             .is_none());
-        db_unvault_transaction(&db_path, db_vault.id).unwrap_err();
+        assert!(db_unvault_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .is_none());
 
         // And re-added of course
         db_confirm_deposit(
@@ -1197,6 +1302,15 @@ mod test {
         .unwrap();
         assert_eq!(db_signed_emer_txs(&db_path).unwrap().len(), 1);
         assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
+        let sig_mis_map = db_sig_missing(&db_path).unwrap();
+        assert_eq!(sig_mis_map.len(), 1);
+        assert_eq!(
+            sig_mis_map
+                .get(sig_mis_map.keys().next().unwrap())
+                .unwrap()
+                .len(),
+            3
+        );
         // If we mark the UnvaultEmergency transaction as fully signed and the vault as
         // Unvaulting, it'll get returned by the unemer fetcher instead.
         db_unvault_deposit(&db_path, &fresh_unvault_tx.txid()).unwrap();
@@ -1261,7 +1375,7 @@ mod test {
         )
         .unwrap();
 
-        let (tx_db_id, _) = db_cancel_transaction(&db_path, db_vault.id)
+        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
             .unwrap()
             .unwrap();
         let mut cancel_tx = fresh_cancel_tx.clone();
@@ -1275,28 +1389,27 @@ mod test {
             let db_path = db_path.clone();
             let cancel_tx = cancel_tx.clone();
             let secp = revaultd.secp_ctx.clone();
+            let stored_cancel_tx_b = stored_cancel_tx.clone();
             move || {
                 for _ in 0..10 {
-                    db_update_presigned_tx(
+                    update_presigned_tx(
                         &db_path,
-                        db_vault.id,
-                        tx_db_id,
-                        cancel_tx.psbt().inputs[0].partial_sigs.clone(),
+                        &db_vault,
+                        stored_cancel_tx_b.clone(),
+                        &cancel_tx.psbt().inputs[0].partial_sigs,
                         &secp,
-                    )
-                    .unwrap();
+                    );
                 }
             }
         });
         for _ in 0..10 {
-            db_update_presigned_tx(
+            update_presigned_tx(
                 &db_path,
-                db_vault.id,
-                tx_db_id,
-                cancel_tx.psbt().inputs[0].partial_sigs.clone(),
+                &db_vault,
+                stored_cancel_tx.clone(),
+                &cancel_tx.psbt().inputs[0].partial_sigs,
                 &revaultd.secp_ctx,
-            )
-            .unwrap();
+            );
         }
         handle.join().unwrap();
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
@@ -1344,14 +1457,17 @@ mod test {
             None,
         )
         .unwrap();
-        db_update_presigned_tx(
+        let stored_unvault_tx = db_unvault_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
+        update_presigned_tx(
             &db_path,
-            db_vault.id,
-            db_unvault_transaction(&db_path, db_vault.id).unwrap().0,
-            fullysigned_unvault_tx.psbt().inputs[0].partial_sigs.clone(),
+            &db_vault,
+            stored_unvault_tx,
+            &fullysigned_unvault_tx.psbt().inputs[0].partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
+        );
+        db_mark_vault_as(&db_path, db_vault.id, VaultStatus::Active).unwrap();
 
         // We can store a Spend tx spending a single unvault and query it
         let spend_tx = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAciTbKS43sH49TJWX6xJ+MxqWfNQhRl+vkttRZ9sLUkHAAAAAAClAQAAAoAyAAAAAAAAIgAggxumgjPgMj5oHWn8QkvKqPIN0N5nuAbyQ+FEgOJZpjygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgKb0SdnuqeHAJpRuZTbk3r81qbXpuHrMEmxT9Kph47HQBAwQBAAAAAQWqIQMfu47eLiYeHN6Y3C1Vk0ckgmWifMy5IUhaPHbNELV93axRh2R2qRTtiGxBD5KrMQQU6UGx2zsKMMf6nIisa3apFCDKte9IuDeF0D4GA/JRUNX4xgt+iKxsk1KHZ1IhAzTPPnjrvzPFmi+raNR6sY8WTt1KNusVwp82uWebzWDwIQKl21mZX7WAQhRvdhhwqUAuQfIemg9zkTCCyMQ+Q8CVFVKvAqUBsmgiBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhAx+7jt4uJh4c3pjcLVWTRySCZaJ8zLkhSFo8ds0QtX3drFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
@@ -1432,14 +1548,17 @@ mod test {
             None,
         )
         .unwrap();
-        db_update_presigned_tx(
+        let stored_unvault_tx = db_unvault_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
+        update_presigned_tx(
             &db_path,
-            db_vault.id,
-            db_unvault_transaction(&db_path, db_vault.id).unwrap().0,
-            fullysigned_unvault_tx.psbt().inputs[0].partial_sigs.clone(),
+            &db_vault,
+            stored_unvault_tx,
+            &fullysigned_unvault_tx.psbt().inputs[0].partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
+        );
+        db_mark_vault_as(&db_path, db_vault.id, VaultStatus::Active).unwrap();
 
         let spend_tx_b = SpendTransaction::from_psbt_str("cHNidP8BAGcCAAAAAXHqOcTAJnPyXEF1cxFATe4S6yHLGZm+s0aj9mUTtKgVAAAAAACHGwAAAoAyAAAAAAAAIgAgAYLPNnsrzQaSg7aZR0JUgXHtO6bnZRehvxqxyzW5m5ygjAIAAAAAAAAAAAAAAAEBK0ANAwAAAAAAIgAgdS3fC7QX+PKWZBful8J229uixPOW012CYpKMH7rU8T4BAwQBAAAAAQWqIQLbrZUUxHTNBLySX7XjBBa5auxTfjuUSHxE3vJ1JXfdlaxRh2R2qRS8iuykW8lDZdRWXgK4UY0gLAkjX4isa3apFJ+lQ0Ybj4Eig7391TEtxikgP4DDiKxsk1KHZ1IhAqTEmYMxdjLU50wj/Hw9X2Pf7WRDSCnO4P4qpJ5h+PNOIQO2p8sldVsHhhEimy+ZW0E1L3vX5d9mqQ0d01XVdx3DWVKvAocbsmgiBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhAtutlRTEdM0EvJJfteMEFrlq7FN+O5RIfETe8nUld92VrFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
         let spend_tx_b_inputs = &spend_tx_b.tx().input;

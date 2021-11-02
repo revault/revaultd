@@ -176,7 +176,11 @@ fn mark_unvaulted(
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
     db_vault: &DbVault,
 ) -> Result<(), BitcoindError> {
-    let (_, unvault_tx) = db_unvault_transaction(&db_path, db_vault.id)?;
+    // FIXME: remove this unwrap in favour of an Error enum variant for txs not found
+    let unvault_tx = db_unvault_transaction(&db_path, db_vault.id)?
+        .unwrap()
+        .psbt
+        .assert_unvault();
     let unvault_descriptor = revaultd.read().unwrap().unvault_descriptor.derive(
         db_vault.derivation_index,
         &revaultd.read().unwrap().secp_ctx,

@@ -32,6 +32,7 @@ impl From<RpcControlError> for Error {
             RpcControlError::Tx(_) => ErrorCode::INTERNAL_ERROR,
             RpcControlError::Bitcoind(_) => ErrorCode::BITCOIND_ERROR,
             RpcControlError::ThreadCommunication(_) => ErrorCode::INTERNAL_ERROR,
+            RpcControlError::TransactionNotFound => ErrorCode::INTERNAL_ERROR,
         };
         Error(code, e.to_string())
     }
@@ -70,6 +71,12 @@ impl From<RecvError> for Error {
 impl From<DatabaseError> for Error {
     fn from(e: DatabaseError) -> Error {
         Error(ErrorCode::INTERNAL_ERROR, e.to_string())
+    }
+}
+
+impl From<DatabaseError> for JsonRpcError {
+    fn from(e: DatabaseError) -> JsonRpcError {
+        Error::from(e).into()
     }
 }
 

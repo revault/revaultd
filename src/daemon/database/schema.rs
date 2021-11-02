@@ -1,17 +1,15 @@
-use crate::daemon::revaultd::VaultStatus;
+use crate::daemon::{
+    database::bitcointx::{RevaultTx, TransactionType},
+    revaultd::VaultStatus,
+};
 use revault_tx::{
     bitcoin::{
         util::bip32::{ChildNumber, ExtendedPubKey},
         Amount, OutPoint, Txid,
     },
     scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
-    transactions::{
-        CancelTransaction, EmergencyTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
-    },
+    transactions::SpendTransaction,
 };
-
-use std::convert::TryFrom;
 
 pub const SCHEMA: &str = "\
 CREATE TABLE version (
@@ -131,7 +129,7 @@ pub struct DbWallet {
 }
 
 /// A row of the "vaults" table
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DbVault {
     pub id: u32, // FIXME: should be an i64
     pub wallet_id: u32,
@@ -143,63 +141,6 @@ pub struct DbVault {
     pub received_at: u32,
     pub updated_at: u32,
     pub final_txid: Option<Txid>,
-}
-
-/// The type of the transaction, as stored in the "presigned_transactions" table
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TransactionType {
-    Unvault,
-    Cancel,
-    Emergency,
-    UnvaultEmergency,
-}
-
-impl TryFrom<u32> for TransactionType {
-    type Error = ();
-
-    fn try_from(n: u32) -> Result<Self, Self::Error> {
-        match n {
-            0 => Ok(Self::Unvault),
-            1 => Ok(Self::Cancel),
-            2 => Ok(Self::Emergency),
-            3 => Ok(Self::UnvaultEmergency),
-            _ => Err(()),
-        }
-    }
-}
-
-macro_rules! tx_type_from_tx {
-    ($tx:ident, $tx_type:ident) => {
-        impl From<&$tx> for TransactionType {
-            fn from(_: &$tx) -> Self {
-                Self::$tx_type
-            }
-        }
-    };
-}
-tx_type_from_tx!(UnvaultTransaction, Unvault);
-tx_type_from_tx!(CancelTransaction, Cancel);
-tx_type_from_tx!(EmergencyTransaction, Emergency);
-tx_type_from_tx!(UnvaultEmergencyTransaction, UnvaultEmergency);
-
-/// A transaction stored in the 'presigned_transactions' table
-#[derive(Debug, PartialEq, Clone)]
-pub enum RevaultTx {
-    Unvault(UnvaultTransaction),
-    Cancel(CancelTransaction),
-    Emergency(EmergencyTransaction),
-    UnvaultEmergency(UnvaultEmergencyTransaction),
-}
-
-/// Boilerplate to get a specific variant of the RevaultTx enum if You Are Confident :TM:
-#[macro_export]
-macro_rules! assert_tx_type {
-    ($tx:expr, $variant:ident, $reason:literal) => {
-        match $tx {
-            RevaultTx::$variant(inner_tx) => inner_tx,
-            _ => unreachable!($reason),
-        }
-    };
 }
 
 // FIXME: naming it "db transaction" was ambiguous..

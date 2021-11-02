@@ -9,7 +9,7 @@ use crate::daemon::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
             db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
         },
-        schema::DbVault,
+        schema::{DbTransaction, DbVault},
         DatabaseError,
     },
     revaultd::{RevaultD, VaultStatus},
@@ -25,12 +25,8 @@ use revault_net::{
 };
 use revault_tx::{
     bitcoin::{
-        consensus::encode,
-        hashes::hex::ToHex,
-        secp256k1::{self, Signature},
-        util::bip32::ChildNumber,
-        Address, Amount, OutPoint, PublicKey as BitcoinPubKey, SigHashType,
-        Transaction as BitcoinTransaction, Txid,
+        consensus::encode, hashes::hex::ToHex, secp256k1, util::bip32::ChildNumber, Address,
+        Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
     transactions::{
@@ -145,6 +141,11 @@ pub enum RpcControlError {
     Tx(revault_tx::Error),
     Bitcoind(BitcoindError),
     ThreadCommunication(String),
+    /// An error returned when, given a previous poll of the state of the vault
+    /// in database a certain pre-signed transaction should be present but it was
+    /// not. Could be due to another thread wiping all the txs due to for instance
+    /// a block chain reorg.
+    TransactionNotFound,
 }
 
 impl From<DatabaseError> for RpcControlError {
@@ -178,6 +179,10 @@ impl fmt::Display for RpcControlError {
             Self::Tx(ref e) => write!(f, "Transaction handling error: '{}'", e),
             Self::Bitcoind(ref e) => write!(f, "Bitcoind error: '{}'", e),
             Self::ThreadCommunication(ref e) => write!(f, "Thread communication error: '{}'", e),
+            Self::TransactionNotFound => write!(
+                f,
+                "Transaction not found although it should have been in database"
+            ),
         }
     }
 }
@@ -261,7 +266,10 @@ pub fn presigned_txs(
     for db_vault in db_vaults {
         let outpoint = db_vault.deposit_outpoint;
 
-        let (_, unvault_psbt) = db_unvault_transaction(db_path, db_vault.id)?;
+        let unvault_psbt = db_unvault_transaction(db_path, db_vault.id)?
+            .ok_or(RpcControlError::TransactionNotFound)?
+            .psbt
+            .assert_unvault();
         let mut finalized_unvault = unvault_psbt.clone();
         let unvault = VaultPresignedTransaction {
             transaction: if finalized_unvault.finalize(&revaultd.secp_ctx).is_ok() {
@@ -272,9 +280,9 @@ pub fn presigned_txs(
             psbt: unvault_psbt,
         };
 
-        // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-        let (_, cancel_psbt) =
-            db_cancel_transaction(db_path, db_vault.id)?.expect("Must be here post 'Funded' state");
+        let cancel_db_tx = db_cancel_transaction(db_path, db_vault.id)?
+            .ok_or(RpcControlError::TransactionNotFound)?;
+        let cancel_psbt = cancel_db_tx.psbt.assert_cancel();
         let mut finalized_cancel = cancel_psbt.clone();
         let cancel = VaultPresignedTransaction {
             transaction: if finalized_cancel.finalize(&revaultd.secp_ctx).is_ok() {
@@ -288,9 +296,9 @@ pub fn presigned_txs(
         let mut emergency = None;
         let mut unvault_emergency = None;
         if revaultd.is_stakeholder() {
-            // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-            let (_, emer_psbt) = db_emer_transaction(db_path, db_vault.id)?
-                .expect("Must be here post 'Funded' state");
+            let emer_db_tx = db_emer_transaction(db_path, db_vault.id)?
+                .ok_or(RpcControlError::TransactionNotFound)?;
+            let emer_psbt = emer_db_tx.psbt.assert_emer();
             let mut finalized_emer = emer_psbt.clone();
             emergency = Some(VaultPresignedTransaction {
                 transaction: if finalized_emer.finalize(&revaultd.secp_ctx).is_ok() {
@@ -301,9 +309,9 @@ pub fn presigned_txs(
                 psbt: emer_psbt,
             });
 
-            // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-            let (_, unemer_psbt) = db_unvault_emer_transaction(db_path, db_vault.id)?
-                .expect("Must be here post 'Funded' state");
+            let unemer_db_tx = db_unvault_emer_transaction(db_path, db_vault.id)?
+                .ok_or(RpcControlError::TransactionNotFound)?;
+            let unemer_psbt = unemer_db_tx.psbt.assert_unvault_emer();
             let mut finalized_unemer = unemer_psbt.clone();
             unvault_emergency = Some(VaultPresignedTransaction {
                 transaction: if finalized_unemer.finalize(&revaultd.secp_ctx).is_ok() {
@@ -349,23 +357,15 @@ pub fn onchain_txs<T: BitcoindThread>(
         // eg returning None early on Funded vaults).
         let (unvault, cancel, emergency, unvault_emergency, spend) = match db_vault.status {
             VaultStatus::Unvaulting | VaultStatus::Unvaulted => {
-                let unvault = db_unvault_transaction(db_path, db_vault.id)
-                    .map_err(|e| e.into())
-                    .and_then(|(_, tx)| {
-                        bitcoind_conn
-                            .wallet_tx(tx.txid())
-                            .map_err(|e| RpcControlError::from(e))
-                    })?;
+                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
+                    .ok_or(RpcControlError::TransactionNotFound)?;
+                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
                 (unvault, None, None, None, None)
             }
             VaultStatus::Spending | VaultStatus::Spent => {
-                let unvault = db_unvault_transaction(db_path, db_vault.id)
-                    .map_err(|e| e.into())
-                    .and_then(|(_, tx)| {
-                        bitcoind_conn
-                            .wallet_tx(tx.txid())
-                            .map_err(|e| RpcControlError::from(e))
-                    })?;
+                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
+                    .ok_or(RpcControlError::TransactionNotFound)?;
+                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
                 let spend = if let Some(spend_txid) = db_vault.final_txid {
                     bitcoind_conn.wallet_tx(spend_txid)?
                 } else {
@@ -374,13 +374,9 @@ pub fn onchain_txs<T: BitcoindThread>(
                 (unvault, None, None, None, spend)
             }
             VaultStatus::Canceling | VaultStatus::Canceled => {
-                let unvault = db_unvault_transaction(db_path, db_vault.id)
-                    .map_err(|e| e.into())
-                    .and_then(|(_, tx)| {
-                        bitcoind_conn
-                            .wallet_tx(tx.txid())
-                            .map_err(|e| RpcControlError::from(e))
-                    })?;
+                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
+                    .ok_or(RpcControlError::TransactionNotFound)?;
+                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
                 let cancel = if let Some(cancel_txid) = db_vault.final_txid {
                     bitcoind_conn.wallet_tx(cancel_txid)?
                 } else {
@@ -391,40 +387,24 @@ pub fn onchain_txs<T: BitcoindThread>(
             VaultStatus::EmergencyVaulting | VaultStatus::EmergencyVaulted => {
                 // Emergencies are only for stakeholders!
                 if revaultd.is_stakeholder() {
-                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-                    let emergency = db_emer_transaction(db_path, db_vault.id)
-                        .map(|tx| tx.expect("Must be here post 'Funded' state"))
-                        .map_err(|e| e.into())
-                        .and_then(|(_, tx)| {
-                            bitcoind_conn
-                                .wallet_tx(tx.txid())
-                                .map_err(|e| RpcControlError::from(e))
-                        })?;
+                    let emer_db_tx = db_emer_transaction(db_path, db_vault.id)?
+                        .ok_or(RpcControlError::TransactionNotFound)?;
+                    let emergency = bitcoind_conn.wallet_tx(emer_db_tx.psbt.txid())?;
                     (None, None, emergency, None, None)
                 } else {
                     (None, None, None, None, None)
                 }
             }
             VaultStatus::UnvaultEmergencyVaulting | VaultStatus::UnvaultEmergencyVaulted => {
-                let unvault = db_unvault_transaction(db_path, db_vault.id)
-                    .map_err(|e| e.into())
-                    .and_then(|(_, tx)| {
-                        bitcoind_conn
-                            .wallet_tx(tx.txid())
-                            .map_err(|e| RpcControlError::from(e))
-                    })?;
+                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
+                    .ok_or(RpcControlError::TransactionNotFound)?;
+                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
 
                 // Emergencies are only for stakeholders!
                 if revaultd.is_stakeholder() {
-                    // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-                    let unvault_emergency = db_unvault_emer_transaction(db_path, db_vault.id)
-                        .map(|tx| tx.expect("Must be here if not 'unconfirmed'"))
-                        .map_err(|e| e.into())
-                        .and_then(|(_, tx)| {
-                            bitcoind_conn
-                                .wallet_tx(tx.txid())
-                                .map_err(|e| RpcControlError::from(e))
-                        })?;
+                    let unemer_db_tx = db_emer_transaction(db_path, db_vault.id)?
+                        .ok_or(RpcControlError::TransactionNotFound)?;
+                    let unvault_emergency = bitcoind_conn.wallet_tx(unemer_db_tx.psbt.txid())?;
                     (unvault, None, None, unvault_emergency, None)
                 } else {
                     (unvault, None, None, None, None)
@@ -471,114 +451,6 @@ pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>
         .chain(unemer_iter)
         .collect::<Result<Vec<BitcoinTransaction>, revault_tx::Error>>()
         .map_err(|e| e.into())
-}
-
-/// An error thrown when the verification of a signature fails
-#[derive(Debug)]
-pub enum SigError {
-    InvalidLength,
-    InvalidSighash,
-    VerifError(secp256k1::Error),
-    /// Transaction for which we check the sigs does not pass sanity checks
-    InsaneTransaction,
-    Tx(revault_tx::Error),
-}
-
-impl std::fmt::Display for SigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::InvalidLength => write!(f, "Invalid length of signature"),
-            Self::InvalidSighash => write!(f, "Invalid SIGHASH type"),
-            Self::VerifError(e) => write!(f, "Signature verification error: '{}'", e),
-            Self::InsaneTransaction => write!(f, "Insane transaction"),
-            Self::Tx(e) => write!(f, "Error in transaction management: '{}'", e),
-        }
-    }
-}
-
-impl std::error::Error for SigError {}
-
-impl From<secp256k1::Error> for SigError {
-    fn from(e: secp256k1::Error) -> Self {
-        Self::VerifError(e)
-    }
-}
-
-/// The signature hash of a presigned transaction (ie Unvault, Cancel, Emergency, or
-/// UnvaultEmergency)
-///
-/// # Error
-/// - If the transaction does not have exactly 1 input
-/// - If the sighash is not either ALL of ALL|ACP
-pub fn presigned_tx_sighash(
-    tx: &impl RevaultTransaction,
-    hashtype: SigHashType,
-) -> Result<secp256k1::Message, SigError> {
-    // Presigned transactions only have one input when handled by revaultd.
-    if tx.tx().input.len() != 1 {
-        return Err(SigError::InsaneTransaction);
-    }
-
-    // We wouldn't check the signatures of an already valid transaction, would we?
-    if tx.is_finalized() {
-        return Err(SigError::InsaneTransaction);
-    }
-
-    if hashtype != SigHashType::All && hashtype != SigHashType::AllPlusAnyoneCanPay {
-        return Err(SigError::InvalidSighash);
-    }
-
-    let sighash = tx
-        .signature_hash(0, hashtype)
-        .map_err(|e| SigError::Tx(e.into()))?;
-    Ok(secp256k1::Message::from_slice(&sighash).expect("sighash is a 32 bytes hash"))
-}
-
-/// Check all complete signatures for revocation transactions (ie Cancel, Emergency,
-/// or UnvaultEmergency)
-pub fn check_revocation_signatures(
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    tx: &impl RevaultTransaction,
-    // FIXME: it should get the sigs from the tx, as per the Unvault routine
-    sigs: &BTreeMap<BitcoinPubKey, Vec<u8>>,
-) -> Result<(), SigError> {
-    let sighash_type = SigHashType::AllPlusAnyoneCanPay;
-    let sighash = presigned_tx_sighash(tx, sighash_type)?;
-
-    for (pubkey, sig) in sigs {
-        let (sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
-        if *sighash_type != SigHashType::AllPlusAnyoneCanPay as u8 {
-            return Err(SigError::InvalidSighash);
-        }
-        secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
-    }
-
-    Ok(())
-}
-
-/// Check all signatures of an Unvault transaction
-pub fn check_unvault_signatures(
-    secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    tx: &UnvaultTransaction,
-) -> Result<(), SigError> {
-    let sighash_type = SigHashType::All;
-    let sighash = presigned_tx_sighash(tx, sighash_type)?;
-    let sigs = &tx
-        .psbt()
-        .inputs
-        .get(0)
-        .ok_or(SigError::InsaneTransaction)?
-        .partial_sigs;
-
-    for (pubkey, sig) in sigs.iter() {
-        let (sighash_type, sig) = sig.split_last().ok_or(SigError::InvalidLength)?;
-        if *sighash_type != SigHashType::All as u8 {
-            return Err(SigError::InvalidSighash);
-        }
-        secp.verify(&sighash, &Signature::from_der(&sig)?, &pubkey.key)?;
-    }
-
-    Ok(())
 }
 
 /// An error that occured when talking to a server
@@ -635,19 +507,9 @@ impl From<revault_net::Error> for CommunicationError {
 fn send_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
-    sigs: BTreeMap<BitcoinPubKey, Vec<u8>>,
+    sigs: BTreeMap<secp256k1::PublicKey, secp256k1::Signature>,
 ) -> Result<(), CommunicationError> {
-    for (pubkey, sig) in sigs {
-        let pubkey = pubkey.key;
-        let (sigtype, sig) = sig
-            .split_last()
-            .expect("They must provide valid signatures");
-        assert!(
-            *sigtype == SigHashType::AllPlusAnyoneCanPay as u8
-                || *sigtype == SigHashType::All as u8
-        );
-
-        let signature = Signature::from_der(&sig).expect("They must provide valid signatures");
+    for (pubkey, signature) in sigs {
         let sig_msg = Sig {
             pubkey,
             signature,
@@ -669,23 +531,13 @@ pub fn share_rev_signatures(
     coordinator_host: std::net::SocketAddr,
     noise_secret: &revault_net::noise::SecretKey,
     coordinator_noisekey: &revault_net::noise::PublicKey,
-    cancel: (&CancelTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
-    emer: (&EmergencyTransaction, BTreeMap<BitcoinPubKey, Vec<u8>>),
-    unvault_emer: (
-        &UnvaultEmergencyTransaction,
-        BTreeMap<BitcoinPubKey, Vec<u8>>,
-    ),
+    rev_txs: &[DbTransaction],
 ) -> Result<(), CommunicationError> {
-    // We would not spam the coordinator, would we?
-    assert!(!cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty());
     let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
-    let cancel_txid = cancel.0.txid();
-    send_sig_msg(&mut transport, cancel_txid, cancel.1)?;
-    let emer_txid = emer.0.txid();
-    send_sig_msg(&mut transport, emer_txid, emer.1)?;
-    let unvault_emer_txid = unvault_emer.0.txid();
-    send_sig_msg(&mut transport, unvault_emer_txid, unvault_emer.1)?;
+    for tx in rev_txs {
+        send_sig_msg(&mut transport, tx.psbt.txid(), tx.psbt.signatures())?;
+    }
 
     Ok(())
 }
@@ -695,20 +547,15 @@ pub fn share_unvault_signatures(
     coordinator_host: std::net::SocketAddr,
     noise_secret: &revault_net::noise::SecretKey,
     coordinator_noisekey: &revault_net::noise::PublicKey,
-    unvault_tx: &UnvaultTransaction,
+    unvault_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
     let mut transport = KKTransport::connect(coordinator_host, noise_secret, coordinator_noisekey)?;
 
-    // FIXME: don't blindly assume the index here..
-    let sigs = &unvault_tx
-        .psbt()
-        .inputs
-        .get(0)
-        .expect("Unvault has a single input")
-        .partial_sigs;
-    log::trace!("Sharing unvault sigs {:?}", sigs);
-    let txid = unvault_tx.txid();
-    send_sig_msg(&mut transport, txid, sigs.clone())
+    send_sig_msg(
+        &mut transport,
+        unvault_tx.psbt.txid(),
+        unvault_tx.psbt.signatures(),
+    )
 }
 
 // A hack to workaround the immutability of the SpendTransaction.
@@ -899,13 +746,14 @@ mod test {
         database::{
             actions::{
                 db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
-                db_update_presigned_tx,
+                db_update_presigned_txs,
             },
+            bitcointx::{RevaultTx, TransactionType},
             interface::{
-                db_cancel_transaction, db_emer_transaction, db_unvault_emer_transaction,
+                db_cancel_transaction, db_emer_transaction, db_exec, db_unvault_emer_transaction,
                 db_unvault_transaction, db_vault_by_deposit,
             },
-            schema::DbVault,
+            schema::{DbTransaction, DbVault},
         },
         jsonrpc::UserRole,
         revaultd::{RevaultD, VaultStatus},
@@ -923,7 +771,7 @@ mod test {
             hashes::hex::FromHex,
             network::constants::Network,
             secp256k1,
-            util::{amount::Amount, bip143::SigHashCache, bip32::ChildNumber},
+            util::{amount::Amount, bip32::ChildNumber},
             PrivateKey as BitcoinPrivKey, PublicKey as BitcoinPubKey, SigHashType,
         },
         transactions::{
@@ -931,6 +779,7 @@ mod test {
             UnvaultEmergencyTransaction, UnvaultTransaction,
         },
     };
+    use rusqlite::params;
     use std::{collections::BTreeMap, fs, net::TcpListener, str::FromStr, thread};
 
     #[test]
@@ -962,6 +811,35 @@ mod test {
         pub final_emer: Option<EmergencyTransaction>,
         pub initial_unvault_emer: UnvaultEmergencyTransaction,
         pub final_unvault_emer: Option<UnvaultEmergencyTransaction>,
+    }
+
+    fn update_presigned_tx<C>(
+        db_path: &std::path::PathBuf,
+        db_vault: &DbVault,
+        mut db_tx: DbTransaction,
+        sigs: &BTreeMap<BitcoinPubKey, Vec<u8>>,
+        secp: &secp256k1::Secp256k1<C>,
+    ) where
+        C: secp256k1::Verification,
+    {
+        for (key, sig) in sigs {
+            let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).unwrap();
+            match db_tx.psbt {
+                RevaultTx::Unvault(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+                RevaultTx::Cancel(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+                RevaultTx::Emergency(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+                RevaultTx::UnvaultEmergency(ref mut tx) => {
+                    tx.add_signature(0, key.key, sig, secp).unwrap();
+                }
+            }
+        }
+        db_update_presigned_txs(db_path, db_vault, vec![db_tx], secp).unwrap();
     }
 
     /// Create 4 vaults: one unconfirmed, one funded, one secured and one active
@@ -1090,14 +968,14 @@ mod test {
             .map(|o| db_vault_by_deposit(&db_file, &o).unwrap().unwrap())
             .collect();
 
-        let (tx_db_id, _) = db_cancel_transaction(&db_file, vaults[2].id)
+        let tx_db = db_cancel_transaction(&db_file, vaults[2].id)
             .unwrap()
             .unwrap();
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_file,
-            vaults[2].id,
-            tx_db_id,
-            transactions[2]
+            &vaults[2],
+            tx_db,
+            &transactions[2]
                 .as_ref()
                 .unwrap()
                 .final_cancel
@@ -1105,20 +983,18 @@ mod test {
                 .unwrap()
                 .psbt()
                 .inputs[0]
-                .partial_sigs
-                .clone(),
+                .partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
+        );
 
-        let (tx_db_id, _) = db_emer_transaction(&db_file, vaults[2].id)
+        let tx_db = db_emer_transaction(&db_file, vaults[2].id)
             .unwrap()
             .unwrap();
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_file,
-            vaults[2].id,
-            tx_db_id,
-            transactions[2]
+            &vaults[2],
+            tx_db,
+            &transactions[2]
                 .as_ref()
                 .unwrap()
                 .final_emer
@@ -1126,20 +1002,18 @@ mod test {
                 .unwrap()
                 .psbt()
                 .inputs[0]
-                .partial_sigs
-                .clone(),
+                .partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
+        );
 
-        let (tx_db_id, _) = db_unvault_emer_transaction(&db_file, vaults[2].id)
+        let tx_db = db_unvault_emer_transaction(&db_file, vaults[2].id)
             .unwrap()
             .unwrap();
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_file,
-            vaults[2].id,
-            tx_db_id,
-            transactions[2]
+            &vaults[2],
+            tx_db,
+            &transactions[2]
                 .as_ref()
                 .unwrap()
                 .final_unvault_emer
@@ -1147,10 +1021,18 @@ mod test {
                 .unwrap()
                 .psbt()
                 .inputs[0]
-                .partial_sigs
-                .clone(),
+                .partial_sigs,
             &revaultd.secp_ctx,
-        )
+        );
+        db_exec(&db_file, |tx| {
+            tx.execute(
+                "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id = (?2)",
+                params![VaultStatus::Secured as u32, vaults[2].id,],
+            )
+            .unwrap();
+            Ok(())
+        })
         .unwrap();
         assert_eq!(
             db_vault_by_deposit(&db_file, &outpoints[2])
@@ -1172,14 +1054,14 @@ mod test {
         )
         .unwrap();
 
-        let (tx_db_id, _) = db_cancel_transaction(&db_file, vaults[3].id)
+        let tx_db = db_cancel_transaction(&db_file, vaults[3].id)
             .unwrap()
             .unwrap();
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_file,
-            vaults[2].id,
-            tx_db_id,
-            transactions[3]
+            &vaults[3],
+            tx_db,
+            &transactions[3]
                 .as_ref()
                 .unwrap()
                 .final_cancel
@@ -1187,20 +1069,18 @@ mod test {
                 .unwrap()
                 .psbt()
                 .inputs[0]
-                .partial_sigs
-                .clone(),
+                .partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
+        );
 
-        let (tx_db_id, _) = db_emer_transaction(&db_file, vaults[3].id)
+        let tx_db = db_emer_transaction(&db_file, vaults[3].id)
             .unwrap()
             .unwrap();
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_file,
-            vaults[2].id,
-            tx_db_id,
-            transactions[3]
+            &vaults[3],
+            tx_db,
+            &transactions[3]
                 .as_ref()
                 .unwrap()
                 .final_emer
@@ -1208,20 +1088,18 @@ mod test {
                 .unwrap()
                 .psbt()
                 .inputs[0]
-                .partial_sigs
-                .clone(),
+                .partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
+        );
 
-        let (tx_db_id, _) = db_unvault_emer_transaction(&db_file, vaults[3].id)
+        let tx_db = db_unvault_emer_transaction(&db_file, vaults[3].id)
             .unwrap()
             .unwrap();
-        db_update_presigned_tx(
+        update_presigned_tx(
             &db_file,
-            vaults[2].id,
-            tx_db_id,
-            transactions[3]
+            &vaults[3],
+            tx_db,
+            &transactions[3]
                 .as_ref()
                 .unwrap()
                 .final_unvault_emer
@@ -1229,18 +1107,18 @@ mod test {
                 .unwrap()
                 .psbt()
                 .inputs[0]
-                .partial_sigs
-                .clone(),
+                .partial_sigs,
             &revaultd.secp_ctx,
-        )
-        .unwrap();
+        );
 
-        let (tx_db_id, _) = db_unvault_transaction(&db_file, vaults[3].id).unwrap();
-        db_update_presigned_tx(
+        let tx_db = db_unvault_transaction(&db_file, vaults[3].id)
+            .unwrap()
+            .unwrap();
+        update_presigned_tx(
             &db_file,
-            vaults[3].id,
-            tx_db_id,
-            transactions[3]
+            &vaults[3],
+            tx_db,
+            &transactions[3]
                 .as_ref()
                 .unwrap()
                 .final_unvault
@@ -1248,11 +1126,20 @@ mod test {
                 .unwrap()
                 .psbt()
                 .inputs[0]
-                .partial_sigs
-                .clone(),
+                .partial_sigs,
             &revaultd.secp_ctx,
-        )
+        );
+        db_exec(&db_file, |tx| {
+            tx.execute(
+                "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+             WHERE vaults.id = (?2)",
+                params![VaultStatus::Active as u32, vaults[3].id,],
+            )
+            .unwrap();
+            Ok(())
+        })
         .unwrap();
+
         assert_eq!(
             db_vault_by_deposit(&db_file, &outpoints[3])
                 .unwrap()
@@ -1271,6 +1158,20 @@ mod test {
                 transactions: txs,
             })
             .collect()
+    }
+
+    fn create_keys(
+        ctx: &secp256k1::Secp256k1<secp256k1::All>,
+        secret_slice: &[u8],
+    ) -> (BitcoinPrivKey, BitcoinPubKey) {
+        let secret_key = secp256k1::SecretKey::from_slice(secret_slice).unwrap();
+        let private_key = BitcoinPrivKey {
+            compressed: true,
+            network: Network::Regtest,
+            key: secret_key,
+        };
+        let public_key = BitcoinPubKey::from_private_key(&ctx, &private_key);
+        (private_key, public_key)
     }
 
     #[test]
@@ -1423,11 +1324,11 @@ mod test {
         let _ = create_vaults(&man_revaultd);
 
         // vault[0] is not confirmed, no presigned txs here!
-        assert!(
+        assert_eq!(
             presigned_txs(&stake_revaultd, vec![vaults[0].db_vault.clone()])
                 .unwrap_err()
-                .to_string()
-                .contains("Database error: No unvault tx in db")
+                .to_string(),
+            RpcControlError::TransactionNotFound.to_string()
         );
 
         // vault[1] is funded, no txs is final
@@ -1758,359 +1659,6 @@ mod test {
         fs::remove_dir_all(&datadir).unwrap();
     }
 
-    #[test]
-    fn test_presigned_tx_sighash() {
-        let datadir = test_datadir();
-        let revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
-
-        // A RevaultTransaction with multiple inputs
-        let tx = CancelTransaction::from_psbt_str("cHNidP8BAIcCAAAAAvvnQeptD/Ppkod15b290euvxLZ152fu+UG6SL6Sn/rKAwAAAAD9////K6wOngepyjysKKXiEUntd0HTM9hDT6d2hzOnGOYvB5EAAAAAAP3///8Bes3LHQAAAAAiACAiB1URdpLbPVOgR361M5byVJWUrSorRzKB9ls5e4WZEQAAAAAAAQErpg/MHQAAAAAiACD81LIaR5tvZke/RiX8d1TzDKcJHsnQr7Y8HRBh/Txh8SICAryqF/aeT6OwqH48wpkNaKu5BZqcZXzgyl4Z758P0YuESDBFAiEAxTjt2+FUGQYvyk4s22KffTBG6EUyMenpGZ9gPeKPM6ECIDQ1Bxds9DZjpTGAHgmIZtru1HA9WGeStbgKH7cQUeq6gSICAxjzGCXfRtFhIh3oMXqXJGNnIAASdnv3ew8UlNfn7N5ZSDBFAiEA/FXZdFvem9r9Rgj/ndhW/5k9nhA1GbpAUx15BItV4PgCICy+YnzAFGiXPZVR3um6GW/T0uxt3Wzhi289nqUaHXFDgQEDBIEAAAABBaghAgPHSfAloH4bK1PlRN6K+IzAbbxkf/YS1Ki1aS+XwQe7rFGHZHapFKH2KeYE3b7EwzjxOTdU46doSmy3iKxrdqkUmEKNXQMQl/KOoGRty6RxMQ5QrgeIrGyTUodnUiEDD2S5Iq7i/Vl/EEvGyztnDxyixsSbEHGhpsAQV12U/lohAqvkdbGZ7D1i+ldvruFqM0/bhv+ybc51vs66rt8yisP+Uq9TsmgiBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABAR82AAAAAAAAABYAFAAAAAAAAAAAAAAAAAAAAAAAAAAAAQMEAQAAAAABAUdSIQK8qhf2nk+jsKh+PMKZDWiruQWanGV84MpeGe+fD9GLhCEDGPMYJd9G0WEiHegxepckY2cgABJ2e/d7DxSU1+fs3llSriICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-        assert!(presigned_tx_sighash(&tx, SigHashType::AllPlusAnyoneCanPay)
-            .unwrap_err()
-            .to_string()
-            .contains(&SigError::InsaneTransaction.to_string()));
-
-        // A RevaultTransaction already finalized
-        let mut tx = UnvaultTransaction::from_psbt_str("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").unwrap();
-        tx.finalize(&revaultd.secp_ctx).unwrap();
-        assert!(presigned_tx_sighash(&tx, SigHashType::All)
-            .unwrap_err()
-            .to_string()
-            .contains(&SigError::InsaneTransaction.to_string()));
-
-        // A RevaultTransaction with the wrong SigHashType
-        let tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAUaovJQUhwegF7P9qJBrWxtPq7dcJVPZ8MTjp9v8LUoDAAAAAAD9////AtCn6QsAAAAAIgAg8R4ZLx3Zf/A7VOcZ7PtAzhSLo5olkqqYP+voLCRFn2QwdQAAAAAAACIAIOD4aW9ds/RNXcNihA2bsw1c+bmg65auhz/3DoPPEg7oAAAAAAABASsYL+oLAAAAACIAIKdjkv/h5NjyHOPSensxUoTK3V1lFzGvS6zsG04Xdfs8IgICApM6sQN+rQqkp4WMbUnWcF4fs7xfZrAJGK97nwDs1SZIMEUCIQC18W4KdSJgg0w8PaNvCISyIxKXYbMRB6NBDmhz3Ok+hQIgV77oVG62xS9baMrBbp9pdAUjooB2Mqnx5hixZ48kQpoBIgICA8dJ8CWgfhsrU+VE3or4jMBtvGR/9hLUqLVpL5fBB7tIMEUCIQDmjTp2N3Pb7UKLyVy/85lgBa4Et6xMxi1ZeWy14gdVUQIgZu5u5/wDWv0evlPL1NdzINwO6h5yBiaNskl3VOrMGtoBIgICBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DlIMEUCIQDJeX1L12SnJ+SBprTtTo57u3hcuzRTQ/y0AEwcfVSLegIgWrBVPnhhzYh2tw8gk0eGZJ4MaBInKrSiVXUoUuyvspYBIgICEUcipBjtxtFxFXI6CYvMq/KXtJxTVJETq5tRILViovxHMEQCIG5YQZzENXnaYNa57yz95VVFyDdJOU7zrEKAeuXzCtDCAiAH+tzK1BuBv2y1PF/HBOPl70JoCYREuAlmD8/oovZqGgEiAgJDFo5gffr4sTpOPvcI45wr3VtVCTh/yw/SiCJaCIjiV0cwRAIgE73DtQt36NOcekaFMGwuR4tBwuZpfzpT/iBUhVSKC3ECIE3+5Ixb/m1vfGeelQ2YPG24JFF511o9CTPpAySkQLd1ASICAsq7RLTptOoznxrLVOYVZez7c7CNiE0rx7Ts4ZZIIKc0RzBEAiBEWBtW23SxE9S/kpxQwIAAZzjNP+44oRmGJ/uFDW4WqAIgK5o4IsOQ1eYHGhayIzT3drzd2qBzZF/ODhh5b6+XkVEBIgIC6CJXMrp3sp02Gl+hpD2YHeku/rN95ivhprKBTRY+H9JIMEUCIQDtqwsuWxHTP3K+0GadKas1DuRm69MBZc/UpSyWUb/QvQIgczyuvIadVpF8qaGQ0gDYeCtcEGgGjL3mqp3A4fliYeoBIgIC9t7BqqGmkqEmYkK1StchrYTgch6CE1hR7eN1mk4/JaxHMEQCIBkfbFjrWBu2hM4uriAu0QNUeExTsTD8JqBZxo4zkHGzAiBwYMXCzPKBBcY0Wt9h1Au9bBvEdyR0qVt+AQy9ftQ3wQEiAgL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvEcwRAIgc2Yp+nrcf8jozOH0zkoM5DRHA6VfFgeV7LxsUAXAaSACIFKiy1+WoD7cfJviCH6K+eAxdVWHXKr+/59G0GpUAi8UASICAvuWyyfoIfsyrTwNoR8N80zSBdfJrGff+D9XKBRL7aEFSDBFAiEAk5LsVb9ztXJa2boq6j/U+GS8rQ2IZMJMtY1Win7Xf7cCIHn+GWPTxQYlwVlRZjx+1nC8Y+C83hYjNzxeEyNvR1MEASICAzXQHO6KjAbz7OgmKxKccFYxsHZnt5oH/gWg1awnK9T0RzBEAiB2xY5QteSVL/U1Bm8Vv2s5kNBc3dMT2a48+NUzulNX0QIgTz/zcxaerGY+p/Iw8T9WzwLr8icSY2+sWx65a1P2Bm8BIgIDTm37cDT97U0sxMAhgCDeN0TLih+a3NKHx6ahcyh66xdIMEUCIQDyC6YFW72jfFHTeYvRAKB7sl/1ETvSvJQ6oXtvFM2LxwIgWd3pGOipAsisM9/2qGrnoWvvLm8dKqUHrachRGaskyIBIgIDTo4HmlEehH38tYZMerpLLhSBzzkjW1DITKYZ6Pr9+I1HMEQCICTUqQmMyIg6pRpb/rrVyRLxOOnCguqpytPH1cKg0RdiAiAQsgjOTio98PWUNcVqTODBMM2HJvURyN+GhJbUZDL3TwEiAgPAKvZof/JMq6C/mAv3iRqN76eVO6RzNYLzz9XqXigOjkcwRAIgSzN1LbuYv8y6tkZRvTZZeVYC32fXstGvgd7O1gRQEDcCIDTOeB3gocuzJpmBv1P/3Ktt9JCV5NY0DJlJK9012gDzAQEDBAEAAAABBUdSIQL7lssn6CH7Mq08DaEfDfNM0gXXyaxn3/g/VygUS+2hBSECQxaOYH36+LE6Tj73COOcK91bVQk4f8sP0ogiWgiI4ldSriIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBqCECBnMMBWVan9BFRWk1mJUJsUOKEwiJI/uSjrLQ6Btb4DmsUYdkdqkUb6EvZUC3JnDp5ob7670mID8QRt6IrGt2qRRFrmAKACpzZQe2b3NL6jaTgMGDHIisbJNSh2dSIQMPZLkiruL9WX8QS8bLO2cPHKLGxJsQcaGmwBBXXZT+WiECq+R1sZnsPWL6V2+u4WozT9uG/7JtznW+zrqu3zKKw/5Sr1OyaCICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBJSECWDjcCUoChdvjsfivEoK7jSMGDPuXWy85IUr436Ago52sUYciAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
-        assert!(presigned_tx_sighash(&tx, SigHashType::Single)
-            .unwrap_err()
-            .to_string()
-            .contains(&SigError::InvalidSighash.to_string()));
-
-        // And finally, a proper RevaultTransaction :)
-        let tx = UnvaultTransaction::from_psbt_str("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").unwrap();
-        presigned_tx_sighash(&tx, SigHashType::All).unwrap();
-
-        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
-    }
-
-    fn create_keys(
-        ctx: &secp256k1::Secp256k1<secp256k1::All>,
-        secret_slice: &[u8],
-    ) -> (BitcoinPrivKey, BitcoinPubKey) {
-        let secret_key = secp256k1::SecretKey::from_slice(secret_slice).unwrap();
-        let private_key = BitcoinPrivKey {
-            compressed: true,
-            network: Network::Regtest,
-            key: secret_key,
-        };
-        let public_key = BitcoinPubKey::from_private_key(&ctx, &private_key);
-        (private_key, public_key)
-    }
-
-    #[test]
-    fn test_check_revocation_signatures() {
-        let datadirs = [test_datadir(), test_datadir(), test_datadir()];
-        let revaultds = [
-            dummy_revaultd(datadirs[0].clone(), UserRole::Manager),
-            dummy_revaultd(datadirs[1].clone(), UserRole::ManagerStakeholder),
-            dummy_revaultd(datadirs[2].clone(), UserRole::Stakeholder),
-        ];
-
-        // We need a ctx that can sign as well (revaultd context is verify only)
-        let ctx = secp256k1::Secp256k1::new();
-
-        let (private_key, public_key) =
-            create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-
-        // Let's create a valid signature
-        let tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        let psbt = tx.psbt();
-        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
-        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
-        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
-        let sighash = cache.signature_hash(
-            0,
-            &script_code,
-            prev_value,
-            SigHashType::AllPlusAnyoneCanPay,
-        );
-        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
-        let mut sig = ctx
-            .sign(&sighash, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
-        let mut sigs = BTreeMap::new();
-        sigs.insert(public_key, sig.clone());
-
-        // Happy path: everything works :)
-        for revaultd in &revaultds {
-            check_revocation_signatures(&revaultd.secp_ctx, &tx, &sigs).unwrap();
-        }
-
-        // Now, onto with the sad paths...
-
-        // Signature is empty? Wtf?
-        let mut wrong_sigs = BTreeMap::new();
-        wrong_sigs.insert(public_key, vec![]);
-        for revaultd in &revaultds {
-            assert!(
-                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
-                    .unwrap_err()
-                    .to_string()
-                    .contains(&SigError::InvalidLength.to_string())
-            );
-        }
-
-        // Signature is not a valid der-encoded string
-        let mut wrong_sig = vec![1, 2, 3];
-        wrong_sig.push(SigHashType::All as u8);
-        let mut wrong_sigs = BTreeMap::new();
-        wrong_sigs.insert(public_key, wrong_sig);
-        for revaultd in &revaultds {
-            assert!(
-                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
-                    .unwrap_err()
-                    .to_string()
-                    .contains(&SigError::InvalidSighash.to_string())
-            );
-        }
-
-        // I signed with the right sighash_type but pushed the wrong one
-        let mut wrong_sig = ctx
-            .sign(&sighash, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        wrong_sig.push(SigHashType::All as u8);
-        let mut wrong_sigs = BTreeMap::new();
-        wrong_sigs.insert(public_key, wrong_sig);
-        for revaultd in &revaultds {
-            assert!(
-                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
-                    .unwrap_err()
-                    .to_string()
-                    .contains(&SigError::InvalidSighash.to_string())
-            );
-        }
-
-        // I signed with the wrong sighash_type but pushed the right one
-        let wrong_sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
-        let wrong_sighash = secp256k1::Message::from_slice(&wrong_sighash).unwrap();
-        let mut wrong_sig = ctx
-            .sign(&wrong_sighash, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
-        let mut wrong_sigs = BTreeMap::new();
-        wrong_sigs.insert(public_key, wrong_sig);
-        for revaultd in &revaultds {
-            assert!(
-                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("Signature verification error")
-            );
-        }
-
-        // The signature is correct, but signed by another key
-        let (_, another_public_key) =
-            create_keys(&ctx, &[3; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut wrong_sigs = BTreeMap::new();
-        wrong_sigs.insert(another_public_key, sig.clone());
-        for revaultd in &revaultds {
-            assert!(
-                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("Signature verification error")
-            );
-        }
-
-        // The signature is correct, but signs a completely different message
-        let wrong_msg = secp256k1::Message::from_slice(&[1; 32]).unwrap();
-        let mut wrong_sig = ctx
-            .sign(&wrong_msg, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
-        let mut wrong_sigs = BTreeMap::new();
-        wrong_sigs.insert(public_key, wrong_sig);
-        for revaultd in &revaultds {
-            assert!(
-                check_revocation_signatures(&revaultd.secp_ctx, &tx, &wrong_sigs)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("Signature verification error")
-            );
-        }
-
-        for d in datadirs.iter() {
-            fs::remove_dir_all(&d).unwrap();
-        }
-    }
-
-    #[test]
-    fn test_check_unvault_signatures() {
-        let datadirs = [test_datadir(), test_datadir(), test_datadir()];
-        let revaultds = [
-            dummy_revaultd(datadirs[0].clone(), UserRole::Manager),
-            dummy_revaultd(datadirs[1].clone(), UserRole::ManagerStakeholder),
-            dummy_revaultd(datadirs[2].clone(), UserRole::Stakeholder),
-        ];
-
-        // We need a ctx that can sign as well (revaultd context is verify only)
-        let ctx = secp256k1::Secp256k1::new();
-
-        let (private_key, public_key) =
-            create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-
-        let mut tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap();
-
-        // No sigs, everything is fine
-        for revaultd in &revaultds {
-            check_unvault_signatures(&revaultd.secp_ctx, &tx).unwrap();
-        }
-
-        // Let's add a valid signature
-        let psbt = tx.psbt();
-        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
-        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
-        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
-        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
-        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
-        let sig = ctx.sign(&sighash, &private_key.key);
-        tx.add_signature(0, public_key.key, sig.clone(), &ctx)
-            .unwrap();
-
-        // Happy path: everything works :)
-        for revaultd in &revaultds {
-            check_unvault_signatures(&revaultd.secp_ctx, &tx).unwrap();
-        }
-
-        // Note how the type system prevents us to add a transaction without PSBT inputs or tx
-        // inputs.
-
-        // Signature is empty? Wtf?
-        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
-        psbt.inputs[0].partial_sigs.insert(public_key, vec![]);
-        // FIXME: revault_tx should probably fail here!
-        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string()
-                .contains(&SigError::InvalidLength.to_string()));
-        }
-
-        // Signature is not a valid der-encoded string
-        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
-        let mut wrong_sig = vec![1, 2, 3];
-        wrong_sig.push(SigHashType::All as u8);
-        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
-        // FIXME: revault_tx should probably fail here!
-        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string()
-                .contains("Signature verification error"));
-        }
-
-        // I signed with the right sighash_type but pushed the wrong one
-        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
-        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
-        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
-        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
-        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
-        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
-        let mut wrong_sig = ctx
-            .sign(&sighash, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        wrong_sig.push(SigHashType::AllPlusAnyoneCanPay as u8);
-        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
-        // FIXME: revault_tx should probably fail here!
-        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string()
-                .contains(&SigError::InvalidSighash.to_string()));
-        }
-
-        // I signed with the wrong sighash_type but pushed the right one
-        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
-        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
-        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
-        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
-        let wrong_sighash = cache.signature_hash(
-            0,
-            &script_code,
-            prev_value,
-            SigHashType::AllPlusAnyoneCanPay,
-        );
-        let wrong_sighash = secp256k1::Message::from_slice(&wrong_sighash).unwrap();
-        let mut wrong_sig = ctx
-            .sign(&wrong_sighash, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        wrong_sig.push(SigHashType::All as u8);
-        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
-        // FIXME: revault_tx should probably fail here!
-        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string()
-                .contains("Signature verification error"));
-        }
-
-        // The signature is correct, but signed by another key
-        let (_, another_public_key) =
-            create_keys(&ctx, &[3; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
-        let mut cache = SigHashCache::new(&psbt.global.unsigned_tx);
-        let prev_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
-        let script_code = psbt.inputs[0].witness_script.as_ref().unwrap();
-        let sighash = cache.signature_hash(0, &script_code, prev_value, SigHashType::All);
-        let sighash = secp256k1::Message::from_slice(&sighash).unwrap();
-        let mut sig = ctx
-            .sign(&sighash, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        sig.push(SigHashType::All as u8);
-        psbt.inputs[0].partial_sigs.insert(another_public_key, sig);
-        // FIXME: revault_tx should probably fail here!
-        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string()
-                .contains("Signature verification error"));
-        }
-
-        // The signature is correct, but signs a completely different message
-        let wrong_msg = secp256k1::Message::from_slice(&[1; 32]).unwrap();
-        let mut wrong_sig = ctx
-            .sign(&wrong_msg, &private_key.key)
-            .serialize_der()
-            .to_vec();
-        wrong_sig.push(SigHashType::All as u8);
-        let mut psbt = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAYi2DPhirMLIyBDVZxf7imJWUCdV4q2yE8kvyE+dsJz5AAAAAAD9////AtBxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2vowdQAAAAAAACIAIJZTpkweKS2TREar9MCFqF1QwPShzY3fF5zdVq2cA+SBAAAAAAABASsY+YRHAAAAACIAIA7F4yZpfkQdqB/Rizfk6gwzgZ0r/n2BfCUn69oRaXDZAQMEAQAAAAEFR1IhAlA4fOi+w5kA39d/IoJWs5m37DR1ZYGpO85N4jdF/oLQIQO9bL04WJFHJXFejdFCVHKAgUcX4cUrPan81x0tF18pxVKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQElIQMDD9p4ZaMXr5f3gQHy9ozkyB6bfM9FnBbZtooZ8mbj0qxRhyICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAA==").unwrap().into_psbt();
-        psbt.inputs[0].partial_sigs.insert(public_key, wrong_sig);
-        // FIXME: revault_tx should probably fail here!
-        let tx = UnvaultTransaction::from_raw_psbt(&encode::serialize(&psbt)).unwrap();
-        for revaultd in &revaultds {
-            assert!(check_unvault_signatures(&revaultd.secp_ctx, &tx)
-                .unwrap_err()
-                .to_string()
-                .contains("Signature verification error"));
-        }
-
-        for d in datadirs.iter() {
-            fs::remove_dir_all(&d).unwrap();
-        }
-    }
-
     // This time the coordinator won't ack our signatures :(
     #[test]
     fn test_send_sig_msg_not_acked() {
@@ -2120,8 +1668,8 @@ mod test {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
+        let signature = secp256k1::Signature::from_str("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap();
+        sigs.insert(public_key.key, signature.clone());
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2148,7 +1696,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: txid
                     }),
                 );
@@ -2169,8 +1717,8 @@ mod test {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
+        let signature = secp256k1::Signature::from_str("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap();
+        sigs.insert(public_key.key, signature.clone());
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2194,7 +1742,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: txid
                     }),
                 );
@@ -2207,87 +1755,30 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "They must provide valid signatures")]
-    fn test_send_sig_msg_invalid_signature() {
-        let txid =
-            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
-                .unwrap();
-        let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        // This signature is invalid
-        let signature = vec![];
-        sigs.insert(public_key, signature.clone());
-
-        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
-            (gen_keypair(), gen_keypair());
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _server_transport =
-                KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
-                    .expect("Server channel binding and accepting");
-        });
-
-        let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
-            .expect("Client channel connecting");
-
-        // This call will panic because the signature has invalid lenght
-        send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
-        server_thread.join().unwrap();
-    }
-
-    #[test]
-    // We trim the assertion message here because windows and the rest of the world handle \n
-    // in different ways :/
-    #[should_panic(
-        expected = "assertion failed: *sigtype == SigHashType::AllPlusAnyoneCanPay as u8 ||"
-    )]
-    fn test_send_sig_msg_invalid_sighash_type() {
-        let txid =
-            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
-                .unwrap();
-        let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d02").unwrap();
-        sigs.insert(public_key, signature.clone());
-
-        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
-            (gen_keypair(), gen_keypair());
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _server_transport =
-                KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
-                    .expect("Server channel binding and accepting");
-        });
-        let mut cli_transport = KKTransport::connect(addr, &client_privkey, &server_pubkey)
-            .expect("Client channel connecting");
-
-        // This call will fail as the signature has the wrong sighash
-        send_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
-        server_thread.join().unwrap();
-    }
-
-    #[test]
     fn test_share_rev_signatures_not_acked() {
         let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
-        let cancel =
+        let (private_key, public_key) =
+            create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut cancel =
                 CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let emer =
-                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
-        let unvault_emer =
-                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        // Rust newbie: I need the txs but they're moved inside the closure, so I'm cloning
-        // them now
+        let signature_hash = secp256k1::Message::from_slice(
+            &cancel
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature = ctx.sign(&signature_hash, &private_key.key);
+        cancel
+            .add_cancel_sig(public_key.key, signature, &ctx)
+            .unwrap();
         let other_cancel = cancel.clone();
+        let db_tx = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Cancel,
+            psbt: RevaultTx::Cancel(cancel),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2296,17 +1787,12 @@ mod test {
 
         // client thread
         let cli_thread = thread::spawn(move || {
-            assert!(share_rev_signatures(
-                addr,
-                &client_privkey,
-                &server_pubkey,
-                (&cancel, sigs.clone()),
-                (&emer, sigs.clone()),
-                (&unvault_emer, sigs.clone()),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains(&CommunicationError::SignatureStorage.to_string()));
+            assert!(
+                share_rev_signatures(addr, &client_privkey, &server_pubkey, &[db_tx])
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&CommunicationError::SignatureStorage.to_string())
+            );
         });
 
         let mut server_transport =
@@ -2319,7 +1805,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature,
                         id: other_cancel.txid(),
                     }),
                 );
@@ -2334,21 +1820,66 @@ mod test {
     #[test]
     fn test_share_rev_signatures() {
         let ctx = secp256k1::Secp256k1::new();
-        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let mut sigs = BTreeMap::new();
-        let signature = Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d01").unwrap();
-        sigs.insert(public_key, signature.clone());
-        let cancel =
+        let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let mut cancel =
                 CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let emer =
+        let signature_hash = secp256k1::Message::from_slice(
+            &cancel
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature_cancel = ctx.sign(&signature_hash, &privkey.key);
+        cancel
+            .add_cancel_sig(public_key.key, signature_cancel, &ctx)
+            .unwrap();
+        let mut emer =
                 EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
-        let unvault_emer =
+        let signature_hash = secp256k1::Message::from_slice(
+            &emer
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature_emer = ctx.sign(&signature_hash, &privkey.key);
+        emer.add_emer_sig(public_key.key, signature_emer, &ctx)
+            .unwrap();
+        let mut unvault_emer =
                 UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        // Rust newbie: I need the txs but they're moved inside the closure, so I'm cloning
-        // them now
+        let signature_hash = secp256k1::Message::from_slice(
+            &unvault_emer
+                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
+                .unwrap(),
+        )
+        .unwrap();
+        let signature_unemer = ctx.sign(&signature_hash, &privkey.key);
+        unvault_emer
+            .add_emer_sig(public_key.key, signature_unemer, &ctx)
+            .unwrap();
         let other_cancel = cancel.clone();
         let other_emer = emer.clone();
         let other_unvault_emer = unvault_emer.clone();
+        let db_cancel = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Cancel,
+            psbt: RevaultTx::Cancel(cancel),
+            is_fully_signed: false,
+        };
+        let db_emer = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Emergency,
+            psbt: RevaultTx::Emergency(emer),
+            is_fully_signed: false,
+        };
+        let db_unemer = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::UnvaultEmergency,
+            psbt: RevaultTx::UnvaultEmergency(unvault_emer),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2361,9 +1892,7 @@ mod test {
                 addr,
                 &client_privkey,
                 &server_pubkey,
-                (&cancel, sigs.clone()),
-                (&emer, sigs.clone()),
-                (&unvault_emer, sigs.clone()),
+                &[db_cancel, db_emer, db_unemer],
             )
             .unwrap();
         });
@@ -2378,7 +1907,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature: signature_cancel,
                         id: other_cancel.txid(),
                     }),
                 );
@@ -2394,7 +1923,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature: signature_emer,
                         id: other_emer.txid(),
                     }),
                 );
@@ -2410,7 +1939,7 @@ mod test {
                     &params,
                     &message::RequestParams::CoordSig(Sig {
                         pubkey: public_key.key,
-                        signature: Signature::from_der(&signature[..signature.len() - 1]).unwrap(),
+                        signature: signature_unemer,
                         id: other_unvault_emer.txid(),
                     }),
                 );
@@ -2420,34 +1949,6 @@ mod test {
             })
             .unwrap();
         cli_thread.join().unwrap();
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "assertion failed: !cancel.1.is_empty() && !emer.1.is_empty() && !unvault_emer.1.is_empty()"
-    )]
-    fn test_share_rev_signatures_empty() {
-        // Let's try to give empty sigs to the coordinator
-        let sigs = BTreeMap::new();
-        let cancel =
-                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let emer =
-                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZBQAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZBQAAAAA=").unwrap();
-        let unvault_emer =
-                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        let ((_, client_privkey), (server_pubkey, _)) = (gen_keypair(), gen_keypair());
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        share_rev_signatures(
-            addr,
-            &client_privkey,
-            &server_pubkey,
-            (&cancel, sigs.clone()),
-            (&emer, sigs.clone()),
-            (&unvault_emer, sigs.clone()),
-        )
-        .unwrap();
     }
 
     #[test]
@@ -2463,9 +1964,14 @@ mod test {
         unvault
             .add_signature(0, public_key.key, signature.clone(), &ctx)
             .unwrap();
-        // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
-        // it now
         let other_unvault = unvault.clone();
+        let db_unvault = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Unvault,
+            psbt: RevaultTx::Unvault(unvault),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2474,7 +1980,7 @@ mod test {
 
         // client thread
         let cli_thread = thread::spawn(move || {
-            share_unvault_signatures(addr, &client_privkey, &server_pubkey, &unvault).unwrap();
+            share_unvault_signatures(addr, &client_privkey, &server_pubkey, &db_unvault).unwrap();
         });
 
         let mut server_transport =
@@ -2512,9 +2018,14 @@ mod test {
         unvault
             .add_signature(0, public_key.key, signature.clone(), &ctx)
             .unwrap();
-        // Rust newbie: I need the unvault but it's moved inside the closure, so I'm cloning
-        // it now
         let other_unvault = unvault.clone();
+        let db_unvault = DbTransaction {
+            id: 0,
+            vault_id: 0,
+            tx_type: TransactionType::Unvault,
+            psbt: RevaultTx::Unvault(unvault),
+            is_fully_signed: false,
+        };
 
         let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
             (gen_keypair(), gen_keypair());
@@ -2524,7 +2035,7 @@ mod test {
         // client thread
         let cli_thread = thread::spawn(move || {
             assert!(
-                share_unvault_signatures(addr, &client_privkey, &server_pubkey, &unvault,)
+                share_unvault_signatures(addr, &client_privkey, &server_pubkey, &db_unvault,)
                     .unwrap_err()
                     .to_string()
                     .contains(&CommunicationError::SignatureStorage.to_string())
@@ -2877,7 +2388,7 @@ mod test {
     fn test_get_presigs() {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature = Signature::from_der(&Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap()).unwrap();
+        let signature = secp256k1::Signature::from_der(&Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap()).unwrap();
         let mut sigs = BTreeMap::new();
         sigs.insert(public_key.key, signature);
         let other_sigs = sigs.clone();

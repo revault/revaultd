@@ -8,17 +8,16 @@ use error::Error;
 use crate::common::VERSION;
 use crate::daemon::{
     control::{
-        announce_spend_transaction, check_revocation_signatures, check_spend_transaction_size,
-        check_unvault_signatures, coordinator_status, cosigners_status, fetch_cosigs_signatures,
-        finalized_emer_txs, listvaults_from_db, onchain_txs, presigned_txs, share_rev_signatures,
-        share_unvault_signatures, vaults_from_deposits, watchtowers_status, ListSpendEntry,
-        ListSpendStatus, RpcUtils,
+        announce_spend_transaction, check_spend_transaction_size, coordinator_status,
+        cosigners_status, fetch_cosigs_signatures, finalized_emer_txs, listvaults_from_db,
+        onchain_txs, presigned_txs, share_rev_signatures, share_unvault_signatures,
+        vaults_from_deposits, watchtowers_status, ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{
             db_delete_spend, db_insert_spend, db_mark_activating_vault,
-            db_mark_broadcastable_spend, db_mark_securing_vault, db_update_presigned_tx,
-            db_update_spend,
+            db_mark_broadcastable_spend, db_mark_securing_vault, db_update_presigned_txs,
+            db_update_spend, db_update_vault_status,
         },
         interface::{
             db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
@@ -577,37 +576,30 @@ impl RpcApi for RpcImpl {
         };
 
         // Sanity check they didn't send us garbaged PSBTs
-        // FIXME: this may not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-        let (cancel_db_id, db_cancel_tx) = db_cancel_transaction(&db_path, db_vault.id)
-            .map_err(|e| Error::from(e))?
-            .expect("must be here if at least in 'Funded' state");
+        let mut cancel_db_tx = db_cancel_transaction(&db_path, db_vault.id)?
+            .ok_or_else(JsonRpcError::internal_error)?;
         let rpc_txid = cancel_tx.tx().wtxid();
-        let db_txid = db_cancel_tx.tx().wtxid();
+        let db_txid = cancel_db_tx.psbt.wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Cancel tx: db wtxid is '{}' but this PSBT's is '{}' ",
                 db_txid, rpc_txid
             )));
         }
-        // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-        let (emer_db_id, db_emergency_tx) = db_emer_transaction(&revaultd.db_file(), db_vault.id)
-            .map_err(|e| Error::from(e))?
-            .expect("Must be here if 'funded'");
+        let mut emer_db_tx = db_emer_transaction(&revaultd.db_file(), db_vault.id)?
+            .ok_or_else(JsonRpcError::internal_error)?;
         let rpc_txid = emergency_tx.tx().wtxid();
-        let db_txid = db_emergency_tx.tx().wtxid();
+        let db_txid = emer_db_tx.psbt.wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
                 db_txid, rpc_txid
             )));
         }
-        // FIXME: this *might* not hold true in all cases, see https://github.com/revault/revaultd/issues/145
-        let (unvault_emer_db_id, db_unemergency_tx) =
-            db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)
-                .map_err(|e| Error::from(e))?
-                .expect("Must be here if 'funded'");
+        let mut unvault_emer_db_tx = db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)?
+            .ok_or_else(JsonRpcError::internal_error)?;
         let rpc_txid = unvault_emergency_tx.tx().wtxid();
-        let db_txid = db_unemergency_tx.tx().wtxid();
+        let db_txid = unvault_emer_db_tx.psbt.wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Unvault Emergency tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -615,28 +607,26 @@ impl RpcApi for RpcImpl {
             )));
         }
 
+        // Alias some vars we'll reuse
         let deriv_index = db_vault.derivation_index;
-        let cancel_sigs = cancel_tx
+        let cancel_sigs = &cancel_tx
             .psbt()
             .inputs
             .get(0)
             .expect("Cancel tx has a single input, inbefore fee bumping.")
-            .partial_sigs
-            .clone();
-        let emer_sigs = emergency_tx
+            .partial_sigs;
+        let emer_sigs = &emergency_tx
             .psbt()
             .inputs
             .get(0)
             .expect("Emergency tx has a single input, inbefore fee bumping.")
-            .partial_sigs
-            .clone();
-        let unvault_emer_sigs = unvault_emergency_tx
+            .partial_sigs;
+        let unvault_emer_sigs = &unvault_emergency_tx
             .psbt()
             .inputs
             .get(0)
             .expect("UnvaultEmergency tx has a single input, inbefore fee bumping.")
-            .partial_sigs
-            .clone();
+            .partial_sigs;
 
         // They must have included *at least* a signature for our pubkey
         let our_pubkey = revaultd
@@ -688,66 +678,83 @@ impl RpcApi for RpcImpl {
             }
         }
 
-        // Don't share anything if we were given invalid signatures. This
-        // checks for the presence (and the validity!) of a SIGHASH type flag.
-        check_revocation_signatures(secp_ctx, &cancel_tx, &cancel_sigs).map_err(|e| {
-            JsonRpcError::invalid_params(format!("Invalid signature in Cancel transaction: {}", e))
-        })?;
-        check_revocation_signatures(secp_ctx, &emergency_tx, &emer_sigs).map_err(|e| {
-            JsonRpcError::invalid_params(format!(
-                "Invalid signature in Emergency transaction: {}",
-                e
-            ))
-        })?;
-        check_revocation_signatures(secp_ctx, &unvault_emergency_tx, &unvault_emer_sigs).map_err(
-            |e| {
-                JsonRpcError::invalid_params(format!(
-                    "Invalid signature in Unvault Emergency transaction: {}",
-                    e
-                ))
-            },
-        )?;
+        // Add the signatures to the DB transactions.
+        for (key, sig) in cancel_sigs {
+            if sig.is_empty() {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Empty signature for key '{}' in Cancel PSBT",
+                    key
+                )));
+            }
+            let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).map_err(|_| {
+                JsonRpcError::invalid_params(format!("Non DER signature in Cancel PSBT"))
+            })?;
+            cancel_db_tx
+                .psbt
+                .add_signature(secp_ctx, key.key, sig)
+                .map_err(|e| {
+                    JsonRpcError::invalid_params(format!(
+                        "Invalid signature '{}' in Cancel PSBT: '{}'",
+                        sig, e
+                    ))
+                })?;
+        }
+        for (key, sig) in emer_sigs {
+            if sig.is_empty() {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Empty signature for key '{}' in Emergency PSBT",
+                    key
+                )));
+            }
+            let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).map_err(|_| {
+                JsonRpcError::invalid_params(format!("Non DER signature in Emergency PSBT"))
+            })?;
+            emer_db_tx
+                .psbt
+                .add_signature(secp_ctx, key.key, sig)
+                .map_err(|e| {
+                    JsonRpcError::invalid_params(format!(
+                        "Invalid signature '{}' in Emergency PSBT: '{}'",
+                        sig, e
+                    ))
+                })?;
+        }
+        for (key, sig) in unvault_emer_sigs {
+            if sig.is_empty() {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Empty signature for key '{}' in UnvaultEmergency PSBT",
+                    key
+                )));
+            }
+            let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).map_err(|_| {
+                JsonRpcError::invalid_params(format!("Non DER signature in UnvaultEmergency PSBT",))
+            })?;
+            unvault_emer_db_tx
+                .psbt
+                .add_signature(secp_ctx, key.key, sig)
+                .map_err(|e| {
+                    JsonRpcError::invalid_params(format!(
+                        "Invalid signature '{}' in UnvaultEmergency PSBT: '{}'",
+                        sig, e
+                    ))
+                })?;
+        }
 
-        // Ok, signatures look legit. Add them to the PSBTs in database.
-        db_update_presigned_tx(
-            &revaultd.db_file(),
-            db_vault.id,
-            cancel_db_id,
-            cancel_sigs.clone(),
-            secp_ctx,
-        )
-        .map_err(|e| Error::from(e))?;
-        db_update_presigned_tx(
-            &revaultd.db_file(),
-            db_vault.id,
-            emer_db_id,
-            emer_sigs.clone(),
-            secp_ctx,
-        )
-        .map_err(|e| Error::from(e))?;
-        db_update_presigned_tx(
-            &revaultd.db_file(),
-            db_vault.id,
-            unvault_emer_db_id,
-            unvault_emer_sigs.clone(),
-            secp_ctx,
-        )
-        .map_err(|e| Error::from(e))?;
+        // Then add them to the PSBTs in database. Take care to update the vault
+        // status if all signatures were given via the RPC.
+        let rev_txs = vec![cancel_db_tx, emer_db_tx, unvault_emer_db_tx];
+        db_update_presigned_txs(&db_path, &db_vault, rev_txs.clone(), secp_ctx)?;
+        db_mark_securing_vault(&db_path, db_vault.id)?;
+        db_update_vault_status(&db_path, &db_vault)?;
 
         // Share them with our felow stakeholders.
         share_rev_signatures(
             revaultd.coordinator_host,
             &revaultd.noise_secret,
             &revaultd.coordinator_noisekey,
-            (&cancel_tx, cancel_sigs),
-            (&emergency_tx, emer_sigs),
-            (&unvault_emergency_tx, unvault_emer_sigs),
+            &rev_txs,
         )
         .map_err(|e| Error::from(e))?;
-
-        // NOTE: it will only mark it as 'securing' if it was 'funded', not if it was
-        // marked as 'secured' by db_update_presigned_tx() !
-        db_mark_securing_vault(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }
@@ -813,18 +820,17 @@ impl RpcApi for RpcImpl {
         // better not send our unvault sig!
         // If the vault is already active (or more) there is no point in spamming the
         // coordinator.
-        let db_vault = db_vault_by_deposit(&db_path, &outpoint)
-            .map_err(|e| Error::from(e))?
-            .ok_or_else(|| unknown_outpoint!(outpoint))?;
+        let db_vault =
+            db_vault_by_deposit(&db_path, &outpoint)?.ok_or_else(|| unknown_outpoint!(outpoint))?;
         if !matches!(db_vault.status, VaultStatus::Secured) {
             return Err(invalid_status!(db_vault.status, VaultStatus::Funded));
         }
 
         // Sanity check they didn't send us a garbaged PSBT
-        let (unvault_db_id, db_unvault_tx) =
-            db_unvault_transaction(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
+        let mut unvault_db_tx = db_unvault_transaction(&db_path, db_vault.id)?
+            .ok_or_else(JsonRpcError::internal_error)?;
         let rpc_txid = unvault_tx.tx().wtxid();
-        let db_txid = db_unvault_tx.tx().wtxid();
+        let db_txid = unvault_db_tx.psbt.wtxid();
         if rpc_txid != db_txid {
             return Err(JsonRpcError::invalid_params(format!(
                 "Invalid Unvault tx: db wtxid is '{}' but this PSBT's is '{}' ",
@@ -851,38 +857,45 @@ impl RpcApi for RpcImpl {
             )));
         }
 
-        // There is no reason for them to include an unnecessary signature, so be strict.
-        for (ref key, _) in sigs.iter() {
-            if !stk_keys.contains(key) {
+        for (key, sig) in sigs {
+            // There is no reason for them to include an unnecessary signature, so be strict.
+            if !stk_keys.contains(&key) {
                 return Err(JsonRpcError::invalid_params(format!(
-                    "Unknown key in Cancel transaction signatures: {}",
+                    "Unknown key in Unvault transaction signatures: {}",
                     key
                 )));
             }
+
+            if sig.is_empty() {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Empty signature for key '{}' in Unvault PSBT",
+                    key
+                )));
+            }
+            let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).map_err(|_| {
+                JsonRpcError::invalid_params(format!("Non DER signature in Unvault PSBT"))
+            })?;
+
+            unvault_db_tx
+                .psbt
+                .add_signature(secp_ctx, key.key, sig)
+                .map_err(|e| {
+                    JsonRpcError::invalid_params(format!(
+                        "Invalid signature '{}' in Unvault PSBT: '{}'",
+                        sig, e
+                    ))
+                })?;
         }
 
-        // Of course, don't send a PSBT with an invalid signature
-        check_unvault_signatures(secp_ctx, &unvault_tx).map_err(|e| {
-            JsonRpcError::invalid_params(format!(
-                "Invalid signature in Unvault transaction: '{}'",
-                e
-            ))
-        })?;
-
         // Sanity checks passed. Store it then share it.
-        db_update_presigned_tx(
-            &revaultd.db_file(),
-            db_vault.id,
-            unvault_db_id,
-            sigs.clone(),
-            secp_ctx,
-        )
-        .map_err(|e| Error::from(e))?;
+        db_update_presigned_txs(&db_path, &db_vault, vec![unvault_db_tx.clone()], secp_ctx)?;
+        db_mark_activating_vault(&db_path, db_vault.id)?;
+        db_update_vault_status(&db_path, &db_vault)?;
         share_unvault_signatures(
             revaultd.coordinator_host,
             &revaultd.noise_secret,
             &revaultd.coordinator_noisekey,
-            &unvault_tx,
+            &unvault_db_tx,
         )
         .map_err(|e| {
             JsonRpcError::invalid_params(format!(
@@ -890,10 +903,6 @@ impl RpcApi for RpcImpl {
                 e
             ))
         })?;
-
-        // NOTE: it will only mark it as 'unvaulting' if it was 'secured', not if it was
-        // marked as 'activated' by db_update_presigned_tx() !
-        db_mark_activating_vault(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
 
         Ok(json!({}))
     }
@@ -1397,8 +1406,10 @@ impl RpcApi for RpcImpl {
             .values()
             .into_iter()
             .map(|db_vault| {
-                let (_, mut unvault_tx) =
-                    db_unvault_transaction(&db_path, db_vault.id).map_err(|e| Error::from(e))?;
+                let mut unvault_tx = db_unvault_transaction(&db_path, db_vault.id)?
+                    .ok_or_else(JsonRpcError::internal_error)?
+                    .psbt
+                    .assert_unvault();
                 unvault_tx
                     .finalize(&revaultd.secp_ctx)
                     .map_err(|e| Error::from(e))?;
@@ -1435,9 +1446,10 @@ impl RpcApi for RpcImpl {
             return Err(invalid_status!(vault.status, VaultStatus::Unvaulting));
         }
 
-        let (_, mut cancel_tx) = db_cancel_transaction(&db_path, vault.id)
-            .map_err(|e| Error::from(e))?
-            .expect("Must be in DB post 'Secured' status");
+        let mut cancel_tx = db_cancel_transaction(&db_path, vault.id)?
+            .ok_or_else(JsonRpcError::internal_error)?
+            .psbt
+            .assert_cancel();
 
         cancel_tx
             .finalize(&revaultd.secp_ctx)

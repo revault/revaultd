@@ -1,9 +1,7 @@
-use crate::assert_tx_type;
 use crate::daemon::{
     database::{
-        schema::{
-            DbSpendTransaction, DbTransaction, DbVault, DbWallet, RevaultTx, TransactionType,
-        },
+        bitcointx::{RevaultTx, TransactionType},
+        schema::{DbSpendTransaction, DbTransaction, DbVault, DbWallet},
         DatabaseError,
     },
     revaultd::{BlockchainTip, VaultStatus},
@@ -262,17 +260,6 @@ impl TryFrom<&Row<'_>> for DbVault {
     }
 }
 
-/// Get a vault from it id. Returns None if we never heard of such a vault.
-pub fn db_vault(db_path: &Path, vault_id: u32) -> Result<Option<DbVault>, DatabaseError> {
-    db_query(
-        db_path,
-        "SELECT * FROM vaults WHERE id = (?1)",
-        params![vault_id],
-        |row| row.try_into(),
-    )
-    .map(|mut vault_list| vault_list.pop())
-}
-
 /// Get all the vaults we know about from the db, sorted by last update
 pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(
@@ -451,86 +438,86 @@ pub fn db_unemering_vaults(
     )
 }
 
+fn db_tx_from_row(row: &Row, index_offset: usize) -> Result<DbTransaction, rusqlite::Error> {
+    let id: u32 = row.get(index_offset)?;
+    let vault_id: u32 = row.get(index_offset + 1)?;
+
+    let db_tx_type: u32 = row.get(index_offset + 2)?;
+    let tx_type: TransactionType = db_tx_type.try_into().map_err(|_| {
+        FromSqlError::Other(Box::new(DatabaseError(format!(
+            "Unsane db: got an invalid tx type: '{}'",
+            db_tx_type
+        ))))
+    })?;
+
+    let db_psbt: Vec<u8> = row.get(index_offset + 3)?;
+    let psbt = match tx_type {
+        // For the remaining transactions (which we do create), we store a PSBT.
+        TransactionType::Unvault => RevaultTx::Unvault(
+            UnvaultTransaction::from_psbt_serialized(&db_psbt)
+                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+        ),
+        TransactionType::Cancel => RevaultTx::Cancel(
+            CancelTransaction::from_psbt_serialized(&db_psbt)
+                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+        ),
+        TransactionType::Emergency => RevaultTx::Emergency(
+            EmergencyTransaction::from_psbt_serialized(&db_psbt)
+                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+        ),
+        TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
+            UnvaultEmergencyTransaction::from_psbt_serialized(&db_psbt)
+                .map_err(|e| FromSqlError::Other(Box::new(e)))?,
+        ),
+    };
+
+    debug_assert_eq!(
+        encode::deserialize::<revault_tx::bitcoin::util::psbt::PartiallySignedTransaction>(
+            &db_psbt
+        )
+        .unwrap()
+        .global
+        .unsigned_tx
+        .txid()
+        .to_vec(),
+        row.get::<_, Vec<u8>>(index_offset + 4)?,
+        "Column txid and Psbt txid mismatch"
+    );
+
+    let is_fully_signed: bool = row.get(index_offset + 5)?;
+
+    Ok(DbTransaction {
+        id,
+        vault_id,
+        tx_type,
+        psbt,
+        is_fully_signed,
+    })
+}
+
 impl TryFrom<&Row<'_>> for DbTransaction {
     type Error = rusqlite::Error;
 
     fn try_from(row: &Row) -> Result<Self, Self::Error> {
-        let id: u32 = row.get(0)?;
-        let vault_id: u32 = row.get(1)?;
-
-        let db_tx_type: u32 = row.get(2)?;
-        let tx_type: TransactionType = db_tx_type.try_into().map_err(|_| {
-            FromSqlError::Other(Box::new(DatabaseError(format!(
-                "Unsane db: got an invalid tx type: '{}'",
-                db_tx_type
-            ))))
-        })?;
-
-        let db_psbt: Vec<u8> = row.get(3)?;
-        let psbt = match tx_type {
-            // For the remaining transactions (which we do create), we store a PSBT.
-            TransactionType::Unvault => RevaultTx::Unvault(
-                UnvaultTransaction::from_psbt_serialized(&db_psbt)
-                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-            ),
-            TransactionType::Cancel => RevaultTx::Cancel(
-                CancelTransaction::from_psbt_serialized(&db_psbt)
-                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-            ),
-            TransactionType::Emergency => RevaultTx::Emergency(
-                EmergencyTransaction::from_psbt_serialized(&db_psbt)
-                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-            ),
-            TransactionType::UnvaultEmergency => RevaultTx::UnvaultEmergency(
-                UnvaultEmergencyTransaction::from_psbt_serialized(&db_psbt)
-                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-            ),
-        };
-
-        debug_assert_eq!(
-            encode::deserialize::<revault_tx::bitcoin::util::psbt::PartiallySignedTransaction>(
-                &db_psbt
-            )
-            .unwrap()
-            .global
-            .unsigned_tx
-            .txid()
-            .to_vec(),
-            row.get::<_, Vec<u8>>(4)?,
-            "Column txid and Psbt txid mismatch"
-        );
-
-        let is_fully_signed: bool = row.get(5)?;
-
-        Ok(DbTransaction {
-            id,
-            vault_id,
-            tx_type,
-            psbt,
-            is_fully_signed,
-        })
+        db_tx_from_row(row, 0)
     }
 }
 
 /// Get the Unvault transaction for this vault
+///
+/// NOTE: the transaction *might* not be here even if you polled the vault status
+/// beforehand, because it is a new database transaction.
 pub fn db_unvault_transaction(
     db_path: &Path,
     vault_id: u32,
-) -> Result<(u32, UnvaultTransaction), DatabaseError> {
-    let mut rows: Vec<DbTransaction> = db_query(
+) -> Result<Option<DbTransaction>, DatabaseError> {
+    db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::Unvault as u32],
         |row| row.try_into(),
-    )?;
-    let db_tx = rows
-        .pop()
-        .ok_or_else(|| DatabaseError(format!("No unvault tx in db for vault id '{}'", vault_id)))?;
-
-    Ok((
-        db_tx.id,
-        assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"),
-    ))
+    )
+    .map(|mut rows| rows.pop())
 }
 
 /// Get the Unvault transaction for this vault from an existing database transaction
@@ -546,7 +533,7 @@ pub fn db_unvault_dbtx(
     )
     .map(|mut rows| {
         rows.pop()
-            .map(|db_tx: DbTransaction| assert_tx_type!(db_tx.psbt, Unvault, "We just queryed it"))
+            .map(|db_tx: DbTransaction| db_tx.psbt.assert_unvault())
     })
 }
 
@@ -564,26 +551,24 @@ pub fn db_unvault_from_deposit(
         |row| row.try_into()
     ).map(|mut rows| rows.pop())?;
 
-    Ok(db_unvault.map(|db_tx| assert_tx_type!(db_tx.psbt, Unvault, "We just queried it")))
+    Ok(db_unvault.map(|db_tx| db_tx.psbt.assert_unvault()))
 }
 
 /// Get the Cancel transaction corresponding to this vault
+///
+/// NOTE: the transaction *might* not be here even if you polled the vault status
+/// beforehand, because it is a new database transaction.
 pub fn db_cancel_transaction(
     db_path: &Path,
     vault_id: u32,
-) -> Result<Option<(u32, CancelTransaction)>, DatabaseError> {
-    let mut rows: Vec<DbTransaction> = db_query(
+) -> Result<Option<DbTransaction>, DatabaseError> {
+    db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::Cancel as u32],
         |row| row.try_into(),
-    )?;
-    Ok(rows.pop().map(|db_tx| {
-        (
-            db_tx.id,
-            assert_tx_type!(db_tx.psbt, Cancel, "We just queryed it"),
-        )
-    }))
+    )
+    .map(|mut rows| rows.pop())
 }
 
 /// Get the Cancel transaction corresponding to this vault
@@ -599,52 +584,42 @@ pub fn db_cancel_dbtx(
     )
     .map(|mut rows| {
         rows.pop()
-            .map(|db_tx: DbTransaction| assert_tx_type!(db_tx.psbt, Cancel, "We just queryed it"))
+            .map(|db_tx: DbTransaction| db_tx.psbt.assert_cancel())
     })
 }
 
 /// Get the Emergency transaction corresponding to this vault.
-/// Will error if there are none, ie if called by a non-stakeholder!
+///
+/// NOTE: the transaction *might* not be here even if you polled the vault status
+/// beforehand, because it is a new database transaction.
 pub fn db_emer_transaction(
     db_path: &Path,
     vault_id: u32,
-) -> Result<Option<(u32, EmergencyTransaction)>, DatabaseError> {
+) -> Result<Option<DbTransaction>, DatabaseError> {
     db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::Emergency as u32],
         |row| row.try_into(),
     )
-    .map(|mut rows| {
-        rows.pop().map(|db_tx: DbTransaction| {
-            (
-                db_tx.id,
-                assert_tx_type!(db_tx.psbt, Emergency, "We just queryed it"),
-            )
-        })
-    })
+    .map(|mut rows| rows.pop())
 }
 
 /// Get the Unvault Emergency transaction corresponding to this vault
-/// Will error if there are none, ie if called by a non-stakeholder!
+///
+/// NOTE: the transaction *might* not be here even if you polled the vault status
+/// beforehand, because it is a new database transaction.
 pub fn db_unvault_emer_transaction(
     db_path: &Path,
     vault_id: u32,
-) -> Result<Option<(u32, UnvaultEmergencyTransaction)>, DatabaseError> {
+) -> Result<Option<DbTransaction>, DatabaseError> {
     db_query(
         db_path,
         "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
         params![vault_id, TransactionType::UnvaultEmergency as u32],
         |row| row.try_into(),
     )
-    .map(|mut rows| {
-        rows.pop().map(|db_tx: DbTransaction| {
-            (
-                db_tx.id,
-                assert_tx_type!(db_tx.psbt, UnvaultEmergency, "We just queryed it"),
-            )
-        })
-    })
+    .map(|mut rows| rows.pop())
 }
 
 /// Get a vault and its Unvault transaction out of an Unvault txid
@@ -681,21 +656,46 @@ pub fn db_vault_by_unvault_txid(
     .pop())
 }
 
-/// Get all the presigned transactions for which we don't have all the sigs yet.
+/// Get all the vaults whose presigned txs are missing signature, along with those txs.
 /// Note that it will return the emergency transactions (if unsigned) only if we
 /// are a stakeholder.
-pub fn db_transactions_sig_missing(db_path: &Path) -> Result<Vec<DbTransaction>, DatabaseError> {
+pub fn db_sig_missing(
+    db_path: &Path,
+) -> Result<HashMap<DbVault, Vec<DbTransaction>>, DatabaseError> {
+    let mut vault_map: HashMap<DbVault, Vec<DbTransaction>> = HashMap::new();
+
     db_query(
         db_path,
-        "SELECT * FROM presigned_transactions WHERE fullysigned = 0",
-        params![],
-        |row| row.try_into(),
-    )
+        "SELECT v.*, ptx.* \
+         FROM presigned_transactions as ptx INNER JOIN vaults as v ON ptx.vault_id = v.id \
+         WHERE ptx.fullysigned = 0 AND v.status IN (?1, ?2, ?3, ?4)",
+        params![
+            VaultStatus::Funded as u32,
+            VaultStatus::Securing as u32,
+            VaultStatus::Secured as u32,
+            VaultStatus::Activating as u32
+        ],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let db_tx: DbTransaction = db_tx_from_row(row, 11)?;
+
+            if let Some(db_txs) = vault_map.get_mut(&db_vault) {
+                db_txs.push(db_tx);
+            } else {
+                vault_map.insert(db_vault, vec![db_tx]);
+            }
+
+            Ok(())
+        },
+    )?;
+
+    Ok(vault_map)
 }
 
 /// Get all the Emergency transactions of the "secured" (Emergency signed) vaults that were not yet
 /// Unvaulted.
 pub fn db_signed_emer_txs(db_path: &Path) -> Result<Vec<EmergencyTransaction>, DatabaseError> {
+    // FIXME: Get rid of this footguny v.status < (?2)
     db_query(
         db_path,
         "SELECT ptx.* FROM presigned_transactions as ptx INNER JOIN vaults as v ON ptx.vault_id = v.id \

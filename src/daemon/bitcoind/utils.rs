@@ -183,8 +183,8 @@ pub fn cancel_txid(
     let revaultd = revaultd.read().unwrap();
     let db_path = revaultd.db_file();
 
-    let cancel_tx = if let Some((_, db_tx)) = db_cancel_transaction(&db_path, db_vault.id)? {
-        db_tx
+    let cancel_tx = if let Some(cancel_db_tx) = db_cancel_transaction(&db_path, db_vault.id)? {
+        cancel_db_tx.psbt.assert_cancel()
     } else {
         let (_, cancel_tx) = transaction_chain_manager(
             db_vault.deposit_outpoint,
@@ -212,8 +212,8 @@ pub fn unemer_txid(
 
     if revaultd.is_stakeholder() {
         let unemer_tx =
-            if let Some((_, db_tx)) = db_unvault_emer_transaction(&db_path, db_vault.id)? {
-                db_tx
+            if let Some(unemer_db_tx) = db_unvault_emer_transaction(&db_path, db_vault.id)? {
+                unemer_db_tx.psbt.assert_unvault_emer()
             } else {
                 let (_, _, _, unemer_tx) = transaction_chain(
                     db_vault.deposit_outpoint,
@@ -247,8 +247,8 @@ pub fn emer_txid(
     let db_path = revaultd.db_file();
 
     if revaultd.is_stakeholder() {
-        let unemer_tx = if let Some((_, db_tx)) = db_emer_transaction(&db_path, db_vault.id)? {
-            db_tx
+        let unemer_tx = if let Some(emer_db_tx) = db_emer_transaction(&db_path, db_vault.id)? {
+            emer_db_tx.psbt.assert_emer()
         } else {
             let (_, _, emer_tx, _) = transaction_chain(
                 db_vault.deposit_outpoint,

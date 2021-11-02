@@ -243,7 +243,10 @@ impl Config {
 
             let emer_addr_net = stk_config.emergency_address.address().network;
             let bitcoind_net = config.bitcoind_config.network;
-            if emer_addr_net != bitcoind_net {
+            // Signet addresses have testnet type
+            let signet_special_case =
+                bitcoind_net == Network::Signet && emer_addr_net == Network::Testnet;
+            if emer_addr_net != bitcoind_net && !signet_special_case {
                 return Err(ConfigError(format!(
                     r#"Our "emergency_address" is for '{}' but bitcoind is on '{}'"#,
                     emer_addr_net, bitcoind_net

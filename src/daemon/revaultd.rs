@@ -593,7 +593,12 @@ mod tests {
         Config::from_file(Some(path.clone())).expect_err("Parsing invalid config file");
 
         path.pop();
-        path.push("valid_config.toml");
+        path.push("valid_config_man.toml");
+        let config = Config::from_file(Some(path.clone())).expect("Parsing valid config file");
+        RevaultD::from_config(config).expect("Creating state from config");
+
+        path.pop();
+        path.push("valid_config_stake.toml");
         let config = Config::from_file(Some(path)).expect("Parsing valid config file");
         RevaultD::from_config(config).expect("Creating state from config");
         // TODO: test actual fields..

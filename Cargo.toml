@@ -17,6 +17,8 @@ path = "src/bin/daemon.rs"
 name = "revault-cli"
 path = "src/bin/cli.rs"
 
+[features]
+bench = []
 
 [dependencies]
 revault_tx = { version = "0.4.0", features = ["use-serde"] }

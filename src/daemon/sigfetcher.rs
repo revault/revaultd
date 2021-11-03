@@ -11,7 +11,11 @@ use crate::daemon::{
     revaultd::RevaultD,
     threadmessages::SigFetcherMessageOut,
 };
-use revault_tx::{bitcoin::PublicKey as BitcoinPubKey, transactions::RevaultTransaction};
+use revault_net::transport::KKTransport;
+use revault_tx::{
+    bitcoin::{secp256k1, PublicKey as BitcoinPubKey},
+    transactions::RevaultTransaction,
+};
 
 use std::{
     collections::HashMap,
@@ -64,18 +68,13 @@ impl From<revault_net::Error> for SignatureFetcherError {
 // Send a `get_sigs` message to the Coordinator to fetch other stakeholders' signatures for this
 // transaction (https://github.com/revault/practical-revault/blob/master/messages.md#get_sigs).
 // If the Coordinator hands us some new signatures, update the transaction we are passed.
-fn get_sigs(
-    revaultd: &RevaultD,
+fn get_sigs<C: secp256k1::Verification>(
+    transport: &mut KKTransport,
     stk_keys: &[BitcoinPubKey],
     tx: &mut impl RevaultTransaction,
+    secp: &secp256k1::Secp256k1<C>,
 ) -> Result<(), SignatureFetcherError> {
-    let secp_ctx = &revaultd.secp_ctx;
-    let signatures = get_presigs(
-        revaultd.coordinator_host,
-        &revaultd.noise_secret,
-        &revaultd.coordinator_noisekey,
-        tx.txid(),
-    )?;
+    let signatures = get_presigs(transport, tx.txid())?;
 
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {
@@ -106,7 +105,7 @@ fn get_sigs(
             pubkey,
             tx.txid()
         );
-        if let Err(e) = tx.add_signature(0, pubkey.key, sig, secp_ctx) {
+        if let Err(e) = tx.add_signature(0, pubkey.key, sig, secp) {
             // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
             // signatures something shady's happening.
             log::error!("Error while adding signature for presigned tx: '{}'", e);
@@ -127,6 +126,11 @@ fn fetch_all_signatures(
     vault_txs: HashMap<DbVault, Vec<DbTransaction>>,
 ) -> Result<(), SignatureFetcherError> {
     let db_path = &revaultd.db_file();
+    let mut transport = KKTransport::connect(
+        revaultd.coordinator_host,
+        &revaultd.noise_secret,
+        &revaultd.coordinator_noisekey,
+    )?;
 
     for (db_vault, mut db_txs) in vault_txs {
         let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
@@ -135,21 +139,21 @@ fn fetch_all_signatures(
             match db_tx.psbt {
                 RevaultTx::Unvault(ref mut unvault_tx) => {
                     log::debug!("Fetching Unvault signature");
-                    get_sigs(revaultd, &stk_keys, unvault_tx)?;
+                    get_sigs(&mut transport, &stk_keys, unvault_tx, &revaultd.secp_ctx)?;
                 }
                 RevaultTx::Cancel(ref mut cancel_tx) => {
                     log::debug!("Fetching Cancel signature");
-                    get_sigs(revaultd, &stk_keys, cancel_tx)?;
+                    get_sigs(&mut transport, &stk_keys, cancel_tx, &revaultd.secp_ctx)?;
                 }
                 RevaultTx::Emergency(ref mut emer_tx) => {
                     log::debug!("Fetching Emergency signature");
                     debug_assert!(revaultd.is_stakeholder());
-                    get_sigs(revaultd, &stk_keys, emer_tx)?;
+                    get_sigs(&mut transport, &stk_keys, emer_tx, &revaultd.secp_ctx)?;
                 }
                 RevaultTx::UnvaultEmergency(ref mut unemer_tx) => {
                     log::debug!("Fetching Unvault Emergency signature");
                     debug_assert!(revaultd.is_stakeholder());
-                    get_sigs(revaultd, &stk_keys, unemer_tx)?;
+                    get_sigs(&mut transport, &stk_keys, unemer_tx, &revaultd.secp_ctx)?;
                 }
             };
         }

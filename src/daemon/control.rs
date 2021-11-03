@@ -669,14 +669,10 @@ pub fn announce_spend_transaction(
 
 /// Get the signatures for this presigned transaction from the Coordinator.
 pub fn get_presigs(
-    coordinator_host: std::net::SocketAddr,
-    noise_secret: &revault_net::noise::SecretKey,
-    coordinator_noisekey: &revault_net::noise::PublicKey,
+    transport: &mut KKTransport,
     txid: Txid,
 ) -> Result<BTreeMap<secp256k1::PublicKey, secp256k1::Signature>, CommunicationError> {
     let getsigs_msg = GetSigs { id: txid };
-    let mut transport =
-        KKTransport::connect(coordinator_host, &noise_secret, &coordinator_noisekey)?;
 
     log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
     let resp: Sigs = transport.send_req(&getsigs_msg.into())?;
@@ -2388,7 +2384,7 @@ mod tests {
     fn test_get_presigs() {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature = secp256k1::Signature::from_der(&Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap()).unwrap();
+        let signature = secp256k1::Signature::from_str("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap();
         let mut sigs = BTreeMap::new();
         sigs.insert(public_key.key, signature);
         let other_sigs = sigs.clone();
@@ -2400,11 +2396,12 @@ mod tests {
         let txid =
             Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
                 .unwrap();
-        let another_txid = txid.clone();
+        let same_txid = txid.clone();
 
-        // client thread
         let cli_thread = thread::spawn(move || {
-            let signatures = get_presigs(addr, &client_privkey, &server_pubkey, txid).unwrap();
+            let mut transport =
+                KKTransport::connect(addr, &client_privkey, &server_pubkey).unwrap();
+            let signatures = get_presigs(&mut transport, txid).unwrap();
             assert_eq!(signatures, sigs);
         });
 
@@ -2416,7 +2413,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::GetSigs(GetSigs { id: another_txid })
+                    &message::RequestParams::GetSigs(GetSigs { id: same_txid })
                 );
                 Some(message::ResponseResult::Sigs(message::coordinator::Sigs {
                     signatures: other_sigs,
@@ -2474,27 +2471,36 @@ mod benches {
             Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
                 .unwrap();
 
-        thread::spawn({
+        let server_thread = thread::spawn({
             let id = txid;
-            move || loop {
+            move || {
                 let mut server_transport =
                     KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
                         .expect("Server channel binding and accepting");
-                server_transport
-                    .read_req(|params| {
-                        assert_eq!(&params, &message::RequestParams::GetSigs(GetSigs { id }));
-                        Some(message::ResponseResult::Sigs(message::coordinator::Sigs {
-                            signatures: other_sigs.clone(),
-                        }))
-                    })
-                    .unwrap();
+                loop {
+                    if server_transport
+                        .read_req(|params| {
+                            assert_eq!(&params, &message::RequestParams::GetSigs(GetSigs { id }));
+                            Some(message::ResponseResult::Sigs(message::coordinator::Sigs {
+                                signatures: other_sigs.clone(),
+                            }))
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             }
         });
 
         {
+            let mut transport =
+                KKTransport::connect(addr, &client_privkey, &server_pubkey).unwrap();
             bh.iter(|| {
-                black_box(get_presigs(addr, &client_privkey, &server_pubkey, txid)).unwrap();
+                black_box(get_presigs(&mut transport, txid)).unwrap();
             })
         }
+
+        server_thread.join().unwrap();
     }
 }

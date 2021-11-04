@@ -669,14 +669,10 @@ pub fn announce_spend_transaction(
 
 /// Get the signatures for this presigned transaction from the Coordinator.
 pub fn get_presigs(
-    coordinator_host: std::net::SocketAddr,
-    noise_secret: &revault_net::noise::SecretKey,
-    coordinator_noisekey: &revault_net::noise::PublicKey,
+    transport: &mut KKTransport,
     txid: Txid,
 ) -> Result<BTreeMap<secp256k1::PublicKey, secp256k1::Signature>, CommunicationError> {
     let getsigs_msg = GetSigs { id: txid };
-    let mut transport =
-        KKTransport::connect(coordinator_host, &noise_secret, &coordinator_noisekey)?;
 
     log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
     let resp: Sigs = transport.send_req(&getsigs_msg.into())?;
@@ -740,7 +736,7 @@ pub struct RpcUtils {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::daemon::{
         control::*,
         database::{
@@ -2388,7 +2384,7 @@ mod test {
     fn test_get_presigs() {
         let ctx = secp256k1::Secp256k1::new();
         let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature = secp256k1::Signature::from_der(&Vec::<u8>::from_hex("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap()).unwrap();
+        let signature = secp256k1::Signature::from_str("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap();
         let mut sigs = BTreeMap::new();
         sigs.insert(public_key.key, signature);
         let other_sigs = sigs.clone();
@@ -2400,11 +2396,12 @@ mod test {
         let txid =
             Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
                 .unwrap();
-        let another_txid = txid.clone();
+        let same_txid = txid.clone();
 
-        // client thread
         let cli_thread = thread::spawn(move || {
-            let signatures = get_presigs(addr, &client_privkey, &server_pubkey, txid).unwrap();
+            let mut transport =
+                KKTransport::connect(addr, &client_privkey, &server_pubkey).unwrap();
+            let signatures = get_presigs(&mut transport, txid).unwrap();
             assert_eq!(signatures, sigs);
         });
 
@@ -2416,7 +2413,7 @@ mod test {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::GetSigs(GetSigs { id: another_txid })
+                    &message::RequestParams::GetSigs(GetSigs { id: same_txid })
                 );
                 Some(message::ResponseResult::Sigs(message::coordinator::Sigs {
                     signatures: other_sigs,
@@ -2424,5 +2421,86 @@ mod test {
             })
             .unwrap();
         cli_thread.join().unwrap();
+    }
+}
+
+#[cfg(all(test, feature = "bench"))]
+mod benches {
+    use super::*;
+
+    use revault_net::{
+        message, sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair,
+        transport::KKTransport,
+    };
+    use revault_tx::bitcoin::{
+        secp256k1, Network, PrivateKey as BitcoinPrivKey, PublicKey as BitcoinPubKey, Txid,
+    };
+
+    use std::{collections::BTreeMap, net::TcpListener, str::FromStr, thread};
+    use test::{black_box, Bencher};
+
+    fn create_keys(
+        ctx: &secp256k1::Secp256k1<secp256k1::All>,
+        secret_slice: &[u8],
+    ) -> (BitcoinPrivKey, BitcoinPubKey) {
+        let secret_key = secp256k1::SecretKey::from_slice(secret_slice).unwrap();
+        let private_key = BitcoinPrivKey {
+            compressed: true,
+            network: Network::Regtest,
+            key: secret_key,
+        };
+        let public_key = BitcoinPubKey::from_private_key(&ctx, &private_key);
+        (private_key, public_key)
+    }
+
+    // Benchmark the performance gain to not re-create the connection at each call
+    #[bench]
+    fn bench_presigs(bh: &mut Bencher) {
+        let ctx = secp256k1::Secp256k1::new();
+        let (_, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
+        let signature = secp256k1::Signature::from_str("304402201a3109a4a6445c1e56416bc39520aada5c8ad089e69ee4f1a40a0901de1a435302204b281ba97da2ab2e40eb65943ae414cc4307406c5eb177b1c646606839a2e99d").unwrap();
+        let mut sigs = BTreeMap::new();
+        sigs.insert(public_key.key, signature);
+        let other_sigs = sigs.clone();
+
+        let ((client_pubkey, client_privkey), (server_pubkey, server_privkey)) =
+            (gen_keypair(), gen_keypair());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let txid =
+            Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
+                .unwrap();
+
+        let server_thread = thread::spawn({
+            let id = txid;
+            move || {
+                let mut server_transport =
+                    KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+                        .expect("Server channel binding and accepting");
+                loop {
+                    if server_transport
+                        .read_req(|params| {
+                            assert_eq!(&params, &message::RequestParams::GetSigs(GetSigs { id }));
+                            Some(message::ResponseResult::Sigs(message::coordinator::Sigs {
+                                signatures: other_sigs.clone(),
+                            }))
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+
+        {
+            let mut transport =
+                KKTransport::connect(addr, &client_privkey, &server_pubkey).unwrap();
+            bh.iter(|| {
+                black_box(get_presigs(&mut transport, txid)).unwrap();
+            })
+        }
+
+        server_thread.join().unwrap();
     }
 }

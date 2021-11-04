@@ -13,7 +13,7 @@ task:
   matrix:
     - name: 'Misc functional tests'
       env:
-        TEST_GROUP: tests/test_misc.py
+        TEST_GROUP: tests/test_misc.py tests/test_watchtowers.py
     - name: 'RPC functional tests'
       env:
         TEST_GROUP: tests/test_rpc.py
@@ -23,9 +23,6 @@ task:
     - name: 'Spend functional tests'
       env:
         TEST_GROUP: tests/test_spend.py
-    - name: 'Watchtowers functional tests'
-      env:
-        TEST_GROUP: tests/test_watchtowers.py
 
   registry_cache:
     folder: $CARGO_HOME/registry

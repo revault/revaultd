@@ -737,10 +737,7 @@ impl BitcoinD {
     // FIXME: this should return a struct not a footguny tuple.
     /// Get the raw transaction as hex, the blockheight it was included in if
     /// it's confirmed, as well as the reception time.
-    pub fn get_wallet_transaction(
-        &self,
-        txid: &Txid,
-    ) -> Result<(String, Option<u32>, u32), BitcoindError> {
+    pub fn get_wallet_transaction(&self, txid: &Txid) -> Result<WalletTransaction, BitcoindError> {
         let res = self
             .make_watchonly_request("gettransaction", &params!(Json::String(txid.to_string())))?;
         let tx_hex = res
@@ -757,7 +754,8 @@ impl BitcoinD {
             })?
             .to_string();
         let blockheight = res.get("blockheight").map(|bh| bh.as_u64().unwrap() as u32);
-        let received = res
+        let blocktime = res.get("blocktime").map(|bh| bh.as_u64().unwrap() as u32);
+        let received_time = res
             .get("timereceived")
             .ok_or_else(|| {
                 BitcoindError::Custom(format!(
@@ -773,7 +771,12 @@ impl BitcoinD {
                 ))
             })? as u32;
 
-        Ok((tx_hex, blockheight, received))
+        Ok(WalletTransaction {
+            hex: tx_hex,
+            blockheight,
+            blocktime,
+            received_time,
+        })
     }
 
     /// Broadcast a transaction with 'sendrawtransaction', discarding the returned txid
@@ -803,9 +806,9 @@ impl BitcoinD {
 
     /// Broadcast a transaction that is already part of the wallet
     pub fn rebroadcast_wallet_tx(&self, txid: &Txid) -> Result<(), BitcoindError> {
-        let (hex, _, _) = self.get_wallet_transaction(txid)?;
-        log::debug!("Re-broadcasting '{}'", hex);
-        self.make_watchonly_request("sendrawtransaction", &params!(Json::String(hex)))
+        let tx = self.get_wallet_transaction(txid)?;
+        log::debug!("Re-broadcasting '{}'", tx.hex);
+        self.make_watchonly_request("sendrawtransaction", &params!(Json::String(tx.hex)))
             .map(|_| ())
     }
 
@@ -926,12 +929,27 @@ impl BitcoinD {
         match self.get_wallet_transaction(txid) {
             // Non wallet transaction?
             Err(_) => Ok(false),
-            // Confirmed wallet transaction
-            Ok((_, Some(_), _)) => Ok(true),
-            // Not confirmed wallet transaction
-            Ok((_, None, _)) => self.is_in_mempool(txid),
+            Ok(tx) => {
+                // Confirmed wallet transaction
+                if tx.blockheight.is_some() {
+                    Ok(true)
+                // Not confirmed wallet transaction
+                } else {
+                    self.is_in_mempool(txid)
+                }
+            }
         }
     }
+}
+
+#[derive(Debug)]
+pub struct WalletTransaction {
+    pub hex: String,
+    pub received_time: u32,
+    // None if unconfirmed
+    pub blockheight: Option<u32>,
+    // None if unconfirmed
+    pub blocktime: Option<u32>,
 }
 
 /// Information about an utxo one of our descriptors points to.

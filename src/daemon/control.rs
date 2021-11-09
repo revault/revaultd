@@ -3,7 +3,7 @@
 //! fetcher thread.
 
 use crate::daemon::{
-    bitcoind::BitcoindError,
+    bitcoind::{interface::WalletTransaction, BitcoindError},
     database::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,

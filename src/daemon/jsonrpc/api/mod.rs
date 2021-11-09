@@ -7,6 +7,7 @@ use error::Error;
 
 use crate::common::VERSION;
 use crate::daemon::{
+    bitcoind::interface::WalletTransaction,
     control::{
         announce_spend_transaction, check_spend_transaction_size, coord_share_rev_signatures,
         coordinator_status, cosigners_status, fetch_cosigs_signatures, finalized_emer_txs,
@@ -28,7 +29,7 @@ use crate::daemon::{
     },
     jsonrpc::UserRole,
     revaultd::{BlockchainTip, VaultStatus},
-    threadmessages::{BitcoindThread, SigFetcherMessageOut, WalletTransaction},
+    threadmessages::{BitcoindThread, SigFetcherMessageOut},
 };
 
 use revault_tx::{

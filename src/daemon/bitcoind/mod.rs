@@ -4,11 +4,9 @@ pub mod utils;
 
 use crate::common::config::BitcoindConfig;
 use crate::daemon::{
-    database::DatabaseError,
-    revaultd::RevaultD,
-    threadmessages::{BitcoindMessageOut, WalletTransaction},
+    database::DatabaseError, revaultd::RevaultD, threadmessages::BitcoindMessageOut,
 };
-use interface::BitcoinD;
+use interface::{BitcoinD, WalletTransaction};
 use poller::poller_main;
 use revault_tx::bitcoin::{Network, Txid};
 
@@ -146,21 +144,17 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
 }
 
 fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {
-    let res = bitcoind.get_wallet_transaction(&txid);
-    if let Ok((hex, blockheight, received_time)) = res {
-        Some(WalletTransaction {
-            hex,
-            blockheight,
-            received_time,
+    bitcoind
+        .get_wallet_transaction(&txid)
+        .map_err(|res| {
+            log::trace!(
+                "Got '{:?}' from bitcoind when requesting wallet transaction '{}'",
+                res,
+                txid
+            );
+            res
         })
-    } else {
-        log::trace!(
-            "Got '{:?}' from bitcoind when requesting wallet transaction '{}'",
-            res,
-            txid
-        );
-        None
-    }
+        .ok()
 }
 
 /// The bitcoind event loop.

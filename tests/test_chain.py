@@ -78,6 +78,8 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
         ]
     )
     wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed")
+    for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+        assert stk.rpc.listvaults()["vaults"][0][field] is None
 
     # Reorg it again, it's already unconfirmed so nothing to do, but since we
     # mined a new block it's now confirmed!
@@ -91,6 +93,9 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
         ]
     )
     wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "funded")
+    assert stk.rpc.listvaults()["vaults"][0]["funded_at"] is not None
+    for field in ["secured_at", "delegated_at", "moved_at"]:
+        assert stk.rpc.listvaults()["vaults"][0][field] is None
 
     # Now try to completely evict it from the chain with a 6-blocks reorg. We
     # should mark it as unconfirmed (but it's not the same codepath).
@@ -103,6 +108,8 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
         ]
     )
     wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed")
+    for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+        assert stk.rpc.listvaults()["vaults"][0][field] is None
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -137,6 +144,8 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) == 1)
+        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            assert w.rpc.listvaults()["vaults"][0][field] is None
 
     # All presigned transactions must have been removed from the db,
     # if we get it confirmed again, it will re-create the pre-signed
@@ -171,9 +180,14 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
+        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            assert w.rpc.listvaults()["vaults"][0][field] is None
     bitcoind.generate_block(1)
     for w in revault_network.participants():
         w.wait_for_active_vaults([deposit])
+        assert w.rpc.listvaults([], [deposit])["vaults"][0]["moved_at"] is None
+        for field in ["funded_at", "secured_at", "delegated_at"]:
+            assert w.rpc.listvaults([], [deposit])["vaults"][0][field] is not None
 
     # If we are stopped during the reorg, we recover in the same way at startup
     revault_network.stop_wallets()
@@ -200,11 +214,16 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
+        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            assert w.rpc.listvaults()["vaults"][0][field] is None
     revault_network.stop_wallets()
     bitcoind.generate_block(1)
     revault_network.start_wallets()
     for w in revault_network.participants():
         w.wait_for_active_vaults([deposit])
+        assert w.rpc.listvaults()["vaults"][0]["moved_at"] is None
+        for field in ["funded_at", "secured_at", "delegated_at"]:
+            assert w.rpc.listvaults()["vaults"][0][field] is not None, field
 
     # Now do the same dance with a spent vault
 
@@ -218,6 +237,8 @@ def test_reorged_deposit_status(revault_network, bitcoind):
     revault_network.spend_vaults_anyhow([vault])
     for w in revault_network.mans():
         assert len(w.rpc.listspendtxs()["spend_txs"]) == 1
+        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            assert w.rpc.listvaults()["vaults"][0][field] is not None, field
     bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3)
     for w in revault_network.participants():
         w.wait_for_logs(
@@ -239,6 +260,9 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == 1)
+        assert w.rpc.listvaults()["vaults"][0]["moved_at"] is None
+        for field in ["funded_at", "secured_at", "delegated_at"]:
+            assert w.rpc.listvaults()["vaults"][0][field] is not None
 
     # Now the same dance with a canceled vault
 
@@ -276,6 +300,9 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["canceling"])["vaults"]) == 1)
+        assert w.rpc.listvaults(["canceling"])["vaults"][0]["moved_at"] is None
+        for field in ["funded_at", "secured_at", "delegated_at"]:
+            assert w.rpc.listvaults()["vaults"][0][field] is not None
 
     # Now the same dance with an emergencied vault
     # TODO
@@ -312,6 +339,11 @@ def test_reorged_unvault(revault_network, bitcoind):
     assert unvault_tx_a["blockheight"] == unvault_tx_b["blockheight"]
     for w in revault_network.participants():
         assert len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"]) == len(deposits)
+        for vault in w.rpc.listvaults(["unvaulted"], deposits)["vaults"]:
+            assert vault["moved_at"] is None
+            for field in ["funded_at", "secured_at", "delegated_at"]:
+                assert vault[field] is not None, field
+
     bitcoind.simple_reorg(unvault_tx_a["blockheight"], shift=1)
     for w in revault_network.participants():
         w.wait_for_logs(
@@ -324,6 +356,10 @@ def test_reorged_unvault(revault_network, bitcoind):
         )
     for w in revault_network.participants():
         assert len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"]) == len(deposits)
+        for vault in w.rpc.listvaults(["unvaulted"], deposits)["vaults"]:
+            assert vault["moved_at"] is None
+            for field in ["funded_at", "secured_at", "delegated_at"]:
+                assert vault[field] is not None, field
 
     # If it's not confirmed anymore, we'll detect it and mark the vault as unvaulting
     bitcoind.simple_reorg(unvault_tx_a["blockheight"] + 1, shift=-1)
@@ -340,6 +376,10 @@ def test_reorged_unvault(revault_network, bitcoind):
         assert len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"]) == len(
             deposits
         )
+        for vault in w.rpc.listvaults(["unvaulting"], deposits)["vaults"]:
+            assert vault["moved_at"] is None
+            for field in ["funded_at", "secured_at", "delegated_at"]:
+                assert vault[field] is not None, field
 
     # Now if we are spending
     # unvault_vault() above actually registered the Spend transaction, so we can activate
@@ -351,6 +391,10 @@ def test_reorged_unvault(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["spending"], deposits)["vaults"])
             == len(deposits)
         )
+        for vault in w.rpc.listvaults(["spending"], deposits)["vaults"]:
+            assert vault["moved_at"] is None
+            for field in ["funded_at", "secured_at", "delegated_at"]:
+                assert vault[field] is not None, field
 
     # If we are 'spending' and the Unvault gets unconfirmed, it'll get marked for
     # re-broadcast
@@ -373,6 +417,11 @@ def test_reorged_unvault(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["unvaulting"], deposits)["vaults"])
             == len(deposits)
         )
+        for vault in w.rpc.listvaults(["unvaulting"], deposits)["vaults"]:
+            assert vault["moved_at"] is None
+            for field in ["funded_at", "secured_at", "delegated_at"]:
+                assert vault[field] is not None, field
+
     bitcoind.generate_block(1, wait_for_mempool=len(vaults))
     bitcoind.generate_block(revault_network.csv - 1)
     for w in revault_network.participants():
@@ -380,12 +429,20 @@ def test_reorged_unvault(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["spending"], deposits)["vaults"])
             == len(deposits)
         )
+        for vault in w.rpc.listvaults(["spending"], deposits)["vaults"]:
+            assert vault["moved_at"] is None
+            for field in ["funded_at", "secured_at", "delegated_at"]:
+                assert vault[field] is not None, field
+
     bitcoind.generate_block(1, wait_for_mempool=1)
     for w in revault_network.participants():
         wait_for(
             lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
             == len(deposits)
         )
+        for vault in w.rpc.listvaults(["spent"], deposits)["vaults"]:
+            for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+                assert vault[field] is not None, field
 
     # If we are 'spent' and the Unvault gets unconfirmed, it'll get marked for
     # re-broadcast
@@ -406,6 +463,9 @@ def test_reorged_unvault(revault_network, bitcoind):
             lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
             == len(deposits)
         )
+        for vault in w.rpc.listvaults(["spent"], deposits)["vaults"]:
+            for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+                assert vault[field] is not None, field
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -460,6 +520,9 @@ def test_reorged_cancel(revault_network, bitcoind):
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
             == "canceling"
         )
+        assert w.rpc.listvaults([], [deposit])["vaults"][0]["moved_at"] is None
+        for field in ["funded_at", "secured_at", "delegated_at"]:
+            assert w.rpc.listvaults([], [deposit])["vaults"][0][field] is not None
 
     # Confirming the cancel again
     bitcoind.generate_block(1, wait_for_mempool=1)
@@ -468,6 +531,8 @@ def test_reorged_cancel(revault_network, bitcoind):
         wait_for(
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
         )
+        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            assert w.rpc.listvaults([], [deposit])["vaults"][0][field] is not None
 
     # Let's unconfirm the unvault
     bitcoind.simple_reorg(unvault_tx["blockheight"], shift=-1)
@@ -480,6 +545,8 @@ def test_reorged_cancel(revault_network, bitcoind):
         wait_for(
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
         )
+        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            assert w.rpc.listvaults([], [deposit])["vaults"][0][field] is not None
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

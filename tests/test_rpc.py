@@ -53,8 +53,11 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert vault_list[0]["amount"] == amount_sent * 10 ** 8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
-    assert vault_list[0]["updated_at"] == vault_list[0]["received_at"]
     assert vault_list[0]["blockheight"] == 0
+    assert vault_list[0]["funded_at"] is None
+    assert vault_list[0]["secured_at"] is None
+    assert vault_list[0]["delegated_at"] is None
+    assert vault_list[0]["moved_at"] is None
     assert revaultd_manager.rpc.call("getinfo")["vaults"] == 1
 
     # Generate 5 blocks, it is still unconfirmed
@@ -68,7 +71,10 @@ def test_listvaults(revaultd_manager, bitcoind):
     revaultd_manager.wait_for_log(f"Vault at .*{txid}.* is now confirmed")
     vault = revaultd_manager.rpc.call("listvaults")["vaults"][0]
     assert vault["status"] == "funded"
-    assert vault["updated_at"] > vault["received_at"]
+    assert vault["funded_at"] is not None
+    assert vault["secured_at"] is None
+    assert vault["delegated_at"] is None
+    assert vault["moved_at"] is None
     assert vault["blockheight"] == bitcoind.rpc.getblockcount() - 5
 
     # Of course, it persists across restarts.
@@ -81,6 +87,10 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert vault_list[0]["txid"] == txid
     assert vault_list[0]["amount"] == amount_sent * 10 ** 8
     assert vault_list[0]["address"] == addr
+    assert vault["funded_at"] is not None
+    assert vault["secured_at"] is None
+    assert vault["delegated_at"] is None
+    assert vault["moved_at"] is None
     assert vault_list[0]["derivation_index"] == 0
 
     # And we can filter the result by status
@@ -393,6 +403,7 @@ def test_listonchaintransactions(revault_network):
         ][0]
         # Deposit is always there
         assert res["deposit"]["blockheight"] is not None
+        assert res["deposit"]["blocktime"] is not None
         assert res["deposit"]["received_at"] is not None
         assert res["deposit"]["hex"] is not None
         assert res["unvault"] is None
@@ -411,6 +422,7 @@ def test_listonchaintransactions(revault_network):
             "onchain_transactions"
         ][0]
         assert res["deposit"]["blockheight"] is not None
+        assert res["deposit"]["blocktime"] is not None
         assert res["deposit"]["received_at"] is not None
         assert res["deposit"]["hex"] is not None
         assert res["unvault"]["blockheight"] is not None
@@ -420,6 +432,7 @@ def test_listonchaintransactions(revault_network):
         assert res["emergency"] is None
         assert res["unvault_emergency"] is None
         assert res["spend"]["blockheight"] is not None
+        assert res["spend"]["blocktime"] is not None
         assert res["spend"]["received_at"] is not None
         assert res["spend"]["hex"] is not None
 
@@ -1029,6 +1042,7 @@ def test_revault_command(revault_network, bitcoind, executor):
         wait_for(
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
         )
+        w.rpc.listvaults([], [deposit])["vaults"][0]["moved_at"] is not None
 
     # Now, do the same process with two new vaults (thus with different derivation indexes)
     # at the same time, and with the Unvault not being mined yet

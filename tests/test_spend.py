@@ -378,6 +378,8 @@ def test_spends_conflicting(revault_network, bitcoind):
         lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"])
         == len(deposits_a)
     )
+    for vault in man.rpc.listvaults(["spent"], deposits)["vaults"]:
+        assert vault["moved_at"] is not None
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -482,6 +484,8 @@ def test_spend_threshold(revault_network, bitcoind, executor):
             lambda: len(m.rpc.listvaults(["spent"], deposits)["vaults"])
             == len(deposits)
         )
+        for vault in m.rpc.listvaults(["spent"], deposits)["vaults"]:
+            assert vault["moved_at"] is not None
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
@@ -559,6 +563,8 @@ def test_large_spends(revault_network, bitcoind, executor):
     wait_for(
         lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
     )
+    for vault in man.rpc.listvaults(["spent"], deposits)["vaults"]:
+        assert vault["moved_at"] is not None
 
 
 # Tests that getspendtx returns an error when trying to build a spend too big
@@ -636,6 +642,8 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     wait_for(
         lambda: len(man.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
     )
+    for vault in man.rpc.listvaults(["spent"], deposits)["vaults"]:
+        assert vault["moved_at"] is not None
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

@@ -239,12 +239,14 @@ impl TryFrom<&Row<'_>> for DbVault {
         };
         let amount = Amount::from_sat(row.get::<_, i64>(6)? as u64);
         let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
-        let received_at = row.get(8)?;
-        let updated_at = row.get(9)?;
+        let funded_at = row.get(8)?;
+        let secured_at = row.get(9)?;
+        let delegated_at = row.get(10)?;
+        let moved_at = row.get(11)?;
         let final_txid = row
-            .get::<_, Option<Vec<u8>>>(10)?
+            .get::<_, Option<Vec<u8>>>(12)?
             .map(|raw_txid| encode::deserialize(&raw_txid).expect("We only store valid txids"));
-        let emer_shared: bool = row.get(11)?;
+        let emer_shared: bool = row.get(13)?;
 
         Ok(DbVault {
             id,
@@ -254,22 +256,21 @@ impl TryFrom<&Row<'_>> for DbVault {
             deposit_outpoint,
             amount,
             derivation_index,
-            received_at,
-            updated_at,
+            funded_at,
+            secured_at,
+            delegated_at,
+            moved_at,
             final_txid,
             emer_shared,
         })
     }
 }
 
-/// Get all the vaults we know about from the db, sorted by last update
+/// Get all the vaults we know about from the db
 pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
-    db_query::<_, _, DbVault>(
-        db_path,
-        "SELECT * FROM vaults ORDER BY updated_at DESC",
-        NO_PARAMS,
-        |row| row.try_into(),
-    )
+    db_query::<_, _, DbVault>(db_path, "SELECT * FROM vaults", NO_PARAMS, |row| {
+        row.try_into()
+    })
 }
 
 /// Get all the vaults where status is *at least* `status`
@@ -279,7 +280,7 @@ pub fn db_vaults_min_status(
 ) -> Result<Vec<DbVault>, DatabaseError> {
     db_query::<_, _, DbVault>(
         db_path,
-        "SELECT * FROM vaults WHERE status >= (?1) ORDER BY updated_at DESC",
+        "SELECT * FROM vaults WHERE status >= (?1) ORDER BY moved_at, delegated_at, secured_at, funded_at DESC",
         params![status as u32],
         |row| row.try_into(),
     )
@@ -296,7 +297,7 @@ pub fn db_vaults_dbtx(db_tx: &Transaction) -> Result<Vec<DbVault>, DatabaseError
 pub fn db_deposits(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query(
         db_path,
-        "SELECT * FROM vaults WHERE status <= (?1) ORDER BY updated_at DESC",
+        "SELECT * FROM vaults WHERE status <= (?1)",
         &[VaultStatus::Active as u32],
         |row| row.try_into(),
     )
@@ -332,7 +333,7 @@ pub fn db_unvaulted_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let unvault_tx: Vec<u8> = row.get(12)?;
+            let unvault_tx: Vec<u8> = row.get(14)?;
             let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
                 .expect("We store it with as_psbt_serialized");
 
@@ -356,7 +357,7 @@ pub fn db_spending_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let unvault_tx: Vec<u8> = row.get(12)?;
+            let unvault_tx: Vec<u8> = row.get(14)?;
             let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
                 .expect("We store it with as_psbt_serialized");
 
@@ -381,7 +382,7 @@ pub fn db_canceling_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let cancel_tx: Vec<u8> = row.get(12)?;
+            let cancel_tx: Vec<u8> = row.get(14)?;
             let cancel_tx = CancelTransaction::from_psbt_serialized(&cancel_tx)
                 .expect("We store it with as_psbt_serialized");
 
@@ -406,7 +407,7 @@ pub fn db_emering_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let emer_tx: Vec<u8> = row.get(12)?;
+            let emer_tx: Vec<u8> = row.get(14)?;
             let emer_tx = EmergencyTransaction::from_psbt_serialized(&emer_tx)
                 .expect("We store it with to_psbt_serialized");
 
@@ -431,7 +432,7 @@ pub fn db_unemering_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let unemer_tx: Vec<u8> = row.get(12)?;
+            let unemer_tx: Vec<u8> = row.get(14)?;
             let unemer_tx = UnvaultEmergencyTransaction::from_psbt_serialized(&unemer_tx)
                 .expect("We store it with to_psbt_serialized");
 
@@ -637,7 +638,7 @@ pub fn db_vault_by_unvault_txid(
         params![txid.to_vec(), TransactionType::Unvault as u32],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let offset = 12;
+            let offset = 14;
 
             // FIXME: there is probably a more extensible way to implement the from()s so we don't
             // have to change all those when adding a column
@@ -680,7 +681,7 @@ pub fn db_sig_missing(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let db_tx: DbTransaction = db_tx_from_row(row, 12)?;
+            let db_tx: DbTransaction = db_tx_from_row(row, 14)?;
 
             if let Some(db_txs) = vault_map.get_mut(&db_vault) {
                 db_txs.push(db_tx);
@@ -850,7 +851,7 @@ pub fn db_vaults_from_spend(
         params![spend_txid.to_vec()],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(12)?).expect("We store it");
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(14)?).expect("We store it");
             db_vaults.insert(txid, db_vault);
             Ok(())
         },

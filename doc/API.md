@@ -109,15 +109,17 @@ Get an address to build a deposit transaction.
 
 ### Vault resource
 
-| Field         | Type   | Description                                                 |
-| ------------- | ------ | ----------------------------------------------------------- |
-| `amount`      | int    | Amount of the vault in satoshis                             |
-| `blockheight` | int    | Blockheight of the deposit transaction block                |
-| `received_at` | int    | Timestamp of the deposit transaction reception time         |
-| `status`      | string | Status of the vault (see [vault statuses](#vault-statuses)) |
-| `txid`        | string | Deposit txid of the vault deposit transaction               |
-| `updated_at`  | int    | Timestamp of the last status change                         |
-| `vout`        | int    | Index of the deposit output in the deposit transaction.     |
+| Field          | Type          | Description                                                      |
+| -------------- | ------------- | ---------------------------------------------------------------- |
+| `amount`       | int           | Amount of the vault in satoshis                                  |
+| `blockheight`  | int           | Blockheight of the deposit transaction block                     |
+| `delegated_at` | int or `null` | Timestamp of the vault status change to `active`                 |
+| `funded_at`    | int or `null` | Block timestamp of the deposit transaction                       |
+| `moved_at`     | int or `null` | Block timestamp of the vault final transaction (spend or cancel) |
+| `secured_at`   | int or `null` | Timestamp of the vault status change to `secured`                |
+| `status`       | string        | Status of the vault (see [vault statuses](#vault-statuses))      |
+| `txid`         | string        | Deposit txid of the vault deposit transaction                    |
+| `vout`         | int           | Index of the deposit output in the deposit transaction.          |
 
 Note that the `scriptPubKey` is implicitly known as we have the vault output Miniscript descriptor.
 
@@ -212,11 +214,12 @@ network (hence they may be unconfirmed). Will error if any of the vaults is unkn
 
 #### Wallet tx
 
-| Field         | Type             | Description                                                                   |
-| ------------- | ---------------- | ----------------------------------------------------------------------------  |
-| `blockheight` | int or `null`    | Height of the block containing the transaction, `null` if unconfirmed         |
-| `hex`         | string           | Hexadecimal of the network-serialized transaction                             |
-| `received_at` | int              | Transaction reception date as the number of seconds since UNIX epoch          |
+| Field         | Type          | Description                                                                   |
+| ------------- | ------------- | ----------------------------------------------------------------------------  |
+| `blockheight` | int or `null` | Height of the block containing the transaction, `null` if unconfirmed         |
+| `blocktime`   | int or `null` | Timestamp of the block containing the transaction, `null` if unconfirmed      |
+| `hex`         | string        | Hexadecimal of the network-serialized transaction                             |
+| `received_at` | int           | Transaction reception date as the number of seconds since UNIX epoch          |
 
 
 ### `getrevocationtxs`

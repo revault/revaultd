@@ -96,8 +96,10 @@ pub struct ListVaultsEntry {
     pub deposit_outpoint: OutPoint,
     pub derivation_index: ChildNumber,
     pub address: Address,
-    pub received_at: u32,
-    pub updated_at: u32,
+    pub funded_at: Option<u32>,
+    pub secured_at: Option<u32>,
+    pub delegated_at: Option<u32>,
+    pub moved_at: Option<u32>,
 }
 
 fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
@@ -218,8 +220,10 @@ pub fn listvaults_from_db(
                     status: db_vault.status,
                     deposit_outpoint: db_vault.deposit_outpoint,
                     derivation_index: db_vault.derivation_index,
-                    received_at: db_vault.received_at,
-                    updated_at: db_vault.updated_at,
+                    funded_at: db_vault.funded_at,
+                    secured_at: db_vault.secured_at,
+                    delegated_at: db_vault.delegated_at,
+                    moved_at: db_vault.moved_at,
                     address,
                 })
             })
@@ -1043,7 +1047,6 @@ mod tests {
                 &outpoint,
                 &Amount::ONE_BTC,
                 ChildNumber::from_normal_idx(0).unwrap(),
-                1,
             )
             .unwrap();
         }
@@ -1053,6 +1056,7 @@ mod tests {
             &db_file,
             &outpoints[1],
             9, // blockheight
+            9, // blocktime
             &transactions[1].as_ref().unwrap().initial_unvault,
             &transactions[1].as_ref().unwrap().initial_cancel,
             Some(&transactions[1].as_ref().unwrap().initial_emer),
@@ -1072,6 +1076,7 @@ mod tests {
             &db_file,
             &outpoints[2],
             9, // blockheight
+            9, // blocktime
             &transactions[2].as_ref().unwrap().initial_unvault,
             &transactions[2].as_ref().unwrap().initial_cancel,
             Some(&transactions[2].as_ref().unwrap().initial_emer),
@@ -1142,7 +1147,7 @@ mod tests {
         );
         db_exec(&db_file, |tx| {
             tx.execute(
-                "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+                "UPDATE vaults SET status = (?1), secured_at = strftime('%s','now') \
              WHERE vaults.id = (?2)",
                 params![VaultStatus::Secured as u32, vaults[2].id,],
             )
@@ -1163,6 +1168,7 @@ mod tests {
             &db_file,
             &vaults[3].deposit_outpoint,
             9, // blockheight
+            9, // blocktime
             &transactions[3].as_ref().unwrap().initial_unvault,
             &transactions[3].as_ref().unwrap().initial_cancel,
             Some(&transactions[3].as_ref().unwrap().initial_emer),
@@ -1247,9 +1253,9 @@ mod tests {
         );
         db_exec(&db_file, |tx| {
             tx.execute(
-                "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+                "UPDATE vaults SET status = (?1), secured_at = strftime('%s','now'), delegated_at = strftime('%s','now') \
              WHERE vaults.id = (?2)",
-                params![VaultStatus::Active as u32, vaults[3].id,],
+                params![VaultStatus::Active as u32, vaults[3].id],
             )
             .unwrap();
             Ok(())

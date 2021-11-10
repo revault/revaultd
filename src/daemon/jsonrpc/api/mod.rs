@@ -482,8 +482,10 @@ impl RpcApi for RpcImpl {
                     "vout": entry.deposit_outpoint.vout,
                     "derivation_index": derivation_index,
                     "address": entry.address.to_string(),
-                    "received_at": entry.received_at,
-                    "updated_at": entry.updated_at,
+                    "funded_at": entry.funded_at,
+                    "secured_at": entry.secured_at,
+                    "delegated_at": entry.delegated_at,
+                    "moved_at": entry.moved_at,
                 })
             })
             .collect();
@@ -1001,6 +1003,7 @@ impl RpcApi for RpcImpl {
         fn wallet_tx_to_json(tx: WalletTransaction) -> serde_json::Value {
             json!({
                 "blockheight": tx.blockheight.map(serde_json::Number::from),
+                "blocktime": tx.blocktime.map(serde_json::Number::from),
                 "received_at": serde_json::Number::from(tx.received_time),
                 "hex": serde_json::Value::String(tx.hex),
             })

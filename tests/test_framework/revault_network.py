@@ -10,6 +10,7 @@ from nacl.public import PrivateKey as Curve25519Private
 from test_framework import serializations
 from test_framework.coordinatord import Coordinatord
 from test_framework.cosignerd import Cosignerd
+from test_framework.miradord import Miradord
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd, StkManRevaultd
 from test_framework.utils import (
     get_descriptors,
@@ -17,6 +18,7 @@ from test_framework.utils import (
     wait_for,
     RpcError,
     TIMEOUT,
+    WT_PLUGINS_DIR,
 )
 
 
@@ -58,6 +60,7 @@ class RevaultNetwork:
         csv=None,
         managers_threshold=None,
         with_cosigs=True,
+        with_watchtowers=True,
     ):
         """
         Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
@@ -219,21 +222,47 @@ class RevaultNetwork:
 
         # Start daemons in parallel, as it takes a few seconds for each
         start_jobs = []
+        # By default the watchtower should not revault anything
+        default_wt_plugin = {
+            "path": os.path.join(WT_PLUGINS_DIR, "revault_nothing.py"),
+            "conf": {},
+        }
 
         # Spin up the stakeholders wallets and their cosigning servers
         for i, stk in enumerate(stkonly_keychains):
+            if with_watchtowers:
+                datadir = os.path.join(self.root_dir, f"miradord-{i}")
+                os.makedirs(datadir)
+                wt_listen_port = reserve()
+                miradord = Miradord(
+                    datadir,
+                    deposit_desc,
+                    unvault_desc,
+                    cpfp_desc,
+                    self.emergency_address,
+                    wt_listen_port,
+                    stkonly_wt_noiseprivs[i],
+                    stkonly_noisepubs[i].hex(),
+                    coordinator_noisepub.hex(),
+                    self.coordinator_port,
+                    self.bitcoind,
+                    plugins=[default_wt_plugin],
+                )
+                start_jobs.append(self.executor.submit(miradord.start))
+                self.daemons.append(miradord)
+
             datadir = os.path.join(self.root_dir, f"revaultd-stk-{i}")
             os.makedirs(datadir, exist_ok=True)
-
             stk_config = {
                 "keychain": stk,
-                # FIXME: Eventually use real ones
                 "watchtowers": [
                     {
-                        "host": "127.0.0.1:1",
-                        "noise_key": os.urandom(32),
+                        "host": f"127.0.0.1:{wt_listen_port}",
+                        "noise_key": stkonly_wt_noisepubs[i].hex(),
                     }
-                ],
+                ]
+                if with_watchtowers
+                else [],
                 "emergency_address": self.emergency_address,
             }
 
@@ -247,6 +276,7 @@ class RevaultNetwork:
                 self.coordinator_port,
                 self.bitcoind,
                 stk_config,
+                wt_process=miradord if with_watchtowers else None,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stk_wallets.append(revaultd)
@@ -267,18 +297,39 @@ class RevaultNetwork:
 
         # Spin up the stakeholder-managers wallets and their cosigning servers
         for i, stkman in enumerate(stkman_stk_keychains):
+            if with_watchtowers:
+                datadir = os.path.join(self.root_dir, f"miradord-stkman-{i}")
+                os.makedirs(datadir)
+                wt_listen_port = reserve()
+                miradord = Miradord(
+                    datadir,
+                    deposit_desc,
+                    unvault_desc,
+                    cpfp_desc,
+                    self.emergency_address,
+                    wt_listen_port,
+                    stkman_wt_noiseprivs[i],
+                    stkman_noisepubs[i].hex(),
+                    coordinator_noisepub.hex(),
+                    self.coordinator_port,
+                    self.bitcoind,
+                    plugins=[default_wt_plugin],
+                )
+                start_jobs.append(self.executor.submit(miradord.start))
+                self.daemons.append(miradord)
+
             datadir = os.path.join(self.root_dir, f"revaultd-stkman-{i}")
             os.makedirs(datadir, exist_ok=True)
-
             stk_config = {
                 "keychain": stkman,
-                # FIXME: Eventually use real ones
                 "watchtowers": [
                     {
-                        "host": "127.0.0.1:1",
-                        "noise_key": os.urandom(32),
+                        "host": f"127.0.0.1:{wt_listen_port}",
+                        "noise_key": stkman_wt_noisepubs[i].hex(),
                     }
-                ],
+                ]
+                if with_watchtowers
+                else [],
                 "emergency_address": self.emergency_address,
             }
             man_config = {
@@ -297,6 +348,7 @@ class RevaultNetwork:
                 self.bitcoind,
                 stk_config,
                 man_config,
+                wt_process=miradord if with_watchtowers else None,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stkman_wallets.append(revaultd)
@@ -483,10 +535,11 @@ class RevaultNetwork:
         for j in act_jobs:
             j.result(TIMEOUT)
 
-    def unvault_vaults(self, vaults, destinations, feerate):
+    def broadcast_unvaults(self, vaults, destinations, feerate):
         """
-        Unvault these {vaults}, advertizing a Spend tx spending to these {destinations}
-        (mapping of addresses to amounts)
+        Broadcast the Unvault transactions for these {vaults}, advertizing a
+        Spend tx spending to these {destinations} (mapping of addresses to
+        amounts)
         """
         man = self.man(0)
         deposits = []
@@ -506,6 +559,13 @@ class RevaultNetwork:
         spend_psbt.tx.calc_sha256()
         man.rpc.setspendtx(spend_psbt.tx.hash)
 
+    def unvault_vaults(self, vaults, destinations, feerate):
+        """
+        Unvault these {vaults}, advertizing a Spend tx spending to these {destinations}
+        (mapping of addresses to amounts)
+        """
+        self.broadcast_unvaults(vaults, destinations, feerate)
+        deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
         self.bitcoind.generate_block(1, wait_for_mempool=len(deposits))
         for w in self.participants():
             wait_for(
@@ -522,6 +582,7 @@ class RevaultNetwork:
 
         :return: the list of spent deposits along with the Spend PSBT.
         """
+        assert len(vaults) > 0
         man = self.man(0)
         deposits = []
         deriv_indexes = []
@@ -588,6 +649,14 @@ class RevaultNetwork:
         """
         destinations, feerate = self._any_spend_data(vaults)
         return self.unvault_vaults(vaults, destinations, feerate)
+
+    def broadcast_unvaults_anyhow(self, vaults):
+        """
+        Broadcast the Unvault transactions for these vaults with a random Spend
+        transaction for a maximum amount and a fixed feerate.
+        """
+        destinations, feerate = self._any_spend_data(vaults)
+        return self.broadcast_unvaults(vaults, destinations, feerate)
 
     def spend_vaults_anyhow(self, vaults):
         """Spend these vaults to a random address for a maximum amount for a fixed feerate"""

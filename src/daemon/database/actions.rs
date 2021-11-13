@@ -263,9 +263,9 @@ pub fn db_insert_new_unconfirmed_vault(
         tx.execute(
             "INSERT INTO vaults ( \
                 wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
-                received_at, updated_at, final_txid \
+                received_at, updated_at, final_txid, emer_shared \
             ) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, 0)",
             params![
                 wallet_id,
                 VaultStatus::Unconfirmed as u32,
@@ -588,6 +588,18 @@ pub fn db_mark_activating_vault(db_path: &Path, vault_id: u32) -> Result<(), Dat
     })
 }
 
+/// Mark a vault as having its Emergency signature already shared with the watchtowers.
+pub fn db_mark_emer_shared(db_path: &Path, db_vault: &DbVault) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET emer_shared = 1 WHERE vaults.id = (?1)",
+            params![db_vault.id],
+        )
+        .map(|_| ())
+        .map_err(DatabaseError::from)
+    })
+}
+
 // Merge the partial sigs of two transactions of the same type into the first one
 //
 // Returns true if this made the transaction "valid" (fully signed).
@@ -682,6 +694,10 @@ pub fn db_update_vault_status(db_path: &Path, db_vault: &DbVault) -> Result<(), 
             .prepare("SELECT * FROM presigned_transactions WHERE vault_id = (?1)")?
             .query_map(params![db_vault.id], |row| row.try_into())?
             .collect::<rusqlite::Result<Vec<DbTransaction>>>()?;
+
+        if db_transactions.is_empty() {
+            return Ok(());
+        }
 
         let (mut all_signed, mut all_but_unvault_signed) = (true, true);
         for db_tx in db_transactions {
@@ -1324,6 +1340,21 @@ mod test {
         .unwrap();
         assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
         assert_eq!(db_signed_unemer_txs(&db_path).unwrap().len(), 1);
+
+        // Sanity check we can mark the Emergency as shared with the watchtowers
+        assert!(
+            !db_vault_by_deposit(&db_path, &db_vault.deposit_outpoint)
+                .unwrap()
+                .unwrap()
+                .emer_shared
+        );
+        db_mark_emer_shared(&db_path, &db_vault).unwrap();
+        assert!(
+            db_vault_by_deposit(&db_path, &db_vault.deposit_outpoint)
+                .unwrap()
+                .unwrap()
+                .emer_shared
+        );
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }

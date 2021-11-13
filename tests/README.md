@@ -47,7 +47,7 @@ servers:
 
 ```
 # Adapt `-n`, `-v`, `timeout` and other environment variables to your needs
-pytest -vvv -n4 --timeout=1800
+pytest tests/ -vvv -n4 --ignore tests/servers/
 ```
 
 #### With the servers
@@ -59,9 +59,9 @@ servers code:
 # From the root of the repository
 git submodule update --init --recursive
 cd tests/servers
-cd coordinatord && cargo build
-cd cosignerd && cargo build
-# TODO: add the other servers here when they are implemented
+cd coordinatord && cargo build && cd ..
+cd cosignerd && cargo build && cd ..
+cd miradord && cargo build && cd ..
 ```
 
 When you need a new version of the servers, you can update the submodules:

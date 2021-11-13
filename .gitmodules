@@ -1,6 +1,12 @@
-[submodule "tests/servers/coordinatord"]
+[submodule "coordinatord"]
 	path = tests/servers/coordinatord
 	url = https://github.com/revault/coordinatord
-[submodule "tests/servers/cosignerd"]
+	branch = master
+[submodule "cosignerd"]
 	path = tests/servers/cosignerd
 	url = https://github.com/revault/cosignerd
+	branch = master
+[submodule "miradord"]
+	path = tests/servers/miradord
+	url = https://github.com/revault/miradord
+	branch = master

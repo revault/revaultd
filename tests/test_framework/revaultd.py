@@ -24,6 +24,7 @@ class Revaultd(TailableProc):
         bitcoind,
         stk_config=None,
         man_config=None,
+        wt_process=None,
     ):
         # set descriptors
         self.cpfp_desc = cpfp_desc
@@ -34,6 +35,7 @@ class Revaultd(TailableProc):
         TailableProc.__init__(self, datadir, verbose=VERBOSE)
 
         self.prefix = os.path.split(datadir)[-1]
+        self.watchtower = wt_process
 
         # The data is stored in a per-network directory. We need to create it
         # in order to write the Noise private key
@@ -78,7 +80,7 @@ class Revaultd(TailableProc):
                 for wt in stk_config["watchtowers"]:
                     f.write(
                         f"{{ \"host\" = \"{wt['host']}\", \"noise_key\" = "
-                        f"\"{wt['noise_key'].hex()}\" }}, "
+                        f"\"{wt['noise_key']}\" }}, "
                     )
                 f.write("]\n")
                 f.write(f"emergency_address = \"{stk_config['emergency_address']}\"\n")
@@ -198,6 +200,7 @@ class StakeholderRevaultd(Revaultd):
         coordinator_port,
         bitcoind,
         stk_config,
+        wt_process,
     ):
         """The wallet daemon for a stakeholder.
         Needs to know all xpubs, and needs to be able to connect to the
@@ -214,6 +217,7 @@ class StakeholderRevaultd(Revaultd):
             bitcoind,
             stk_config,
             man_config=None,
+            wt_process=wt_process,
         )
         assert self.stk_keychain is not None
 
@@ -231,6 +235,7 @@ class StkManRevaultd(Revaultd):
         bitcoind,
         stk_config,
         man_config,
+        wt_process,
     ):
         """A revaultd instance that is both stakeholder and manager."""
         super(StkManRevaultd, self).__init__(
@@ -244,4 +249,5 @@ class StkManRevaultd(Revaultd):
             bitcoind,
             stk_config,
             man_config,
+            wt_process,
         )

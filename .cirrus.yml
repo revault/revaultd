@@ -13,7 +13,7 @@ task:
   matrix:
     - name: 'Misc functional tests'
       env:
-        TEST_GROUP: tests/test_misc.py
+        TEST_GROUP: tests/test_misc.py tests/test_watchtowers.py
     - name: 'RPC functional tests'
       env:
         TEST_GROUP: tests/test_rpc.py
@@ -55,7 +55,9 @@ task:
     export REVAULTD_PATH=$PWD/target/release/revaultd
     git submodule update --init
     cd tests/servers
-    cd coordinatord && cargo build
+    cd miradord && cargo build
+    export MIRADORD_PATH=$PWD/target/debug/miradord
+    cd ../coordinatord && cargo build
     export COORDINATORD_PATH=$PWD/target/debug/coordinatord
     cd ../cosignerd && cargo build
     export COSIGNERD_PATH=$PWD/target/debug/cosignerd

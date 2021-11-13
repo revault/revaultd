@@ -45,6 +45,8 @@ CREATE TABLE wallets (
  * spending txid or the canceling txid out of a deposit outpoint.
  * It MUST be NOT NULL if status is 'spending', 'spent', 'canceling'
  * or 'canceled'.
+ * The emer_shared field indicates wether we already shared the Emergency
+ * transaction for this vault with the watchtower.
  */
 CREATE TABLE vaults (
     id INTEGER PRIMARY KEY NOT NULL,
@@ -58,6 +60,7 @@ CREATE TABLE vaults (
     received_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     final_txid BLOB,
+    emer_shared BOOLEAN NOT NULL CHECK (emer_shared IN (0,1)),
     FOREIGN KEY (wallet_id) REFERENCES wallets (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT
@@ -141,6 +144,7 @@ pub struct DbVault {
     pub received_at: u32,
     pub updated_at: u32,
     pub final_txid: Option<Txid>,
+    pub emer_shared: bool,
 }
 
 // FIXME: naming it "db transaction" was ambiguous..

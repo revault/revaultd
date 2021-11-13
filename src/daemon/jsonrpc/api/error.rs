@@ -14,12 +14,19 @@ impl From<CommunicationError> for Error {
     fn from(e: CommunicationError) -> Error {
         let code = match e {
             CommunicationError::Net(_) => ErrorCode::TRANSPORT_ERROR,
+            CommunicationError::WatchtowerNack(_, _) => ErrorCode::WT_SIG_NACK,
             CommunicationError::SignatureStorage => ErrorCode::COORDINATOR_SIG_STORE_ERROR,
             CommunicationError::SpendTxStorage => ErrorCode::COORDINATOR_SPEND_STORE_ERROR,
             CommunicationError::CosigAlreadySigned => ErrorCode::COSIGNER_ALREADY_SIGN_ERROR,
             CommunicationError::CosigInsanePsbt => ErrorCode::COSIGNER_INSANE_ERROR,
         };
         Error(code, e.to_string())
+    }
+}
+
+impl From<CommunicationError> for JsonRpcError {
+    fn from(e: CommunicationError) -> JsonRpcError {
+        Error::from(e).into()
     }
 }
 
@@ -96,6 +103,8 @@ pub enum ErrorCode {
     INTERNAL_ERROR = 11000,
     /// An error internal to revault_net, generally a transport error
     TRANSPORT_ERROR = 12000,
+    /// The watchtower refused our signatures
+    WT_SIG_NACK = 13_000,
     /// The Coordinator told us they could not store our signature
     COORDINATOR_SIG_STORE_ERROR = 13100,
     /// The Coordinator told us they could not store our Spend transaction

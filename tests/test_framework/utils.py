@@ -27,12 +27,20 @@ POSTGRES_PASS = os.getenv("POSTGRES_PASS", "")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_IS_SETUP = POSTGRES_USER and POSTGRES_PASS and POSTGRES_HOST
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
-LOG_LEVEL = os.getenv("LOG_LEVEL", "trace")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "debug")
 assert LOG_LEVEL in ["trace", "debug", "info", "warn", "error"]
 DEFAULT_REV_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "target/debug/revaultd"
 )
 REVAULTD_PATH = os.getenv("REVAULTD_PATH", DEFAULT_REV_PATH)
+DEFAULT_MIRADORD_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "servers",
+    "miradord",
+    "target/debug/miradord",
+)
+MIRADORD_PATH = os.getenv("MIRADORD_PATH", DEFAULT_MIRADORD_PATH)
 DEFAULT_COORD_PATH = os.path.join(
     os.path.dirname(__file__),
     "..",
@@ -51,6 +59,7 @@ DEFAULT_COSIG_PATH = os.path.join(
 COSIGNERD_PATH = os.getenv("COSIGNERD_PATH", DEFAULT_COSIG_PATH)
 DEFAULT_BITCOIND_PATH = "bitcoind"
 BITCOIND_PATH = os.getenv("BITCOIND_PATH", DEFAULT_BITCOIND_PATH)
+WT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wtplugins")
 
 
 def wait_for(success, timeout=TIMEOUT, debug_fn=None):

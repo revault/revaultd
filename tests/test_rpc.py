@@ -1108,25 +1108,21 @@ def test_getserverstatus(revault_network, bitcoind):
         res = w.rpc.call("getserverstatus")
         assert res["cosigners"] == []
 
-    # Only stakeholders have info about the watchtowers...
+    # Only stakeholders have info about the watchtowers, they must be reachable
     for w in rn.stks():
         res = w.rpc.call("getserverstatus")
-        # ...And well, they're dead
         for watchtower in res["watchtowers"]:
-            assert not watchtower["reachable"]
+            assert watchtower["reachable"]
 
     # Managers don't have watchtowers info
     for w in rn.mans():
         res = w.rpc.call("getserverstatus")
         assert res["watchtowers"] == []
 
-    # Alright, let's kill everything :D
-
-    # Hacky... We actually don't want to kill the wallets,
-    # so we kill the first N + 1 servers, which happen to be the
-    # coordinator and the N cosigners
-    for server in rn.daemons[: 1 + len(rn.stks())]:
-        server.stop()
+    # Alright, let's kill all the servers
+    for d in rn.daemons:
+        if d not in rn.participants():
+            d.stop()
 
     # The coordinator is dead
     for w in rn.participants():
@@ -1141,3 +1137,9 @@ def test_getserverstatus(revault_network, bitcoind):
             assert not cosigner["reachable"]
             # Sadly we don't persist the cosigner ports
             assert cosigner["host"].startswith("127.0.0.1:")
+
+    # So are the watchtowers
+    for w in rn.stks():
+        res = w.rpc.call("getserverstatus")
+        for watchtower in res["watchtowers"]:
+            assert not watchtower["reachable"]

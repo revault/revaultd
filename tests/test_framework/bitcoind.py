@@ -76,14 +76,13 @@ class BitcoinD(TailableProc):
             "-datadir={}".format(bitcoin_dir),
             "-printtoconsole",
             "-server",
-            "-logtimestamps",
-            "-rpcthreads=16",
         ]
         bitcoind_conf = {
             "port": self.p2pport,
             "rpcport": rpcport,
             "debug": 1,
             "fallbackfee": Decimal(1000) / bitcoin.core.COIN,
+            "rpcthreads": 32,
         }
         self.conf_file = os.path.join(bitcoin_dir, "bitcoin.conf")
         with open(self.conf_file, "w") as f:

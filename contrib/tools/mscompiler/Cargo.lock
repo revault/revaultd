@@ -78,12 +78,13 @@ dependencies = [
 
 [[package]]
 name = "revault_tx"
-version = "0.3.0"
-source = "git+https://github.com/revault/revault_tx#c928dbaa97382b1d4a810d1f973f43816792d5f4"
+version = "0.4.0"
+source = "git+https://github.com/danielabrozzoni/revault_tx/?branch=2021109_support_cpfp#2870c7b17c75b9f9d504c221c89f75e67782979e"
 dependencies = [
  "base64",
  "bitcoinconsensus",
  "miniscript",
+ "serde",
 ]
 
 [[package]]

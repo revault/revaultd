@@ -39,8 +39,9 @@ use revault_tx::{
     },
     miniscript::DescriptorTrait,
     transactions::{
-        spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
-        RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
+        spend_tx_from_deposits, transaction_chain, CancelTransaction, CpfpableTransaction,
+        EmergencyTransaction, RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
     txins::DepositTxIn,
     txouts::{DepositTxOut, SpendTxOut},

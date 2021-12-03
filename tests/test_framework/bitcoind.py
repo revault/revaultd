@@ -199,12 +199,11 @@ class BitcoinD(TailableProc):
             raise
 
         info = self.rpc.getnetworkinfo()
-
-        if info["version"] < 210000:
+        if info["version"] < 220000:
             self.rpc.stop()
             raise ValueError(
-                "bitcoind is too old. At least version 21000"
-                " (v0.21.0) is needed, current version is {}".format(info["version"])
+                "bitcoind is too old. Minimum supported version is 0.22.0."
+                " Current is {}".format(info["version"])
             )
 
     def cleanup(self):

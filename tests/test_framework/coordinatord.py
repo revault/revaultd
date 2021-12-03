@@ -27,7 +27,9 @@ class Coordinatord(TailableProc):
         self.postgres_pass = postgres_pass
         self.postgres_host = postgres_host
         # Use the directory fixture uid
-        uid = os.path.basename(os.path.dirname(datadir))
+        uid = os.path.basename(os.path.dirname(os.path.dirname(datadir))).replace(
+            "-", ""
+        )
         self.db_name = f"revault_coordinatord_{uid}"
         # Cleanup a potential leftover from a crashed test
         try:

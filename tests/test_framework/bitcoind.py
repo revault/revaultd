@@ -2,52 +2,30 @@ import bitcoin
 import logging
 import os
 
-from bitcoin.rpc import RawProxy as BitcoinProxy
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
+from test_framework.authproxy import AuthServiceProxy
 from test_framework.utils import TailableProc, wait_for, TIMEOUT, BITCOIND_PATH
 
 
-class SimpleBitcoinProxy:
-    """Wrapper for BitcoinProxy to reconnect.
-
-    Long wait times between calls to the Bitcoin RPC could result in
-    `bitcoind` closing the connection, so here we just create
-    throwaway connections. This is easier than to reach into the RPC
-    library to close, reopen and reauth upon failure.
-    """
-
-    def __init__(self, bitcoind_dir, bitcoind_port, *args, **kwargs):
-        self.__btc_conf_file__ = os.path.join(bitcoind_dir, "bitcoin.conf")
-        self.__cookie_path = os.path.join(bitcoind_dir, "regtest", ".cookie")
-        self.__port = bitcoind_port
-        # The internal bitcoind wallet, used to generate blocks and distribute
-        # coins
+class BitcoinDProxy:
+    def __init__(self, data_dir, network, rpc_port):
+        self.cookie_path = os.path.join(data_dir, network, ".cookie")
+        self.rpc_port = rpc_port
         self.wallet_name = "revaultd-tests"
 
     def __getattr__(self, name):
-        if name.startswith("__") and name.endswith("__"):
-            # Python internal stuff
-            raise AttributeError
+        assert not (name.startswith("__") and name.endswith("__")), "Python internals"
 
-        # We want to hit the per-wallet API and python-bitcoinlib will not read
-        # the cookie if we specify a custom URL..
-        with open(self.__cookie_path) as fd:
+        with open(self.cookie_path) as fd:
             authpair = fd.read()
         service_url = (
-            f"http://{authpair}@localhost:{self.__port}/wallet" f"/{self.wallet_name}"
+            f"http://{authpair}@localhost:{self.rpc_port}/wallet/{self.wallet_name}"
         )
-
-        # Create a callable to do the actual call
-        # NOTE: the socket can timeout on CI..
-        proxy = BitcoinProxy(
-            btc_conf_file=self.__btc_conf_file__,
-            service_url=service_url,
-            timeout=5 * 60,
-        )
+        proxy = AuthServiceProxy(service_url, name)
 
         def f(*args):
-            return proxy._call(name, *args)
+            return proxy.__call__(*args)
 
         # Make debuggers show <function bitcoin.rpc.name> rather than <function
         # bitcoin.rpc.<lambda>>
@@ -91,10 +69,7 @@ class BitcoinD(TailableProc):
             for k, v in bitcoind_conf.items():
                 f.write(f"{k}={v}\n")
 
-        self.rpc = SimpleBitcoinProxy(
-            bitcoind_dir=self.bitcoin_dir, bitcoind_port=self.rpcport
-        )
-        self.proxies = []
+        self.rpc = BitcoinDProxy(bitcoin_dir, "regtest", rpcport)
 
     def start(self):
         TailableProc.start(self)

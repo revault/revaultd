@@ -1,10 +1,8 @@
 import bip32
-import bitcoin
 import logging
 import os
 import random
 
-from bitcoin.wallet import CBitcoinSecret
 from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
 from test_framework import serializations
@@ -16,7 +14,6 @@ from test_framework.utils import (
     get_descriptors,
     get_participants,
     wait_for,
-    RpcError,
     TIMEOUT,
     WT_PLUGINS_DIR,
 )
@@ -104,10 +101,8 @@ class RevaultNetwork:
             stks_xpubs, cosigs_keys, mans_xpubs, managers_threshold, cpfp_xpubs, csv
         )
         # Generate a dummy 2of2 to be used as our Emergency address
-        bitcoin.SelectParams("regtest")
-        pka = str(CBitcoinSecret.from_secret_bytes(os.urandom(32)))
-        pkb = str(CBitcoinSecret.from_secret_bytes(os.urandom(32)))
-        desc = f"wsh(multi(2,{pka},{pkb}))"
+        desc = "wsh(multi(2,cRE7qAArQYnFQK7S1gXFTArFT4UWvh8J2v2EUajRWXbWFvRzxoeF,\
+                cTzcgRCmHNqUqZuZgvCPLUDXXrQSoVQpZiXQZWQzsLEytcTr6iXi))"
         checksum = self.bitcoind.rpc.getdescriptorinfo(desc)["checksum"]
         desc = f"{desc}#{checksum}"
         self.emergency_address = self.bitcoind.rpc.deriveaddresses(desc)[0]

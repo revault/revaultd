@@ -1,12 +1,12 @@
 import os
 import pytest
 
-from bitcoin.core import COIN
 from fixtures import *
 from test_framework.utils import (
     wait_for,
     POSTGRES_IS_SETUP,
     WT_PLUGINS_DIR,
+    COIN,
 )
 
 

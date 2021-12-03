@@ -1,11 +1,10 @@
-import bitcoin
 import logging
 import os
 
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
 from test_framework.authproxy import AuthServiceProxy
-from test_framework.utils import TailableProc, wait_for, TIMEOUT, BITCOIND_PATH
+from test_framework.utils import TailableProc, wait_for, TIMEOUT, BITCOIND_PATH, COIN
 
 
 class BitcoinDProxy:
@@ -59,7 +58,7 @@ class BitcoinD(TailableProc):
             "port": self.p2pport,
             "rpcport": rpcport,
             "debug": 1,
-            "fallbackfee": Decimal(1000) / bitcoin.core.COIN,
+            "fallbackfee": Decimal(1000) / COIN,
             "rpcthreads": 32,
         }
         self.conf_file = os.path.join(bitcoin_dir, "bitcoin.conf")

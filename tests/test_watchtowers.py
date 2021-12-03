@@ -76,7 +76,16 @@ def test_wt_policy(directory, revault_network, bitcoind):
     # The first one will go through (4 < 5)
     v = vaults[-1]
     assert v["amount"] == 4 * COIN
-    rn.spend_vaults_anyhow([v])
+    deposits, spend_psbt = rn.spend_vaults_anyhow_unconfirmed([v])
+    for stk in rn.stks():
+        stk.watchtower.wait_for_log(
+            f"Got a confirmed Unvault UTXO for vault at '{v['txid']}:{v['vout']}'"
+        )
+    bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
+    wait_for(
+        lambda: len(rn.man(0).rpc.listvaults(["spent"], deposits)["vaults"])
+        == len(deposits)
+    )
     # The second one won't (4 + 2 > 5)
     v = vaults[-2]
     assert v["amount"] == 2 * COIN

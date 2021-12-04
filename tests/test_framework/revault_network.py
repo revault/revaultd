@@ -6,6 +6,7 @@ import random
 from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
 from test_framework import serializations
+from test_framework.bitcoind import BitcoindRpcProxy
 from test_framework.coordinatord import Coordinatord
 from test_framework.cosignerd import Cosignerd
 from test_framework.miradord import Miradord
@@ -49,6 +50,8 @@ class RevaultNetwork:
         self.csv = None
         self.emergency_address = None
 
+        self.bitcoind_proxy = None
+
     def deploy(
         self,
         n_stakeholders,
@@ -58,6 +61,7 @@ class RevaultNetwork:
         managers_threshold=None,
         with_cosigs=True,
         with_watchtowers=True,
+        bitcoind_rpc_mocks=[],
     ):
         """
         Deploy a revault setup with {n_stakeholders} stakeholders, {n_managers}
@@ -71,6 +75,17 @@ class RevaultNetwork:
         assert n_stakeholders + n_stkmanagers >= 2, "Not enough stakeholders"
         assert n_managers + n_stkmanagers >= 1, "Not enough managers"
         assert managers_threshold <= n_managers + n_stkmanagers, "Invalid threshold"
+
+        # Connection info to bitcoind. Change the port depending on whether we are proxying
+        # the daemons' requests.
+        bitcoind_cookie = os.path.join(self.bitcoind.bitcoin_dir, "regtest", ".cookie")
+        if len(bitcoind_rpc_mocks) > 0:
+            self.bitcoind_proxy = BitcoindRpcProxy(
+                self.bitcoind.rpcport, bitcoind_cookie, bitcoind_rpc_mocks
+            )
+            bitcoind_rpcport = self.bitcoind_proxy.rpcport
+        else:
+            bitcoind_rpcport = self.bitcoind.rpcport
 
         (
             stkonly_keychains,
@@ -240,7 +255,8 @@ class RevaultNetwork:
                     stkonly_noisepubs[i].hex(),
                     coordinator_noisepub.hex(),
                     self.coordinator_port,
-                    self.bitcoind,
+                    bitcoind_rpcport,
+                    bitcoind_cookie,
                     plugins=[default_wt_plugin],
                 )
                 start_jobs.append(self.executor.submit(miradord.start))
@@ -269,7 +285,8 @@ class RevaultNetwork:
                 stkonly_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
-                self.bitcoind,
+                bitcoind_rpcport,
+                bitcoind_cookie,
                 stk_config,
                 wt_process=miradord if with_watchtowers else None,
             )
@@ -307,7 +324,8 @@ class RevaultNetwork:
                     stkman_noisepubs[i].hex(),
                     coordinator_noisepub.hex(),
                     self.coordinator_port,
-                    self.bitcoind,
+                    bitcoind_rpcport,
+                    bitcoind_cookie,
                     plugins=[default_wt_plugin],
                 )
                 start_jobs.append(self.executor.submit(miradord.start))
@@ -340,7 +358,8 @@ class RevaultNetwork:
                 stkman_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
-                self.bitcoind,
+                bitcoind_rpcport,
+                bitcoind_cookie,
                 stk_config,
                 man_config,
                 wt_process=miradord if with_watchtowers else None,
@@ -376,7 +395,8 @@ class RevaultNetwork:
                 man_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
-                self.bitcoind,
+                bitcoind_rpcport,
+                bitcoind_cookie,
                 man_config,
             )
             start_jobs.append(self.executor.submit(daemon.start))
@@ -735,3 +755,5 @@ class RevaultNetwork:
     def cleanup(self):
         for n in self.daemons:
             n.cleanup()
+        if self.bitcoind_proxy is not None:
+            self.bitcoind_proxy.stop()

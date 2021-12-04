@@ -147,15 +147,16 @@ class AuthServiceProxy:
     def get_request(self, *args, **argsn):
         AuthServiceProxy.__id_count += 1
 
-        log.debug(
-            "-{}-> {} {}".format(
-                AuthServiceProxy.__id_count,
-                self._service_name,
-                json.dumps(
-                    args or argsn, default=EncodeDecimal, ensure_ascii=self.ensure_ascii
-                ),
-            )
-        )
+        # FIXME: keep this but with a lower degree of verbosity
+        # log.debug(
+        # "-{}-> {} {}".format(
+        # AuthServiceProxy.__id_count,
+        # self._service_name,
+        # json.dumps(
+        # args or argsn, default=EncodeDecimal, ensure_ascii=self.ensure_ascii
+        # ),
+        # )
+        # )
         if args and argsn:
             raise ValueError("Cannot handle both named and positional arguments")
         return {
@@ -195,7 +196,8 @@ class AuthServiceProxy:
         postdata = json.dumps(
             list(rpc_call_list), default=EncodeDecimal, ensure_ascii=self.ensure_ascii
         )
-        log.debug("--> " + postdata)
+        # FIXME: keep this but with a lower degree of verbosity
+        # log.debug("--> " + postdata)
         response, status = self._request(
             "POST", self.__url.path, postdata.encode("utf-8")
         )
@@ -210,7 +212,7 @@ class AuthServiceProxy:
         return response
 
     def _get_response(self):
-        req_start_time = time.time()
+        # req_start_time = time.time()
         try:
             http_response = self.__conn.getresponse()
         except socket.timeout:
@@ -240,22 +242,23 @@ class AuthServiceProxy:
 
         responsedata = http_response.read().decode("utf8")
         response = json.loads(responsedata, parse_float=decimal.Decimal)
-        elapsed = time.time() - req_start_time
-        if "error" in response and response["error"] is None:
-            log.debug(
-                "<-%s- [%.6f] %s"
-                % (
-                    response["id"],
-                    elapsed,
-                    json.dumps(
-                        response["result"],
-                        default=EncodeDecimal,
-                        ensure_ascii=self.ensure_ascii,
-                    ),
-                )
-            )
-        else:
-            log.debug("<-- [%.6f] %s" % (elapsed, responsedata))
+        # FIXME: keep this but with a lower degree of verbosity
+        # elapsed = time.time() - req_start_time
+        # if "error" in response and response["error"] is None:
+        # log.debug(
+        # "<-%s- [%.6f] %s"
+        # % (
+        # response["id"],
+        # elapsed,
+        # json.dumps(
+        # response["result"],
+        # default=EncodeDecimal,
+        # ensure_ascii=self.ensure_ascii,
+        # ),
+        # )
+        # )
+        # else:
+        # log.debug("<-- [%.6f] %s" % (elapsed, responsedata))
         return response, http_response.status
 
     def __truediv__(self, relative_uri):

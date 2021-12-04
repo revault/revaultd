@@ -24,17 +24,10 @@ import shutil
 import tempfile
 import time
 
+
+# A dict in which we count how often a particular test has run so far. Used to
+# give each attempt its own numbered directory, and avoid clashes.
 __attempts = {}
-
-
-@pytest.fixture(autouse=True)
-def set_backtrace():
-    prev = os.getenv("RUST_BACKTRACE", "0")
-    os.environ["RUST_BACKTRACE"] = "1"
-
-    yield
-
-    os.environ["RUST_BACKTRACE"] = prev
 
 
 @pytest.fixture(scope="session")

@@ -466,11 +466,13 @@ class RevaultNetwork:
 
         txid = self.bitcoind.rpc.sendmany("", amounts_sendmany)
         man.wait_for_logs(
-            [f"Got a new unconfirmed deposit at {txid}" for _ in range(len(amounts))]
+            [f"Got a new unconfirmed deposit at {txid}" for _ in range(len(amounts))],
+            timeout=TIMEOUT * max(1, len(amounts) / 10),
         )
         self.bitcoind.generate_block(6, wait_for_mempool=txid)
         man.wait_for_logs(
-            [f"Vault at {txid}.* is now confirmed" for _ in range(len(amounts))]
+            [f"Vault at {txid}.* is now confirmed" for _ in range(len(amounts))],
+            timeout=TIMEOUT * max(1, len(amounts) / 10),
         )
 
         # Return the vaults we created

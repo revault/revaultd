@@ -259,25 +259,19 @@ impl BitcoinD {
     }
 
     pub fn getblockhash(&self, height: u32) -> Result<BlockHash, BitcoindError> {
-        BlockHash::from_str(
+        Ok(BlockHash::from_str(
             self.make_node_request("getblockhash", &params!(height))?
                 .as_str()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'getblockhash' didn't return a string.".to_string(),
-                    )
-                })?,
+                .expect("API break, 'getblockhash' didn't return a string."),
         )
-        .map_err(|e| {
-            BitcoindError::Custom(format!("Invalid blockhash given by 'getblockhash': {}", e))
-        })
+        .expect(&format!("Invalid blockhash given by 'getblockhash'")))
     }
 
     pub fn get_tip(&self) -> Result<BlockchainTip, BitcoindError> {
         let json_height = self.make_node_request("getblockcount", &[])?;
-        let height = json_height.as_u64().ok_or_else(|| {
-            BitcoindError::Custom("API break, 'getblockcount' didn't return an u64.".to_string())
-        })? as u32;
+        let height = json_height
+            .as_u64()
+            .expect("API break, 'getblockcount' didn't return an u64.") as u32;
         let hash = self.getblockhash(height)?;
 
         Ok(BlockchainTip { height, hash })
@@ -289,35 +283,19 @@ impl BitcoinD {
             headers: chaininfo
                 .get("headers")
                 .and_then(|h| h.as_u64())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'headers' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'headers' in getblockchaininfo response?"),
             blocks: chaininfo
                 .get("blocks")
                 .and_then(|b| b.as_u64())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'blocks' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'blocks' in getblockchaininfo response?"),
             ibd: chaininfo
                 .get("initialblockdownload")
                 .and_then(|i| i.as_bool())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'initialblockdownload' in getblockchaininfo response?"),
             progress: chaininfo
                 .get("verificationprogress")
                 .and_then(|i| i.as_f64())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'initialblockdownload' in getblockchaininfo response?"),
         })
     }
 
@@ -350,26 +328,18 @@ impl BitcoinD {
     }
 
     pub fn listwallets(&self) -> Result<Vec<String>, BitcoindError> {
-        self.make_node_request("listwallets", &[])?
+        Ok(self
+            .make_node_request("listwallets", &[])?
             .as_array()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listwallets' didn't return an array.".to_string(),
-                )
+            .expect("API break, 'listwallets' didn't return an array.")
+            .iter()
+            .map(|json_str| {
+                json_str
+                    .as_str()
+                    .expect("API break: 'listwallets' contains a non-string value")
+                    .to_string()
             })
-            .map(|vec| {
-                vec.iter()
-                    .map(|json_str| {
-                        json_str
-                            .as_str()
-                            .unwrap_or_else(|| {
-                                log::error!("'listwallets' contain a non-string value. Aborting.");
-                                panic!("API break: 'listwallets' contains a non-string value");
-                            })
-                            .to_string()
-                    })
-                    .collect()
-            })
+            .collect())
     }
 
     pub fn loadwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
@@ -420,15 +390,9 @@ impl BitcoinD {
                 &params!(Json::String(desc_wo_checksum)),
             )?
             .get("descriptor")
-            .ok_or_else(|| {
-                BitcoindError::Custom("No 'descriptor' in 'getdescriptorinfo'".to_string())
-            })?
+            .expect("No 'descriptor' in 'getdescriptorinfo'")
             .as_str()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "'descriptor' in 'getdescriptorinfo' isn't a string anymore".to_string(),
-                )
-            })?
+            .expect("'descriptor' in 'getdescriptorinfo' isn't a string anymore")
             .to_string())
     }
 
@@ -723,34 +687,26 @@ impl BitcoinD {
             .make_watchonly_request("gettransaction", &params!(Json::String(txid.to_string())))?;
         let tx_hex = res
             .get("hex")
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: no 'hex' in 'gettransaction' result (txid: {})",
-                    txid
-                ))
-            })?
+            .expect(&format!(
+                "API break: no 'hex' in 'gettransaction' result (txid: {})",
+                txid
+            ))
             .as_str()
-            .ok_or_else(|| {
-                BitcoindError::Custom("API break: 'hex' is not a string ????".to_string())
-            })?
+            .expect("API break: 'hex' is not a string ????")
             .to_string();
         let blockheight = res.get("blockheight").map(|bh| bh.as_u64().unwrap() as u32);
         let blocktime = res.get("blocktime").map(|bh| bh.as_u64().unwrap() as u32);
         let received_time = res
             .get("timereceived")
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: no 'time_received' in 'gettransaction' result (txid: {})",
-                    txid
-                ))
-            })?
+            .expect(&format!(
+                "API break: no 'time_received' in 'gettransaction' result (txid: {})",
+                txid
+            ))
             .as_u64()
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: invalid 'time_received' in 'gettransaction' result (txid: {})",
-                    txid
-                ))
-            })? as u32;
+            .expect(&format!(
+                "API break: invalid 'time_received' in 'gettransaction' result (txid: {})",
+                txid
+            )) as u32;
 
         Ok(WalletTransaction {
             hex: tx_hex,
@@ -812,12 +768,10 @@ impl BitcoinD {
             .get("transactions")
             .map(|t| t.as_array())
             .flatten()
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
-                    block_hash
-                ))
-            })?;
+            .expect(&format!(
+            "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
+            block_hash
+        ));
 
         for transaction in transactions {
             if transaction.get("category").map(|c| c.as_str()).flatten() != Some("send") {
@@ -831,12 +785,10 @@ impl BitcoinD {
                 .get("txid")
                 .map(|t| t.as_str())
                 .flatten()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(format!(
-                        "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
-                        block_hash
-                    ))
-                })?;
+                .expect(&format!(
+                    "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
+                    block_hash
+                ));
 
             let gettx_res = self.make_watchonly_request(
                 "gettransaction",
@@ -851,41 +803,34 @@ impl BitcoinD {
                 .map(|d| d.get("vin").map(|vin| vin.as_array()))
                 .flatten()
                 .flatten()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(format!(
-                        "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
-                        block_hash
-                    ))
-                })?;
+                .expect(&format!(
+                    "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
+                    block_hash
+                ));
 
             for input in vin {
                 let txid = input
                     .get("txid")
                     .map(|t| t.as_str().map(|t| Txid::from_str(t).ok()))
                     .flatten()
-                    .flatten().ok_or_else(|| {
-                    BitcoindError::Custom(format!(
-                        "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
-                        block_hash
-                    ))
-                })?;
-                let vout = input.get("vout").map(|v| v.as_u64()).flatten().ok_or_else(|| {
-                    BitcoindError::Custom(format!(
+                    .flatten()
+                    .expect(
+                        &format!(
+                            "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
+                            block_hash
+                    ));
+                let vout = input.get("vout").map(|v| v.as_u64()).flatten().expect(
+                    &format!(
                         "API break: Invalid or no vout in 'vin' entry in 'gettransaction' (blockhash: {})",
                         block_hash
                     ))
-                })? as u32;
+                as u32;
                 let input_outpoint = OutPoint { txid, vout };
 
                 if spent_outpoint == &input_outpoint {
-                    return Txid::from_str(spending_txid)
-                        .map(|txid| Some(txid))
-                        .map_err(|e| {
-                            BitcoindError::Custom(format!(
-                                "bitcoind gave an invalid txid in 'listsinceblock': '{}'",
-                                e
-                            ))
-                        });
+                    return Ok(Txid::from_str(spending_txid).map(|txid| Some(txid)).expect(
+                        &format!("bitcoind gave an invalid txid in 'listsinceblock'"),
+                    ));
                 }
             }
         }

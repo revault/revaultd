@@ -78,7 +78,6 @@ fn maybe_broadcast_spend_transactions(
                 db_mark_broadcasted_spend(&db_path, &txid)?;
             }
             Err(e) => {
-                // This should not happen if it was succesfully finalized!
                 log::error!("Error broadcasting Spend tx '{}': '{}'", txid, e);
             }
         }

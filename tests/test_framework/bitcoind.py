@@ -1,53 +1,35 @@
-import bitcoin
+import decimal
+import json
 import logging
 import os
+import threading
 
-from bitcoin.rpc import RawProxy as BitcoinProxy
+from cheroot.wsgi import PathInfoDispatcher, Server
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
-from test_framework.utils import TailableProc, wait_for, TIMEOUT, BITCOIND_PATH
+from flask import Flask, request, Response
+from test_framework.authproxy import AuthServiceProxy, JSONRPCException
+from test_framework.utils import TailableProc, wait_for, TIMEOUT, BITCOIND_PATH, COIN
 
 
-class SimpleBitcoinProxy:
-    """Wrapper for BitcoinProxy to reconnect.
-
-    Long wait times between calls to the Bitcoin RPC could result in
-    `bitcoind` closing the connection, so here we just create
-    throwaway connections. This is easier than to reach into the RPC
-    library to close, reopen and reauth upon failure.
-    """
-
-    def __init__(self, bitcoind_dir, bitcoind_port, *args, **kwargs):
-        self.__btc_conf_file__ = os.path.join(bitcoind_dir, "bitcoin.conf")
-        self.__cookie_path = os.path.join(bitcoind_dir, "regtest", ".cookie")
-        self.__port = bitcoind_port
-        # The internal bitcoind wallet, used to generate blocks and distribute
-        # coins
+class BitcoindRpcInterface:
+    def __init__(self, data_dir, network, rpc_port):
+        self.cookie_path = os.path.join(data_dir, network, ".cookie")
+        self.rpc_port = rpc_port
         self.wallet_name = "revaultd-tests"
 
     def __getattr__(self, name):
-        if name.startswith("__") and name.endswith("__"):
-            # Python internal stuff
-            raise AttributeError
+        assert not (name.startswith("__") and name.endswith("__")), "Python internals"
 
-        # We want to hit the per-wallet API and python-bitcoinlib will not read
-        # the cookie if we specify a custom URL..
-        with open(self.__cookie_path) as fd:
+        with open(self.cookie_path) as fd:
             authpair = fd.read()
         service_url = (
-            f"http://{authpair}@localhost:{self.__port}/wallet" f"/{self.wallet_name}"
+            f"http://{authpair}@localhost:{self.rpc_port}/wallet/{self.wallet_name}"
         )
-
-        # Create a callable to do the actual call
-        # NOTE: the socket can timeout on CI..
-        proxy = BitcoinProxy(
-            btc_conf_file=self.__btc_conf_file__,
-            service_url=service_url,
-            timeout=5 * 60,
-        )
+        proxy = AuthServiceProxy(service_url, name)
 
         def f(*args):
-            return proxy._call(name, *args)
+            return proxy.__call__(*args)
 
         # Make debuggers show <function bitcoin.rpc.name> rather than <function
         # bitcoin.rpc.<lambda>>
@@ -81,7 +63,7 @@ class BitcoinD(TailableProc):
             "port": self.p2pport,
             "rpcport": rpcport,
             "debug": 1,
-            "fallbackfee": Decimal(1000) / bitcoin.core.COIN,
+            "fallbackfee": Decimal(1000) / COIN,
             "rpcthreads": 32,
         }
         self.conf_file = os.path.join(bitcoin_dir, "bitcoin.conf")
@@ -91,10 +73,7 @@ class BitcoinD(TailableProc):
             for k, v in bitcoind_conf.items():
                 f.write(f"{k}={v}\n")
 
-        self.rpc = SimpleBitcoinProxy(
-            bitcoind_dir=self.bitcoin_dir, bitcoind_port=self.rpcport
-        )
-        self.proxies = []
+        self.rpc = BitcoindRpcInterface(bitcoin_dir, "regtest", rpcport)
 
     def start(self):
         TailableProc.start(self)
@@ -199,12 +178,11 @@ class BitcoinD(TailableProc):
             raise
 
         info = self.rpc.getnetworkinfo()
-
-        if info["version"] < 210000:
+        if info["version"] < 220000:
             self.rpc.stop()
             raise ValueError(
-                "bitcoind is too old. At least version 21000"
-                " (v0.21.0) is needed, current version is {}".format(info["version"])
+                "bitcoind is too old. Minimum supported version is 0.22.0."
+                " Current is {}".format(info["version"])
             )
 
     def cleanup(self):
@@ -213,3 +191,105 @@ class BitcoinD(TailableProc):
         except Exception:
             self.proc.kill()
         self.proc.wait()
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """By default json.dumps does not handle Decimals correctly, so we override its handling"""
+
+    def default(self, o):
+        if isinstance(o, decimal.Decimal):
+            return float(o)
+        return super(DecimalEncoder, self).default(o)
+
+
+class BitcoindRpcProxy(object):
+    """A proxy to the bitcoind RPC interface that can replace commands with arbitrary results.
+
+    Starts a HTTP server in a thread, listens for incoming JSONRPC requests, and responds with
+    either a mocked result or the result it got from bitcoind.
+    This was taken and adapted from the C-lightning test suite.
+    """
+
+    def __init__(self, bitcoind_rpc_port, bitcoind_cookie_path, mocks):
+        self.app = Flask("BitcoindProxy")
+        self.app.add_url_rule(
+            "/",
+            "Entrypoint",
+            self.proxy,
+            methods=["POST"],
+            defaults={"path": ""},
+        )
+        self.app.add_url_rule(
+            "/<path:path>",
+            "Entrypoint",
+            self.proxy,
+            methods=["POST"],
+        )
+        self.rpcport = reserve()
+        # A mapping from method name to result as a dict.
+        # Eventually, the results could be callable.
+        self.mocks = mocks
+        self.bitcoind_rpc_port = bitcoind_rpc_port
+        self.bitcoind_cookie_path = bitcoind_cookie_path
+
+        self.start()
+
+    def __del__(self):
+        self.stop()
+
+    def _handle_request(self, r, path):
+        """Handle a JSONRPC request {r} made to the HTTP endpoint {path} (to handle
+        wallet paths)"""
+        method = r["method"]
+
+        # If we have set a mock for this method reply with that
+        if method in self.mocks:
+            return {"id": r["id"], "error": None, "result": self.mocks[method]}
+
+        # Otherwise, just forward the request
+        with open(self.bitcoind_cookie_path) as fd:
+            authpair = fd.read()
+        service_url = f"http://{authpair}@localhost:{self.bitcoind_rpc_port}/{path}"
+
+        try:
+            res = AuthServiceProxy(service_url, r["method"])(*r["params"])
+            return {"result": res, "id": r["id"]}
+        except JSONRPCException as e:
+            return {"error": e.error, "id": r["id"]}
+
+    def proxy(self, path):
+        r = json.loads(request.data.decode("ASCII"))
+
+        if isinstance(r, list):
+            reply = [self._handle_request(subreq, path) for subreq in r]
+        else:
+            reply = self._handle_request(r, path)
+
+        # \r\n because rust-jsonrpc expects it..
+        response = Response(json.dumps(reply, cls=DecimalEncoder) + "\r\n")
+        response.headers["Content-Type"] = "application/json"
+        return response
+
+    def start(self):
+        self.server = Server(
+            ("127.0.0.1", self.rpcport),
+            self.app,
+            numthreads=32,
+            request_queue_size=10,
+            accepted_queue_timeout=20,
+            timeout=TIMEOUT * 2,
+        )
+        self.proxy_thread = threading.Thread(target=self.server.start)
+        self.proxy_thread.daemon = True
+        self.proxy_thread.start()
+
+        # Now that bitcoind is running on the real rpcport, let's tell all
+        # future callers to talk to the proxyport. We use the bind_addr as a
+        # signal that the port is bound and accepting connections.
+        while self.server.bind_addr[1] == 0:
+            pass
+        self.rpcport = self.server.bind_addr[1]
+
+    def stop(self):
+        self.server.stop()
+        self.proxy_thread.join()

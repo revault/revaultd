@@ -150,6 +150,7 @@ def revaultd_stakeholder(bitcoind, directory):
     coordinator_noise_key = (
         "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
     )
+    bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest", ".cookie")
     revaultd = StakeholderRevaultd(
         datadir,
         dep_desc,
@@ -158,7 +159,8 @@ def revaultd_stakeholder(bitcoind, directory):
         os.urandom(32),
         coordinator_noise_key,
         reserve(),
-        bitcoind,
+        bitcoind.rpcport,
+        bitcoind_cookie,
         stk_config=stk_config,
         wt_process=None,
     )
@@ -194,6 +196,7 @@ def revaultd_manager(bitcoind, directory):
     coordinator_noise_key = (
         "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
     )
+    bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest", ".cookie")
     revaultd = ManagerRevaultd(
         datadir,
         dep_desc,
@@ -202,7 +205,8 @@ def revaultd_manager(bitcoind, directory):
         os.urandom(32),
         coordinator_noise_key,
         reserve(),
-        bitcoind,
+        bitcoind.rpcport,
+        bitcoind_cookie,
         man_config=man_config,
     )
     revaultd.start()

@@ -1,4 +1,3 @@
-python-bitcoinlib==0.11.0
 pytest==6.2
 pytest-xdist==1.31.0
 pytest-timeout==1.3.4
@@ -6,3 +5,7 @@ ephemeral_port_reserve==1.1.1
 bip32~=2.0
 psycopg2-binary==2.9
 pynacl==1.4
+
+# For the bitcoind proxy
+Flask==1.1.*
+cheroot==8.5.*

@@ -27,7 +27,8 @@ class Miradord(TailableProc):
         stk_noise_key,
         coordinator_noise_key,
         coordinator_port,
-        bitcoind,
+        bitcoind_rpcport,
+        bitcoind_cookie,
         plugins=[],
     ):
         """All public keys must be hex"""
@@ -40,7 +41,6 @@ class Miradord(TailableProc):
         self.unvault_desc = unvault_desc
         self.cpfp_desc = cpfp_desc
         self.emer_addr = emer_addr
-        self.bitcoind = bitcoind
 
         # The data is stored in a per-network directory. We need to create it
         # in order to write the Noise private key
@@ -58,7 +58,6 @@ class Miradord(TailableProc):
             f"Watchtower Noise key: {wt_noise_key.hex()}, Stakeholder Noise key: {stk_noise_key}"
         )
 
-        bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest", ".cookie")
         with open(self.conf_file, "w") as f:
             f.write(f"data_dir = '{datadir}'\n")
             f.write("daemon = false\n")
@@ -81,7 +80,7 @@ class Miradord(TailableProc):
             f.write("[bitcoind_config]\n")
             f.write('network = "regtest"\n')
             f.write(f"cookie_path = '{bitcoind_cookie}'\n")
-            f.write(f"addr = '127.0.0.1:{bitcoind.rpcport}'\n")
+            f.write(f"addr = '127.0.0.1:{bitcoind_rpcport}'\n")
             f.write("poll_interval_secs = 5\n")
 
             f.write(f"\n{toml.dumps({'plugins': plugins})}\n")

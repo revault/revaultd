@@ -21,7 +21,8 @@ class Revaultd(TailableProc):
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
-        bitcoind,
+        bitcoind_rpc_port,
+        bitcoind_cookie_path,
         stk_config=None,
         man_config=None,
         wt_process=None,
@@ -51,7 +52,6 @@ class Revaultd(TailableProc):
         with open(noise_secret_file, "wb") as f:
             f.write(noise_priv)
 
-        bitcoind_cookie = os.path.join(bitcoind.bitcoin_dir, "regtest", ".cookie")
         with open(self.conf_file, "w") as f:
             f.write(f"data_dir = '{datadir}'\n")
             f.write("daemon = false\n")
@@ -68,8 +68,8 @@ class Revaultd(TailableProc):
 
             f.write("[bitcoind_config]\n")
             f.write('network = "regtest"\n')
-            f.write(f"cookie_path = '{bitcoind_cookie}'\n")
-            f.write(f"addr = '127.0.0.1:{bitcoind.rpcport}'\n")
+            f.write(f"cookie_path = '{bitcoind_cookie_path}'\n")
+            f.write(f"addr = '127.0.0.1:{bitcoind_rpc_port}'\n")
             f.write("poll_interval_secs = 10\n")
 
             if stk_config is not None:
@@ -167,7 +167,8 @@ class ManagerRevaultd(Revaultd):
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
-        bitcoind,
+        bitcoind_rpc,
+        bitcoind_cookie,
         man_config,
     ):
         """The wallet daemon for a manager.
@@ -182,7 +183,8 @@ class ManagerRevaultd(Revaultd):
             noise_priv,
             coordinator_noise_key,
             coordinator_port,
-            bitcoind,
+            bitcoind_rpc,
+            bitcoind_cookie,
             man_config=man_config,
         )
         assert self.man_keychain is not None
@@ -198,7 +200,8 @@ class StakeholderRevaultd(Revaultd):
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
-        bitcoind,
+        bitcoind_rpc,
+        bitcoind_cookie,
         stk_config,
         wt_process,
     ):
@@ -214,7 +217,8 @@ class StakeholderRevaultd(Revaultd):
             noise_priv,
             coordinator_noise_key,
             coordinator_port,
-            bitcoind,
+            bitcoind_rpc,
+            bitcoind_cookie,
             stk_config,
             man_config=None,
             wt_process=wt_process,
@@ -232,7 +236,8 @@ class StkManRevaultd(Revaultd):
         noise_priv,
         coordinator_noise_key,
         coordinator_port,
-        bitcoind,
+        bitcoind_rpc,
+        bitcoind_cookie,
         stk_config,
         man_config,
         wt_process,
@@ -246,7 +251,8 @@ class StkManRevaultd(Revaultd):
             noise_priv,
             coordinator_noise_key,
             coordinator_port,
-            bitcoind,
+            bitcoind_rpc,
+            bitcoind_cookie,
             stk_config,
             man_config,
             wt_process,

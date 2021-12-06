@@ -2,13 +2,13 @@ import logging
 import pytest
 import os
 
-from bitcoin.core import COIN
 from fixtures import *
 from test_framework.utils import (
     TailableProc,
     POSTGRES_IS_SETUP,
     RpcError,
     wait_for,
+    COIN,
 )
 
 

@@ -132,7 +132,7 @@ def revaultd_stakeholder(bitcoind, directory):
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
     # TODO: implement CPFP
     cpfp_xpubs = [
-        "xpub6FD2XRGE3DAJzb69LXMEAiHfj3U4xVqLExMSV4DJXs5zCntHmtdvpkErLwAMGMnKJN2m3LGgaaAMvBELwNNJDAwWvidNMxVgSqLyoC2y2Kc"
+        "tpubDFaf3f5ukV7mGPGzniLKNdd34AZiwtLPnawjqcGSsmqsx5Yzr7V1yBugayF8nrjZ6GZfeunZ7fzQcMixLEDY6cPozKNg3V9v2nwPZD3xShx"
     ]
     stks_xpubs = [stk.get_xpub() for stk in stks]
     cosigs_keys = []
@@ -176,7 +176,7 @@ def revaultd_manager(bitcoind, directory):
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
     # TODO: implement CPFP
     cpfp_xpubs = [
-        "xpub6FD2XRGE3DAJzb69LXMEAiHfj3U4xVqLExMSV4DJXs5zCntHmtdvpkErLwAMGMnKJN2m3LGgaaAMvBELwNNJDAwWvidNMxVgSqLyoC2y2Kc"
+        "tpubDFaf3f5ukV7mGPGzniLKNdd34AZiwtLPnawjqcGSsmqsx5Yzr7V1yBugayF8nrjZ6GZfeunZ7fzQcMixLEDY6cPozKNg3V9v2nwPZD3xShx"
     ]
     stks_xpubs = [stk.get_xpub() for stk in stks]
     cosigs_keys = []

@@ -96,7 +96,7 @@ class RpcError(ValueError):
 
 class Participant:
     def __init__(self):
-        self.hd = bip32.BIP32.from_seed(os.urandom(32))
+        self.hd = bip32.BIP32.from_seed(os.urandom(32), network="test")
 
 
 class User(Participant):

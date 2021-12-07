@@ -593,6 +593,13 @@ mod tests {
         Config::from_file(Some(path.clone())).expect_err("Parsing invalid config file");
 
         path.pop();
+        path.push("invalid_config_network.toml");
+        assert!(Config::from_file(Some(path.clone()))
+            .unwrap_err()
+            .to_string()
+            .contains("Our bitcoin network is signet but one xpub has network bitcoin"));
+
+        path.pop();
         path.push("valid_config_man.toml");
         let config = Config::from_file(Some(path.clone())).expect("Parsing valid config file");
         RevaultD::from_config(config).expect("Creating state from config");

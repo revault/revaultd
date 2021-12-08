@@ -226,6 +226,36 @@ impl Config {
             })?;
         let stk_xpubs = config.scripts_config.deposit_descriptor.xpubs();
 
+        // Checking the network of the xpubs in the descriptors
+        let mut xpubs = config.scripts_config.deposit_descriptor.xpubs();
+        xpubs.append(&mut config.scripts_config.unvault_descriptor.xpubs());
+        xpubs.append(&mut config.scripts_config.cpfp_descriptor.xpubs());
+
+        let bitcoind_net = config.bitcoind_config.network;
+
+        for xpub in xpubs {
+            if let DescriptorPublicKey::XPub(xpub) = xpub {
+                match bitcoind_net {
+                    Network::Bitcoin => {
+                        if xpub.xkey.network != Network::Bitcoin {
+                            return Err(ConfigError(format!(
+                                "Our bitcoin network is {} but one xpub has network {}",
+                                config.bitcoind_config.network, xpub.xkey.network
+                            )));
+                        }
+                    }
+                    _ => {
+                        if xpub.xkey.network != Network::Testnet {
+                            return Err(ConfigError(format!(
+                                "Our bitcoin network is {} but one xpub has network {}",
+                                config.bitcoind_config.network, xpub.xkey.network
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(ref stk_config) = config.stakeholder_config {
             let our_desc_xpub = DescriptorPublicKey::XPub(DescriptorXKey {
                 origin: None,
@@ -242,7 +272,6 @@ impl Config {
             }
 
             let emer_addr_net = stk_config.emergency_address.address().network;
-            let bitcoind_net = config.bitcoind_config.network;
             // Signet addresses have testnet type
             let signet_special_case =
                 bitcoind_net == Network::Signet && emer_addr_net == Network::Testnet;

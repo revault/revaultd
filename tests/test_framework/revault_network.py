@@ -106,7 +106,7 @@ class RevaultNetwork:
 
         # TODO: implement CPFP
         cpfp_xpubs = [
-            bip32.BIP32.from_seed(os.urandom(32)).get_xpub()
+            bip32.BIP32.from_seed(os.urandom(32), network="test").get_xpub()
             for _ in range(len(mans_keychains))
         ]
         stks_xpubs = [stk.get_xpub() for stk in stks_keychains]

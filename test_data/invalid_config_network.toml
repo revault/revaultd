@@ -1,0 +1,18 @@
+coordinator_host = "127.0.0.1:1"
+coordinator_noise_key = "d91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402"
+
+[scripts_config]
+cpfp_descriptor = "wsh(thresh(1,pk(xpub6BhQvtXJmw6hi2ALFeWMi9m7G8rGterJnMTNRqUm29uvB6dVTELvnEs7hfxyN3JM48FR2oh4t8chsvw7bRRRukkyhqp9WZD4oB9UvxAMpqC/*)))#c6th4le3"
+deposit_descriptor = "wsh(multi(2,xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ/*,xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa/*))#wu049esu"
+unvault_descriptor = "wsh(andor(thresh(1,pk(xpub6De9kLSb2vvujzLqBbQvcnfaNfCGv8vBKNikWsvu3yDL6CpdNEE5CKH9J6TpT6ARFsiAdTpH7iJdA8tgAwNeo46FH9CSTv6CURBJSCPAeUu/*)),and_v(v:multi(2,0332e5c86d0938a83ed80d13c5644ec92fd16b9d7184bb35d6ead8227b4ad47803,02807e5c4f7b228aa9f1aef77effde768356480f5268376644464e714d0205eb1c),older(6)),thresh(2,pkh(xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ/*),a:pkh(xpub6BhQvtXJmw6hksh9rRRfdLjaWjQiNMZWtkM5ebn8QkAgh5na2Un6mCDABwkUmHhPCMYtsM9zHY5jxbQ86ayvjfY8XtavbovB6NcNy8KyQLa/*))))#ef5vfw3p"
+
+[bitcoind_config]
+network = "signet"
+cookie_path = "/home/user/.bitcoin/signet/.cookie"
+addr = "127.0.0.1:8332"
+
+
+[stakeholder_config]
+xpub = "xpub6EKrK11LwLcNyJ4arJnCtxPGAuxSYPX35fMfJcmadvTSue6YZn2W9kEUHy7PFyQsy7zkrbmhxtevsgwsfyCiRBayJdWSTohRQua43jMw9FQ"
+watchtowers = [ { host = "127.0.0.1:1", noise_key = "46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3" } ]
+emergency_address = "tb1qee40l085jthykvuwmkwgu7vf0eu992awna0ktjsngq4jqx5ff3js7d9ndd"

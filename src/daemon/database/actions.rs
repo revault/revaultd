@@ -256,16 +256,15 @@ pub fn db_insert_new_unconfirmed_vault(
     deposit_outpoint: &OutPoint,
     amount: &Amount,
     derivation_index: ChildNumber,
-    received_at: u32,
 ) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         let derivation_index: u32 = derivation_index.into();
         tx.execute(
             "INSERT INTO vaults ( \
                 wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
-                received_at, updated_at, final_txid, emer_shared \
+                funded_at, secured_at, delegated_at, moved_at, final_txid, emer_shared \
             ) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, 0)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL, NULL, NULL, 0)",
             params![
                 wallet_id,
                 VaultStatus::Unconfirmed as u32,
@@ -274,8 +273,6 @@ pub fn db_insert_new_unconfirmed_vault(
                 deposit_outpoint.vout,
                 amount_to_i64(amount),
                 derivation_index,
-                received_at,
-                received_at,
             ],
         )
         .map_err(|e| DatabaseError(format!("Inserting vault: {}", e.to_string())))?;
@@ -314,6 +311,7 @@ pub fn db_confirm_deposit(
     db_path: &Path,
     outpoint: &OutPoint,
     blockheight: u32,
+    blocktime: u32,
     unvault_tx: &UnvaultTransaction,
     cancel_tx: &CancelTransaction,
     emer_tx: Option<&EmergencyTransaction>,
@@ -331,8 +329,8 @@ pub fn db_confirm_deposit(
     db_exec(db_path, |db_tx| {
         db_tx
             .execute(
-                "UPDATE vaults SET status = (?1), blockheight = (?2), updated_at = strftime('%s','now') WHERE id = (?3)",
-                params![VaultStatus::Funded as u32, blockheight, vault_id,],
+                "UPDATE vaults SET status = (?1), blockheight = (?2), funded_at = (?3) WHERE id = (?4)",
+                params![VaultStatus::Funded as u32, blockheight, blocktime, vault_id,],
             )
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
 
@@ -376,7 +374,8 @@ pub fn db_unconfirm_deposit_dbtx(
         params![vault_id],
     )?;
     db_tx.execute(
-        "UPDATE vaults SET status = (?1), blockheight = (?2), updated_at = strftime('%s','now') \
+        "UPDATE vaults SET status = (?1), blockheight = (?2), \
+         funded_at = NULL, secured_at = NULL, delegated_at = NULL \
          WHERE id = (?3)",
         params![VaultStatus::Unconfirmed as u32, 0, vault_id],
     )?;
@@ -384,13 +383,23 @@ pub fn db_unconfirm_deposit_dbtx(
     Ok(())
 }
 
+/// Update the vault status and enforce that moved_at is NULL
 fn dbtx_downgrade(
     db_tx: &rusqlite::Transaction,
     vault_id: u32,
     status: VaultStatus,
 ) -> Result<(), DatabaseError> {
+    // Because the status is downgraded, status cannot be one of the statuses
+    // of the end of a vault lifecycle.
+    assert!(!matches!(
+        status,
+        VaultStatus::Canceled
+            | VaultStatus::Spent
+            | VaultStatus::UnvaultEmergencyVaulted
+            | VaultStatus::EmergencyVaulted
+    ));
     db_tx.execute(
-        "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') WHERE id = (?2)",
+        "UPDATE vaults SET status = (?1), moved_at = NULL WHERE id = (?2)",
         params![status as u32, vault_id],
     )?;
 
@@ -437,14 +446,26 @@ pub fn db_unconfirm_unemer_dbtx(
     dbtx_downgrade(db_tx, vault_id, VaultStatus::UnvaultEmergencyVaulting)
 }
 
+/// Update vault status from its unvault transaction ID.
 fn db_status_from_unvault_txid(
     db_path: &Path,
     unvault_txid: &Txid,
     status: VaultStatus,
 ) -> Result<(), DatabaseError> {
+    // Theses statuses cannot be set without their respective timestamps.
+    assert!(!matches!(
+        status,
+        VaultStatus::Funded
+            | VaultStatus::Secured
+            | VaultStatus::Active
+            | VaultStatus::Spent
+            | VaultStatus::Canceled
+            | VaultStatus::EmergencyVaulted
+            | VaultStatus::UnvaultEmergencyVaulted
+    ));
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+            "UPDATE vaults SET status = (?1) \
              WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?2))",
             params![status as u32, unvault_txid.to_vec(),],
         )
@@ -460,9 +481,14 @@ fn db_status_and_final_txid_from_unvault_txid(
     status: VaultStatus,
     final_txid: &Txid,
 ) -> Result<(), DatabaseError> {
+    // Since the final txid is given, status can only be spending/spent or canceling/canceled.
+    assert!(matches!(
+        status,
+        VaultStatus::Canceling | VaultStatus::Canceled | VaultStatus::Spending | VaultStatus::Spent
+    ));
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now'), final_txid = (?2) \
+            "UPDATE vaults SET status = (?1), final_txid = (?2) \
              WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?3))",
             params![status as u32, final_txid.to_vec(), unvault_txid.to_vec(),],
         )
@@ -515,48 +541,90 @@ pub fn db_emer_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), Databa
     db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
 }
 
-fn db_mark_vault_as(
+/// Update vault status and moved_at timestamp with the given status and blocktime.
+fn db_mark_vault_as_moved(
     db_path: &Path,
     vault_id: u32,
     status: VaultStatus,
+    blocktime: u32,
 ) -> Result<(), DatabaseError> {
+    // Because vault is moved and last transaction is confirmed, status must match the statuses of
+    // the end of the vault lifecycle.
+    assert!(matches!(
+        status,
+        VaultStatus::Canceled
+            | VaultStatus::Spent
+            | VaultStatus::EmergencyVaulted
+            | VaultStatus::UnvaultEmergencyVaulted
+    ));
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
-             WHERE vaults.id = (?2)",
-            params![status as u32, vault_id,],
-        )
-        .map_err(|e| DatabaseError(format!("Updating vault to '{}': {}", status, e.to_string())))?;
+            "UPDATE vaults SET status = (?1), moved_at = (?2) \
+             WHERE vaults.id = (?3)",
+            params![status as u32, blocktime, vault_id],
+        )?;
 
         Ok(())
     })
 }
 
-pub fn db_mark_spent_unvault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
-    db_mark_vault_as(&db_path, vault_id, VaultStatus::Spent)
+/// Update vault status to `spent` and set moved_at with given blocktime.
+pub fn db_mark_spent_unvault(
+    db_path: &Path,
+    vault_id: u32,
+    blocktime: u32,
+) -> Result<(), DatabaseError> {
+    db_mark_vault_as_moved(&db_path, vault_id, VaultStatus::Spent, blocktime)
 }
 
-pub fn db_mark_canceled_unvault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
-    db_mark_vault_as(&db_path, vault_id, VaultStatus::Canceled)
+/// Update vault status to `canceled` and set moved_at with given blocktime.
+pub fn db_mark_canceled_unvault(
+    db_path: &Path,
+    vault_id: u32,
+    blocktime: u32,
+) -> Result<(), DatabaseError> {
+    db_mark_vault_as_moved(&db_path, vault_id, VaultStatus::Canceled, blocktime)
 }
 
-pub fn db_mark_emergencied_unvault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
-    db_mark_vault_as(&db_path, vault_id, VaultStatus::UnvaultEmergencyVaulted)
+/// Update vault status to `emergencied` and set moved_at with given blocktime.
+pub fn db_mark_emergencied_unvault(
+    db_path: &Path,
+    vault_id: u32,
+    blocktime: u32,
+) -> Result<(), DatabaseError> {
+    db_mark_vault_as_moved(
+        &db_path,
+        vault_id,
+        VaultStatus::UnvaultEmergencyVaulted,
+        blocktime,
+    )
 }
 
 pub fn db_mark_emergencying_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
-    db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulting)
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET status = (?1) \
+             WHERE vaults.id = (?2)",
+            params![VaultStatus::EmergencyVaulting as u32, vault_id],
+        )?;
+
+        Ok(())
+    })
 }
 
-pub fn db_mark_emergencied_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
-    db_mark_vault_as(&db_path, vault_id, VaultStatus::EmergencyVaulted)
+pub fn db_mark_emergencied_vault(
+    db_path: &Path,
+    vault_id: u32,
+    blocktime: u32,
+) -> Result<(), DatabaseError> {
+    db_mark_vault_as_moved(&db_path, vault_id, VaultStatus::EmergencyVaulted, blocktime)
 }
 
 /// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.
 pub fn db_mark_securing_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+            "UPDATE vaults SET status = (?1) \
              WHERE vaults.id = (?2) AND vaults.status = (?3)",
             params![
                 VaultStatus::Securing as u32,
@@ -574,7 +642,7 @@ pub fn db_mark_securing_vault(db_path: &Path, vault_id: u32) -> Result<(), Datab
 pub fn db_mark_activating_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
     db_exec(db_path, |tx| {
         tx.execute(
-            "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+            "UPDATE vaults SET status = (?1) \
              WHERE vaults.id = (?2) AND vaults.status = (?3)",
             params![
                 VaultStatus::Activating as u32,
@@ -679,6 +747,8 @@ pub fn db_update_presigned_txs(
     })
 }
 
+/// Update vault status to active or secured if the vault presigned_transactions are fully signed
+/// and the associated timestamps secured_at and delegated_at in the case they are null.
 pub fn db_update_vault_status(db_path: &Path, db_vault: &DbVault) -> Result<(), DatabaseError> {
     assert!(matches!(
         db_vault.status,
@@ -713,7 +783,7 @@ pub fn db_update_vault_status(db_path: &Path, db_vault: &DbVault) -> Result<(), 
         if all_signed {
             db_tx.execute(
                 "UPDATE vaults \
-                 SET status = (?1), updated_at = strftime('%s','now') \
+                 SET status = (?1), secured_at = ifnull(secured_at, strftime('%s','now')), delegated_at = strftime('%s','now') \
                  WHERE vaults.id = (?2)",
                 params![VaultStatus::Active as u32, db_vault.id],
             )?;
@@ -725,7 +795,7 @@ pub fn db_update_vault_status(db_path: &Path, db_vault: &DbVault) -> Result<(), 
         {
             db_tx.execute(
                 "UPDATE vaults \
-                 SET status = (?1), updated_at = strftime('%s','now') \
+                 SET status = (?1), secured_at = strftime('%s','now') \
                  WHERE vaults.id = (?2)",
                 params![VaultStatus::Secured as u32, db_vault.id],
             )?;
@@ -847,6 +917,26 @@ mod test {
 
     use std::{collections, fs, str::FromStr};
 
+    /// Force the status in database for a given vault.
+    fn db_mark_vault_as(
+        db_path: &Path,
+        vault_id: u32,
+        status: VaultStatus,
+    ) -> Result<(), DatabaseError> {
+        db_exec(db_path, |tx| {
+            tx.execute(
+                "UPDATE vaults SET status = (?1) \
+             WHERE vaults.id = (?2)",
+                params![status as u32, vault_id,],
+            )
+            .map_err(|e| {
+                DatabaseError(format!("Updating vault to '{}': {}", status, e.to_string()))
+            })?;
+
+            Ok(())
+        })
+    }
+
     fn create_keys(
         ctx: &secp256k1::Secp256k1<secp256k1::All>,
         secret_slice: &[u8],
@@ -948,7 +1038,6 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(123456);
-        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(3);
         db_insert_new_unconfirmed_vault(
             &db_path,
@@ -956,7 +1045,6 @@ mod test {
             &first_deposit_outpoint,
             &amount,
             derivation_index,
-            received_at,
         )
         .unwrap();
 
@@ -966,7 +1054,6 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(456789);
-        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(12);
         db_insert_new_unconfirmed_vault(
             &db_path,
@@ -974,7 +1061,6 @@ mod test {
             &second_deposit_outpoint,
             &amount,
             derivation_index,
-            received_at,
         )
         .unwrap();
 
@@ -984,7 +1070,6 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(428000);
-        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(15);
         db_insert_new_unconfirmed_vault(
             &db_path,
@@ -992,7 +1077,6 @@ mod test {
             &third_deposit_outpoint,
             &amount,
             derivation_index,
-            received_at,
         )
         .unwrap();
 
@@ -1004,7 +1088,6 @@ mod test {
             &third_deposit_outpoint,
             &amount,
             derivation_index,
-            received_at,
         )
         .unwrap_err();
 
@@ -1022,7 +1105,7 @@ mod test {
         // Now if we mark the first as being unvaulted we'll only fetch the two last ones
         db_exec(&db_path, |tx| {
             tx.execute(
-                "UPDATE vaults SET status = (?1), updated_at = strftime('%s','now') \
+                "UPDATE vaults SET status = (?1) \
                  WHERE deposit_txid = (?2) AND deposit_vout = (?3) ",
                 params![
                     VaultStatus::Unvaulting as u32,
@@ -1067,17 +1150,9 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(123456);
-        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(33334);
-        db_insert_new_unconfirmed_vault(
-            &db_path,
-            wallet_id,
-            &outpoint,
-            &amount,
-            derivation_index,
-            received_at,
-        )
-        .unwrap();
+        db_insert_new_unconfirmed_vault(&db_path, wallet_id, &outpoint, &amount, derivation_index)
+            .unwrap();
         let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
 
         // We can store unsigned transactions
@@ -1087,10 +1162,12 @@ mod test {
         let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAcRWqIPG85zGye1nuRlbwWKkko4g91Vd/508Ff6vKklpAAAAAAD9////AkANAwAAAAAAIgAgsT7u0Lo8o2WEfxS1nXWtQzsdJTMJnnOC5fwg0nYPvpowdQAAAAAAACIAIAx0DegrXfBr4D0XdetrGgAT2Q3AZANYm0rJL8L/Epp/AAAAAAABASuIlAMAAAAAACIAIGaHQ5brMNbT+WCtfE/WPW8gkmMir5NXAKRsQZAs9cT2AQMEAQAAAAEFR1IhAwYSJ4FeXdf/XPw6lFHpeMFeGvh88f+rWN2VtnaW75TNIQOn5Sg6nytLwT5FT9z5KmV/LMN1pZRsqbworUMwRdRN0lKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGqIQN0Nj5YtWlqdUtE4VzrCy9fIUbgVSBiSedOJzYY9A0jLqxRh2R2qRQ2UoYTYXFkzWxHTxQLsYl/NGpeVIisa3apFChMb7eFLoSVfMHD7bU9EO0Qn2wqiKxsk1KHZ1IhA2KobMJZNs2+adObuXpg1Ny2DOg/nFo5bqGJdJZWSgKUIQL/DSNFGVoHc5rlzQ4+tEDFvETWR1/NXbg5axpIIYuAhVKvAtY0smgiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhA3Q2Pli1aWp1S0ThXOsLL18hRuBVIGJJ504nNhj0DSMurFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
 
         let blockheight = 700000;
+        let blocktime = 700000;
         db_confirm_deposit(
             &db_path,
             &outpoint,
             blockheight,
+            blocktime,
             &fresh_unvault_tx,
             &fresh_cancel_tx,
             Some(&fresh_emer_tx),
@@ -1282,12 +1359,20 @@ mod test {
         assert!(db_unvault_transaction(&db_path, db_vault.id)
             .unwrap()
             .is_none());
+        let db_vault = db_vault_by_deposit(&db_path, &db_vault.deposit_outpoint)
+            .unwrap()
+            .unwrap();
+        assert_eq!(db_vault.status, VaultStatus::Unconfirmed);
+        assert!(db_vault.delegated_at.is_none());
+        assert!(db_vault.secured_at.is_none());
+        assert!(db_vault.funded_at.is_none());
 
         // And re-added of course
         db_confirm_deposit(
             &db_path,
             &outpoint,
             blockheight,
+            blocktime,
             &fresh_unvault_tx,
             &fresh_cancel_tx,
             Some(&fresh_emer_tx),
@@ -1299,6 +1384,7 @@ mod test {
             &db_path,
             &outpoint,
             blockheight,
+            blocktime,
             &fresh_unvault_tx,
             &fresh_cancel_tx,
             Some(&fresh_emer_tx),
@@ -1378,27 +1464,21 @@ mod test {
         )
         .unwrap();
         let amount = Amount::from_sat(123456);
-        let received_at = 1615297315;
         let derivation_index = ChildNumber::from(33334);
-        db_insert_new_unconfirmed_vault(
-            &db_path,
-            wallet_id,
-            &outpoint,
-            &amount,
-            derivation_index,
-            received_at,
-        )
-        .unwrap();
+        db_insert_new_unconfirmed_vault(&db_path, wallet_id, &outpoint, &amount, derivation_index)
+            .unwrap();
         let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
 
         let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQFHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4iAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
         let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAT7KJ+fkvbKBDobFTsm31LqtMUfhTiR5tWA5XJA9oYgOAAAAAAD9////AkANAwAAAAAAIgAgbMJH4U4sOCdd1R9PVUuEbmS4bkbnNNlJaqxZBqXHwCcwdQAAAAAAACIAIM8vNQyMFHWpzTmNSefLOTf0spivub9JuegPqYdx0rLvAAAAAAABASuIlAMAAAAAACIAIONmt9fso2OE03OxwV4EkzSucRgHSh3ylMy/KcBayrRaAQMEAQAAAAEFR1IhAum/3N5NY9BZnqXIJxEBNzNEhHwCOY4WQ5xdZZ9XN4+dIQNwiQrXHbeULZ18BN3FOfnYK48NrsVzMDAXVEiu7HfvylKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGqIQOxOjPIG6CKHguqGMBsMRvG/RIiZzCbu7GDMDGmmvH6FqxRh2R2qRSrdyIjb58/y1mAP+ccckOFvfAe04isa3apFAexihzQF+l8AqKa+Y/5XVddSavViKxsk1KHZ1IhAwOygpbYC9yckzxzYFmjVTs4cZzaRTJ97nCHwbFZ6PCaIQLBejnrZMZEk984LSigxiITRc96BSWvsT2wJVMCkLKSe1KvAlAFsmgiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhA7E6M8gboIoeC6oYwGwxG8b9EiJnMJu7sYMwMaaa8foWrFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
 
         let blockheight = 2300000;
+        let blocktime = 2300000;
         db_confirm_deposit(
             &db_path,
             &outpoint,
             blockheight,
+            blocktime,
             &fresh_unvault_tx,
             &fresh_cancel_tx,
             None,
@@ -1465,22 +1545,15 @@ mod test {
         .unwrap();
         let amount = Amount::from_sat(612345);
         let derivation_index = ChildNumber::from(349874);
-        let received_at = 17890233;
-        db_insert_new_unconfirmed_vault(
-            &db_path,
-            wallet_id,
-            &outpoint,
-            &amount,
-            derivation_index,
-            received_at,
-        )
-        .unwrap();
+        db_insert_new_unconfirmed_vault(&db_path, wallet_id, &outpoint, &amount, derivation_index)
+            .unwrap();
         let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
 
         // Have the Unvault tx fully signed
         db_confirm_deposit(
             &db_path,
             &outpoint,
+            9,
             9,
             &fresh_unvault_tx,
             &fresh_cancel_tx,
@@ -1558,20 +1631,19 @@ mod test {
         .unwrap();
         let amount = Amount::from_sat(112245);
         let derivation_index = ChildNumber::from(643874);
-        let received_at = 2615297315;
         db_insert_new_unconfirmed_vault(
             &db_path,
             wallet_id,
             &outpoint_b,
             &amount,
             derivation_index,
-            received_at,
         )
         .unwrap();
         let db_vault = db_vault_by_deposit(&db_path, &outpoint_b).unwrap().unwrap();
         db_confirm_deposit(
             &db_path,
             &outpoint_b,
+            9,
             9,
             &fresh_unvault_tx,
             &cancel_tx,
@@ -1707,5 +1779,111 @@ mod test {
         .unwrap();
         assert!(db_spend_transaction(&db_path, &txid_b).unwrap().is_none());
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
+    }
+
+    #[test]
+    fn test_db_update_vault_status() {
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let db_path = revaultd.db_file();
+
+        setup_db(&mut revaultd).unwrap();
+
+        let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAAfihVFC0qjTyRXe/NFNqD5H41QqyRbKs6hABmmmmPYFcAAAAAAD9////ARQJVQEAAAAAIgAgkElks+0BcARwPPXA93nn7gE03Jm7+3obqqKLM5wa7OsAAAAAAAEBK7hEVQEAAAAAIgAgbsu/Z4HxJp0NLrRFQTCKGQckU0lArG3qqpSIVinrf8UBAwSBAAAAAQVhIQPAKvZof/JMq6C/mAv3iRqN76eVO6RzNYLzz9XqXigOjqxRh2R2qRTSH6G2Ru92gsQ8Zo4dNgTsvMy2L4isa3apFLP0U8urvhbV0H973pOSBuRg+k7xiKxsk1KHZ1iyaCIGA7gRH0o4M9yQoqitp18e5GAOLRMFjGIarmzri8HelKrGCNZ9f+kBAAAAIgYDvlsnkvqDNc+mSaKuVISQGu8YaPxvbflKJN3ee4NJh2AIcqlfIgEAAAAiBgPAKvZof/JMq6C/mAv3iRqN76eVO6RzNYLzz9XqXigOjgglHWAJAQAAAAAiAgO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxgjWfX/pAQAAACICA75bJ5L6gzXPpkmirlSEkBrvGGj8b235SiTd3nuDSYdgCHKpXyIBAAAAAA==").unwrap();
+        let fresh_emergency_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAXsLEnDEk/kajuPbB1tQ4i6kfExo7HA6I3xHgmJWRSLaAAAAAAD9////ATgcVQEAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDMVQEAAAAAIgAgkElks+0BcARwPPXA93nn7gE03Jm7+3obqqKLM5wa7OsBAwSBAAAAAQVHUiEDuBEfSjgz3JCiqK2nXx7kYA4tEwWMYhqubOuLwd6UqsYhA75bJ5L6gzXPpkmirlSEkBrvGGj8b235SiTd3nuDSYdgUq4iBgO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxgjWfX/pAQAAACIGA75bJ5L6gzXPpkmirlSEkBrvGGj8b235SiTd3nuDSYdgCHKpXyIBAAAAAAA=").unwrap();
+        let fresh_unvaultemergency_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAfihVFC0qjTyRXe/NFNqD5H41QqyRbKs6hABmmmmPYFcAAAAAAD9////AWZ5VAEAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK7hEVQEAAAAAIgAgbsu/Z4HxJp0NLrRFQTCKGQckU0lArG3qqpSIVinrf8UBAwSBAAAAAQVhIQPAKvZof/JMq6C/mAv3iRqN76eVO6RzNYLzz9XqXigOjqxRh2R2qRTSH6G2Ru92gsQ8Zo4dNgTsvMy2L4isa3apFLP0U8urvhbV0H973pOSBuRg+k7xiKxsk1KHZ1iyaCIGA7gRH0o4M9yQoqitp18e5GAOLRMFjGIarmzri8HelKrGCNZ9f+kBAAAAIgYDvlsnkvqDNc+mSaKuVISQGu8YaPxvbflKJN3ee4NJh2AIcqlfIgEAAAAiBgPAKvZof/JMq6C/mAv3iRqN76eVO6RzNYLzz9XqXigOjgglHWAJAQAAAAAA").unwrap();
+        let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAXsLEnDEk/kajuPbB1tQ4i6kfExo7HA6I3xHgmJWRSLaAAAAAAD9////ArhEVQEAAAAAIgAgbsu/Z4HxJp0NLrRFQTCKGQckU0lArG3qqpSIVinrf8UwdQAAAAAAACIAILzK9vum6/lhgKe5jxw305+0hoD0nTIyaO2YhNSGPZYbAAAAAAABASsAzFUBAAAAACIAIJBJZLPtAXAEcDz1wPd55+4BNNyZu/t6G6qiizOcGuzrAQMEAQAAAAEFR1IhA7gRH0o4M9yQoqitp18e5GAOLRMFjGIarmzri8HelKrGIQO+WyeS+oM1z6ZJoq5UhJAa7xho/G9t+Uok3d57g0mHYFKuIgYDuBEfSjgz3JCiqK2nXx7kYA4tEwWMYhqubOuLwd6UqsYI1n1/6QEAAAAiBgO+WyeS+oM1z6ZJoq5UhJAa7xho/G9t+Uok3d57g0mHYAhyqV8iAQAAAAAiAgO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxgjWfX/pAQAAACICA75bJ5L6gzXPpkmirlSEkBrvGGj8b235SiTd3nuDSYdgCHKpXyIBAAAAIgIDwCr2aH/yTKugv5gL94kaje+nlTukczWC88/V6l4oDo4IJR1gCQEAAAAAIgICpNYvWPZyxsUYf7xyXokNYDytbr1bx10GK6jRxJ19+r4I+93szQEAAAAA").unwrap();
+
+        let fullysigned_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAAfihVFC0qjTyRXe/NFNqD5H41QqyRbKs6hABmmmmPYFcAAAAAAD9////ARQJVQEAAAAAIgAgkElks+0BcARwPPXA93nn7gE03Jm7+3obqqKLM5wa7OsAAAAAAAEBK7hEVQEAAAAAIgAgbsu/Z4HxJp0NLrRFQTCKGQckU0lArG3qqpSIVinrf8UiAgO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxkcwRAIgB/3p+T4lseNEnwmN7iohmyMUiIUsDDnGU58iftbc6lcCIDTeEOYzwqyCkU65rRqQ45q6DHsL/M8SxvTS87vaaMQhgSICA75bJ5L6gzXPpkmirlSEkBrvGGj8b235SiTd3nuDSYdgSDBFAiEA039gXXzN9fjgENN6EOP8LE9HwDxHcJSVRpCCw5DJUKoCIDdwWFSHtJR/3gnubCtUNPF2dJzinCsVFjW2MfQfjYDGgQEDBIEAAAABBWEhA8Aq9mh/8kyroL+YC/eJGo3vp5U7pHM1gvPP1epeKA6OrFGHZHapFNIfobZG73aCxDxmjh02BOy8zLYviKxrdqkUs/RTy6u+FtXQf3vek5IG5GD6TvGIrGyTUodnWLJoIgYDuBEfSjgz3JCiqK2nXx7kYA4tEwWMYhqubOuLwd6UqsYI1n1/6QEAAAAiBgO+WyeS+oM1z6ZJoq5UhJAa7xho/G9t+Uok3d57g0mHYAhyqV8iAQAAACIGA8Aq9mh/8kyroL+YC/eJGo3vp5U7pHM1gvPP1epeKA6OCCUdYAkBAAAAACICA7gRH0o4M9yQoqitp18e5GAOLRMFjGIarmzri8HelKrGCNZ9f+kBAAAAIgIDvlsnkvqDNc+mSaKuVISQGu8YaPxvbflKJN3ee4NJh2AIcqlfIgEAAAAA").unwrap();
+        let fullysigned_emergency_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAXsLEnDEk/kajuPbB1tQ4i6kfExo7HA6I3xHgmJWRSLaAAAAAAD9////ATgcVQEAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDMVQEAAAAAIgAgkElks+0BcARwPPXA93nn7gE03Jm7+3obqqKLM5wa7OsiAgO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxkcwRAIgKDAJyH5ixlG6HgsUtvWgYbpRv6vuthbwjaIc6nxa220CIDfUJJe5RgnmPgWXnQdjiMp/nLNETh1fbi2KV3u6YxRbgSICA75bJ5L6gzXPpkmirlSEkBrvGGj8b235SiTd3nuDSYdgSDBFAiEAyFE0qIblxbDV3ocAUcbrLEvIMXi/c5H2Z+PbkGA43xUCIDagAFsbwHijNkp7QFMkr2M7YVhXODcJ0JO6mzznRcWegQEDBIEAAAABBUdSIQO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxiEDvlsnkvqDNc+mSaKuVISQGu8YaPxvbflKJN3ee4NJh2BSriIGA7gRH0o4M9yQoqitp18e5GAOLRMFjGIarmzri8HelKrGCNZ9f+kBAAAAIgYDvlsnkvqDNc+mSaKuVISQGu8YaPxvbflKJN3ee4NJh2AIcqlfIgEAAAAAAA==").unwrap();
+        let fullysigned_unvaultemergency_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAfihVFC0qjTyRXe/NFNqD5H41QqyRbKs6hABmmmmPYFcAAAAAAD9////AWZ5VAEAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK7hEVQEAAAAAIgAgbsu/Z4HxJp0NLrRFQTCKGQckU0lArG3qqpSIVinrf8UiAgO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxkgwRQIhAKpNCciNFBhFAnGRgOwnSQWmXXd+MGECPxqPyDU795EzAiBkLV2iCdA5S0ggYIYiANaXsRrZCxHRiRdBGQaDgWyviYEiAgO+WyeS+oM1z6ZJoq5UhJAa7xho/G9t+Uok3d57g0mHYEcwRAIgYvx1ukm7/2LGEgUb2JrZouzbNi9Otlqdf9FhKbDaZiICIDtx72rpajYo/xtLQGXUrFmoogOOasxEZztmNZ0x0Gk3gQEDBIEAAAABBWEhA8Aq9mh/8kyroL+YC/eJGo3vp5U7pHM1gvPP1epeKA6OrFGHZHapFNIfobZG73aCxDxmjh02BOy8zLYviKxrdqkUs/RTy6u+FtXQf3vek5IG5GD6TvGIrGyTUodnWLJoIgYDuBEfSjgz3JCiqK2nXx7kYA4tEwWMYhqubOuLwd6UqsYI1n1/6QEAAAAiBgO+WyeS+oM1z6ZJoq5UhJAa7xho/G9t+Uok3d57g0mHYAhyqV8iAQAAACIGA8Aq9mh/8kyroL+YC/eJGo3vp5U7pHM1gvPP1epeKA6OCCUdYAkBAAAAAAA=").unwrap();
+        let fullysigned_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAXsLEnDEk/kajuPbB1tQ4i6kfExo7HA6I3xHgmJWRSLaAAAAAAD9////ArhEVQEAAAAAIgAgbsu/Z4HxJp0NLrRFQTCKGQckU0lArG3qqpSIVinrf8UwdQAAAAAAACIAILzK9vum6/lhgKe5jxw305+0hoD0nTIyaO2YhNSGPZYbAAAAAAABASsAzFUBAAAAACIAIJBJZLPtAXAEcDz1wPd55+4BNNyZu/t6G6qiizOcGuzrIgIDuBEfSjgz3JCiqK2nXx7kYA4tEwWMYhqubOuLwd6UqsZHMEQCICc3av7U4xVy0x35E2BdzIDjR1+F/0NVdCwnkcmNGgNCAiB5pHElbUup/2JRAopn/gQuLGt+uCHhFQy01IOrsje3ZwEiAgO+WyeS+oM1z6ZJoq5UhJAa7xho/G9t+Uok3d57g0mHYEcwRAIgBj4yp1mne9ibY3k6pdpIrdbdAG+MZuOuBdV9Nanzl7cCIFtfEBSqRcruzwGPK0KniC7buW4ow9o6+ELAeH83ZuQDAQEDBAEAAAABBUdSIQO4ER9KODPckKKoradfHuRgDi0TBYxiGq5s64vB3pSqxiEDvlsnkvqDNc+mSaKuVISQGu8YaPxvbflKJN3ee4NJh2BSriIGA7gRH0o4M9yQoqitp18e5GAOLRMFjGIarmzri8HelKrGCNZ9f+kBAAAAIgYDvlsnkvqDNc+mSaKuVISQGu8YaPxvbflKJN3ee4NJh2AIcqlfIgEAAAAAIgIDuBEfSjgz3JCiqK2nXx7kYA4tEwWMYhqubOuLwd6UqsYI1n1/6QEAAAAiAgO+WyeS+oM1z6ZJoq5UhJAa7xho/G9t+Uok3d57g0mHYAhyqV8iAQAAACICA8Aq9mh/8kyroL+YC/eJGo3vp5U7pHM1gvPP1epeKA6OCCUdYAkBAAAAACICAqTWL1j2csbFGH+8cl6JDWA8rW69W8ddBiuo0cSdffq+CPvd7M0BAAAAAA==").unwrap();
+
+        let wallet_id = 1;
+        let outpoint_b = OutPoint::from_str(
+            "da2245566282477c233a70ec684c7ca42ee2505b07dbe38e1af993c470120b7b:0",
+        )
+        .unwrap();
+        let amount = Amount::from_sat(22400000);
+        let derivation_index = ChildNumber::from(1);
+        db_insert_new_unconfirmed_vault(
+            &db_path,
+            wallet_id,
+            &outpoint_b,
+            &amount,
+            derivation_index,
+        )
+        .unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &outpoint_b).unwrap().unwrap();
+        db_confirm_deposit(
+            &db_path,
+            &outpoint_b,
+            9,
+            9,
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            Some(&fresh_emergency_tx),
+            Some(&fresh_unvaultemergency_tx),
+        )
+        .unwrap();
+
+        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
+        update_presigned_tx(
+            &db_path,
+            &db_vault,
+            stored_cancel_tx,
+            &fullysigned_cancel_tx.psbt().inputs[0].partial_sigs,
+            &revaultd.secp_ctx,
+        );
+
+        let stored_emergency_tx = db_emer_transaction(&db_path, db_vault.id).unwrap().unwrap();
+        update_presigned_tx(
+            &db_path,
+            &db_vault,
+            stored_emergency_tx,
+            &fullysigned_emergency_tx.psbt().inputs[0].partial_sigs,
+            &revaultd.secp_ctx,
+        );
+
+        let stored_unvaultemergency_tx = db_unvault_emer_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
+        update_presigned_tx(
+            &db_path,
+            &db_vault,
+            stored_unvaultemergency_tx,
+            &fullysigned_unvaultemergency_tx.psbt().inputs[0].partial_sigs,
+            &revaultd.secp_ctx,
+        );
+
+        db_update_vault_status(&db_path, &db_vault).unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &db_vault.deposit_outpoint)
+            .unwrap()
+            .unwrap();
+        assert_eq!(db_vault.status, VaultStatus::Secured);
+        assert!(db_vault.funded_at.is_some());
+        assert!(db_vault.secured_at.is_some());
+        assert!(db_vault.delegated_at.is_none());
+
+        let stored_unvault_tx = db_unvault_transaction(&db_path, db_vault.id)
+            .unwrap()
+            .unwrap();
+        update_presigned_tx(
+            &db_path,
+            &db_vault,
+            stored_unvault_tx,
+            &fullysigned_unvault_tx.psbt().inputs[0].partial_sigs,
+            &revaultd.secp_ctx,
+        );
+        db_update_vault_status(&db_path, &db_vault).unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &db_vault.deposit_outpoint)
+            .unwrap()
+            .unwrap();
+        assert_eq!(db_vault.status, VaultStatus::Active);
+        assert!(db_vault.funded_at.is_some());
+        assert!(db_vault.secured_at.is_some());
+        assert!(db_vault.delegated_at.is_some());
     }
 }

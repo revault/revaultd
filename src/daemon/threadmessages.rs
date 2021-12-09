@@ -1,4 +1,4 @@
-use crate::daemon::bitcoind::BitcoindError;
+use crate::daemon::bitcoind::{interface::WalletTransaction, BitcoindError};
 use revault_tx::bitcoin::{Transaction as BitcoinTransaction, Txid};
 
 use std::sync::mpsc::{sync_channel, Sender, SyncSender};
@@ -19,14 +19,6 @@ pub enum BitcoindMessageOut {
 #[derive(Debug)]
 pub enum SigFetcherMessageOut {
     Shutdown,
-}
-
-#[derive(Debug)]
-pub struct WalletTransaction {
-    pub hex: String,
-    // None if unconfirmed
-    pub blockheight: Option<u32>,
-    pub received_time: u32,
 }
 
 /// Interface to communicate with bitcoind client thread.

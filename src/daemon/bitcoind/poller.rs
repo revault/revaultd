@@ -90,8 +90,9 @@ fn maybe_confirm_spend(
     db_vault: &DbVault,
     spend_txid: &Txid,
 ) -> Result<bool, BitcoindError> {
-    if let (_, Some(height), _) = bitcoind.get_wallet_transaction(spend_txid)? {
-        db_mark_spent_unvault(&db_path, db_vault.id)?;
+    let tx = bitcoind.get_wallet_transaction(spend_txid)?;
+    if let (Some(height), Some(time)) = (tx.blockheight, tx.blocktime) {
+        db_mark_spent_unvault(&db_path, db_vault.id, time)?;
         log::debug!(
             "Spend tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &spend_txid,
@@ -215,8 +216,9 @@ fn maybe_confirm_cancel(
     db_vault: &DbVault,
     cancel_txid: &Txid,
 ) -> Result<bool, BitcoindError> {
-    if let (_, Some(height), _) = bitcoind.get_wallet_transaction(cancel_txid)? {
-        db_mark_canceled_unvault(&db_path, db_vault.id)?;
+    let tx = bitcoind.get_wallet_transaction(cancel_txid)?;
+    if let (Some(height), Some(time)) = (tx.blockheight, tx.blocktime) {
+        db_mark_canceled_unvault(&db_path, db_vault.id, time)?;
         log::debug!(
             "Cancel tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &cancel_txid,
@@ -271,8 +273,9 @@ fn maybe_confirm_unemer(
     db_vault: &DbVault,
     unemer_txid: &Txid,
 ) -> Result<bool, BitcoindError> {
-    if let (_, Some(height), _) = bitcoind.get_wallet_transaction(unemer_txid)? {
-        db_mark_emergencied_unvault(&db_path, db_vault.id)?;
+    let transaction = bitcoind.get_wallet_transaction(unemer_txid)?;
+    if let (Some(height), Some(blocktime)) = (transaction.blockheight, transaction.blocktime) {
+        db_mark_emergencied_unvault(&db_path, db_vault.id, blocktime)?;
         log::warn!(
             "UnvaultEmergency tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &unemer_txid,
@@ -333,8 +336,9 @@ fn maybe_confirm_emer(
     db_vault: &DbVault,
     emer_txid: &Txid,
 ) -> Result<bool, BitcoindError> {
-    if let (_, Some(height), _) = bitcoind.get_wallet_transaction(emer_txid)? {
-        db_mark_emergencied_vault(&db_path, db_vault.id)?;
+    let transaction = bitcoind.get_wallet_transaction(emer_txid)?;
+    if let (Some(height), Some(blocktime)) = (transaction.blockheight, transaction.blocktime) {
+        db_mark_emergencied_vault(&db_path, db_vault.id, blocktime)?;
         log::warn!(
             "Emergency tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &emer_txid,
@@ -622,8 +626,10 @@ fn comprehensive_rescan(
         }
 
         // bitcoind's wallet will always keep track of our transaction, even in case of reorg.
-        let (_, blockheight, _) = bitcoind.get_wallet_transaction(&vault.deposit_outpoint.txid)?;
-        let dep_height = if let Some(height) = blockheight {
+        let dep_height = if let Some(height) = bitcoind
+            .get_wallet_transaction(&vault.deposit_outpoint.txid)?
+            .blockheight
+        {
             height
         } else {
             unconfirm_vault(
@@ -696,8 +702,7 @@ fn comprehensive_rescan(
                     unvaults_cache,
                 );
             }
-            let (_, blockheight, _) = bitcoind.get_wallet_transaction(&emer_txid)?;
-            if let Some(height) = blockheight {
+            if let Some(height) = bitcoind.get_wallet_transaction(&emer_txid)?.blockheight {
                 log::debug!(
                     "Vault {}'s Emeregency transaction is still confirmed (height '{}')",
                     vault.deposit_outpoint,
@@ -748,28 +753,27 @@ fn comprehensive_rescan(
                     unvaults_cache,
                 );
             }
-            let (_, blockheight, _) = bitcoind.get_wallet_transaction(&unvault_txid)?;
+            let unv_height =
+                if let Some(height) = bitcoind.get_wallet_transaction(&unvault_txid)?.blockheight {
+                    height
+                } else {
+                    unconfirm_unvault(
+                        revaultd,
+                        bitcoind,
+                        db_tx,
+                        unvaults_cache,
+                        &vault,
+                        &unvault_tx,
+                    )?;
 
-            let unv_height = if let Some(height) = blockheight {
-                height
-            } else {
-                unconfirm_unvault(
-                    revaultd,
-                    bitcoind,
-                    db_tx,
-                    unvaults_cache,
-                    &vault,
-                    &unvault_tx,
-                )?;
-
-                // And finally hook the tests (and the eyeballs)
-                log::debug!(
-                    "Vault {}'s Unvault transaction {} got unconfirmed.",
-                    vault.deposit_outpoint,
-                    unvault_txid
-                );
-                continue;
-            };
+                    // And finally hook the tests (and the eyeballs)
+                    log::debug!(
+                        "Vault {}'s Unvault transaction {} got unconfirmed.",
+                        vault.deposit_outpoint,
+                        unvault_txid
+                    );
+                    continue;
+                };
 
             log::debug!(
                 "Vault {}'s Unvault transaction is still confirmed (height '{}')",
@@ -791,8 +795,7 @@ fn comprehensive_rescan(
                         unvaults_cache,
                     );
                 }
-                let (_, blockheight, _) = bitcoind.get_wallet_transaction(spend_txid)?;
-                if let Some(height) = blockheight {
+                if let Some(height) = bitcoind.get_wallet_transaction(spend_txid)?.blockheight {
                     log::debug!(
                         "Vault {}'s Spend transaction is still confirmed (height '{}')",
                         vault.deposit_outpoint,
@@ -822,8 +825,7 @@ fn comprehensive_rescan(
                         unvaults_cache,
                     );
                 }
-                let (_, blockheight, _) = bitcoind.get_wallet_transaction(&cancel_txid)?;
-                if let Some(height) = blockheight {
+                if let Some(height) = bitcoind.get_wallet_transaction(&cancel_txid)?.blockheight {
                     log::debug!(
                         "Vault {}'s Cancel transaction is still confirmed (height '{}')",
                         vault.deposit_outpoint,
@@ -862,8 +864,7 @@ fn comprehensive_rescan(
                         unvaults_cache,
                     );
                 }
-                let (_, blockheight, _) = bitcoind.get_wallet_transaction(&unemer_txid)?;
-                if let Some(height) = blockheight {
+                if let Some(height) = bitcoind.get_wallet_transaction(&unemer_txid)?.blockheight {
                     log::debug!(
                         "Vault {}'s UnvaultEmeregency transaction is still confirmed (height '{}')",
                         vault.deposit_outpoint,
@@ -1131,7 +1132,6 @@ fn handle_new_deposit(
             BitcoindError::Custom(format!("Unknown derivation index for: {:#?}", &utxo))
         })?;
 
-    let received_at = bitcoind.get_wallet_transaction(&outpoint.txid)?.2;
     // Note that the deposit *might* have already MIN_CONF confirmations, that's fine. We'll
     // confim it during the next poll.
     let amount = Amount::from_sat(utxo.txo.value);
@@ -1145,7 +1145,6 @@ fn handle_new_deposit(
         &outpoint,
         &amount,
         derivation_index,
-        received_at,
     )?;
     log::debug!(
         "Got a new unconfirmed deposit at {} for {} ({})",
@@ -1195,9 +1194,10 @@ fn handle_confirmed_deposit(
     outpoint: OutPoint,
     utxo: UtxoInfo,
 ) -> Result<(), BitcoindError> {
-    let blockheight =
-        if let (_, Some(height), _) = bitcoind.get_wallet_transaction(&outpoint.txid)? {
-            height
+    let tx = bitcoind.get_wallet_transaction(&outpoint.txid)?;
+    let (blockheight, blocktime) =
+        if let (Some(height), Some(blocktime)) = (tx.blockheight, tx.blocktime) {
+            (height, blocktime)
         } else {
             // This is theoretically possible if it gets unconfirmed in between the call to
             // listunspent and this one. This was actually encountered by the reorg tests.
@@ -1229,6 +1229,7 @@ fn handle_confirmed_deposit(
         db_path,
         &outpoint,
         blockheight,
+        blocktime,
         &unvault_tx,
         &cancel_tx,
         emer_tx.as_ref(),

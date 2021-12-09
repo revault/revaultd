@@ -7,6 +7,7 @@ etc..
 import pytest
 import random
 
+from bitcoin.core import COIN
 from fixtures import *
 from test_framework import serializations
 from test_framework.utils import (
@@ -571,28 +572,26 @@ def test_large_spends(revault_network, bitcoind, executor):
 # (it wouldn't be possible to announce it to the coordinator when fully signed)
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_not_announceable_spend(revault_network, bitcoind, executor):
-    CSV = 2
-    revault_network.deploy(17, 16, csv=CSV)
+    CSV = 4
+    revault_network.deploy(5, 7, csv=CSV)
     man = revault_network.man(0)
 
     vaults = []
     deposits = []
     deriv_indexes = []
-    total_amount = 0
-    for i in range(10):
-        amount = i + 1
-        vaults.append(revault_network.fund(amount))
-        deposits.append(f"{vaults[i]['txid']}:{vaults[i]['vout']}")
-        deriv_indexes.append(vaults[i]["derivation_index"])
-        total_amount += vaults[i]["amount"]
+    amounts = [(i + 1) / 100 for i in range(20)]
+    total_amount = sum(amounts) * COIN
+    vaults = revault_network.fundmany(amounts)
+    deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
+    deriv_indexes = [v["derivation_index"] for v in vaults]
     revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
-    n_outputs = 251
+    n_outputs = 588
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
+    output_value = int((total_amount - fees) // n_outputs)
     destinations = {
-        bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
-        for _ in range(n_outputs)
+        bitcoind.rpc.getnewaddress(): output_value for _ in range(n_outputs)
     }
 
     # Hey, this spend is huge!
@@ -601,12 +600,15 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     ):
         man.rpc.getspendtx(deposits, destinations, feerate)
 
-    # One less output is ok though
-    n_outputs -= 1
-    destinations = {
-        bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
-        for _ in range(n_outputs)
-    }
+    # One less spent outpoint is ok though
+    deposits.pop()
+    deriv_indexes.pop()
+    amounts.pop()
+    total_amount = sum(amounts) * COIN
+    fees = revault_network.compute_spendtx_fees(feerate, len(deposits), n_outputs)
+    output_value = int((total_amount - fees) // n_outputs)
+    for addr in destinations:
+        destinations[addr] = output_value
     spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
     for man in revault_network.mans():
         spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
@@ -614,7 +616,8 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     spend_psbt = serializations.PSBT()
     spend_psbt.deserialize(spend_tx)
     spend_psbt.tx.calc_sha256()
-    man.rpc.setspendtx(spend_psbt.tx.hash)
+    spend_txid = spend_psbt.tx.hash
+    man.rpc.setspendtx(spend_txid)
 
     wait_for(
         lambda: len(man.rpc.listvaults(["unvaulting"], deposits)["vaults"])
@@ -628,10 +631,8 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     )
 
     # We'll broadcast the Spend transaction as soon as it's valid
-    bitcoind.generate_block(CSV)
-    man.wait_for_log(
-        f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
-    )
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_txid}'")
     wait_for(
         lambda: len(man.rpc.listvaults(["spending"], deposits)["vaults"])
         == len(deposits)

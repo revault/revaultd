@@ -1885,5 +1885,7 @@ mod test {
         assert!(db_vault.funded_at.is_some());
         assert!(db_vault.secured_at.is_some());
         assert!(db_vault.delegated_at.is_some());
+
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 }

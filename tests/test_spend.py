@@ -7,10 +7,10 @@ etc..
 import pytest
 import random
 
-from bitcoin.core import COIN
 from fixtures import *
 from test_framework import serializations
 from test_framework.utils import (
+    COIN,
     POSTGRES_IS_SETUP,
     RpcError,
     wait_for,

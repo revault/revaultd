@@ -53,6 +53,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+// At how many sats/kWU below the target feerate do we CPFP a transaction.
+const CPFP_THRESHOLD: u64 = 1_000;
+
 // Try to broadcast fully signed spend transactions, only mature ones will get through
 fn maybe_broadcast_spend_transactions(
     revaultd: &Arc<RwLock<RevaultD>>,
@@ -432,6 +435,9 @@ impl ToBeCpfped {
     }
 }
 
+// CPFP a bunch of transactions, bumping their feerate by at least `target_feerate`.
+// `target_feerate` is expressed in sat/kWU.
+// All the transactions' feerate MUST be below `target_feerate`.
 fn cpfp_package(
     revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
@@ -447,14 +453,10 @@ fn cpfp_package(
         txids.insert(tx.txid());
         package_weight += tx.max_weight();
         package_fees += tx.fees();
+        assert!(((package_fees.as_sat() * 1000 / package_weight) as u64) < target_feerate);
     }
     let tx_feerate = (package_fees.as_sat() * 1_000 / package_weight) as u64; // to sats/kWU
-    if target_feerate < tx_feerate {
-        // Uhm, we don't need to cpfp this for now, our estimate is lower
-        // than the tx fees.
-        log::debug!("Txs '{:?}' don't need CPFP", txids);
-        return Ok(());
-    }
+    assert!(tx_feerate < target_feerate);
 
     let added_feerate = target_feerate - tx_feerate;
     let listunspent: Vec<_> = bitcoind.list_unspent_cpfp()?;
@@ -549,14 +551,17 @@ fn cpfp_package(
     Ok(())
 }
 
-fn is_unconfirmed(bitcoind: &BitcoinD, txid: &Txid) -> bool {
+// `target_feerate` is in sats/kWU
+fn should_cpfp(bitcoind: &BitcoinD, tx: &impl CpfpableTransaction, target_feerate: u64) -> bool {
     bitcoind
-        .get_wallet_transaction(txid)
+        .get_wallet_transaction(&tx.txid())
         // In the unlikely (actually, shouldn't happen but hey) case where
         // the transaction isn't part of our wallet, default to feebumping
         // it since the user explicitly marked it as high prio.
         .map(|w| w.blockheight.is_none())
         .unwrap_or(true)
+        // * 1000 for kWU
+        && tx.max_feerate() * 1_000 + CPFP_THRESHOLD < target_feerate
 }
 
 fn maybe_cpfp_txs(
@@ -583,7 +588,7 @@ fn maybe_cpfp_txs(
     let to_cpfp: Vec<_> = db_cpfpable_spends(&db_path)?
         .into_iter()
         .filter_map(|spend| {
-            if is_unconfirmed(bitcoind, &spend.txid()) {
+            if should_cpfp(bitcoind, &spend, current_feerate) {
                 Some(ToBeCpfped::Spend(spend))
             } else {
                 None
@@ -594,7 +599,7 @@ fn maybe_cpfp_txs(
                 .into_iter()
                 .map(|unvaults| {
                     unvaults.into_iter().filter_map(|unvault| {
-                        if is_unconfirmed(bitcoind, &unvault.txid()) {
+                        if should_cpfp(bitcoind, &unvault, current_feerate) {
                             Some(ToBeCpfped::Unvault(unvault))
                         } else {
                             None

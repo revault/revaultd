@@ -529,14 +529,18 @@ fn maybe_cpfp_txs(
     }
 
     for unvault_package in unvault_packages {
-        // We check if any unvault in this package is still unconfirmed. If so, we feebump
-        if unvault_package.iter().any(|u| {
-            bitcoind
-                .get_wallet_transaction(&u.txid())
-                .map(|w| w.blockheight.is_none())
-                .unwrap_or(true)
-        }) {
-            cpfp_package(revaultd, bitcoind, unvault_package, current_feerate)?;
+        // We check if any unvault in this package is still unconfirmed. If so, we feebump them.
+        let unvaults_to_cpfp: Vec<_> = unvault_package
+            .into_iter()
+            .filter(|u| {
+                bitcoind
+                    .get_wallet_transaction(&u.txid())
+                    .map(|w| w.blockheight.is_none())
+                    .unwrap_or(true)
+            })
+            .collect();
+        if !unvaults_to_cpfp.is_empty() {
+            cpfp_package(revaultd, bitcoind, unvaults_to_cpfp, current_feerate)?;
         }
     }
 

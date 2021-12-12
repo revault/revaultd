@@ -266,13 +266,17 @@ def test_cpfp_transaction(revault_network, bitcoind):
     # Uh oh! The feerate is too low, miners aren't including our transaction...
     bitcoind.generate_blocks_censor(1, unvault_txids)
     man.wait_for_log("CPFPed transactions")
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == len(unvault_txids) + 1)
     for unvault_txid in unvault_txids:
-        assert bitcoind.rpc.getmempoolentry(unvault_txid)["descendantcount"] == 2
+        entry = bitcoind.rpc.getmempoolentry(unvault_txid)
+        assert entry["descendantcount"] == 2
+        package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+        assert package_feerate >= 50
 
     # Alright, now let's do everything again for the spend :tada:
 
     # Confirming the unvaults
-    bitcoind.generate_block(1)
+    bitcoind.generate_block(1, wait_for_mempool=unvault_txids)
     for w in revault_network.participants():
         wait_for(
             lambda: len(w.rpc.listvaults(["unvaulted"])["vaults"]) == len(vaults),
@@ -291,7 +295,11 @@ def test_cpfp_transaction(revault_network, bitcoind):
     man.wait_for_log(
         f"CPFPed transactions with ids '{{{spend_txid}}}'",
     )
-    assert bitcoind.rpc.getmempoolentry(spend_txid)["descendantcount"] == 2
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == 2)
+    entry = bitcoind.rpc.getmempoolentry(spend_txid)
+    assert entry["descendantcount"] == 2
+    package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+    assert package_feerate >= 50
 
     # Let's test that non-prioritized txs don't get cpfped
     amount = 0.24
@@ -307,9 +315,5 @@ def test_cpfp_transaction(revault_network, bitcoind):
     man.wait_for_log(
         f"Succesfully broadcasted Spend tx '{spend_txid}'",
     )
-
-    # Uh oh! The feerate is too low, miners aren't including our transaction...
     bitcoind.generate_blocks_censor(1, [spend_txid])
-    man.wait_for_log("Checking if transactions need CPFP...")
-    # Nah, they don't
-    assert bitcoind.rpc.getmempoolentry(spend_txid)["descendantcount"] == 1
+    man.wait_for_logs(["Checking if transactions need CPFP...", "Nothing to CPFP"])

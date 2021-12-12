@@ -613,6 +613,8 @@ fn maybe_cpfp_txs(
     // TODO: std transaction max size check and split
     if !to_cpfp.is_empty() {
         cpfp_package(revaultd, bitcoind, to_cpfp, current_feerate)?;
+    } else {
+        log::debug!("Nothing to CPFP");
     }
 
     Ok(())

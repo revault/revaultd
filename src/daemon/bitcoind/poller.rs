@@ -483,7 +483,6 @@ fn cpfp_package(
         );
         return Ok(());
     }
-    let psbt_signed = bitcoind.finalize_psbt(psbt_signed)?;
 
     let final_tx = psbt_signed.extract_tx();
     if let Err(e) = bitcoind.broadcast_transaction(&final_tx) {

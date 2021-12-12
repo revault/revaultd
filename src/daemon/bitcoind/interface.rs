@@ -6,6 +6,7 @@ use revault_tx::{
         consensus::{encode, Decodable},
         hashes::hex::FromHex,
         util::bip32::ChildNumber,
+        util::psbt::PartiallySignedTransaction as Psbt,
         Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
     },
     transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},
@@ -717,8 +718,11 @@ impl BitcoinD {
         })
     }
 
-    pub fn sign_psbt(&self, psbt: String) -> Result<(bool, String), BitcoindError> {
-        let res = self.make_cpfp_request("walletprocesspsbt", &params!(Json::String(psbt)))?;
+    pub fn sign_psbt(&self, psbt: &Psbt) -> Result<(bool, Psbt), BitcoindError> {
+        let res = self.make_cpfp_request(
+            "walletprocesspsbt",
+            &params!(Json::String(base64::encode(&encode::serialize(psbt)))),
+        )?;
         let complete = res
             .get("complete")
             .expect("API break: no 'complete' in 'walletprocesspsbt' result")
@@ -730,6 +734,9 @@ impl BitcoinD {
             .as_str()
             .expect("API break: invalid 'psbt' in 'walletprocesspsbt' result")
             .to_string();
+        let psbt =
+            encode::deserialize(&base64::decode(psbt).expect("bitcoind returned invalid base64"))
+                .expect("bitcoind returned an invalid PSBT.");
         Ok((complete, psbt))
     }
 

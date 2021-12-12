@@ -30,7 +30,7 @@ use crate::daemon::{
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{secp256k1::Secp256k1, Amount, OutPoint, Txid},
+    bitcoin::{consensus::encode, secp256k1::Secp256k1, Amount, OutPoint, Txid},
     error::TransactionCreationError,
     miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
     transactions::{CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
@@ -475,19 +475,18 @@ fn cpfp_package(
         }
     };
 
-    let psbt = psbt.as_psbt_string();
-
-    let (complete, psbt_signed) = bitcoind.sign_psbt(psbt)?;
+    let (complete, psbt_signed) = bitcoind.sign_psbt(psbt.psbt())?;
     if !complete {
         log::error!(
             "Bitcoind returned a non-finalized CPFP PSBT: {}",
-            psbt_signed
+            base64::encode(encode::serialize(&psbt_signed))
         );
         return Ok(());
     }
     let psbt_signed = bitcoind.finalize_psbt(psbt_signed)?;
 
-    if let Err(e) = bitcoind.broadcast_transaction(&psbt_signed) {
+    let final_tx = psbt_signed.extract_tx();
+    if let Err(e) = bitcoind.broadcast_transaction(&final_tx) {
         log::error!("Error broadcasting '{:?}' CPFP tx: {}", txids, e);
     } else {
         log::info!("CPFPed transactions with ids '{:?}'", txids);

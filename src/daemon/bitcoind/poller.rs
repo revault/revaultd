@@ -514,34 +514,42 @@ fn maybe_cpfp_txs(
         }
     };
 
-    let spend_txs: Vec<_> = db_cpfpable_spends(&db_path)?;
-    let unvault_packages: Vec<_> = db_cpfpable_unvaults(&db_path)?;
-    for spend_tx in spend_txs {
-        // We check if this transaction is still unconfirmed. If so, we feebump
-        if bitcoind
-            .get_wallet_transaction(&spend_tx.txid())?
-            .blockheight
-            .is_none()
-        {
-            // As cpfp_package expects a package, we wrap our spend_tx in a Vec
-            cpfp_package(revaultd, bitcoind, vec![spend_tx], current_feerate)?;
-        }
+    // We feebump all the unconfirmed spends.
+    let spends_to_cpfp: Vec<_> = db_cpfpable_spends(&db_path)?
+        .into_iter()
+        .filter(|spend| {
+            bitcoind
+                .get_wallet_transaction(&spend.txid())
+                // In the unlikely (actually, shouldn't happen but hey) case where
+                // the transaction isn't part of our wallet, default to feebumping
+                // it since the user explicitly marked it as high prio.
+                .map(|w| w.blockheight.is_none())
+                .unwrap_or(true)
+        })
+        .collect();
+    if !spends_to_cpfp.is_empty() {
+        cpfp_package(revaultd, bitcoind, spends_to_cpfp, current_feerate)?;
     }
 
-    for unvault_package in unvault_packages {
-        // We check if any unvault in this package is still unconfirmed. If so, we feebump them.
-        let unvaults_to_cpfp: Vec<_> = unvault_package
-            .into_iter()
-            .filter(|u| {
+    // We feebump all the unconfirmed current unvaults.
+    // TODO: std transaction max size check and split
+    let unvaults_to_cpfp: Vec<_> = db_cpfpable_unvaults(&db_path)?
+        .into_iter()
+        .map(|package| {
+            package.into_iter().filter(|unvault| {
                 bitcoind
-                    .get_wallet_transaction(&u.txid())
+                    .get_wallet_transaction(&unvault.txid())
+                    // In the unlikely (actually, shouldn't happen but hey) case where
+                    // the transaction isn't part of our wallet, default to feebumping
+                    // it since the user explicitly marked it as high prio.
                     .map(|w| w.blockheight.is_none())
                     .unwrap_or(true)
             })
-            .collect();
-        if !unvaults_to_cpfp.is_empty() {
-            cpfp_package(revaultd, bitcoind, unvaults_to_cpfp, current_feerate)?;
-        }
+        })
+        .flatten()
+        .collect();
+    if !unvaults_to_cpfp.is_empty() {
+        cpfp_package(revaultd, bitcoind, unvaults_to_cpfp, current_feerate)?;
     }
 
     Ok(())

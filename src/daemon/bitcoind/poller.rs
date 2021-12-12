@@ -426,6 +426,7 @@ fn cpfp_package(
                 .map(|l| l.outpoint.txid)
                 .collect::<Vec<_>>()
         );
+        return Ok(());
     }
 
     let listunspent: Vec<_> = listunspent

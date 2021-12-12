@@ -33,7 +33,7 @@ use revault_tx::{
     bitcoin::{consensus::encode, secp256k1::Secp256k1, Amount, OutPoint, Txid},
     error::TransactionCreationError,
     miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
-    transactions::{CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
+    transactions::{CpfpTransaction, CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
     txins::{CpfpTxIn, RevaultTxIn},
     txouts::{CpfpTxOut, RevaultTxOut},
 };
@@ -448,18 +448,30 @@ fn cpfp_package(
     tx_package.sort_by_key(|tx| tx.txid());
 
     // I can do this as I just ordered by txid
-    let tx_package: Vec<_> = tx_package
-        .into_iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let derived_cpfp_descriptor = revaultd
-                .derived_cpfp_descriptor(my_listunspent[i].derivation_index.expect("Must be here"));
-            (p, derived_cpfp_descriptor)
-        })
-        .collect();
+    let mut txins = Vec::with_capacity(tx_package.len());
+    let mut package_weight = 0;
+    let mut package_fees = Amount::from_sat(0);
+    for (i, tx) in tx_package.into_iter().enumerate() {
+        let derived_cpfp_descriptor = revaultd
+            .derived_cpfp_descriptor(my_listunspent[i].derivation_index.expect("Must be here"));
+        match tx.cpfp_txin(&derived_cpfp_descriptor) {
+            Some(txin) => txins.push(txin),
+            None => {
+                log::error!("No CPFP txin for tx '{}'", tx.txid());
+                return Ok(());
+            }
+        }
+        package_weight += tx.max_weight();
+        package_fees += Amount::from_sat(tx.fees()); // TODO(revault_tx): This should return an Amount!
+    }
 
-    let psbt = match CpfpableTransaction::cpfp_transactions(&tx_package, added_feerate, listunspent)
-    {
+    let psbt = match CpfpTransaction::from_txins(
+        txins,
+        package_weight,
+        package_fees,
+        added_feerate,
+        listunspent,
+    ) {
         Ok(tx) => tx,
         Err(TransactionCreationError::InsufficientFunds) => {
             // Well, we're poor.

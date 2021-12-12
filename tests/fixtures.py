@@ -164,9 +164,13 @@ def revaultd_stakeholder(bitcoind, directory):
         stk_config=stk_config,
         wt_process=None,
     )
-    revaultd.start()
 
-    yield revaultd
+    try:
+        revaultd.start()
+        yield revaultd
+    except Exception:
+        revaultd.cleanup()
+        raise
 
     revaultd.cleanup()
 
@@ -209,9 +213,13 @@ def revaultd_manager(bitcoind, directory):
         bitcoind_cookie,
         man_config=man_config,
     )
-    revaultd.start()
 
-    yield revaultd
+    try:
+        revaultd.start()
+        yield revaultd
+    except Exception:
+        revaultd.cleanup()
+        raise
 
     revaultd.cleanup()
 
@@ -228,6 +236,10 @@ def revault_network(directory, bitcoind, executor):
         directory, bitcoind, executor, POSTGRES_USER, POSTGRES_PASS, POSTGRES_HOST
     )
 
-    yield factory
+    try:
+        yield factory
+    except Exception:
+        factory.cleanup()
+        raise
 
     factory.cleanup()

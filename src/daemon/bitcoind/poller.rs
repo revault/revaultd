@@ -33,13 +33,17 @@ use revault_tx::{
     bitcoin::{consensus::encode, secp256k1::Secp256k1, Amount, OutPoint, Txid},
     error::TransactionCreationError,
     miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
-    transactions::{CpfpTransaction, CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
+    scripts::DerivedCpfpDescriptor,
+    transactions::{
+        CpfpTransaction, CpfpableTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultTransaction,
+    },
     txins::{CpfpTxIn, RevaultTxIn},
     txouts::{CpfpTxOut, RevaultTxOut},
 };
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -392,23 +396,67 @@ fn mark_confirmed_emers(
     Ok(())
 }
 
+enum ToBeCpfped {
+    Spend(SpendTransaction),
+    Unvault(UnvaultTransaction),
+}
+
+impl ToBeCpfped {
+    pub fn txid(&self) -> Txid {
+        match self {
+            Self::Spend(s) => s.txid(),
+            Self::Unvault(u) => u.txid(),
+        }
+    }
+
+    pub fn cpfp_txin(&self, der_desc: &DerivedCpfpDescriptor) -> Option<CpfpTxIn> {
+        match self {
+            Self::Spend(s) => s.cpfp_txin(der_desc),
+            Self::Unvault(u) => u.cpfp_txin(der_desc),
+        }
+    }
+
+    pub fn max_weight(&self) -> u64 {
+        match self {
+            Self::Spend(s) => s.max_weight(),
+            Self::Unvault(u) => u.max_weight(),
+        }
+    }
+
+    pub fn fees(&self) -> Amount {
+        // TODO(revault_tx): fees() should return an Amount!
+        Amount::from_sat(match self {
+            Self::Spend(s) => s.fees(),
+            Self::Unvault(u) => u.fees(),
+        })
+    }
+}
+
 fn cpfp_package(
     revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    mut tx_package: Vec<impl CpfpableTransaction>,
-    current_feerate: u64,
+    mut tx_package: Vec<ToBeCpfped>,
+    target_feerate: u64,
 ) -> Result<(), BitcoindError> {
     let revaultd = revaultd.read().unwrap();
-    let txids: Vec<_> = tx_package.iter().map(|s| s.txid()).collect();
-    let tx_feerate = CpfpableTransaction::max_package_feerate(&tx_package) * 1000; // to sats/kWU
-    if current_feerate < tx_feerate {
+
+    let mut txids = HashSet::with_capacity(tx_package.len());
+    let mut package_weight = 0;
+    let mut package_fees = Amount::from_sat(0);
+    for tx in tx_package.iter() {
+        txids.insert(tx.txid());
+        package_weight += tx.max_weight();
+        package_fees += tx.fees();
+    }
+    let tx_feerate = (package_fees.as_sat() * 1_000 / package_weight) as u64; // to sats/kWU
+    if target_feerate < tx_feerate {
         // Uhm, we don't need to cpfp this for now, our estimate is lower
         // than the tx fees.
         log::debug!("Txs '{:?}' don't need CPFP", txids);
         return Ok(());
     }
 
-    let added_feerate = current_feerate - tx_feerate;
+    let added_feerate = target_feerate - tx_feerate;
     let listunspent: Vec<_> = bitcoind.list_unspent_cpfp()?;
 
     // FIXME: drain_filter would be PERFECT for this but it's nightly only :(
@@ -433,8 +481,6 @@ fn cpfp_package(
     tx_package.sort_by_key(|tx| tx.txid());
     // I can do this as I just ordered by txid
     let mut txins = Vec::with_capacity(tx_package.len());
-    let mut package_weight = 0;
-    let mut package_fees = Amount::from_sat(0);
     for (i, tx) in tx_package.into_iter().enumerate() {
         let derived_cpfp_descriptor = revaultd
             .derived_cpfp_descriptor(my_listunspent[i].derivation_index.expect("Must be here"));
@@ -445,8 +491,6 @@ fn cpfp_package(
                 return Ok(());
             }
         }
-        package_weight += tx.max_weight();
-        package_fees += Amount::from_sat(tx.fees()); // TODO(revault_tx): This should return an Amount!
     }
 
     let confirmed_cpfp_utxos: Vec<_> = listunspent
@@ -505,6 +549,16 @@ fn cpfp_package(
     Ok(())
 }
 
+fn is_unconfirmed(bitcoind: &BitcoinD, txid: &Txid) -> bool {
+    bitcoind
+        .get_wallet_transaction(txid)
+        // In the unlikely (actually, shouldn't happen but hey) case where
+        // the transaction isn't part of our wallet, default to feebumping
+        // it since the user explicitly marked it as high prio.
+        .map(|w| w.blockheight.is_none())
+        .unwrap_or(true)
+}
+
 fn maybe_cpfp_txs(
     revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
@@ -525,42 +579,35 @@ fn maybe_cpfp_txs(
         }
     };
 
-    // We feebump all the unconfirmed spends.
-    let spends_to_cpfp: Vec<_> = db_cpfpable_spends(&db_path)?
+    // We feebump all the spends and unvaults that are still unconfirmed.
+    let to_cpfp: Vec<_> = db_cpfpable_spends(&db_path)?
         .into_iter()
-        .filter(|spend| {
-            bitcoind
-                .get_wallet_transaction(&spend.txid())
-                // In the unlikely (actually, shouldn't happen but hey) case where
-                // the transaction isn't part of our wallet, default to feebumping
-                // it since the user explicitly marked it as high prio.
-                .map(|w| w.blockheight.is_none())
-                .unwrap_or(true)
+        .filter_map(|spend| {
+            if is_unconfirmed(bitcoind, &spend.txid()) {
+                Some(ToBeCpfped::Spend(spend))
+            } else {
+                None
+            }
         })
+        .chain(
+            db_cpfpable_unvaults(&db_path)?
+                .into_iter()
+                .map(|unvaults| {
+                    unvaults.into_iter().filter_map(|unvault| {
+                        if is_unconfirmed(bitcoind, &unvault.txid()) {
+                            Some(ToBeCpfped::Unvault(unvault))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .flatten(),
+        )
         .collect();
-    if !spends_to_cpfp.is_empty() {
-        cpfp_package(revaultd, bitcoind, spends_to_cpfp, current_feerate)?;
-    }
 
-    // We feebump all the unconfirmed current unvaults.
     // TODO: std transaction max size check and split
-    let unvaults_to_cpfp: Vec<_> = db_cpfpable_unvaults(&db_path)?
-        .into_iter()
-        .map(|package| {
-            package.into_iter().filter(|unvault| {
-                bitcoind
-                    .get_wallet_transaction(&unvault.txid())
-                    // In the unlikely (actually, shouldn't happen but hey) case where
-                    // the transaction isn't part of our wallet, default to feebumping
-                    // it since the user explicitly marked it as high prio.
-                    .map(|w| w.blockheight.is_none())
-                    .unwrap_or(true)
-            })
-        })
-        .flatten()
-        .collect();
-    if !unvaults_to_cpfp.is_empty() {
-        cpfp_package(revaultd, bitcoind, unvaults_to_cpfp, current_feerate)?;
+    if !to_cpfp.is_empty() {
+        cpfp_package(revaultd, bitcoind, to_cpfp, current_feerate)?;
     }
 
     Ok(())

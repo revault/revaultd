@@ -265,9 +265,7 @@ def test_cpfp_transaction(revault_network, bitcoind):
 
     # Uh oh! The feerate is too low, miners aren't including our transaction...
     bitcoind.generate_blocks_censor(1, unvault_txids)
-    man.wait_for_log(
-        f"CPFPed transactions",
-    )
+    man.wait_for_log("CPFPed transactions")
     for unvault_txid in unvault_txids:
         assert bitcoind.rpc.getmempoolentry(unvault_txid)["descendantcount"] == 2
 
@@ -291,8 +289,7 @@ def test_cpfp_transaction(revault_network, bitcoind):
     # Uh oh! The feerate is too low, miners aren't including our transaction...
     bitcoind.generate_blocks_censor(1, [spend_txid])
     man.wait_for_log(
-        # FIXME: these '\' before the '[', ']' trigger a deprecation warning
-        f"CPFPed transactions with ids '\[{spend_txid}\]'",
+        f"CPFPed transactions with ids '{{{spend_txid}}}'",
     )
     assert bitcoind.rpc.getmempoolentry(spend_txid)["descendantcount"] == 2
 

@@ -429,25 +429,8 @@ fn cpfp_package(
         return Ok(());
     }
 
-    let listunspent: Vec<_> = listunspent
-        .into_iter()
-        .filter_map(|l| {
-            // Not considering UTXOs still in mempool
-            if l.confirmations < 1 {
-                None
-            } else {
-                let txout = CpfpTxOut::new(
-                    Amount::from_sat(l.txo.value),
-                    &revaultd.derived_cpfp_descriptor(l.derivation_index.expect("Must be here")),
-                );
-                Some(CpfpTxIn::new(l.outpoint, txout))
-            }
-        })
-        .collect();
-
     my_listunspent.sort_by_key(|l| l.outpoint.txid);
     tx_package.sort_by_key(|tx| tx.txid());
-
     // I can do this as I just ordered by txid
     let mut txins = Vec::with_capacity(tx_package.len());
     let mut package_weight = 0;
@@ -466,12 +449,27 @@ fn cpfp_package(
         package_fees += Amount::from_sat(tx.fees()); // TODO(revault_tx): This should return an Amount!
     }
 
+    let confirmed_cpfp_utxos: Vec<_> = listunspent
+        .into_iter()
+        .filter_map(|l| {
+            // Not considering UTXOs still in mempool
+            if l.confirmations < 1 {
+                None
+            } else {
+                let txout = CpfpTxOut::new(
+                    Amount::from_sat(l.txo.value),
+                    &revaultd.derived_cpfp_descriptor(l.derivation_index.expect("Must be here")),
+                );
+                Some(CpfpTxIn::new(l.outpoint, txout))
+            }
+        })
+        .collect();
     let psbt = match CpfpTransaction::from_txins(
         txins,
         package_weight,
         package_fees,
         added_feerate,
-        listunspent,
+        confirmed_cpfp_utxos,
     ) {
         Ok(tx) => tx,
         Err(TransactionCreationError::InsufficientFunds) => {

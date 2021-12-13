@@ -8,22 +8,24 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | Command                                                     | Description                                          |
 | ----------------------------------------------------------- | ---------------------------------------------------- |
 | [`help`](#help)                                             | Display all available commands                       |
+| [`stop`](#stop)                                             | Stops the revault daemon                             |
 | [`getinfo`](#getinfo)                                       | Display general information                          |
-| [`getrevocationtxs`](#getrevocationtxs)                     | Retrieve the Revault revocation transactions to sign |
-| [`getunvaulttx`](#getunvaulttx)                             | Retrieve the Revault unvault transaction to sign     |
-| [`getspendtx`](#getspendtx)                                 | Retrieve the Revault spend transaction to sign       |
+| [`getdepositaddress`](#getdepositaddress)                   | Get an address to build a deposit transaction        |
+| [`getserverstatus`](#getserverstatus)                       | Retrieve the status of the servers                   |
+| [`listvaults`](#listvaults)                                 | Display a paginated list of vaults                   |
 | [`listpresignedtransactions`](#listpresignedtransactions)   | List presigned transactions of a confirmed vault     |
 | [`listonchaintransactions`](#listonchaintransactions)       | List broadcast transactions of a vault               |
-| [`listvaults`](#listvaults)                                 | Display a paginated list of vaults                   |
+| [`getrevocationtxs`](#getrevocationtxs)                     | Retrieve the Revault revocation transactions to sign |
 | [`revocationtxs`](#revocationtxs)                           | Give back the revocation transactions signed         |
+| [`getunvaulttx`](#getunvaulttx)                             | Retrieve the Revault unvault transaction to sign     |
 | [`unvaulttx`](#unvaulttx)                                   | Give back the unvault transaction signed             |
+| [`getspendtx`](#getspendtx)                                 | Retrieve the Revault spend transaction to sign       |
 | [`updatespendtx`](#updatespendtx)                           | Store or update the stored Spend transaction         |
 | [`delspendtx`](#delspendtx)                                 | Delete a stored Spend transaction                    |
-| [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
 | [`listspendtxs`](#listspendtxs)                             | List all stored Spend transactions                   |
+| [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
 | [`gethistory`](#gethistory)                                 | Retrieve history of funds                            |
 | [`emergency`](#emergency)                                   | Broadcast all Emergency signed transactions          |
-| [`getserverstatus`](#getserverstatus)                       | Retrieve the status of the servers                   |
 
 
 
@@ -37,18 +39,13 @@ Display all available commands.
 
 #### Response
 
-| Field      | Type  | Description                                 |
-| ---------- | ----- | ------------------------------------------- |
-| `commands` | array | Array of [help resource](#Help-resource)    |
+| Field      | Type   | Description                                                                                                      |
+| ---------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
+| `commands` | object | One entry per command, specifying the command name and parameters. Optional parameters are enclosed in brackets. |
 
-##### Help resource
+### `stop`
 
-| Field         | Type   | Description                                                                                          |
-| ------------- | ------ | ---------------------------------------------------------------------------------------------------- |
-| `name`        | string | The name of the command                                                                              |
-| `parameters`  | array  | The command parameters as strings, optional ones are enclosed in brackets (ie `[optional argument]`) |
-| `description` | string | A description of the command                                                                         |
-
+Stops the revault daemon.
 
 ### `getinfo`
 
@@ -83,6 +80,31 @@ Get an address to build a deposit transaction.
 | Field         | Type   | Description                                                 |
 | ------------- | ------ | ----------------------------------------------------------- |
 | `address`     | string | An address for the N-of-N multisig deposit script           |
+
+
+### `getserverstatus`
+
+Retrieve the status of the servers, such as the coordinator, the cosigners, the watchtowers
+
+#### Request
+
+| Field          | Type   | Description                                    |
+| -------------- | ------ | ---------------------------------------------- |
+
+#### Response
+
+| Field          | Type   | Description                                         |
+| -------------- | ------ | --------------------------------------------------- |
+| `coordinator`  | object | [Server status](#server-status) for the coordinator |
+| `cosigners`    | array  | Array of [Server status](#server-status)            |
+| `watchtowers`  | array  | Array of [Server status](#server-status)            |
+
+##### Server status
+
+| Field       | Type   | Description                                                 |
+| ----------- | ------ | ----------------------------------------------------------- |
+| `reachable` | bool   | Can the server be reached?                                  |
+| `host`      | string | Hostname and port of the server                             |
 
 
 ## Vault
@@ -462,30 +484,6 @@ of inflows and outflows net of any change amount (that is technically a transact
 None; the `result` field will be set to the empty object `{}`. Any value should be
 disregarded for forward compatibility.
 
-
-### `getserverstatus`
-
-Retrieve the status of the servers, such as the coordinator, the cosigners, the watchtowers
-
-#### Request
-
-| Field          | Type   | Description                                    |
-| -------------- | ------ | ---------------------------------------------- |
-
-#### Response
-
-| Field          | Type   | Description                                         |
-| -------------- | ------ | --------------------------------------------------- |
-| `coordinator`  | object | [Server status](#server-status) for the coordinator |
-| `cosigners`    | array  | Array of [Server status](#server-status)            |
-| `watchtowers`  | array  | Array of [Server status](#server-status)            |
-
-##### Server status
-
-| Field       | Type   | Description                                                 |
-| ----------- | ------ | ----------------------------------------------------------- |
-| `reachable` | bool   | Can the server be reached?                                  |
-| `host`      | string | Hostname and port of the server                             |
 
 ## User flows
 

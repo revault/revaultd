@@ -446,6 +446,7 @@ fn cpfp_package(
 ) -> Result<(), BitcoindError> {
     let revaultd = revaultd.read().unwrap();
 
+    // First of all, compute all the information we need from the to-be-cpfped transactions.
     let mut txids = HashSet::with_capacity(tx_package.len());
     let mut package_weight = 0;
     let mut package_fees = Amount::from_sat(0);
@@ -457,15 +458,16 @@ fn cpfp_package(
     }
     let tx_feerate = (package_fees.as_sat() * 1_000 / package_weight) as u64; // to sats/kWU
     assert!(tx_feerate < target_feerate);
-
     let added_feerate = target_feerate - tx_feerate;
-    let listunspent: Vec<_> = bitcoind.list_unspent_cpfp()?;
 
+    // FIXME: it's a shame to have to get the derivation paths from bitcoind, but we need to
+    // for the Spend CPFP output derivation index. We have all the info and should be able to
+    // make it work without this hack.
+    let listunspent: Vec<_> = bitcoind.list_unspent_cpfp()?;
     // FIXME: drain_filter would be PERFECT for this but it's nightly only :(
     let (mut my_listunspent, listunspent): (Vec<_>, Vec<_>) = listunspent
         .into_iter()
         .partition(|l| txids.contains(&l.outpoint.txid));
-
     if my_listunspent.len() != tx_package.len() {
         log::warn!(
             "We need to feebump a package containing the following txids: {:?},\n
@@ -478,7 +480,6 @@ fn cpfp_package(
         );
         return Ok(());
     }
-
     my_listunspent.sort_by_key(|l| l.outpoint.txid);
     tx_package.sort_by_key(|tx| tx.txid());
     // I can do this as I just ordered by txid
@@ -495,6 +496,7 @@ fn cpfp_package(
         }
     }
 
+    // Then construct the child PSBT
     let confirmed_cpfp_utxos: Vec<_> = listunspent
         .into_iter()
         .filter_map(|l| {
@@ -532,6 +534,7 @@ fn cpfp_package(
         }
     };
 
+    // Finally, sign and (try to) broadcast the CPFP transaction
     let (complete, psbt_signed) = bitcoind.sign_psbt(psbt.psbt())?;
     if !complete {
         log::error!(
@@ -597,16 +600,13 @@ fn maybe_cpfp_txs(
         .chain(
             db_cpfpable_unvaults(&db_path)?
                 .into_iter()
-                .map(|unvaults| {
-                    unvaults.into_iter().filter_map(|unvault| {
-                        if should_cpfp(bitcoind, &unvault, current_feerate) {
-                            Some(ToBeCpfped::Unvault(unvault))
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .flatten(),
+                .filter_map(|unvault| {
+                    if should_cpfp(bitcoind, &unvault, current_feerate) {
+                        Some(ToBeCpfped::Unvault(unvault))
+                    } else {
+                        None
+                    }
+                }),
         )
         .collect();
 

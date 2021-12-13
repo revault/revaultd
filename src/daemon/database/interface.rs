@@ -879,8 +879,7 @@ pub fn db_cpfpable_spends(db_path: &Path) -> Result<Vec<SpendTransaction>, Datab
 
 /// Returns all the unvaults that have priority and for which their spend has not
 /// been broadcasted, which are eligible for CPFP if still unconfirmed
-pub fn db_cpfpable_unvaults(db_path: &Path) -> Result<Vec<Vec<UnvaultTransaction>>, DatabaseError> {
-    let mut unvaults: HashMap<i64, Vec<UnvaultTransaction>> = HashMap::new();
+pub fn db_cpfpable_unvaults(db_path: &Path) -> Result<Vec<UnvaultTransaction>, DatabaseError> {
     db_query(
         db_path,
         "SELECT ptx.*, stx.id FROM spend_transactions stx \
@@ -891,17 +890,10 @@ pub fn db_cpfpable_unvaults(db_path: &Path) -> Result<Vec<Vec<UnvaultTransaction
         params![TransactionType::Unvault as u32,],
         |row| {
             let tx: DbTransaction = row.try_into()?;
-            let unvault_tx = match tx.psbt {
-                RevaultTx::Unvault(tx) => tx,
+            match tx.psbt {
+                RevaultTx::Unvault(tx) => Ok(tx),
                 _ => unreachable!(),
-            };
-            let spend_id = row.get::<_, i64>(6)?;
-            unvaults
-                .entry(spend_id)
-                .or_insert(Vec::new())
-                .push(unvault_tx);
-            Ok(())
+            }
         },
-    )?;
-    Ok(unvaults.values().cloned().collect())
+    )
 }

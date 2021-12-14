@@ -3,6 +3,7 @@ import pytest
 import os
 
 from fixtures import *
+from test_framework import serializations
 from test_framework.utils import (
     TailableProc,
     POSTGRES_IS_SETUP,
@@ -226,3 +227,92 @@ def test_no_cosig_server(revault_network):
     rn.spend_vaults_anyhow(vaults[:2])
     rn.unvault_vaults_anyhow([vaults[-1]])
     rn.cancel_vault(vaults[-1])
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_cpfp_transaction(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        with_watchtowers=False,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    stks = revault_network.stks()
+    vaults = revault_network.fundmany([1, 2, 3])
+
+    for vault in vaults:
+        revault_network.secure_vault(vault)
+        revault_network.activate_vault(vault)
+    spend_psbt = revault_network.broadcast_unvaults_anyhow(vaults, priority=True)
+
+    unvault_txids = []
+    for vault in vaults:
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        unvault_psbt = serializations.PSBT()
+        unvault_b64 = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]
+        unvault_psbt.deserialize(unvault_b64)
+        unvault_psbt.tx.calc_sha256()
+        unvault_txids.append(unvault_psbt.tx.hash)
+    spend_txid = spend_psbt.tx.hash
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == len(vaults),
+        )
+
+    # Uh oh! The feerate is too low, miners aren't including our transaction...
+    bitcoind.generate_blocks_censor(1, unvault_txids)
+    man.wait_for_log(
+        f"CPFPed transactions",
+    )
+    for unvault_txid in unvault_txids:
+        assert bitcoind.rpc.getmempoolentry(unvault_txid)["descendantcount"] == 2
+
+    # Alright, now let's do everything again for the spend :tada:
+
+    # Confirming the unvaults
+    bitcoind.generate_block(1)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"])["vaults"]) == len(vaults),
+        )
+
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_txid}'")
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == len(vaults),
+        )
+
+    # Uh oh! The feerate is too low, miners aren't including our transaction...
+    bitcoind.generate_blocks_censor(1, [spend_txid])
+    man.wait_for_log(
+        # FIXME: these '\' before the '[', ']' trigger a deprecation warning
+        f"CPFPed transactions with ids '\[{spend_txid}\]'",
+    )
+    assert bitcoind.rpc.getmempoolentry(spend_txid)["descendantcount"] == 2
+
+    # Let's test that non-prioritized txs don't get cpfped
+    amount = 0.24
+    vault = revault_network.fund(amount)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    spend_psbt = revault_network.unvault_vaults_anyhow([vault], priority=False)
+    spend_txid = spend_psbt.tx.hash
+
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(
+        f"Succesfully broadcasted Spend tx '{spend_txid}'",
+    )
+
+    # Uh oh! The feerate is too low, miners aren't including our transaction...
+    bitcoind.generate_blocks_censor(1, [spend_txid])
+    man.wait_for_log("Checking if transactions need CPFP...")
+    # Nah, they don't
+    assert bitcoind.rpc.getmempoolentry(spend_txid)["descendantcount"] == 1

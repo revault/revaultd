@@ -39,8 +39,9 @@ use revault_tx::{
     },
     miniscript::DescriptorTrait,
     transactions::{
-        spend_tx_from_deposits, transaction_chain, CancelTransaction, EmergencyTransaction,
-        RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
+        spend_tx_from_deposits, transaction_chain, CancelTransaction, CpfpableTransaction,
+        EmergencyTransaction, RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction,
+        UnvaultTransaction,
     },
     txins::DepositTxIn,
     txouts::{DepositTxOut, SpendTxOut},
@@ -210,6 +211,7 @@ pub trait RpcApi {
         &self,
         meta: Self::Metadata,
         spend_txid: Txid,
+        priority: Option<bool>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
     #[rpc(meta, name = "revault")]
@@ -1221,12 +1223,15 @@ impl RpcApi for RpcImpl {
             db_unvaults.push(db_unvault);
         }
 
+        // The user has the ability to set priority to the transaction in
+        // setspendtx, here we always set it to false.
+
         if db_spend_transaction(&db_path, &spend_txid)
             .map_err(|e| Error::from(e))?
             .is_some()
         {
             log::debug!("Updating Spend transaction '{}'", spend_txid);
-            db_update_spend(&db_path, &spend_tx).map_err(|e| Error::from(e))?;
+            db_update_spend(&db_path, &spend_tx, false).map_err(|e| Error::from(e))?;
         } else {
             log::debug!("Storing new Spend transaction '{}'", spend_txid);
             db_insert_spend(&db_path, &db_unvaults, &spend_tx).map_err(|e| Error::from(e))?;
@@ -1323,11 +1328,22 @@ impl RpcApi for RpcImpl {
         &self,
         meta: Self::Metadata,
         spend_txid: Txid,
+        priority: Option<bool>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         manager_only!(meta);
 
+        let priority = priority.unwrap_or(false);
         let revaultd = meta.rpc_utils.revaultd.read().unwrap();
         let db_path = revaultd.db_file();
+
+        if priority && revaultd.cpfp_key.is_none() {
+            return Err(JsonRpcError::invalid_params(
+                "Can't read the cpfp key. \
+                    Make sure you have a file called cpfp_secret containing \
+                    the private key in your datadir"
+                    .to_string(),
+            ));
+        }
 
         // Get the referenced Spend and the vaults it spends from the DB
         let mut spend_tx = db_spend_transaction(&db_path, &spend_txid)
@@ -1432,7 +1448,7 @@ impl RpcApi for RpcImpl {
                 e
             ))
         })?;
-        db_update_spend(&db_path, &spend_tx.psbt).map_err(|e| Error::from(e))?;
+        db_update_spend(&db_path, &spend_tx.psbt, priority).map_err(|e| Error::from(e))?;
 
         // Finally we can broadcast the Unvault(s) transaction(s) and store the Spend
         // transaction for later broadcast

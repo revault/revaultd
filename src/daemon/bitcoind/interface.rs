@@ -2,8 +2,11 @@ use crate::common::config::BitcoindConfig;
 use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
     bitcoin::{
-        blockdata::constants::COIN_VALUE, consensus::encode, Address, Amount, BlockHash, OutPoint,
-        Transaction, TxOut, Txid,
+        blockdata::constants::COIN_VALUE,
+        consensus::{encode, Decodable},
+        hashes::hex::FromHex,
+        util::bip32::ChildNumber,
+        Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
     },
     transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},
 };
@@ -33,10 +36,12 @@ const RPC_SOCKET_TIMEOUT: u64 = 180;
 // Labels used to tag utxos in the watchonly wallet
 const DEPOSIT_UTXOS_LABEL: &str = "revault-deposit";
 const UNVAULT_UTXOS_LABEL: &str = "revault-unvault";
+const CPFP_UTXOS_LABEL: &str = "revault-cpfp";
 
 pub struct BitcoinD {
     node_client: Client,
     watchonly_client: Client,
+    cpfp_client: Client,
 }
 
 macro_rules! params {
@@ -53,6 +58,7 @@ impl BitcoinD {
     pub fn new(
         config: &BitcoindConfig,
         watchonly_wallet_path: String,
+        cpfp_wallet_path: String,
     ) -> Result<BitcoinD, BitcoindError> {
         let cookie_string = fs::read_to_string(&config.cookie_path).map_err(|e| {
             BitcoindError::Custom(format!("Reading cookie file: {}", e.to_string()))
@@ -67,10 +73,20 @@ impl BitcoinD {
                 .build(),
         );
 
-        let url = format!("http://{}/wallet/{}", config.addr, watchonly_wallet_path);
+        let watchonly_url = format!("http://{}/wallet/{}", config.addr, watchonly_wallet_path);
         let watchonly_client = Client::with_transport(
             SimpleHttpTransport::builder()
-                .url(&url)
+                .url(&watchonly_url)
+                .map_err(BitcoindError::from)?
+                .timeout(Duration::from_secs(RPC_SOCKET_TIMEOUT))
+                .cookie_auth(cookie_string.clone())
+                .build(),
+        );
+
+        let cpfp_url = format!("http://{}/wallet/{}", config.addr, cpfp_wallet_path);
+        let cpfp_client = Client::with_transport(
+            SimpleHttpTransport::builder()
+                .url(&cpfp_url)
                 .map_err(BitcoindError::from)?
                 .timeout(Duration::from_secs(RPC_SOCKET_TIMEOUT))
                 .cookie_auth(cookie_string)
@@ -80,6 +96,7 @@ impl BitcoinD {
         Ok(BitcoinD {
             node_client,
             watchonly_client,
+            cpfp_client,
         })
     }
 
@@ -230,30 +247,32 @@ impl BitcoinD {
         self.make_requests(&self.node_client, requests)
     }
 
+    fn make_cpfp_request<'a, 'b>(
+        &self,
+        method: &'a str,
+        params: &'b [Box<serde_json::value::RawValue>],
+    ) -> Result<Json, BitcoindError> {
+        self.make_request(&self.cpfp_client, method, params)
+    }
+
     pub fn getblockchaininfo(&self) -> Result<Json, BitcoindError> {
         self.make_node_request("getblockchaininfo", &[])
     }
 
     pub fn getblockhash(&self, height: u32) -> Result<BlockHash, BitcoindError> {
-        BlockHash::from_str(
+        Ok(BlockHash::from_str(
             self.make_node_request("getblockhash", &params!(height))?
                 .as_str()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'getblockhash' didn't return a string.".to_string(),
-                    )
-                })?,
+                .expect("API break, 'getblockhash' didn't return a string."),
         )
-        .map_err(|e| {
-            BitcoindError::Custom(format!("Invalid blockhash given by 'getblockhash': {}", e))
-        })
+        .expect(&format!("Invalid blockhash given by 'getblockhash'")))
     }
 
     pub fn get_tip(&self) -> Result<BlockchainTip, BitcoindError> {
         let json_height = self.make_node_request("getblockcount", &[])?;
-        let height = json_height.as_u64().ok_or_else(|| {
-            BitcoindError::Custom("API break, 'getblockcount' didn't return an u64.".to_string())
-        })? as u32;
+        let height = json_height
+            .as_u64()
+            .expect("API break, 'getblockcount' didn't return an u64.") as u32;
         let hash = self.getblockhash(height)?;
 
         Ok(BlockchainTip { height, hash })
@@ -265,45 +284,33 @@ impl BitcoinD {
             headers: chaininfo
                 .get("headers")
                 .and_then(|h| h.as_u64())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'headers' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'headers' in getblockchaininfo response?"),
             blocks: chaininfo
                 .get("blocks")
                 .and_then(|b| b.as_u64())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'blocks' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'blocks' in getblockchaininfo response?"),
             ibd: chaininfo
                 .get("initialblockdownload")
                 .and_then(|i| i.as_bool())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'initialblockdownload' in getblockchaininfo response?"),
             progress: chaininfo
                 .get("verificationprogress")
                 .and_then(|i| i.as_f64())
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "No valid 'initialblockdownload' in getblockchaininfo response?".to_owned(),
-                    )
-                })?,
+                .expect("No valid 'initialblockdownload' in getblockchaininfo response?"),
         })
     }
 
-    pub fn createwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
+    pub fn createwallet_startup(
+        &self,
+        wallet_path: String,
+        watchonly: bool,
+    ) -> Result<(), BitcoindError> {
         let res = self.make_node_request(
             "createwallet",
             &params!(
                 Json::String(wallet_path),
-                Json::Bool(true),             // watchonly
-                Json::Bool(false),            // blank
+                Json::Bool(watchonly),        // watchonly
+                Json::Bool(true),             // blank
                 Json::String("".to_string()), // passphrase,
                 Json::Bool(false),            // avoid_reuse
                 Json::Bool(true),             // descriptors
@@ -322,26 +329,18 @@ impl BitcoinD {
     }
 
     pub fn listwallets(&self) -> Result<Vec<String>, BitcoindError> {
-        self.make_node_request("listwallets", &[])?
+        Ok(self
+            .make_node_request("listwallets", &[])?
             .as_array()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listwallets' didn't return an array.".to_string(),
-                )
+            .expect("API break, 'listwallets' didn't return an array.")
+            .iter()
+            .map(|json_str| {
+                json_str
+                    .as_str()
+                    .expect("API break: 'listwallets' contains a non-string value")
+                    .to_string()
             })
-            .map(|vec| {
-                vec.iter()
-                    .map(|json_str| {
-                        json_str
-                            .as_str()
-                            .unwrap_or_else(|| {
-                                log::error!("'listwallets' contain a non-string value. Aborting.");
-                                panic!("API break: 'listwallets' contains a non-string value");
-                            })
-                            .to_string()
-                    })
-                    .collect()
-            })
+            .collect())
     }
 
     pub fn loadwallet_startup(&self, wallet_path: String) -> Result<(), BitcoindError> {
@@ -392,25 +391,25 @@ impl BitcoinD {
                 &params!(Json::String(desc_wo_checksum)),
             )?
             .get("descriptor")
-            .ok_or_else(|| {
-                BitcoindError::Custom("No 'descriptor' in 'getdescriptorinfo'".to_string())
-            })?
+            .expect("No 'descriptor' in 'getdescriptorinfo'")
             .as_str()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "'descriptor' in 'getdescriptorinfo' isn't a string anymore".to_string(),
-                )
-            })?
+            .expect("'descriptor' in 'getdescriptorinfo' isn't a string anymore")
             .to_string())
     }
 
     fn bulk_import_descriptors(
         &self,
+        client: &Client,
         descriptors: Vec<String>,
         timestamp: u32,
         label: String,
         fresh_wallet: bool,
+        active: bool,
     ) -> Result<(), BitcoindError> {
+        if !fresh_wallet {
+            log::debug!("Not a fresh wallet, rescan *may* take some time.");
+        }
+
         let all_descriptors: Vec<Json> = descriptors
             .into_iter()
             .map(|desc| {
@@ -423,25 +422,28 @@ impl BitcoinD {
                     if fresh_wallet {
                         Json::String("now".to_string())
                     } else {
-                        log::debug!("Not a fresh wallet, rescan *may* take some time.");
                         Json::Number(serde_json::Number::from(timestamp))
                     },
                 );
                 desc_map.insert("label".to_string(), Json::String(label.clone()));
+                desc_map.insert("active".to_string(), Json::Bool(active));
 
                 Json::Object(desc_map)
             })
             .collect();
 
-        let res = self
-            .make_watchonly_request("importdescriptors", &params!(Json::Array(all_descriptors)))?;
+        let res = self.make_request(
+            &client,
+            "importdescriptors",
+            &params!(Json::Array(all_descriptors)),
+        )?;
         if res.get(0).map(|x| x.get("success")) == Some(Some(&Json::Bool(true))) {
             return Ok(());
         }
 
         Err(BitcoindError::Custom(format!(
             "Error returned from 'importdescriptor': {:?}",
-            res.get("error")
+            res.get(0).map(|r| r.get("error"))
         )))
     }
 
@@ -452,10 +454,12 @@ impl BitcoinD {
         fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
         self.bulk_import_descriptors(
+            &self.watchonly_client,
             descriptors,
             timestamp,
             DEPOSIT_UTXOS_LABEL.to_string(),
             fresh_wallet,
+            false,
         )
     }
 
@@ -466,10 +470,28 @@ impl BitcoinD {
         fresh_wallet: bool,
     ) -> Result<(), BitcoindError> {
         self.bulk_import_descriptors(
+            &self.watchonly_client,
             descriptors,
             timestamp,
             UNVAULT_UTXOS_LABEL.to_string(),
             fresh_wallet,
+            false,
+        )
+    }
+
+    pub fn startup_import_cpfp_descriptor(
+        &self,
+        descriptor: String,
+        timestamp: u32,
+        fresh_wallet: bool,
+    ) -> Result<(), BitcoindError> {
+        self.bulk_import_descriptors(
+            &self.cpfp_client,
+            vec![descriptor],
+            timestamp,
+            CPFP_UTXOS_LABEL.to_string(),
+            fresh_wallet,
+            true,
         )
     }
 
@@ -505,43 +527,77 @@ impl BitcoinD {
         self.import_fresh_descriptor(descriptor, UNVAULT_UTXOS_LABEL.to_string())
     }
 
-    // A routine to get the txid,vout pair out of a listunspent entry
-    fn outpoint_from_utxo(&self, utxo: &Json) -> Result<OutPoint, BitcoindError> {
-        let txid = utxo
-            .get("txid")
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a 'txid'.".to_string(),
-                )
-            })?
-            .as_str()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a string 'txid'.".to_string(),
-                )
-            })?;
-        let txid = Txid::from_str(txid).map_err(|e| {
-            BitcoindError::Custom(format!(
-                "Converting txid from str in 'listunspent': {}.",
-                e.to_string()
-            ))
-        })?;
-        let vout = utxo
-            .get("vout")
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a 'vout'.".to_string(),
-                )
-            })?
-            .as_u64()
-            .ok_or_else(|| {
-                BitcoindError::Custom(
-                    "API break, 'listunspent' entry didn't contain a valid 'vout'.".to_string(),
-                )
-            })?;
-        Ok(OutPoint {
-            txid,
-            vout: vout as u32, // Bitcoin makes this safe
+    pub fn list_unspent_deposits(
+        &self,
+        min_amount: Option<u64>,
+    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        self.list_unspent(
+            &self.watchonly_client,
+            min_amount,
+            Some(DEPOSIT_UTXOS_LABEL),
+        )
+    }
+
+    pub fn list_unspent_unvaults(
+        &self,
+        min_amount: Option<u64>,
+    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        self.list_unspent(
+            &self.watchonly_client,
+            min_amount,
+            Some(UNVAULT_UTXOS_LABEL),
+        )
+    }
+
+    pub fn list_unspent_cpfp(&self) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        // For some weird reason, listunspent with the cpfp wallet doesn't return the label
+        // (maybe because we only have one descriptor anyways?), so we pass `None` as a label
+        self.list_unspent(&self.cpfp_client, None, None)
+    }
+
+    fn list_unspent(
+        &self,
+        client: &Client,
+        min_amount: Option<u64>,
+        label: Option<&'static str>,
+    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
+        let req = if let Some(min_amount) = min_amount {
+            self.make_request(
+                client,
+                "listunspent",
+                &params!(
+                    Json::Number(0.into()),       // minconf
+                    Json::Number(9999999.into()), // maxconf (default)
+                    Json::Array(vec![]),          // addresses (default)
+                    Json::Bool(true),             // include_unsafe (default)
+                    serde_json::json!({
+                        "minimumAmount": min_amount,
+                    }), // query_options
+                ),
+            )
+        } else {
+            self.make_request(
+                client,
+                "listunspent",
+                &params!(
+                    Json::Number(0.into()), // minconf
+                ),
+            )
+        };
+
+        req.map(|r| {
+            r.as_array()
+                .expect("API break, 'listunspent' didn't return an array.")
+                .into_iter()
+                .filter_map(|utxo| {
+                    let utxo = ListUnspentEntry::from(utxo);
+                    if label.or(utxo.label.as_deref()) == utxo.label.as_deref() {
+                        Some(utxo)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         })
     }
 
@@ -555,109 +611,25 @@ impl BitcoinD {
         let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
         // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
         let mut spent_utxos = deposits_utxos.clone();
-        let label_json: Json = DEPOSIT_UTXOS_LABEL.to_string().into();
+        let utxos = self.list_unspent_deposits(Some(MIN_DEPOSIT_VALUE / COIN_VALUE))?;
 
-        let req = self.make_watchonly_request(
-            "listunspent",
-            &params!(
-                Json::Number(0.into()),       // minconf
-                Json::Number(9999999.into()), // maxconf (default)
-                Json::Array(vec![]),          // addresses (default)
-                Json::Bool(true),             // include_unsafe (default)
-                serde_json::json!({
-                    "minimumAmount": MIN_DEPOSIT_VALUE / COIN_VALUE,
-                }), // query_options
-            ),
-        );
-
-        for utxo in req?.as_array().ok_or_else(|| {
-            BitcoindError::Custom("API break, 'listunspent' didn't return an array.".to_string())
-        })? {
-            if utxo.get("label") != Some(&label_json) {
-                continue;
-            }
-            let confirmations = utxo
-                .get("confirmations")
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a 'confirmations'."
-                            .to_string(),
-                    )
-                })?
-                .as_u64()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a valid 'confirmations'."
-                            .to_string(),
-                    )
-                })?;
-
-            let outpoint = self.outpoint_from_utxo(&utxo)?;
+        for unspent in utxos {
             // Not obvious at first sight:
             //  - spent_utxos == existing_utxos before the loop
             //  - listunspent won't send duplicated entries
             //  - remove() will return None if it was not present in the map
             // Therefore if there is an utxo at this outpoint, it's an already known deposit
-            if let Some(utxo) = spent_utxos.remove(&outpoint) {
+            if let Some(map_utxo) = spent_utxos.remove(&unspent.outpoint) {
                 // It may be known but still unconfirmed, though.
-                if !utxo.is_confirmed && confirmations >= min_conf as u64 {
-                    confirmed_utxos.insert(outpoint, utxo);
+                if !map_utxo.is_confirmed && unspent.confirmations >= min_conf as u64 {
+                    confirmed_utxos.insert(unspent.outpoint, map_utxo);
                 }
                 continue;
             }
-
-            let address = utxo
-                .get("address")
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain an 'address'.".to_string(),
-                    )
-                })?
-                .as_str()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a string 'address'."
-                            .to_string(),
-                    )
-                })?;
-            let script_pubkey = Address::from_str(address)
-                .map_err(|e| {
-                    BitcoindError::Custom(format!(
-                        "Could not parse 'address' from 'listunspent' entry: {}",
-                        e.to_string()
-                    ))
-                })?
-                .script_pubkey();
-            let amount = utxo
-                .get("amount")
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain an 'amount'.".to_string(),
-                    )
-                })?
-                .as_f64()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(
-                        "API break, 'listunspent' entry didn't contain a valid 'amount'."
-                            .to_string(),
-                    )
-                })?;
-            let value = Amount::from_btc(amount)
-                .map_err(|e| {
-                    BitcoindError::Custom(format!(
-                        "Could not convert 'listunspent' entry's 'amount' to an Amount: {}",
-                        e.to_string()
-                    ))
-                })?
-                .as_sat();
-
             new_utxos.insert(
-                outpoint,
+                unspent.outpoint,
                 UtxoInfo {
-                    txo: TxOut {
-                        value,
-                        script_pubkey,
-                    },
+                    txo: unspent.txo,
                     // All new utxos are marked as unconfirmed. This allows for a proper state
                     // transition.
                     is_confirmed: false,
@@ -683,36 +655,10 @@ impl BitcoinD {
         //
         // 1. Fetch the Unvault utxos from the watchonly wallet into a
         //    (outpoint, confirmed) mapping
-        let label: Json = UNVAULT_UTXOS_LABEL.into();
         let unspent_list: HashMap<OutPoint, bool> = self
-            .make_watchonly_request(
-                "listunspent",
-                &params!(
-                    Json::Number(0.into()), // minconf
-                ),
-            )?
-            .as_array()
-            .expect("API break: 'listunspent' didn't return an array?")
+            .list_unspent_unvaults(None)?
             .iter()
-            .filter_map(|entry| {
-                if entry
-                    .get("label")
-                    .expect("API break: no 'label' in listunspent entry")
-                    == &label
-                {
-                    let op = self
-                        .outpoint_from_utxo(&entry)
-                        .expect("API break: can't get outpoint from listunspent entry");
-                    let confs = entry
-                        .get("confirmations")
-                        .map(|c| c.as_u64())
-                        .flatten()
-                        .expect("API break: invalid 'confirmations' entry in listunpsent entry");
-                    Some((op, confs > 0))
-                } else {
-                    None
-                }
-            })
+            .map(|utxo| (utxo.outpoint, utxo.confirmations > 0))
             .collect();
 
         // 2. Loop through all known Unvault utxos, check if some confirmed or
@@ -742,34 +688,26 @@ impl BitcoinD {
             .make_watchonly_request("gettransaction", &params!(Json::String(txid.to_string())))?;
         let tx_hex = res
             .get("hex")
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: no 'hex' in 'gettransaction' result (txid: {})",
-                    txid
-                ))
-            })?
+            .expect(&format!(
+                "API break: no 'hex' in 'gettransaction' result (txid: {})",
+                txid
+            ))
             .as_str()
-            .ok_or_else(|| {
-                BitcoindError::Custom("API break: 'hex' is not a string ????".to_string())
-            })?
+            .expect("API break: 'hex' is not a string ????")
             .to_string();
         let blockheight = res.get("blockheight").map(|bh| bh.as_u64().unwrap() as u32);
         let blocktime = res.get("blocktime").map(|bh| bh.as_u64().unwrap() as u32);
         let received_time = res
             .get("timereceived")
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: no 'time_received' in 'gettransaction' result (txid: {})",
-                    txid
-                ))
-            })?
+            .expect(&format!(
+                "API break: no 'time_received' in 'gettransaction' result (txid: {})",
+                txid
+            ))
             .as_u64()
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: invalid 'time_received' in 'gettransaction' result (txid: {})",
-                    txid
-                ))
-            })? as u32;
+            .expect(&format!(
+                "API break: invalid 'time_received' in 'gettransaction' result (txid: {})",
+                txid
+            )) as u32;
 
         Ok(WalletTransaction {
             hex: tx_hex,
@@ -777,6 +715,35 @@ impl BitcoinD {
             blocktime,
             received_time,
         })
+    }
+
+    pub fn sign_psbt(&self, psbt: String) -> Result<(bool, String), BitcoindError> {
+        let res = self.make_cpfp_request("walletprocesspsbt", &params!(Json::String(psbt)))?;
+        let complete = res
+            .get("complete")
+            .expect("API break: no 'complete' in 'walletprocesspsbt' result")
+            .as_bool()
+            .expect("API break: invalid 'complete' in 'walletprocesspsbt' result");
+        let psbt = res
+            .get("psbt")
+            .expect("API break: no 'psbt' in 'walletprocesspsbt' result")
+            .as_str()
+            .expect("API break: invalid 'psbt' in 'walletprocesspsbt' result")
+            .to_string();
+        Ok((complete, psbt))
+    }
+
+    pub fn finalize_psbt(&self, psbt: String) -> Result<Transaction, BitcoindError> {
+        let res = self.make_cpfp_request("finalizepsbt", &params!(Json::String(psbt)))?;
+        let hex_str = res
+            .get("hex")
+            .expect("API break: no 'hex' in 'finalizepsbt' result")
+            .as_str()
+            .expect("API break: invalid 'hex' in 'finalizepsbt' result");
+        let hex = <Vec<u8>>::from_hex(hex_str)
+            .expect("API break: invalid 'hex' in 'finalizepsbt' result");
+        Ok(Transaction::consensus_decode(hex.as_slice())
+            .expect("API break: invalid 'hex' in 'finalizepsbt' result"))
     }
 
     /// Broadcast a transaction with 'sendrawtransaction', discarding the returned txid
@@ -831,12 +798,10 @@ impl BitcoinD {
             .get("transactions")
             .map(|t| t.as_array())
             .flatten()
-            .ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
-                    block_hash
-                ))
-            })?;
+            .expect(&format!(
+            "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
+            block_hash
+        ));
 
         for transaction in transactions {
             if transaction.get("category").map(|c| c.as_str()).flatten() != Some("send") {
@@ -850,12 +815,10 @@ impl BitcoinD {
                 .get("txid")
                 .map(|t| t.as_str())
                 .flatten()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(format!(
-                        "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
-                        block_hash
-                    ))
-                })?;
+                .expect(&format!(
+                    "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
+                    block_hash
+                ));
 
             let gettx_res = self.make_watchonly_request(
                 "gettransaction",
@@ -870,41 +833,34 @@ impl BitcoinD {
                 .map(|d| d.get("vin").map(|vin| vin.as_array()))
                 .flatten()
                 .flatten()
-                .ok_or_else(|| {
-                    BitcoindError::Custom(format!(
-                        "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
-                        block_hash
-                    ))
-                })?;
+                .expect(&format!(
+                    "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
+                    block_hash
+                ));
 
             for input in vin {
                 let txid = input
                     .get("txid")
                     .map(|t| t.as_str().map(|t| Txid::from_str(t).ok()))
                     .flatten()
-                    .flatten().ok_or_else(|| {
-                    BitcoindError::Custom(format!(
-                        "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
-                        block_hash
-                    ))
-                })?;
-                let vout = input.get("vout").map(|v| v.as_u64()).flatten().ok_or_else(|| {
-                    BitcoindError::Custom(format!(
+                    .flatten()
+                    .expect(
+                        &format!(
+                            "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
+                            block_hash
+                    ));
+                let vout = input.get("vout").map(|v| v.as_u64()).flatten().expect(
+                    &format!(
                         "API break: Invalid or no vout in 'vin' entry in 'gettransaction' (blockhash: {})",
                         block_hash
                     ))
-                })? as u32;
+                as u32;
                 let input_outpoint = OutPoint { txid, vout };
 
                 if spent_outpoint == &input_outpoint {
-                    return Txid::from_str(spending_txid)
-                        .map(|txid| Some(txid))
-                        .map_err(|e| {
-                            BitcoindError::Custom(format!(
-                                "bitcoind gave an invalid txid in 'listsinceblock': '{}'",
-                                e
-                            ))
-                        });
+                    return Ok(Txid::from_str(spending_txid).map(|txid| Some(txid)).expect(
+                        &format!("bitcoind gave an invalid txid in 'listsinceblock'"),
+                    ));
                 }
             }
         }
@@ -939,6 +895,32 @@ impl BitcoinD {
                 }
             }
         }
+    }
+
+    /// Estimates the feerate needed for a tx to make it in the
+    /// next block. Uses estimatesmartfee and, in case it returns an
+    /// error, a default value.
+    /// The value returned is in sats/kWU
+    pub fn estimate_feerate(&self) -> Result<Option<u64>, BitcoindError> {
+        if let Ok(json) = self.make_node_request(
+            "estimatesmartfee",
+            &params!(Json::Number(serde_json::Number::from(2))),
+        ) {
+            if let Some(n) = json.get("feerate") {
+                let btc_kvb = n.as_f64().expect("feerate is f64");
+                // Math is hard
+                // btc/kvbyte -> sats/kbyte
+                let sats_kvb = btc_kvb * Amount::ONE_BTC.as_sat() as f64;
+                // sats/kbyte -> sats/vbyte
+                let sats_vb = sats_kvb / 1000.0;
+                // sats/vbyte -> sats/WU
+                let sats_wu = sats_vb / 4.0;
+                // sats/WU -> msats/WU
+                return Ok(Some((sats_wu * 1000.0) as u64));
+            }
+        }
+        // TODO: Calculate the fallback feerate using the blockchain!
+        Ok(None)
     }
 }
 
@@ -982,4 +964,89 @@ pub struct SyncInfo {
     pub blocks: u64,
     pub ibd: bool,
     pub progress: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ListUnspentEntry {
+    pub outpoint: OutPoint,
+    pub txo: TxOut,
+    pub label: Option<String>,
+    pub confirmations: u64,
+    pub derivation_index: Option<ChildNumber>,
+}
+
+impl From<&Json> for ListUnspentEntry {
+    fn from(utxo: &Json) -> Self {
+        let txid = utxo
+            .get("txid")
+            .map(|a| a.as_str())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a string 'txid'.");
+        let txid = Txid::from_str(txid).expect("Converting txid from str in 'listunspent': {}.");
+        let vout = utxo
+            .get("vout")
+            .map(|a| a.as_u64())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a valid 'vout'.");
+        let script_pubkey = utxo
+            .get("scriptPubKey")
+            .map(|s| s.as_str())
+            .flatten()
+            .map(|s| {
+                Script::from_str(s)
+                    .expect("API break, 'listunspent' entry didn't contain a valid script_pubkey")
+            })
+            .expect("API break, 'listunspent' entry didn't contain a string script_pubkey.");
+        let amount = utxo
+            .get("amount")
+            .map(|a| a.as_f64())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a valid 'amount'.");
+        let value = Amount::from_btc(amount)
+            .expect("Could not convert 'listunspent' entry's 'amount' to an Amount")
+            .as_sat();
+        let confirmations = utxo
+            .get("confirmations")
+            .map(|a| a.as_u64())
+            .flatten()
+            .expect("API break, 'listunspent' entry didn't contain a valid 'confirmations'.");
+        let label = utxo
+            .get("label")
+            .map(|l| l.as_str())
+            .flatten()
+            .map(|l| l.to_string());
+        let mut derivation_index = None;
+        if let Some(d) = utxo.get("desc").map(|d| {
+            d.as_str()
+                .expect("API break, 'listunspent` entry contains a non-string desc")
+        }) {
+            // If we have a descriptor, we derive only once, so the derivation index must be
+            // between `/` and `]`
+            let derivation_index_start = d.find("/");
+            let derivation_index_end = d.find("]");
+            if let Some(s) = derivation_index_start {
+                if let Some(e) = derivation_index_end {
+                    // Also we always use normal derivation
+                    derivation_index = d[s + 1..e]
+                        .parse()
+                        .map(|d| ChildNumber::Normal { index: d })
+                        .ok();
+                }
+            }
+        }
+
+        ListUnspentEntry {
+            outpoint: OutPoint {
+                txid,
+                vout: vout as u32, // Bitcoin makes this safe
+            },
+            txo: TxOut {
+                value,
+                script_pubkey,
+            },
+            confirmations,
+            label,
+            derivation_index,
+        }
+    }
 }

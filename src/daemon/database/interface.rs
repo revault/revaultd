@@ -750,6 +750,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
         let id: i64 = row.get(0)?;
         let psbt: Vec<u8> = row.get(1)?;
         let broadcasted: Option<bool> = row.get(3)?; // 2 is 'txid'
+        let has_priority: bool = row.get(4)?;
 
         let psbt = SpendTransaction::from_psbt_serialized(&psbt)
             .expect("We store it with as_psbt_serialized");
@@ -764,6 +765,7 @@ impl TryFrom<&Row<'_>> for DbSpendTransaction {
             id,
             psbt,
             broadcasted,
+            has_priority,
         })
     }
 }
@@ -777,7 +779,7 @@ pub fn db_list_spends(
 
     db_query(
         db_path,
-        "SELECT stx.id, stx.psbt, stx.txid, stx.broadcasted, vaults.deposit_txid, vaults.deposit_vout \
+        "SELECT stx.id, stx.psbt, stx.txid, stx.broadcasted, stx.has_priority, vaults.deposit_txid, vaults.deposit_vout \
          FROM spend_transactions as stx \
          INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
          INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
@@ -786,8 +788,8 @@ pub fn db_list_spends(
         |row| {
             let db_spend: DbSpendTransaction = row.try_into()?;
 
-            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(4)?).expect("We store it");
-            let vout: u32 = row.get(5)?;
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(5)?).expect("We store it");
+            let vout: u32 = row.get(6)?;
             let deposit_outpoint = OutPoint { txid, vout };
 
             let spend_txid = db_spend.psbt.tx().txid();
@@ -858,4 +860,48 @@ pub fn db_vaults_from_spend(
     )?;
 
     Ok(db_vaults)
+}
+
+/// Returns all the spends that have priority and have been broadcasted, which are
+/// eligible for CPFP
+pub fn db_cpfpable_spends(db_path: &Path) -> Result<Vec<SpendTransaction>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM spend_transactions
+         WHERE has_priority = 1 AND broadcasted = 1",
+        params![],
+        |row| {
+            let db_spend: DbSpendTransaction = row.try_into()?;
+            Ok(db_spend.psbt)
+        },
+    )
+}
+
+/// Returns all the unvaults that have priority and for which their spend has not
+/// been broadcasted, which are eligible for CPFP if still unconfirmed
+pub fn db_cpfpable_unvaults(db_path: &Path) -> Result<Vec<Vec<UnvaultTransaction>>, DatabaseError> {
+    let mut unvaults: HashMap<i64, Vec<UnvaultTransaction>> = HashMap::new();
+    db_query(
+        db_path,
+        "SELECT ptx.*, stx.id FROM spend_transactions stx \
+         INNER JOIN spend_inputs as sin ON stx.id = sin.spend_id \
+         INNER JOIN presigned_transactions as ptx ON ptx.id = sin.unvault_id \
+         WHERE has_priority = true AND broadcasted = false AND ptx.type = (?1)
+        ",
+        params![TransactionType::Unvault as u32,],
+        |row| {
+            let tx: DbTransaction = row.try_into()?;
+            let unvault_tx = match tx.psbt {
+                RevaultTx::Unvault(tx) => tx,
+                _ => unreachable!(),
+            };
+            let spend_id = row.get::<_, i64>(6)?;
+            unvaults
+                .entry(spend_id)
+                .or_insert(Vec::new())
+                .push(unvault_tx);
+            Ok(())
+        },
+    )?;
+    Ok(unvaults.values().cloned().collect())
 }

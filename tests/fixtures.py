@@ -130,9 +130,13 @@ def revaultd_stakeholder(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
-    # TODO: implement CPFP
+    cpfp_xprivs = [
+        bytes.fromhex(
+            "0435839400000000000000000060499f801b896d83179a4374aeb7822aaeaceaa0db1f85ee3e904c4defbd9689004b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e",
+        )
+    ]
     cpfp_xpubs = [
-        "tpubDFaf3f5ukV7mGPGzniLKNdd34AZiwtLPnawjqcGSsmqsx5Yzr7V1yBugayF8nrjZ6GZfeunZ7fzQcMixLEDY6cPozKNg3V9v2nwPZD3xShx"
+        "tpubD6NzVbkrYhZ4XJDrzRvuxHEyQaPd1mwwdDofEJwekX18tAdsqeKfxss79AJzg1431FybXg5rfpTrJF4iAhyR7RubberdzEQXiRmXGADH2eA"
     ]
     stks_xpubs = [stk.get_xpub() for stk in stks]
     cosigs_keys = []
@@ -176,9 +180,13 @@ def revaultd_manager(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
-    # TODO: implement CPFP
+    cpfp_xprivs = [
+        bytes.fromhex(
+            "0435839400000000000000000060499f801b896d83179a4374aeb7822aaeaceaa0db1f85ee3e904c4defbd9689004b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e",
+        )
+    ]
     cpfp_xpubs = [
-        "tpubDFaf3f5ukV7mGPGzniLKNdd34AZiwtLPnawjqcGSsmqsx5Yzr7V1yBugayF8nrjZ6GZfeunZ7fzQcMixLEDY6cPozKNg3V9v2nwPZD3xShx"
+        "tpubD6NzVbkrYhZ4XJDrzRvuxHEyQaPd1mwwdDofEJwekX18tAdsqeKfxss79AJzg1431FybXg5rfpTrJF4iAhyR7RubberdzEQXiRmXGADH2eA"
     ]
     stks_xpubs = [stk.get_xpub() for stk in stks]
     cosigs_keys = []
@@ -208,6 +216,7 @@ def revaultd_manager(bitcoind, directory):
         bitcoind.rpcport,
         bitcoind_cookie,
         man_config=man_config,
+        cpfp_priv=cpfp_xprivs[0],
     )
     revaultd.start()
 

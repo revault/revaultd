@@ -20,19 +20,22 @@ use crate::daemon::{
         },
         interface::{
             db_broadcastable_spend_transactions, db_cancel_dbtx, db_canceling_vaults,
-            db_emering_vaults, db_exec, db_spending_vaults, db_tip, db_unemering_vaults,
-            db_unvault_dbtx, db_unvault_transaction, db_vault_by_deposit, db_vault_by_unvault_txid,
-            db_vaults_dbtx, db_wallet,
+            db_cpfpable_spends, db_cpfpable_unvaults, db_emering_vaults, db_exec,
+            db_spending_vaults, db_tip, db_unemering_vaults, db_unvault_dbtx,
+            db_unvault_transaction, db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults_dbtx,
+            db_wallet,
         },
         schema::DbVault,
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{Amount, OutPoint, Txid},
-    transactions::{RevaultTransaction, UnvaultTransaction},
-    txins::RevaultTxIn,
-    txouts::RevaultTxOut,
+    bitcoin::{secp256k1::Secp256k1, Amount, OutPoint, Txid},
+    error::TransactionCreationError,
+    miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
+    transactions::{CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
+    txins::{CpfpTxIn, RevaultTxIn},
+    txouts::{CpfpTxOut, RevaultTxOut},
 };
 
 use std::{
@@ -75,7 +78,6 @@ fn maybe_broadcast_spend_transactions(
                 db_mark_broadcasted_spend(&db_path, &txid)?;
             }
             Err(e) => {
-                // This should not happen if it was succesfully finalized!
                 log::error!("Error broadcasting Spend tx '{}': '{}'", txid, e);
             }
         }
@@ -390,6 +392,159 @@ fn mark_confirmed_emers(
     Ok(())
 }
 
+fn cpfp_package(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+    mut tx_package: Vec<impl CpfpableTransaction>,
+    current_feerate: u64,
+) -> Result<(), BitcoindError> {
+    let revaultd = revaultd.read().unwrap();
+    let txids: Vec<_> = tx_package.iter().map(|s| s.txid()).collect();
+    let tx_feerate = CpfpableTransaction::max_package_feerate(&tx_package) * 1000; // to sats/kWU
+    if current_feerate < tx_feerate {
+        // Uhm, we don't need to cpfp this for now, our estimate is lower
+        // than the tx fees.
+        log::debug!("Txs '{:?}' don't need CPFP", txids);
+        return Ok(());
+    }
+
+    let added_feerate = current_feerate - tx_feerate;
+    let listunspent: Vec<_> = bitcoind.list_unspent_cpfp()?;
+
+    // FIXME: drain_filter would be PERFECT for this but it's nightly only :(
+    let (mut my_listunspent, listunspent): (Vec<_>, Vec<_>) = listunspent
+        .into_iter()
+        .partition(|l| txids.contains(&l.outpoint.txid));
+
+    if my_listunspent.len() != tx_package.len() {
+        log::warn!(
+            "We need to feebump a package containing the following txids: {:?},\n
+                but we found listunspents only for {:?}",
+            txids,
+            my_listunspent
+                .iter()
+                .map(|l| l.outpoint.txid)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    let listunspent: Vec<_> = listunspent
+        .into_iter()
+        .filter_map(|l| {
+            // Not considering UTXOs still in mempool
+            if l.confirmations < 1 {
+                None
+            } else {
+                let txout = CpfpTxOut::new(
+                    Amount::from_sat(l.txo.value),
+                    &revaultd.derived_cpfp_descriptor(l.derivation_index.expect("Must be here")),
+                );
+                Some(CpfpTxIn::new(l.outpoint, txout))
+            }
+        })
+        .collect();
+
+    my_listunspent.sort_by_key(|l| l.outpoint.txid);
+    tx_package.sort_by_key(|tx| tx.txid());
+
+    // I can do this as I just ordered by txid
+    let tx_package: Vec<_> = tx_package
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let derived_cpfp_descriptor = revaultd
+                .derived_cpfp_descriptor(my_listunspent[i].derivation_index.expect("Must be here"));
+            (p, derived_cpfp_descriptor)
+        })
+        .collect();
+
+    let psbt = match CpfpableTransaction::cpfp_transactions(&tx_package, added_feerate, listunspent)
+    {
+        Ok(tx) => tx,
+        Err(TransactionCreationError::InsufficientFunds) => {
+            // Well, we're poor.
+            log::error!(
+                "We wanted to feebump transactions '{:?}', but we don't have enough funds!",
+                txids
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            log::error!("Error while creating CPFP transaction: '{}'", e);
+            return Ok(());
+        }
+    };
+
+    let psbt = psbt.as_psbt_string();
+
+    let (complete, psbt_signed) = bitcoind.sign_psbt(psbt)?;
+    if !complete {
+        log::error!(
+            "Bitcoind returned a non-finalized CPFP PSBT: {}",
+            psbt_signed
+        );
+        return Ok(());
+    }
+    let psbt_signed = bitcoind.finalize_psbt(psbt_signed)?;
+
+    if let Err(e) = bitcoind.broadcast_transaction(&psbt_signed) {
+        log::error!("Error broadcasting '{:?}' CPFP tx: {}", txids, e);
+    } else {
+        log::info!("CPFPed transactions with ids '{:?}'", txids);
+    }
+
+    Ok(())
+}
+
+fn maybe_cpfp_txs(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+    log::debug!("Checking if transactions need CPFP...");
+
+    if revaultd.read().unwrap().cpfp_key.is_none() {
+        log::warn!("We should CPFP transactions, but we don't have a cpfp key!");
+        return Ok(());
+    }
+
+    let current_feerate = match bitcoind.estimate_feerate()? {
+        Some(f) => f,
+        None => {
+            log::warn!("Fee estimation not available, skipping CPFP");
+            return Ok(());
+        }
+    };
+
+    let spend_txs: Vec<_> = db_cpfpable_spends(&db_path)?;
+    let unvault_packages: Vec<_> = db_cpfpable_unvaults(&db_path)?;
+    for spend_tx in spend_txs {
+        // We check if this transaction is still unconfirmed. If so, we feebump
+        if bitcoind
+            .get_wallet_transaction(&spend_tx.txid())?
+            .blockheight
+            .is_none()
+        {
+            // As cpfp_package expects a package, we wrap our spend_tx in a Vec
+            cpfp_package(revaultd, bitcoind, vec![spend_tx], current_feerate)?;
+        }
+    }
+
+    for unvault_package in unvault_packages {
+        // We check if any unvault in this package is still unconfirmed. If so, we feebump
+        if unvault_package.iter().any(|u| {
+            bitcoind
+                .get_wallet_transaction(&u.txid())
+                .map(|w| w.blockheight.is_none())
+                .unwrap_or(true)
+        }) {
+            cpfp_package(revaultd, bitcoind, unvault_package, current_feerate)?;
+        }
+    }
+
+    Ok(())
+}
+
 // Everything we do when the chain moves forward
 fn new_tip_event(
     revaultd: &Arc<RwLock<RevaultD>>,
@@ -401,6 +556,11 @@ fn new_tip_event(
 
     // First we update it in DB
     db_update_tip(&db_path, new_tip)?;
+
+    // Then we CPFP our spends/unvaults, if we can
+    if revaultd.read().unwrap().is_manager() {
+        maybe_cpfp_txs(revaultd, bitcoind)?;
+    }
 
     // Then we check if any Spend became mature yet
     maybe_broadcast_spend_transactions(revaultd, bitcoind)?;
@@ -1508,7 +1668,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
             }
         }
 
-        bitcoind.createwallet_startup(bitcoind_wallet_path)?;
+        bitcoind.createwallet_startup(bitcoind_wallet_path, true)?;
         log::info!("Importing descriptors to bitcoind watchonly wallet.");
 
         // Now, import descriptors.
@@ -1539,6 +1699,48 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
     }
 
+    if let Some(cpfp_key) = revaultd.cpfp_key {
+        let cpfp_wallet_path = revaultd
+            .cpfp_wallet_file()
+            .expect("Wallet id is set at startup in setup_db()");
+
+        if !PathBuf::from(cpfp_wallet_path.clone()).exists() {
+            log::info!("Creating the CPFP wallet");
+            // Remove any leftover. This can happen if we delete the cpfp wallet but don't restart
+            // bitcoind.
+            while bitcoind.listwallets()?.contains(&cpfp_wallet_path) {
+                log::info!("Found a leftover cpfp wallet loaded on bitcoind. Removing it.");
+                if let Err(e) = bitcoind.unloadwallet(cpfp_wallet_path.clone()) {
+                    log::error!("Unloading wallet '{}': '{}'", &cpfp_wallet_path, e);
+                }
+            }
+
+            bitcoind.createwallet_startup(cpfp_wallet_path, false)?;
+            log::info!("Importing descriptors to bitcoind cpfp wallet.");
+
+            // Now, import descriptors.
+            let mut keymap: KeyMap = KeyMap::new();
+            let cpfp_private_key = DescriptorSecretKey::XPrv(DescriptorXKey {
+                xkey: cpfp_key.clone(),
+                origin: None,
+                derivation_path: Default::default(),
+                wildcard: Wildcard::Unhardened,
+            });
+            let sign_ctx = Secp256k1::signing_only();
+            let cpfp_public_key = cpfp_private_key
+                .as_public(&sign_ctx)
+                .expect("We never use hardened");
+            keymap.insert(cpfp_public_key, cpfp_private_key);
+            let cpfp_desc = revaultd
+                .cpfp_descriptor
+                .inner()
+                .to_string_with_secret(&keymap);
+
+            bitcoind.startup_import_cpfp_descriptor(cpfp_desc, wallet.timestamp, fresh_wallet)?;
+        }
+    } else {
+        log::info!("Not creating the CPFP wallet, as we don't have a CPFP key");
+    }
     Ok(())
 }
 

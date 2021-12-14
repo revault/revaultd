@@ -2,11 +2,9 @@ use crate::common::config::BitcoindConfig;
 use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
     bitcoin::{
-        blockdata::constants::COIN_VALUE,
-        consensus::{encode, Decodable},
-        hashes::hex::FromHex,
-        util::bip32::ChildNumber,
-        Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
+        blockdata::constants::COIN_VALUE, consensus::encode, util::bip32::ChildNumber,
+        util::psbt::PartiallySignedTransaction as Psbt, Amount, BlockHash, OutPoint, Script,
+        Transaction, TxOut, Txid,
     },
     transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},
 };
@@ -717,8 +715,15 @@ impl BitcoinD {
         })
     }
 
-    pub fn sign_psbt(&self, psbt: String) -> Result<(bool, String), BitcoindError> {
-        let res = self.make_cpfp_request("walletprocesspsbt", &params!(Json::String(psbt)))?;
+    /// Make bitcoind:
+    /// 1. Add information to the PSBT inputs
+    /// 2. Sign the PSBT inputs it can
+    /// 3. Finalize the PSBT if it is complete
+    pub fn sign_psbt(&self, psbt: &Psbt) -> Result<(bool, Psbt), BitcoindError> {
+        let res = self.make_cpfp_request(
+            "walletprocesspsbt",
+            &params!(Json::String(base64::encode(&encode::serialize(psbt)))),
+        )?;
         let complete = res
             .get("complete")
             .expect("API break: no 'complete' in 'walletprocesspsbt' result")
@@ -730,20 +735,10 @@ impl BitcoinD {
             .as_str()
             .expect("API break: invalid 'psbt' in 'walletprocesspsbt' result")
             .to_string();
+        let psbt =
+            encode::deserialize(&base64::decode(psbt).expect("bitcoind returned invalid base64"))
+                .expect("bitcoind returned an invalid PSBT.");
         Ok((complete, psbt))
-    }
-
-    pub fn finalize_psbt(&self, psbt: String) -> Result<Transaction, BitcoindError> {
-        let res = self.make_cpfp_request("finalizepsbt", &params!(Json::String(psbt)))?;
-        let hex_str = res
-            .get("hex")
-            .expect("API break: no 'hex' in 'finalizepsbt' result")
-            .as_str()
-            .expect("API break: invalid 'hex' in 'finalizepsbt' result");
-        let hex = <Vec<u8>>::from_hex(hex_str)
-            .expect("API break: invalid 'hex' in 'finalizepsbt' result");
-        Ok(Transaction::consensus_decode(hex.as_slice())
-            .expect("API break: invalid 'hex' in 'finalizepsbt' result"))
     }
 
     /// Broadcast a transaction with 'sendrawtransaction', discarding the returned txid

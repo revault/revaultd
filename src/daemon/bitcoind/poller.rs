@@ -30,16 +30,20 @@ use crate::daemon::{
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{secp256k1::Secp256k1, Amount, OutPoint, Txid},
+    bitcoin::{consensus::encode, secp256k1::Secp256k1, Amount, OutPoint, Txid},
     error::TransactionCreationError,
     miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
-    transactions::{CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
+    scripts::DerivedCpfpDescriptor,
+    transactions::{
+        CpfpTransaction, CpfpableTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultTransaction,
+    },
     txins::{CpfpTxIn, RevaultTxIn},
     txouts::{CpfpTxOut, RevaultTxOut},
 };
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -48,6 +52,9 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+// At how many sats/kWU below the target feerate do we CPFP a transaction.
+const CPFP_THRESHOLD: u64 = 1_000;
 
 // Try to broadcast fully signed spend transactions, only mature ones will get through
 fn maybe_broadcast_spend_transactions(
@@ -392,30 +399,75 @@ fn mark_confirmed_emers(
     Ok(())
 }
 
+enum ToBeCpfped {
+    Spend(SpendTransaction),
+    Unvault(UnvaultTransaction),
+}
+
+impl ToBeCpfped {
+    pub fn txid(&self) -> Txid {
+        match self {
+            Self::Spend(s) => s.txid(),
+            Self::Unvault(u) => u.txid(),
+        }
+    }
+
+    pub fn cpfp_txin(&self, der_desc: &DerivedCpfpDescriptor) -> Option<CpfpTxIn> {
+        match self {
+            Self::Spend(s) => s.cpfp_txin(der_desc),
+            Self::Unvault(u) => u.cpfp_txin(der_desc),
+        }
+    }
+
+    pub fn max_weight(&self) -> u64 {
+        match self {
+            Self::Spend(s) => s.max_weight(),
+            Self::Unvault(u) => u.max_weight(),
+        }
+    }
+
+    pub fn fees(&self) -> Amount {
+        // TODO(revault_tx): fees() should return an Amount!
+        Amount::from_sat(match self {
+            Self::Spend(s) => s.fees(),
+            Self::Unvault(u) => u.fees(),
+        })
+    }
+}
+
+// CPFP a bunch of transactions, bumping their feerate by at least `target_feerate`.
+// `target_feerate` is expressed in sat/kWU.
+// All the transactions' feerate MUST be below `target_feerate`.
 fn cpfp_package(
     revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    mut tx_package: Vec<impl CpfpableTransaction>,
-    current_feerate: u64,
+    mut tx_package: Vec<ToBeCpfped>,
+    target_feerate: u64,
 ) -> Result<(), BitcoindError> {
     let revaultd = revaultd.read().unwrap();
-    let txids: Vec<_> = tx_package.iter().map(|s| s.txid()).collect();
-    let tx_feerate = CpfpableTransaction::max_package_feerate(&tx_package) * 1000; // to sats/kWU
-    if current_feerate < tx_feerate {
-        // Uhm, we don't need to cpfp this for now, our estimate is lower
-        // than the tx fees.
-        log::debug!("Txs '{:?}' don't need CPFP", txids);
-        return Ok(());
+
+    // First of all, compute all the information we need from the to-be-cpfped transactions.
+    let mut txids = HashSet::with_capacity(tx_package.len());
+    let mut package_weight = 0;
+    let mut package_fees = Amount::from_sat(0);
+    for tx in tx_package.iter() {
+        txids.insert(tx.txid());
+        package_weight += tx.max_weight();
+        package_fees += tx.fees();
+        assert!(((package_fees.as_sat() * 1000 / package_weight) as u64) < target_feerate);
     }
+    let tx_feerate = (package_fees.as_sat() * 1_000 / package_weight) as u64; // to sats/kWU
+    assert!(tx_feerate < target_feerate);
+    let added_feerate = target_feerate - tx_feerate;
 
-    let added_feerate = current_feerate - tx_feerate;
+    // FIXME: it's a shame to have to get the derivation paths from bitcoind, but we need to
+    // for the Spend CPFP output derivation index. We have all the info and should be able to
+    // make it work without this hack.
     let listunspent: Vec<_> = bitcoind.list_unspent_cpfp()?;
-
     // FIXME: drain_filter would be PERFECT for this but it's nightly only :(
     let (mut my_listunspent, listunspent): (Vec<_>, Vec<_>) = listunspent
         .into_iter()
         .partition(|l| txids.contains(&l.outpoint.txid));
-
     if my_listunspent.len() != tx_package.len() {
         log::warn!(
             "We need to feebump a package containing the following txids: {:?},\n
@@ -426,9 +478,26 @@ fn cpfp_package(
                 .map(|l| l.outpoint.txid)
                 .collect::<Vec<_>>()
         );
+        return Ok(());
+    }
+    my_listunspent.sort_by_key(|l| l.outpoint.txid);
+    tx_package.sort_by_key(|tx| tx.txid());
+    // I can do this as I just ordered by txid
+    let mut txins = Vec::with_capacity(tx_package.len());
+    for (i, tx) in tx_package.into_iter().enumerate() {
+        let derived_cpfp_descriptor = revaultd
+            .derived_cpfp_descriptor(my_listunspent[i].derivation_index.expect("Must be here"));
+        match tx.cpfp_txin(&derived_cpfp_descriptor) {
+            Some(txin) => txins.push(txin),
+            None => {
+                log::error!("No CPFP txin for tx '{}'", tx.txid());
+                return Ok(());
+            }
+        }
     }
 
-    let listunspent: Vec<_> = listunspent
+    // Then construct the child PSBT
+    let confirmed_cpfp_utxos: Vec<_> = listunspent
         .into_iter()
         .filter_map(|l| {
             // Not considering UTXOs still in mempool
@@ -443,23 +512,13 @@ fn cpfp_package(
             }
         })
         .collect();
-
-    my_listunspent.sort_by_key(|l| l.outpoint.txid);
-    tx_package.sort_by_key(|tx| tx.txid());
-
-    // I can do this as I just ordered by txid
-    let tx_package: Vec<_> = tx_package
-        .into_iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let derived_cpfp_descriptor = revaultd
-                .derived_cpfp_descriptor(my_listunspent[i].derivation_index.expect("Must be here"));
-            (p, derived_cpfp_descriptor)
-        })
-        .collect();
-
-    let psbt = match CpfpableTransaction::cpfp_transactions(&tx_package, added_feerate, listunspent)
-    {
+    let psbt = match CpfpTransaction::from_txins(
+        txins,
+        package_weight,
+        package_fees,
+        added_feerate,
+        confirmed_cpfp_utxos,
+    ) {
         Ok(tx) => tx,
         Err(TransactionCreationError::InsufficientFunds) => {
             // Well, we're poor.
@@ -475,25 +534,37 @@ fn cpfp_package(
         }
     };
 
-    let psbt = psbt.as_psbt_string();
-
-    let (complete, psbt_signed) = bitcoind.sign_psbt(psbt)?;
+    // Finally, sign and (try to) broadcast the CPFP transaction
+    let (complete, psbt_signed) = bitcoind.sign_psbt(psbt.psbt())?;
     if !complete {
         log::error!(
             "Bitcoind returned a non-finalized CPFP PSBT: {}",
-            psbt_signed
+            base64::encode(encode::serialize(&psbt_signed))
         );
         return Ok(());
     }
-    let psbt_signed = bitcoind.finalize_psbt(psbt_signed)?;
 
-    if let Err(e) = bitcoind.broadcast_transaction(&psbt_signed) {
+    let final_tx = psbt_signed.extract_tx();
+    if let Err(e) = bitcoind.broadcast_transaction(&final_tx) {
         log::error!("Error broadcasting '{:?}' CPFP tx: {}", txids, e);
     } else {
         log::info!("CPFPed transactions with ids '{:?}'", txids);
     }
 
     Ok(())
+}
+
+// `target_feerate` is in sats/kWU
+fn should_cpfp(bitcoind: &BitcoinD, tx: &impl CpfpableTransaction, target_feerate: u64) -> bool {
+    bitcoind
+        .get_wallet_transaction(&tx.txid())
+        // In the unlikely (actually, shouldn't happen but hey) case where
+        // the transaction isn't part of our wallet, default to feebumping
+        // it since the user explicitly marked it as high prio.
+        .map(|w| w.blockheight.is_none())
+        .unwrap_or(true)
+        // * 1000 for kWU
+        && tx.max_feerate() * 1_000 + CPFP_THRESHOLD < target_feerate
 }
 
 fn maybe_cpfp_txs(
@@ -516,30 +587,34 @@ fn maybe_cpfp_txs(
         }
     };
 
-    let spend_txs: Vec<_> = db_cpfpable_spends(&db_path)?;
-    let unvault_packages: Vec<_> = db_cpfpable_unvaults(&db_path)?;
-    for spend_tx in spend_txs {
-        // We check if this transaction is still unconfirmed. If so, we feebump
-        if bitcoind
-            .get_wallet_transaction(&spend_tx.txid())?
-            .blockheight
-            .is_none()
-        {
-            // As cpfp_package expects a package, we wrap our spend_tx in a Vec
-            cpfp_package(revaultd, bitcoind, vec![spend_tx], current_feerate)?;
-        }
-    }
+    // We feebump all the spends and unvaults that are still unconfirmed.
+    let to_cpfp: Vec<_> = db_cpfpable_spends(&db_path)?
+        .into_iter()
+        .filter_map(|spend| {
+            if should_cpfp(bitcoind, &spend, current_feerate) {
+                Some(ToBeCpfped::Spend(spend))
+            } else {
+                None
+            }
+        })
+        .chain(
+            db_cpfpable_unvaults(&db_path)?
+                .into_iter()
+                .filter_map(|unvault| {
+                    if should_cpfp(bitcoind, &unvault, current_feerate) {
+                        Some(ToBeCpfped::Unvault(unvault))
+                    } else {
+                        None
+                    }
+                }),
+        )
+        .collect();
 
-    for unvault_package in unvault_packages {
-        // We check if any unvault in this package is still unconfirmed. If so, we feebump
-        if unvault_package.iter().any(|u| {
-            bitcoind
-                .get_wallet_transaction(&u.txid())
-                .map(|w| w.blockheight.is_none())
-                .unwrap_or(true)
-        }) {
-            cpfp_package(revaultd, bitcoind, unvault_package, current_feerate)?;
-        }
+    // TODO: std transaction max size check and split
+    if !to_cpfp.is_empty() {
+        cpfp_package(revaultd, bitcoind, to_cpfp, current_feerate)?;
+    } else {
+        log::debug!("Nothing to CPFP");
     }
 
     Ok(())

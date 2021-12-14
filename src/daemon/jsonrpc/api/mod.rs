@@ -11,9 +11,10 @@ use crate::daemon::{
     control::{
         announce_spend_transaction, check_spend_transaction_size, coord_share_rev_signatures,
         coordinator_status, cosigners_status, fetch_cosigs_signatures, finalized_emer_txs,
-        listvaults_from_db, onchain_txs, presigned_txs, share_unvault_signatures,
+        get_history, listvaults_from_db, onchain_txs, presigned_txs, share_unvault_signatures,
         vaults_from_deposits, watchtowers_status, wts_share_emer_signatures,
-        wts_share_second_stage_signatures, ListSpendEntry, ListSpendStatus, RpcUtils,
+        wts_share_second_stage_signatures, HistoryEventKind, ListSpendEntry, ListSpendStatus,
+        RpcUtils,
     },
     database::{
         actions::{
@@ -226,6 +227,17 @@ pub trait RpcApi {
 
     #[rpc(meta, name = "getserverstatus")]
     fn getserverstatus(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value>;
+
+    /// Retrieve the accounting history
+    #[rpc(meta, name = "gethistory")]
+    fn gethistory(
+        &self,
+        meta: Self::Metadata,
+        kind: Vec<HistoryEventKind>,
+        start: u32,
+        end: u32,
+        limit: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 // TODO: we should probably make these proc macros and apply them above?
@@ -429,7 +441,7 @@ impl RpcApi for RpcImpl {
                 },
                 {
                     "name": "gethistory",
-                    "parameters": [],
+                    "parameters": ["[kind]", "start", "end", "limit"],
                     "description": "Retrieve history of funds"
                 },
                 {
@@ -1547,6 +1559,32 @@ impl RpcApi for RpcImpl {
             "coordinator": coordinator,
             "cosigners": cosigners,
             "watchtowers": watchtowers,
+        }))
+    }
+
+    /// get_history retrieves a limited list of events which occured between two given dates.
+    fn gethistory(
+        &self,
+        meta: Self::Metadata,
+        kind: Vec<HistoryEventKind>,
+        start: u32,
+        end: u32,
+        limit: u64,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
+
+        let events = get_history(
+            &revaultd,
+            &meta.rpc_utils.bitcoind_conn,
+            start,
+            end,
+            limit,
+            kind,
+        )
+        .map_err(|e| Error::from(e))?;
+
+        Ok(json!({
+            "events": events,
         }))
     }
 }

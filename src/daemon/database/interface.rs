@@ -29,7 +29,6 @@ use std::{
 
 use rusqlite::{
     params, types::FromSqlError, Connection, Row, ToSql, Transaction, TransactionBehavior,
-    NO_PARAMS,
 };
 
 // As the bundled sqlite is compiled with SQLITE_THREADSAFE, quoting sqlite.org:
@@ -65,7 +64,7 @@ fn db_query<'a, P, F, T>(
     f: F,
 ) -> Result<Vec<T>, DatabaseError>
 where
-    P: IntoIterator,
+    P: IntoIterator + rusqlite::Params,
     P::Item: ToSql,
     F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
 {
@@ -93,7 +92,7 @@ fn db_query_tx<'a, P, F, T>(
     f: F,
 ) -> Result<Vec<T>, DatabaseError>
 where
-    P: IntoIterator,
+    P: IntoIterator + rusqlite::Params,
     P::Item: ToSql,
     F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
 {
@@ -109,7 +108,7 @@ where
 
 /// Get the database version
 pub fn db_version(db_path: &Path) -> Result<u32, DatabaseError> {
-    let mut rows = db_query(db_path, "SELECT version FROM version", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT version FROM version", params![], |row| {
         row.get::<_, u32>(0)
     })?;
 
@@ -122,7 +121,7 @@ pub fn db_tip(db_path: &Path) -> Result<BlockchainTip, DatabaseError> {
     let mut rows = db_query(
         db_path,
         "SELECT blockheight, blockhash FROM tip",
-        NO_PARAMS,
+        params![],
         |row| {
             let height = row.get::<_, u32>(0)?;
             let hash: BlockHash = encode::deserialize(&row.get::<_, Vec<u8>>(1)?)
@@ -138,7 +137,7 @@ pub fn db_tip(db_path: &Path) -> Result<BlockchainTip, DatabaseError> {
 
 /// Get the network this DB was created on
 pub fn db_network(db_path: &Path) -> Result<Network, DatabaseError> {
-    let mut rows = db_query(db_path, "SELECT network FROM tip", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT network FROM tip", params![], |row| {
         Ok(Network::from_str(&row.get::<_, String>(0)?)
             .expect("We only evert insert from to_string"))
     })?;
@@ -149,7 +148,7 @@ pub fn db_network(db_path: &Path) -> Result<Network, DatabaseError> {
 
 /// Get the database wallet. We only support single wallet, so this always return the first row.
 pub fn db_wallet(db_path: &Path) -> Result<DbWallet, DatabaseError> {
-    let mut rows = db_query(db_path, "SELECT * FROM wallets", NO_PARAMS, |row| {
+    let mut rows = db_query(db_path, "SELECT * FROM wallets", params![], |row| {
         let id = row.get(0)?;
         let timestamp = row.get(1)?;
 
@@ -268,7 +267,7 @@ impl TryFrom<&Row<'_>> for DbVault {
 
 /// Get all the vaults we know about from the db
 pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
-    db_query::<_, _, DbVault>(db_path, "SELECT * FROM vaults", NO_PARAMS, |row| {
+    db_query::<_, _, DbVault>(db_path, "SELECT * FROM vaults", params![], |row| {
         row.try_into()
     })
 }
@@ -298,7 +297,7 @@ pub fn db_deposits(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     db_query(
         db_path,
         "SELECT * FROM vaults WHERE status <= (?1)",
-        &[VaultStatus::Active as u32],
+        params![VaultStatus::Active as u32],
         |row| row.try_into(),
     )
 }
@@ -326,7 +325,7 @@ pub fn db_unvaulted_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults INNER JOIN presigned_transactions as ptx \
          ON ptx.vault_id = vaults.id \
          WHERE ptx.type = (?1) AND vaults.status IN ((?2), (?3))",
-        &[
+        params![
             TransactionType::Unvault as u32,
             VaultStatus::Unvaulted as u32,
             VaultStatus::Unvaulting as u32,
@@ -351,7 +350,7 @@ pub fn db_spending_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::Spending as u32,
             TransactionType::Unvault as u32,
         ],
@@ -376,7 +375,7 @@ pub fn db_canceling_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::Canceling as u32,
             TransactionType::Cancel as u32,
         ],
@@ -401,7 +400,7 @@ pub fn db_emering_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::EmergencyVaulting as u32,
             TransactionType::Emergency as u32,
         ],
@@ -426,7 +425,7 @@ pub fn db_unemering_vaults(
         "SELECT vaults.*, ptx.psbt FROM vaults \
          INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
          WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        &[
+        params![
             VaultStatus::UnvaultEmergencyVaulting as u32,
             TransactionType::UnvaultEmergency as u32,
         ],
@@ -904,4 +903,229 @@ pub fn db_cpfpable_unvaults(db_path: &Path) -> Result<Vec<Vec<UnvaultTransaction
         },
     )?;
     Ok(unvaults.values().cloned().collect())
+}
+
+/// This function returns the vaults that are deposit, change deposit or spend output of
+/// a limited number of tx which occured between two dates.
+pub fn db_vaults_with_txids_in_period(
+    db_path: &Path,
+    start: u32,
+    end: u32,
+    limit: u64,
+) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query(
+        db_path,
+        "WITH txids AS ( \
+            SELECT DISTINCT(txid) FROM ( \
+                SELECT * from ( \
+                    SELECT deposit_txid AS txid, funded_at AS date FROM vaults \
+                    WHERE funded_at >= (?1) \
+                    AND funded_at <= (?2) \
+                    AND status != (?4) \
+                    ORDER BY funded_at DESC LIMIT (?3) \
+                ) \
+                UNION \
+                SELECT * FROM (
+                    SELECT final_txid AS txid, moved_at AS date FROM vaults \
+                    WHERE moved_at >= (?1) \
+                    AND moved_at <= (?2) \
+                    AND status IN ((?5), (?6)) \
+                    ORDER BY moved_at DESC LIMIT (?3) \
+                ) \
+                ORDER BY date DESC LIMIT (?3)
+            ) \
+        ) \
+        SELECT * FROM vaults \
+        WHERE deposit_txid IN txids \
+        OR final_txid IN txids",
+        params![
+            start,
+            end,
+            limit,
+            VaultStatus::Unconfirmed as u32,
+            VaultStatus::Canceled as u32,
+            VaultStatus::Spent as u32,
+        ],
+        |row| row.try_into(),
+    )
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::daemon::database::actions::{
+        db_confirm_deposit, db_insert_new_unconfirmed_vault, setup_db,
+    };
+    use crate::daemon::jsonrpc::UserRole;
+    use crate::daemon::utils::test_utils::{dummy_revaultd, test_datadir};
+    use revault_tx::{bitcoin::OutPoint, transactions::transaction_chain};
+
+    use std::{fs, str::FromStr};
+
+    fn db_vault_set_final_txid(
+        db_path: &Path,
+        db_vault: &DbVault,
+        final_txid: &Txid,
+        moved_at: u32,
+    ) {
+        db_exec(db_path, |tx| {
+            tx.execute(
+                "UPDATE vaults SET final_txid = (?1), moved_at = (?2), status = (?3) WHERE id = (?4)",
+                params![final_txid.to_vec(), moved_at, VaultStatus::Spent as u32, db_vault.id,],
+            )?;
+            Ok(())
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn test_db_vaults_with_txids_in_period() {
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let db_path = revaultd.db_file();
+        setup_db(&mut revaultd).unwrap();
+        let genesis_timestamp: u32 = 1231006505;
+
+        // Fill in some vaults funded at different dates
+        let wallet_id = 1;
+        for i in 1..=10 {
+            let outpoint = OutPoint {
+                // NOTE: we make the txid vary because the SQL request assumes (rightfully) that
+                // vaults with the same txid will never have different `funded_at` values.
+                txid: Txid::from_str(&format!(
+                    "da2245566282477c233a70ec684c7ca42ee2505b07dbe38e1af993c470120b7{:x}",
+                    i
+                ))
+                .unwrap(),
+                vout: i,
+            };
+            let amount = Amount::from_sat(3456798 * i as u64);
+            let derivation_index = ChildNumber::from(i * 10);
+            db_insert_new_unconfirmed_vault(
+                &db_path,
+                wallet_id,
+                &outpoint,
+                &amount,
+                derivation_index,
+            )
+            .unwrap();
+            let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
+                outpoint,
+                amount,
+                &revaultd.deposit_descriptor,
+                &revaultd.unvault_descriptor,
+                &revaultd.cpfp_descriptor,
+                derivation_index,
+                revaultd.emergency_address.clone().unwrap(),
+                revaultd.lock_time,
+                &revaultd.secp_ctx,
+            )
+            .unwrap();
+            db_confirm_deposit(
+                &db_path,
+                &outpoint,
+                i,
+                genesis_timestamp as u32 + i * 600,
+                &unvault_tx,
+                &cancel_tx,
+                Some(&emer_tx),
+                Some(&unemer_tx),
+            )
+            .unwrap();
+        }
+
+        // Nothing at timestamp 0
+        assert_eq!(
+            db_vaults_with_txids_in_period(&db_path, 0, 0, 10)
+                .unwrap()
+                .len(),
+            0
+        );
+        // Range is inclusive
+        assert_eq!(
+            db_vaults_with_txids_in_period(
+                &db_path,
+                genesis_timestamp,
+                genesis_timestamp + 10 * 600,
+                10
+            )
+            .unwrap()
+            .len(),
+            10
+        );
+        assert_eq!(
+            db_vaults_with_txids_in_period(
+                &db_path,
+                genesis_timestamp,
+                genesis_timestamp + 10 * 600 - 1,
+                10
+            )
+            .unwrap()
+            .len(),
+            9
+        );
+        assert_eq!(
+            db_vaults_with_txids_in_period(
+                &db_path,
+                genesis_timestamp + 1 * 600 + 1,
+                genesis_timestamp + 10 * 600,
+                10
+            )
+            .unwrap()
+            .len(),
+            9
+        );
+        // We can limit the number of results
+        assert_eq!(
+            db_vaults_with_txids_in_period(
+                &db_path,
+                genesis_timestamp,
+                genesis_timestamp + 10 * 600,
+                5
+            )
+            .unwrap()
+            .len(),
+            5
+        );
+
+        // This also works with the final txid
+        let vaults = db_vaults(&db_path).unwrap();
+        for i in 0..5 {
+            // NOTE: we make the txid vary because the SQL request assumes (rightfully) that
+            // vaults with the same txid will never have different `moved_at` values.
+            let txid = Txid::from_str(&format!(
+                "af2cac1e0e33d896d9d0751d66fcb2fa54b737c7a13199281fb57e4f497bb65{}",
+                i
+            ))
+            .unwrap();
+            db_vault_set_final_txid(
+                &db_path,
+                &vaults[i],
+                &txid,
+                genesis_timestamp as u32 + 10 * 600 + (i as u32 + 1) * 600,
+            );
+
+            assert_eq!(
+                db_vaults_with_txids_in_period(
+                    &db_path,
+                    genesis_timestamp + 10 * 600 + 1,
+                    genesis_timestamp + 10 * 600 + 5 * 600,
+                    10
+                )
+                .unwrap()
+                .len(),
+                i + 1
+            );
+        }
+
+        // We only have 10 vaults in total, even if half of them have 2 txids in this period.
+        assert_eq!(
+            db_vaults_with_txids_in_period(&db_path, 0, genesis_timestamp + 100 * 600, 50)
+                .unwrap()
+                .len(),
+            10
+        );
+
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
+    }
 }

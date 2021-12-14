@@ -8,6 +8,7 @@ use crate::daemon::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
             db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
+            db_vaults_with_txids_in_period,
         },
         schema::{DbTransaction, DbVault},
         DatabaseError,
@@ -26,8 +27,11 @@ use revault_net::{
 };
 use revault_tx::{
     bitcoin::{
-        consensus::encode, hashes::hex::ToHex, secp256k1, util::bip32::ChildNumber, Address,
-        Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
+        consensus::encode,
+        hashes::hex::{FromHex, ToHex},
+        secp256k1,
+        util::bip32::ChildNumber,
+        Address, Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
     transactions::{
@@ -37,7 +41,7 @@ use revault_tx::{
 };
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::{mpsc::Sender, Arc, RwLock},
     thread::JoinHandle,
@@ -850,6 +854,224 @@ pub fn watchtowers_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
     watchtowers
 }
 
+/// get_history retrieves a limited list of events which occured between two given dates.
+pub fn get_history<T: BitcoindThread>(
+    revaultd: &RevaultD,
+    bitcoind_conn: &T,
+    start: u32,
+    end: u32,
+    limit: u64,
+    kind: Vec<HistoryEventKind>,
+) -> Result<Vec<HistoryEvent>, RpcControlError> {
+    let db_path = revaultd.db_file();
+    // All vaults which have one transaction (either the funding, the canceling, the unvaulting, the spending)
+    // inside the date range are retrieved.
+    // This list might include vaults that were consumed again outside the range.
+    let vaults = db_vaults_with_txids_in_period(&db_path, start, end, limit)?;
+
+    // Used to retrieve the deposit from the Cancel outputs. Not a vector since the Cancel only
+    // ever has a single deposit output.
+    let mut vaults_by_outpoint_txid: HashMap<Txid, &DbVault> = HashMap::with_capacity(vaults.len());
+    // Used for change detection when computing the deposit events.
+    let mut final_txids: HashSet<Txid> = HashSet::with_capacity(vaults.len());
+    for vault in &vaults {
+        vaults_by_outpoint_txid.insert(vault.deposit_outpoint.txid, vault);
+        if let Some(txid) = vault.final_txid {
+            final_txids.insert(txid);
+        }
+    }
+    // Map of the id and the vaults consumed by the final transaction.
+    let mut spends: HashMap<Txid, Vec<&DbVault>> = HashMap::with_capacity(vaults.len());
+    let mut events: Vec<HistoryEvent> = Vec::with_capacity(vaults.len());
+
+    for vault in &vaults {
+        if kind.contains(&HistoryEventKind::Deposit)
+            // A vault may be retrieved as a change of a cancel or a spend in order to compute
+            // change amount but not be in 'funded' state yet (because we usually require >1
+            // conf).
+            && vault.status != VaultStatus::Unconfirmed
+            // Vault could have been moved but not deposited during the period.
+            && vault.funded_at.expect("Vault is funded") >= start
+            && vault.funded_at.expect("Vault is funded") <= end
+            // Only deposits that are not a spend transaction change and not cancel output
+            // are considered as history events.
+            && !final_txids.contains(&vault.deposit_outpoint.txid)
+        {
+            events.push(HistoryEvent {
+                kind: HistoryEventKind::Deposit,
+                date: vault.funded_at.expect("Vault is funded"),
+                blockheight: vault.blockheight,
+                amount: Some(vault.amount.as_sat()),
+                fee: None,
+                txid: vault.deposit_outpoint.txid,
+            });
+        }
+
+        if kind.contains(&HistoryEventKind::Cancel)
+            && vault.status == VaultStatus::Canceled
+            && vault.moved_at.expect("Vault is canceled") >= start
+            && vault.moved_at.expect("Vault is canceled") <= end
+        {
+            let txid = vault
+                .final_txid
+                .expect("Canceled vault must have a cancel txid");
+
+            let cancel_tx = bitcoind_conn
+                .wallet_tx(txid)?
+                .expect("Cancel tx should be here");
+
+            let cancel_height = match cancel_tx.blockheight {
+                Some(h) => h,
+                None => {
+                    // It can only happen if the cancel transaction was just reorg'ed out.
+                    // In this super edgy case, just ignore this entry.
+                    continue;
+                }
+            };
+
+            let change_amount = vaults_by_outpoint_txid
+                .get(&txid)
+                // if the change output did not create a vault because of the dust limit
+                // the change_amount is equal to 0.
+                .map_or(0, |vault| vault.amount.as_sat());
+
+            events.push(HistoryEvent {
+                kind: HistoryEventKind::Cancel,
+                date: vault.moved_at.expect("Tx should be confirmed"),
+                blockheight: cancel_height,
+                amount: None,
+                fee: Some(
+                    vault
+                        .amount
+                        .as_sat()
+                        .checked_sub(change_amount)
+                        .expect("Moved funds include funds going back"),
+                ),
+                txid,
+            });
+        }
+
+        // In order to fill the spend map, only vaults that are
+        // consumed between the two dates are kept.
+        if kind.contains(&HistoryEventKind::Spend)
+            && vault.status == VaultStatus::Spent
+            && vault.moved_at.expect("Vault is spent") >= start
+            && vault.moved_at.expect("Vault is spent") <= end
+        {
+            let txid = vault
+                .final_txid
+                .expect("Spent vault must have a spend txid");
+
+            if let Some(vlts) = spends.get_mut(&txid) {
+                vlts.push(vault);
+            } else {
+                spends.insert(txid, vec![vault]);
+            }
+        }
+    }
+
+    if kind.contains(&HistoryEventKind::Spend) {
+        for (txid, spent_vaults) in spends {
+            let spend_tx = bitcoind_conn
+                .wallet_tx(txid)?
+                .expect("Spend tx should be here");
+
+            let spend_height = match spend_tx.blockheight {
+                Some(h) => h,
+                None => {
+                    // It can only happen if the spend transaction was just reorg'ed out.
+                    // In this super edgy case, just ignore this entry.
+                    continue;
+                }
+            };
+
+            let bytes =
+                Vec::from_hex(&spend_tx.hex).expect("bitcoind returned a wrong transaction format");
+            let tx: BitcoinTransaction =
+                encode::deserialize(&bytes).expect("bitcoind returned a wrong transaction format");
+
+            let derivation_index = spent_vaults
+                .iter()
+                .map(|v| v.derivation_index)
+                .max()
+                .expect("Spent vaults should not be empty");
+
+            let cpfp_script_pubkey = revaultd
+                .cpfp_descriptor
+                .derive(derivation_index, &revaultd.secp_ctx)
+                .into_inner()
+                .script_pubkey();
+
+            let deposit_address = revaultd
+                .deposit_descriptor
+                .derive(derivation_index, &revaultd.secp_ctx)
+                .into_inner()
+                .script_pubkey();
+
+            let mut recipients_amount: u64 = 0;
+            let mut change_amount: u64 = 0;
+            for txout in tx.output {
+                if cpfp_script_pubkey == txout.script_pubkey {
+                    // this cpfp output is ignored and its amount is part of the fees
+                } else if deposit_address == txout.script_pubkey {
+                    change_amount += txout.value;
+                } else {
+                    recipients_amount += txout.value
+                }
+            }
+
+            // fees is the total of the deposits minus the total of the spend outputs.
+            // Fees include then the unvaulting fees and the spend fees.
+            let fees = spent_vaults
+                .iter()
+                .map(|vlt| vlt.amount.as_sat())
+                .sum::<u64>()
+                .checked_sub(recipients_amount + change_amount)
+                .expect("Funds moving include funds going back");
+
+            events.push(HistoryEvent {
+                date: spend_tx.received_time,
+                blockheight: spend_height,
+                kind: HistoryEventKind::Spend,
+                amount: Some(recipients_amount),
+                fee: Some(fees),
+                txid,
+            })
+        }
+    }
+
+    // Because a vault represents a deposit event and maybe a second event (cancel or spend),
+    // the two timestamp `funded_at and `moved_at` must be taken in account. The list of vaults
+    // can not considered as an ordered list of events. All events must be first filtered and
+    // stored in a list before being ordered.
+    events.sort_by(|a, b| b.date.cmp(&a.date));
+    // Because a spend transaction may consume multiple vault and still count as one event,
+    // and because the list of events must be first ordered by event date. The limit is enforced
+    // at the end. (A limit was applied in the sql query only on the number of txids in the given period)
+    events.truncate(limit as usize);
+    Ok(events)
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryEvent {
+    pub kind: HistoryEventKind,
+    pub date: u32,
+    pub blockheight: u32,
+    pub amount: Option<u64>,
+    pub fee: Option<u64>,
+    pub txid: Txid,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum HistoryEventKind {
+    #[serde(rename = "cancel")]
+    Cancel,
+    #[serde(rename = "deposit")]
+    Deposit,
+    #[serde(rename = "spend")]
+    Spend,
+}
+
 #[derive(Clone)]
 pub struct RpcUtils {
     pub revaultd: Arc<RwLock<RevaultD>>,
@@ -878,7 +1100,7 @@ mod tests {
         jsonrpc::UserRole,
         revaultd::{RevaultD, VaultStatus},
         setup_db,
-        utils::test_utils::{dummy_revaultd, test_datadir},
+        utils::test_utils::{dummy_revaultd, insert_vault_in_db, test_datadir, MockBitcoindThread},
     };
     use revault_net::{
         message, sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair,
@@ -2549,6 +2771,180 @@ mod tests {
             })
             .unwrap();
         cli_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_get_history() {
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        setup_db(&mut revaultd).unwrap();
+        let db_file = revaultd.db_file();
+
+        let cancel_tx_hex = "0200000000010158a2f36c1be4e32f59d26930f64c452c81ffb1fc66bb96e8ddb477f0bacfb6660000000000fdffffff011042f4050000000022002025bfbde3ae8bd9381b9ddb837acdab48a3110cbeb05e84cb57b28d77e27794480747304402201b4c8061cb2fb8c086fdedba3787cd30bc765b0f4ba47b22e3b37fe5289ded4602204da79a4637ad85c4d17f9a840c4b50336b7072f5ca482507d9d1070ecf7f105e812103d7c8e6ff708e052a15e4c23f16c7143c2b0c98473a7fd6c1d10850a274319a5a483045022100860539abb4a1172625fcdb913759c54364063a28d707c22204d18ec5b4ffeede0220442e1560b506da56cefd4e4d603c3381c036de777e264f923fe6d81e8d6870cb8121034c8ecf7547552e8c3ca3e0d1189f09b23b92bce3c73186800e7089230cecf6810000ed5121027cf27be4980b5945b1fb4594c0a9cef39278d8a8d59ad0f001acf72a45d17fea21029091080c1f00962c6ef10d0f5346d5aecab6f65543670aa78ae21520b8a3cd2221027fa470475563f20c96b997224fe86bc9564ccad9adb77e083ccd3bdfc94fe9ed53ae6476a914927ea7d35721b017ffed4941ec764b36f730faa288ac6b76a91416b43735b6c445fa5f279c2afa70bfaf375f075388ac6c93528767522102abe475b199ec3d62fa576faee16a334fdb86ffb26dce75becebaaedf328ac3fe21030f64b922aee2fd597f104bc6cb3b670f1ca2c6c49b1071a1a6c010575d94fe5a52af0112b26800000000";
+        let spend_tx_hex = "0200000001b4243a48b54cc360e754e0175a985a49b67cf4615d8523ec5aa46d42421cdf7d0000000000504200000280b2010000000000220020b9be8f8574f8da64bb1cb6668f6134bc4706df7936eeab8411f9d82de20a895b08280954020000000000000000";
+
+        let cancel_tx: BitcoinTransaction =
+            encode::deserialize(&Vec::from_hex(cancel_tx_hex).unwrap()).unwrap();
+
+        let spend_tx: BitcoinTransaction =
+            encode::deserialize(&Vec::from_hex(spend_tx_hex).unwrap()).unwrap();
+
+        let deposit1_txid =
+            Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
+                .unwrap();
+
+        let deposit2_txid =
+            Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
+                .unwrap();
+
+        insert_vault_in_db(
+            &db_file,
+            1,
+            &OutPoint::new(deposit1_txid, 0),
+            &Amount::ONE_BTC,
+            1,
+            ChildNumber::from_normal_idx(0).unwrap(),
+            Some(1),
+            Some(2),
+            VaultStatus::Canceled,
+            Some(&cancel_tx.txid()),
+        );
+
+        insert_vault_in_db(
+            &db_file,
+            1,
+            &OutPoint::new(cancel_tx.txid(), 0),
+            &Amount::from_sat(cancel_tx.output[0].value),
+            2,
+            ChildNumber::from_normal_idx(1).unwrap(),
+            Some(2),
+            None,
+            VaultStatus::Funded,
+            None,
+        );
+
+        insert_vault_in_db(
+            &db_file,
+            1,
+            &OutPoint::new(deposit2_txid, 0),
+            &Amount::from_sat(200_000_000_000),
+            1,
+            ChildNumber::from_normal_idx(0).unwrap(),
+            Some(3),
+            Some(4),
+            VaultStatus::Spent,
+            Some(&spend_tx.txid()),
+        );
+
+        // change of the spend
+        insert_vault_in_db(
+            &db_file,
+            1,
+            &OutPoint::new(spend_tx.txid(), 0),
+            &Amount::from_sat(spend_tx.output[0].value),
+            2,
+            ChildNumber::from_normal_idx(1).unwrap(),
+            Some(4),
+            None,
+            VaultStatus::Funded,
+            None,
+        );
+
+        let mut txs = HashMap::new();
+        txs.insert(
+            cancel_tx.txid(),
+            WalletTransaction {
+                hex: cancel_tx_hex.to_string(),
+                received_time: 2,
+                blocktime: Some(2),
+                blockheight: Some(2),
+            },
+        );
+        txs.insert(
+            spend_tx.txid(),
+            WalletTransaction {
+                hex: spend_tx_hex.to_string(),
+                received_time: 4,
+                blocktime: Some(4),
+                blockheight: Some(4),
+            },
+        );
+        let bitcoind_conn = MockBitcoindThread::new(txs);
+
+        let events = get_history(
+            &revaultd,
+            &bitcoind_conn,
+            0,
+            4,
+            20,
+            vec![
+                HistoryEventKind::Deposit,
+                HistoryEventKind::Cancel,
+                HistoryEventKind::Spend,
+            ],
+        )
+        .unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].txid, spend_tx.txid());
+        assert_eq!(events[0].kind, HistoryEventKind::Spend);
+        assert_eq!(events[0].date, 4);
+        assert_eq!(
+            events[0].amount.unwrap(),
+            spend_tx.output[0].value + spend_tx.output[1].value
+        );
+        assert_eq!(
+            events[0].fee.unwrap(),
+            200_000_000_000 - spend_tx.output[0].value - spend_tx.output[1].value,
+        );
+
+        assert_eq!(events[1].txid, deposit2_txid);
+        assert_eq!(events[1].kind, HistoryEventKind::Deposit);
+        assert_eq!(events[1].date, 3);
+        assert_eq!(events[1].fee, None);
+        assert_eq!(events[1].amount, Some(200_000_000_000));
+
+        assert_eq!(events[2].txid, cancel_tx.txid());
+        assert_eq!(events[2].kind, HistoryEventKind::Cancel);
+        assert!(events[2].amount.is_none());
+        assert_eq!(events[2].date, 2);
+        assert_eq!(
+            events[2].fee.unwrap(),
+            Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value
+        );
+        assert_eq!(events[3].txid, deposit1_txid);
+        assert_eq!(events[3].kind, HistoryEventKind::Deposit);
+
+        // retrieve events later in history
+        let events = get_history(
+            &revaultd,
+            &bitcoind_conn,
+            0,
+            2,
+            20,
+            vec![
+                HistoryEventKind::Deposit,
+                HistoryEventKind::Cancel,
+                HistoryEventKind::Spend,
+            ],
+        )
+        .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].date, 2);
+        assert_eq!(events[0].txid, cancel_tx.txid());
+        assert_eq!(events[0].kind, HistoryEventKind::Cancel);
+        assert!(events[0].amount.is_none());
+        assert_eq!(
+            events[0].fee.unwrap(),
+            Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value
+        );
+
+        assert_eq!(events[1].date, 1);
+        assert_eq!(events[1].txid, deposit1_txid);
+        assert_eq!(events[1].kind, HistoryEventKind::Deposit);
+        assert_eq!(events[1].fee, None);
+        assert_eq!(events[1].amount, Some(Amount::ONE_BTC.as_sat()));
+
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 }
 

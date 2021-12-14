@@ -424,11 +424,12 @@ of inflows and outflows net of any change amount (that is technically a transact
 
 #### Request
 
-| Field    | Type         | Description                                                          |
-| -------- | ------------ | -------------------------------------------------------------------- |
-| `cursor` | int          | Timestamp of the date to retrieve events after                       |
-| `limit`  | int          | Number of events to retrieve                                         |
-| `kind`   | string array | Type of the events to retrieve, can be `deposit`, `cancel`, `spend`  |
+| Field         | Type         | Description                                                          |
+| ------------- | ------------ | -------------------------------------------------------------------- |
+| `kind`        | string array | Type of the events to retrieve, can be `deposit`, `cancel`, `spend`  |
+| `start`       | int          | Timestamp of the beginning of the period to retrieve events for      |
+| `end`         | int          | Timestamp of the end of the period to retrieve events for            |
+| `limit`       | int          | Maximum number of events to retrieve                                 |
 
 #### Response
 
@@ -438,12 +439,14 @@ of inflows and outflows net of any change amount (that is technically a transact
 
 ##### Event Resource
 
-| Field    | Type   | Description                                                                              |
-| -------- | ------ | ---------------------------------------------------------------------------------------- |
-| `kind`   | string | Type of the event, can be `deposit`, `cancel`, `spend`                                   |
-| `date`   | int    | Timestamp of the event                                                                   |
-| `amount` | int    | Absolute amount in satoshis that is entering or exiting the wallet                       |
-| `fee`    | int    | Fee of the event transaction                                                             |
+| Field         | Type   | Description                                                        |
+| ------------- | ------ | ------------------------------------------------------------------ |
+| `blockheight` | int    | Blockheight of the event final transaction                         |
+| `txid`        | string | Hex string  of the event final transaction id                      |
+| `kind`        | string | Type of the event. Can be `deposit`, `cancel`, `spend`             |
+| `date`        | int    | Timestamp of the event                                             |
+| `amount`      | int    | Absolute amount in satoshis that is entering or exiting the wallet |
+| `fee`         | int    | Fees caused by the operation, includes CPFP outputs amount         |
 
 
 ### `emergency`

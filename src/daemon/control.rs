@@ -869,10 +869,11 @@ pub fn get_history<T: BitcoindThread>(
     // This list might include vaults that were consumed again outside the range.
     let vaults = db_vaults_with_txids_in_period(&db_path, start, end, limit)?;
 
-    // Only used by the cancel events to find the change if it exists as vault.
-    let mut vaults_by_outpoint_txid: HashMap<Txid, &DbVault> = HashMap::new();
-    // Only used by the deposit events to find if a vault is the change of an other vault final transaction.
-    let mut final_txids: HashSet<Txid> = HashSet::new();
+    // Used to retrieve the deposit from the Cancel outputs. Not a vector since the Cancel only
+    // ever has a single deposit output.
+    let mut vaults_by_outpoint_txid: HashMap<Txid, &DbVault> = HashMap::with_capacity(vaults.len());
+    // Used for change detection when computing the deposit events.
+    let mut final_txids: HashSet<Txid> = HashSet::with_capacity(vaults.len());
     for vault in &vaults {
         vaults_by_outpoint_txid.insert(vault.deposit_outpoint.txid, vault);
         if let Some(txid) = vault.final_txid {
@@ -880,13 +881,14 @@ pub fn get_history<T: BitcoindThread>(
         }
     }
     // Map of the id and the vaults consumed by the final transaction.
-    let mut spends: HashMap<Txid, Vec<&DbVault>> = HashMap::new();
-    let mut events: Vec<HistoryEvent> = Vec::new();
+    let mut spends: HashMap<Txid, Vec<&DbVault>> = HashMap::with_capacity(vaults.len());
+    let mut events: Vec<HistoryEvent> = Vec::with_capacity(vaults.len());
 
     for vault in &vaults {
         if kind.contains(&HistoryEventKind::Deposit)
-            // A vault may be retrieved as a change of a cancel or a spend in order to calcul
-            // change amount but it is not already confirmed.
+            // A vault may be retrieved as a change of a cancel or a spend in order to compute
+            // change amount but not be in 'funded' state yet (because we usually require >1
+            // conf).
             && vault.status != VaultStatus::Unconfirmed
             // Vault could have been moved but not deposited during the period.
             && vault.funded_at.expect("Vault is funded") >= start

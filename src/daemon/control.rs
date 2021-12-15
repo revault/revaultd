@@ -904,6 +904,7 @@ pub fn get_history<T: BitcoindThread>(
                 amount: Some(vault.amount.as_sat()),
                 fee: None,
                 txid: vault.deposit_outpoint.txid,
+                vaults: vec![vault.deposit_outpoint],
             });
         }
 
@@ -948,6 +949,7 @@ pub fn get_history<T: BitcoindThread>(
                         .expect("Moved funds include funds going back"),
                 ),
                 txid,
+                vaults: vec![vault.deposit_outpoint],
             });
         }
 
@@ -1036,6 +1038,10 @@ pub fn get_history<T: BitcoindThread>(
                 amount: Some(recipients_amount),
                 fee: Some(fees),
                 txid,
+                vaults: spent_vaults
+                    .iter()
+                    .map(|vault| vault.deposit_outpoint)
+                    .collect(),
             })
         }
     }
@@ -1060,6 +1066,7 @@ pub struct HistoryEvent {
     pub amount: Option<u64>,
     pub fee: Option<u64>,
     pub txid: Txid,
+    pub vaults: Vec<OutPoint>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -2789,18 +2796,22 @@ mod tests {
         let spend_tx: BitcoinTransaction =
             encode::deserialize(&Vec::from_hex(spend_tx_hex).unwrap()).unwrap();
 
-        let deposit1_txid =
+        let deposit1_outpoint = OutPoint::new(
             Txid::from_str("fcb6ab963b654c773de786f4ac92c132b3d2e816ccea37af9592aa0b4aaec04b")
-                .unwrap();
+                .unwrap(),
+            0,
+        );
 
-        let deposit2_txid =
+        let deposit2_outpoint = OutPoint::new(
             Txid::from_str("cafa9f92be48ba41f9ee67e775b6c4afebd1bdbde5758792e9f30f6dea41e7fb")
-                .unwrap();
+                .unwrap(),
+            1,
+        );
 
         insert_vault_in_db(
             &db_file,
             1,
-            &OutPoint::new(deposit1_txid, 0),
+            &deposit1_outpoint,
             &Amount::ONE_BTC,
             1,
             ChildNumber::from_normal_idx(0).unwrap(),
@@ -2826,7 +2837,7 @@ mod tests {
         insert_vault_in_db(
             &db_file,
             1,
-            &OutPoint::new(deposit2_txid, 0),
+            &deposit2_outpoint,
             &Amount::from_sat(200_000_000_000),
             1,
             ChildNumber::from_normal_idx(0).unwrap(),
@@ -2896,12 +2907,14 @@ mod tests {
             events[0].fee.unwrap(),
             200_000_000_000 - spend_tx.output[0].value - spend_tx.output[1].value,
         );
+        assert_eq!(events[0].vaults, vec![deposit2_outpoint]);
 
-        assert_eq!(events[1].txid, deposit2_txid);
+        assert_eq!(events[1].txid, deposit2_outpoint.txid);
         assert_eq!(events[1].kind, HistoryEventKind::Deposit);
         assert_eq!(events[1].date, 3);
         assert_eq!(events[1].fee, None);
         assert_eq!(events[1].amount, Some(200_000_000_000));
+        assert_eq!(events[1].vaults, vec![deposit2_outpoint]);
 
         assert_eq!(events[2].txid, cancel_tx.txid());
         assert_eq!(events[2].kind, HistoryEventKind::Cancel);
@@ -2911,8 +2924,9 @@ mod tests {
             events[2].fee.unwrap(),
             Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value
         );
-        assert_eq!(events[3].txid, deposit1_txid);
+        assert_eq!(events[3].txid, deposit1_outpoint.txid);
         assert_eq!(events[3].kind, HistoryEventKind::Deposit);
+        assert_eq!(events[3].vaults, vec![deposit1_outpoint]);
 
         // retrieve events later in history
         let events = get_history(
@@ -2937,12 +2951,14 @@ mod tests {
             events[0].fee.unwrap(),
             Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value
         );
+        assert_eq!(events[0].vaults, vec![deposit1_outpoint]);
 
         assert_eq!(events[1].date, 1);
-        assert_eq!(events[1].txid, deposit1_txid);
+        assert_eq!(events[1].txid, deposit1_outpoint.txid);
         assert_eq!(events[1].kind, HistoryEventKind::Deposit);
         assert_eq!(events[1].fee, None);
         assert_eq!(events[1].amount, Some(Amount::ONE_BTC.as_sat()));
+        assert_eq!(events[1].vaults, vec![deposit1_outpoint]);
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }

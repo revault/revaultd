@@ -439,14 +439,15 @@ of inflows and outflows net of any change amount (that is technically a transact
 
 ##### Event Resource
 
-| Field         | Type   | Description                                                        |
-| ------------- | ------ | ------------------------------------------------------------------ |
-| `blockheight` | int    | Blockheight of the event final transaction                         |
-| `txid`        | string | Hex string  of the event final transaction id                      |
-| `kind`        | string | Type of the event. Can be `deposit`, `cancel`, `spend`             |
-| `date`        | int    | Timestamp of the event                                             |
-| `amount`      | int    | Absolute amount in satoshis that is entering or exiting the wallet |
-| `fee`         | int    | Fees caused by the operation, includes CPFP outputs amount         |
+| Field         | Type         | Description                                                                      |
+| ------------- | ------       | -------------------------------------------------------------------------------- |
+| `blockheight` | int          | Blockheight of the event final transaction                                       |
+| `txid`        | string       | Hex string  of the event final transaction id                                    |
+| `kind`        | string       | Type of the event. Can be `deposit`, `cancel`, `spend`                           |
+| `date`        | int          | Timestamp of the event                                                           |
+| `amount`      | int          | Absolute amount in satoshis that is entering or exiting the wallet               |
+| `fee`         | int          | Fees caused by the operation, includes CPFP outputs amount                       |
+| `vaults`      | string array | List of outpoints of vaults affected by the event excluding any change vault     |
 
 
 ### `emergency`

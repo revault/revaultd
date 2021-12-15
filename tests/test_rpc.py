@@ -1198,9 +1198,8 @@ def test_gethistory(revault_network, bitcoind, executor):
     revault_network.activate_vault(canceled_vault)
     revault_network.spend_vaults_anyhow_unconfirmed([canceled_vault])
     revault_network.cancel_vault(canceled_vault)
+    canceled_outpoint = f"{canceled_vault['txid']}:{canceled_vault['vout']}"
 
-    # We wait a little before and after the timestamp to keep everything
-    # cleanly seperated
     t2 = int(time.time())
 
     events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t2, 20)[
@@ -1208,29 +1207,49 @@ def test_gethistory(revault_network, bitcoind, executor):
     ]
     assert len(events) == 2
     assert events[0]["kind"] == "cancel"
+    assert len(events[0]["vaults"]) == 1
+    assert events[0]["vaults"][0] == canceled_outpoint
     assert events[1]["kind"] == "deposit"
+    assert len(events[1]["vaults"]) == 1
+    assert events[1]["vaults"][0] == canceled_outpoint
 
     # We can filter the results
     events = mans[0].rpc.gethistory(["deposit", "cancel"], t1, t2, 20)["events"]
     assert len(events) == 2
     assert events[0]["kind"] == "cancel"
+    assert len(events[0]["vaults"]) == 1
+    assert events[0]["vaults"][0] == canceled_outpoint
     assert events[1]["kind"] == "deposit"
+    assert len(events[1]["vaults"]) == 1
+    assert events[1]["vaults"][0] == canceled_outpoint
+
     events = mans[0].rpc.gethistory(["cancel"], t1, t2, 20)["events"]
     assert len(events) == 1
     assert events[0]["kind"] == "cancel"
+    assert len(events[0]["vaults"]) == 1
+    assert events[0]["vaults"][0] == canceled_outpoint
+
     events = mans[0].rpc.gethistory(["deposit"], t1, t2, 20)["events"]
     assert len(events) == 1
     assert events[0]["kind"] == "deposit"
+    assert len(events[0]["vaults"]) == 1
+    assert events[0]["vaults"][0] == canceled_outpoint
+
     events = mans[0].rpc.gethistory(["spend"], t1, t2, 20)["events"]
     assert len(events) == 0
 
-    # Create a spend with a input and a change.
-    spent_vault = revault_network.fund(0.05)
-    revault_network.secure_vault(spent_vault)
-    revault_network.activate_vault(spent_vault)
+    spent_vault_1 = revault_network.fund(0.05)
+    revault_network.secure_vault(spent_vault_1)
+    revault_network.activate_vault(spent_vault_1)
+    spent_vault_1_outpoint = f"{spent_vault_1['txid']}:{spent_vault_1['vout']}"
+
+    spent_vault_2 = revault_network.fund(0.05)
+    revault_network.secure_vault(spent_vault_2)
+    revault_network.activate_vault(spent_vault_2)
+    spent_vault_2_outpoint = f"{spent_vault_2['txid']}:{spent_vault_2['vout']}"
 
     address = revault_network.bitcoind.rpc.getnewaddress()
-    revault_network.spend_vaults([spent_vault], {address: 4000000}, 1)
+    revault_network.spend_vaults([spent_vault_1, spent_vault_2], {address: 4000000}, 1)
     spend_txs = revault_network.man(0).rpc.listspendtxs()["spend_txs"]
     assert len(spend_txs) == 2
 
@@ -1241,33 +1260,62 @@ def test_gethistory(revault_network, bitcoind, executor):
     ]
     assert len(events) == 2
     assert events[0]["kind"] == "cancel"
+    assert len(events[0]["vaults"]) == 1
+    assert events[0]["vaults"][0] == canceled_outpoint
     assert events[1]["kind"] == "deposit"
+    assert len(events[1]["vaults"]) == 1
+    assert events[1]["vaults"][0] == canceled_outpoint
 
     events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t2, t3, 20)[
         "events"
     ]
-    assert len(events) == 2
+    assert len(events) == 3
     assert events[0]["kind"] == "spend"
+    assert len(events[0]["vaults"]) == 2
+    assert spent_vault_1_outpoint in events[0]["vaults"]
+    assert spent_vault_2_outpoint in events[0]["vaults"]
     assert events[1]["kind"] == "deposit"
+    assert len(events[1]["vaults"]) == 1
+    assert events[1]["vaults"][0] == spent_vault_2_outpoint
+    assert events[2]["kind"] == "deposit"
+    assert len(events[2]["vaults"]) == 1
+    assert events[2]["vaults"][0] == spent_vault_1_outpoint
 
     events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t3, 20)[
         "events"
     ]
-    assert len(events) == 4
+    assert len(events) == 5
     assert events[0]["kind"] == "spend"
+    assert len(events[0]["vaults"]) == 2
+    assert spent_vault_1_outpoint in events[0]["vaults"]
+    assert spent_vault_2_outpoint in events[0]["vaults"]
     assert events[1]["kind"] == "deposit"
-    assert events[2]["kind"] == "cancel"
-    assert events[3]["kind"] == "deposit"
+    assert len(events[1]["vaults"]) == 1
+    assert events[1]["vaults"][0] == spent_vault_2_outpoint
+    assert events[2]["kind"] == "deposit"
+    assert len(events[2]["vaults"]) == 1
+    assert events[2]["vaults"][0] == spent_vault_1_outpoint
+    assert events[3]["kind"] == "cancel"
+    assert len(events[3]["vaults"]) == 1
+    assert events[3]["vaults"][0] == canceled_outpoint
+    assert events[4]["kind"] == "deposit"
+    assert len(events[4]["vaults"]) == 1
+    assert events[4]["vaults"][0] == canceled_outpoint
 
     events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t3, 2)["events"]
     assert len(events) == 2
     assert events[0]["kind"] == "spend"
+    assert len(events[0]["vaults"]) == 2
+    assert spent_vault_1_outpoint in events[0]["vaults"]
+    assert spent_vault_2_outpoint in events[0]["vaults"]
     assert events[1]["kind"] == "deposit"
+    assert len(events[1]["vaults"]) == 1
+    assert events[1]["vaults"][0] == spent_vault_2_outpoint
 
     for w in mans + stks:
         wait_for(
             lambda: len(
                 w.rpc.gethistory(["spend", "deposit", "cancel"], t1, t3, 20)["events"]
             )
-            == 4
+            == 5
         )

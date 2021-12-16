@@ -57,12 +57,7 @@ where
 }
 
 // Internal helper for queries boilerplate
-fn db_query<'a, P, F, T>(
-    path: &Path,
-    stmt_str: &'a str,
-    params: P,
-    f: F,
-) -> Result<Vec<T>, DatabaseError>
+fn db_query<P, F, T>(path: &Path, stmt_str: &str, params: P, f: F) -> Result<Vec<T>, DatabaseError>
 where
     P: IntoIterator + rusqlite::Params,
     P::Item: ToSql,
@@ -176,20 +171,14 @@ pub fn db_wallet(db_path: &Path) -> Result<DbWallet, DatabaseError> {
 
         let our_man_xpub_str = row.get::<_, Option<String>>(5)?;
         let our_man_xpub = if let Some(ref xpub_str) = our_man_xpub_str {
-            Some(
-                ExtendedPubKey::from_str(&xpub_str)
-                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-            )
+            Some(ExtendedPubKey::from_str(xpub_str).map_err(|e| FromSqlError::Other(Box::new(e)))?)
         } else {
             None
         };
 
         let our_stk_xpub_str = row.get::<_, Option<String>>(6)?;
         let our_stk_xpub = if let Some(ref xpub_str) = our_stk_xpub_str {
-            Some(
-                ExtendedPubKey::from_str(&xpub_str)
-                    .map_err(|e| FromSqlError::Other(Box::new(e)))?,
-            )
+            Some(ExtendedPubKey::from_str(xpub_str).map_err(|e| FromSqlError::Other(Box::new(e)))?)
         } else {
             None
         };

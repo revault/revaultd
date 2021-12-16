@@ -116,7 +116,7 @@ fn bitcoind_sanity_checks(
     bitcoind: &BitcoinD,
     bitcoind_config: &BitcoindConfig,
 ) -> Result<(), BitcoindError> {
-    check_bitcoind_network(&bitcoind, &bitcoind_config.network)
+    check_bitcoind_network(bitcoind, &bitcoind_config.network)
 }
 
 /// Connects to and sanity checks bitcoind.
@@ -177,11 +177,10 @@ pub fn bitcoind_main_loop(
 
     // We use a thread to 1) wait for bitcoind to be synced 2) poll listunspent
     let poller_thread = std::thread::spawn({
-        let _revaultd = revaultd.clone();
         let _bitcoind = bitcoind.clone();
         let _sync_progress = sync_progress.clone();
         let _shutdown = shutdown.clone();
-        move || poller_main(_revaultd, _bitcoind, _sync_progress, _shutdown)
+        move || poller_main(revaultd, _bitcoind, _sync_progress, _shutdown)
     });
 
     for msg in rx {

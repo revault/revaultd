@@ -146,11 +146,11 @@ pub fn unvault_txin_from_deposit(
 ) -> Result<UnvaultTxIn, BitcoindError> {
     let revaultd = revaultd.read().unwrap();
     let db_path = revaultd.db_file();
-    let db_vault = db_vault_by_deposit(&db_path, &deposit_outpoint)?
+    let db_vault = db_vault_by_deposit(&db_path, deposit_outpoint)?
         .expect("Checking Unvault txid for an unknow deposit");
     let unvault_descriptor = revaultd.derived_unvault_descriptor(db_vault.derivation_index);
 
-    let unvault_tx = if let Some(tx) = db_unvault_from_deposit(&db_path, &deposit_outpoint)? {
+    let unvault_tx = if let Some(tx) = db_unvault_from_deposit(&db_path, deposit_outpoint)? {
         tx
     } else {
         let deposit_descriptor = revaultd.derived_deposit_descriptor(db_vault.derivation_index);

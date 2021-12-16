@@ -26,7 +26,7 @@ where
 {
     let data = String::deserialize(deserializer)?;
     FromHex::from_hex(&data)
-        .map_err(|e| de::Error::custom(e))
+        .map_err(de::Error::custom)
         .map(NoisePubkey)
 }
 
@@ -259,7 +259,7 @@ impl Config {
         if let Some(ref stk_config) = config.stakeholder_config {
             let our_desc_xpub = DescriptorPublicKey::XPub(DescriptorXKey {
                 origin: None,
-                xkey: stk_config.xpub.clone(),
+                xkey: stk_config.xpub,
                 derivation_path: bip32::DerivationPath::from(vec![]),
                 wildcard: Wildcard::Unhardened,
             });
@@ -286,7 +286,7 @@ impl Config {
         if let Some(ref man_config) = config.manager_config {
             let our_desc_xpub = DescriptorPublicKey::XPub(DescriptorXKey {
                 origin: None,
-                xkey: man_config.xpub.clone(),
+                xkey: man_config.xpub,
                 derivation_path: bip32::DerivationPath::from(vec![]),
                 wildcard: Wildcard::Unhardened,
             });
@@ -295,15 +295,12 @@ impl Config {
                 .unvault_descriptor
                 .xpubs()
                 .into_iter()
-                .filter_map(|xpub| {
+                .filter(|xpub| {
                     match xpub {
-                        DescriptorPublicKey::SinglePub(_) => None, // Cosig
+                        DescriptorPublicKey::SinglePub(_) => false, // Cosig
                         DescriptorPublicKey::XPub(_) => {
-                            if stk_xpubs.contains(&xpub) {
-                                None // Stakeholder
-                            } else {
-                                Some(xpub) // Manager
-                            }
+                            // Stakeholder or Manager
+                            !stk_xpubs.contains(xpub)
                         }
                     }
                 })

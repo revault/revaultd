@@ -241,7 +241,7 @@ pub fn listvaults_from_db(
 /// If an outpoint does not refer to a known deposit, or if the status of the vault is
 /// part of `invalid_statuses`.
 pub fn vaults_from_deposits(
-    db_path: &std::path::PathBuf,
+    db_path: &std::path::Path,
     outpoints: &[OutPoint],
     invalid_statuses: &[VaultStatus],
 ) -> Result<Vec<DbVault>, RpcControlError> {
@@ -250,7 +250,7 @@ pub fn vaults_from_deposits(
     for outpoint in outpoints.iter() {
         // Note: being smarter with SQL queries implies enabling the 'table' feature of rusqlite
         // with a shit ton of dependencies.
-        if let Some(vault) = db_vault_by_deposit(db_path, &outpoint)? {
+        if let Some(vault) = db_vault_by_deposit(db_path, outpoint)? {
             if invalid_statuses.contains(&vault.status) {
                 return Err(RpcControlError::InvalidStatus(vault.status, *outpoint));
             }
@@ -733,7 +733,7 @@ pub fn fetch_cosigs_signatures<C: secp256k1::Verification>(
                 let (_, rawsig) = sig
                     .split_last()
                     .ok_or(CommunicationError::CosigInsanePsbt)?;
-                let sig = secp256k1::Signature::from_der(&rawsig)
+                let sig = secp256k1::Signature::from_der(rawsig)
                     .map_err(|_| CommunicationError::CosigInsanePsbt)?;
                 spend_tx
                     .add_signature(i, key.key, sig, secp)
@@ -771,7 +771,7 @@ pub fn check_spend_transaction_size(revaultd: &RevaultD, spend_tx: SpendTransact
         "transaction": tx,
     }))
     .expect("JSON created inline");
-    return msg.len() <= revault_net::noise::NOISE_PLAINTEXT_MAX_SIZE;
+    msg.len() <= revault_net::noise::NOISE_PLAINTEXT_MAX_SIZE
 }
 
 /// Sends the spend transaction for a certain outpoint to the coordinator
@@ -827,7 +827,7 @@ pub fn cosigners_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
     let mut cosigners = Vec::new();
     if let Some(c) = &revaultd.cosigs {
         for (host, key) in c {
-            let reachable = KKTransport::connect(*host, &revaultd.noise_secret, &key).is_ok();
+            let reachable = KKTransport::connect(*host, &revaultd.noise_secret, key).is_ok();
 
             cosigners.push(ServerStatus {
                 host: host.to_string(),
@@ -842,7 +842,7 @@ pub fn watchtowers_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
     let mut watchtowers = Vec::new();
     if let Some(w) = &revaultd.watchtowers {
         for (host, key) in w {
-            let reachable = KKTransport::connect(*host, &revaultd.noise_secret, &key).is_ok();
+            let reachable = KKTransport::connect(*host, &revaultd.noise_secret, key).is_ok();
 
             watchtowers.push(ServerStatus {
                 host: host.to_string(),

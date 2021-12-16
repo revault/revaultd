@@ -171,7 +171,7 @@ fn maybe_wt_share_signatures(
         );
         wts_share_emer_signatures(
             &revaultd.noise_secret,
-            &watchtowers,
+            watchtowers,
             db_vault.deposit_outpoint,
             db_vault.derivation_index,
             &emer_tx,
@@ -227,7 +227,7 @@ fn fetch_all_signatures(
             continue;
         }
         // Check if we can share the Emer signature with the watchtowers
-        if let Err(e) = maybe_wt_share_signatures(revaultd, &db_path, &db_vault) {
+        if let Err(e) = maybe_wt_share_signatures(revaultd, db_path, &db_vault) {
             log::error!(
                 "Error sharing emergency signatures with watchtowers: '{}'",
                 e

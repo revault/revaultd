@@ -148,7 +148,7 @@ pub fn setup_panic_hook() {
             .payload()
             .downcast_ref::<&str>()
             .map(|s| s.to_string())
-            .or(panic_info.payload().downcast_ref::<String>().cloned());
+            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned());
         log::error!(
             "panic occurred at line {} of file {}: {:?}\n{:?}",
             line,

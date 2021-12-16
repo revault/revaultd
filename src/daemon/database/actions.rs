@@ -84,7 +84,7 @@ fn create_db(revaultd: &RevaultD) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError(format!("Creating db file: {}", e.to_string())))?;
 
     db_exec(&db_path, |tx| {
-        tx.execute_batch(&SCHEMA)
+        tx.execute_batch(SCHEMA)
             .map_err(|e| DatabaseError(format!("Creating database: {}", e.to_string())))?;
         tx.execute(
             "INSERT INTO version (version) VALUES (?1)",
@@ -205,10 +205,10 @@ pub fn setup_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     let db_path = revaultd.db_file();
     if !db_path.exists() {
         log::info!("No database at {:?}, creating a new one.", db_path);
-        create_db(&revaultd)?;
+        create_db(revaultd)?;
     }
 
-    check_db(&revaultd)?;
+    check_db(revaultd)?;
     state_from_db(revaultd)?;
 
     Ok(())
@@ -307,6 +307,7 @@ macro_rules! db_store_unsigned_transactions {
 /// Mark an unconfirmed deposit as being in 'Funded' state (confirmed), as well as storing the
 /// unsigned "presigned-transactions".
 /// The `emer_tx` and `unemer_tx` may only be passed for stakeholders.
+#[allow(clippy::too_many_arguments)]
 pub fn db_confirm_deposit(
     db_path: &Path,
     outpoint: &OutPoint,
@@ -574,7 +575,7 @@ pub fn db_mark_spent_unvault(
     vault_id: u32,
     blocktime: u32,
 ) -> Result<(), DatabaseError> {
-    db_mark_vault_as_moved(&db_path, vault_id, VaultStatus::Spent, blocktime)
+    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::Spent, blocktime)
 }
 
 /// Update vault status to `canceled` and set moved_at with given blocktime.
@@ -583,7 +584,7 @@ pub fn db_mark_canceled_unvault(
     vault_id: u32,
     blocktime: u32,
 ) -> Result<(), DatabaseError> {
-    db_mark_vault_as_moved(&db_path, vault_id, VaultStatus::Canceled, blocktime)
+    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::Canceled, blocktime)
 }
 
 /// Update vault status to `emergencied` and set moved_at with given blocktime.
@@ -593,7 +594,7 @@ pub fn db_mark_emergencied_unvault(
     blocktime: u32,
 ) -> Result<(), DatabaseError> {
     db_mark_vault_as_moved(
-        &db_path,
+        db_path,
         vault_id,
         VaultStatus::UnvaultEmergencyVaulted,
         blocktime,
@@ -617,7 +618,7 @@ pub fn db_mark_emergencied_vault(
     vault_id: u32,
     blocktime: u32,
 ) -> Result<(), DatabaseError> {
-    db_mark_vault_as_moved(&db_path, vault_id, VaultStatus::EmergencyVaulted, blocktime)
+    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::EmergencyVaulted, blocktime)
 }
 
 /// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.
@@ -824,7 +825,7 @@ pub fn db_insert_spend(
         )?;
         let spend_id = db_tx.last_insert_rowid();
 
-        for unvault_tx in unvault_txs.into_iter() {
+        for unvault_tx in unvault_txs {
             db_tx.execute(
                 "INSERT INTO spend_inputs (unvault_id, spend_id) VALUES (?1, ?2)",
                 params![unvault_tx.id, spend_id],

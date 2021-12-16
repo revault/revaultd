@@ -406,7 +406,8 @@ impl RpcApi for RpcImpl {
 
             ],
             "setspendtx": [
-
+                "spend_txid",
+                "[priority]",
             ],
             "gethistory": [
                 "[kind]",

@@ -428,9 +428,10 @@ broadcast its corresponding Unvault transactions and broadcast it as soon as the
 
 #### Request
 
-| Field          | Type   | Description                                    |
-| -------------- | ------ | ---------------------------------------------- |
-| `spend_txid`   | string | Txid of the Spend transaction to use           |
+| Field          | Type   | Description                                                                                                                                                                                       |
+| -------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spend_txid`   | string | Txid of the Spend transaction to use                                                                                                                                                              |
+| `priority`     | bool   | Whether or not the transaction has priority. Optional, defaults to false. If the transaction has priority, the tx itself and its unvaults will be CPFPed if they can't make it to the next block. |
 
 #### Response
 

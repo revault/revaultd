@@ -178,19 +178,75 @@ def test_sigfetcher(revault_network, bitcoind, executor):
     for w in rn.stks():
         w.wait_for_logs(
             [
-                "Fetching Unvault Emergency signature",
-                "Fetching Emergency signature",
-                "Fetching Cancel signature",
-                "Fetching Unvault signature",
+                "Syncing Unvault Emergency signature",
+                "Syncing Emergency signature",
+                "Syncing Cancel signature",
+                "Syncing Unvault signature",
             ]
         )
     for w in rn.man_wallets:
         w.wait_for_logs(
             [
-                "Fetching Cancel signature",
-                "Fetching Unvault signature",
+                "Syncing Cancel signature",
+                "Syncing Unvault signature",
             ]
         )
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_sigfetcher_coordinator_dead(revault_network, bitcoind):
+    rn = revault_network
+    rn.deploy(
+        2,
+        1,
+        csv=1,
+        with_cosigs=False,
+        with_watchtowers=False,
+    )
+    vault = revault_network.fund(1)
+
+    # We kill the coordinator
+    for d in rn.daemons:
+        if d not in rn.participants():
+            d.stop()
+
+    # Now we secure the vault
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    for stk in rn.stks():
+        stk.wait_for_deposits([deposit])
+        psbts = stk.rpc.getrevocationtxs(deposit)
+        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
+            psbts["cancel_tx"], vault["derivation_index"]
+        )
+        emer_psbt = stk.stk_keychain.sign_revocation_psbt(
+            psbts["emergency_tx"], vault["derivation_index"]
+        )
+        unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
+            psbts["emergency_unvault_tx"], vault["derivation_index"]
+        )
+
+        # Revaultd complains because the coordinator is dead
+        with pytest.raises(RpcError, match="Connection refused"):
+            stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+
+        # The sigfetcher tries to fetch the signatures, but fails
+        stk.wait_for_log("Error while fetching signatures")
+        wait_for(lambda: len(stk.rpc.listvaults(["securing"])["vaults"]) == 1)
+
+    # Now we start the coordinator again, and the vault will be secured :)
+    for d in rn.daemons:
+        if d not in rn.participants():
+            d.start()
+
+    for stk in rn.stks():
+        stk.wait_for_logs(
+            [
+                "Syncing Cancel signature",
+                "Syncing Emergency signature",
+                "Syncing Unvault Emergency signature",
+            ]
+        )
+        stk.wait_for_secured_vaults([deposit])
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

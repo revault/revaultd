@@ -58,6 +58,15 @@ pub enum RevaultTx {
 }
 
 impl RevaultTx {
+    pub fn type_str(&self) -> String {
+        match self {
+            RevaultTx::Unvault(_) => "Unvault".to_string(),
+            RevaultTx::Cancel(_) => "Cancel".to_string(),
+            RevaultTx::Emergency(_) => "Emergency".to_string(),
+            RevaultTx::UnvaultEmergency(_) => "Unvault Emergency".to_string(),
+        }
+    }
+
     /// Serialize in the PSBT format
     pub fn ser(&self) -> Vec<u8> {
         match self {

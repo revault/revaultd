@@ -71,9 +71,9 @@ impl RevaultTx {
     /// Add a signature to a presigned transaction (always first index)
     pub fn add_signature<C>(
         &mut self,
-        secp: &secp256k1::Secp256k1<C>,
         pubkey: secp256k1::PublicKey,
         sig: secp256k1::Signature,
+        secp: &secp256k1::Secp256k1<C>,
     ) -> Result<Option<Vec<u8>>, revault_tx::error::InputSatisfactionError>
     where
         C: secp256k1::Verification,

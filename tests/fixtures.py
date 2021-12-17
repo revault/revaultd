@@ -18,6 +18,7 @@ from test_framework.utils import (
     EXECUTOR_WORKERS,
 )
 
+import bip32
 import os
 import pytest
 import shutil
@@ -184,14 +185,9 @@ def revaultd_manager(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
-    cpfp_xprivs = [
-        bytes.fromhex(
-            "0435839400000000000000000060499f801b896d83179a4374aeb7822aaeaceaa0db1f85ee3e904c4defbd9689004b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e",
-        )
-    ]
-    cpfp_xpubs = [
-        "tpubD6NzVbkrYhZ4XJDrzRvuxHEyQaPd1mwwdDofEJwekX18tAdsqeKfxss79AJzg1431FybXg5rfpTrJF4iAhyR7RubberdzEQXiRmXGADH2eA"
-    ]
+    cpfp_seed = os.urandom(32)
+    cpfp_xprivs = [bip32.BIP32.from_seed(cpfp_seed, network="test")]
+    cpfp_xpubs = [cpfp_xprivs[0].get_xpub()]
     stks_xpubs = [stk.get_xpub() for stk in stks]
     cosigs_keys = []
     mans_xpubs = [man.get_xpub() for man in mans]
@@ -220,7 +216,7 @@ def revaultd_manager(bitcoind, directory):
         bitcoind.rpcport,
         bitcoind_cookie,
         man_config=man_config,
-        cpfp_priv=cpfp_xprivs[0],
+        cpfp_seed=cpfp_seed,
     )
 
     try:

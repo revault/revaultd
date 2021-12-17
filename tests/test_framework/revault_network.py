@@ -105,13 +105,13 @@ class RevaultNetwork:
             csv = random.randint(1, 26784)
         self.csv = csv
 
+        man_cpfp_seeds = [os.urandom(32) for _ in range(len(manonly_keychains))]
         man_cpfp_privs = [
-            bip32.BIP32.from_seed(os.urandom(32), network="test")
-            for _ in range(len(manonly_keychains))
+            bip32.BIP32.from_seed(seed, network="test") for seed in man_cpfp_seeds
         ]
+        stkman_cpfp_seeds = [os.urandom(32) for _ in range(len(stkman_man_keychains))]
         stkman_cpfp_privs = [
-            bip32.BIP32.from_seed(os.urandom(32), network="test")
-            for _ in range(len(stkman_man_keychains))
+            bip32.BIP32.from_seed(seed, network="test") for seed in stkman_cpfp_seeds
         ]
         cpfp_xpubs = [c.get_xpub() for c in man_cpfp_privs + stkman_cpfp_privs]
         stks_xpubs = [stk.get_xpub() for stk in stks_keychains]
@@ -368,7 +368,7 @@ class RevaultNetwork:
                 stk_config,
                 man_config,
                 wt_process=miradord if with_watchtowers else None,
-                cpfp_priv=stkman_cpfp_privs[i].get_xpriv_bytes() if with_cpfp else None,
+                cpfp_seed=stkman_cpfp_seeds[i] if with_cpfp else None,
             )
             start_jobs.append(self.executor.submit(revaultd.start))
             self.stkman_wallets.append(revaultd)
@@ -404,7 +404,7 @@ class RevaultNetwork:
                 bitcoind_rpcport,
                 bitcoind_cookie,
                 man_config,
-                man_cpfp_privs[i].get_xpriv_bytes() if with_cpfp else None,
+                cpfp_seed=man_cpfp_seeds[i] if with_cpfp else None,
             )
             start_jobs.append(self.executor.submit(daemon.start))
             self.man_wallets.append(daemon)

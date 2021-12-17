@@ -175,6 +175,7 @@ impl std::error::Error for NoiseKeyError {}
 
 #[derive(Debug)]
 enum CpfpKeyError {
+    InvalidSeedFile,
     ReadingSeed(io::Error),
     InvalidSeed(bip32::Error),
     KeyNotInDescriptor(String),
@@ -183,6 +184,7 @@ enum CpfpKeyError {
 impl fmt::Display for CpfpKeyError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Self::InvalidSeedFile => write!(f, "Invalid CPFP seed file"),
             Self::ReadingSeed(e) => write!(f, "Error reading CPFP seed: '{}'", e),
             Self::InvalidSeed(e) => write!(f, "Invalid CPFP seed: '{}'", e),
             Self::KeyNotInDescriptor(s) => {
@@ -247,6 +249,15 @@ fn read_cpfp_key(
         Ok(fd) => fd,
         Err(_) => return Ok(None),
     };
+
+    if cpfp_secret_fd
+        .metadata()
+        .map_err(CpfpKeyError::ReadingSeed)?
+        .len()
+        != CPFP_SEED_FILE_SIZE as u64
+    {
+        return Err(CpfpKeyError::InvalidSeedFile);
+    }
 
     let mut seed_buffer = [0; CPFP_SEED_FILE_SIZE];
     cpfp_secret_fd

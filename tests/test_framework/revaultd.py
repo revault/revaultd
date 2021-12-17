@@ -26,7 +26,7 @@ class Revaultd(TailableProc):
         stk_config=None,
         man_config=None,
         wt_process=None,
-        cpfp_priv=None,
+        cpfp_seed=None,
     ):
         # set descriptors
         self.cpfp_desc = cpfp_desc
@@ -53,10 +53,10 @@ class Revaultd(TailableProc):
         with open(noise_secret_file, "wb") as f:
             f.write(noise_priv)
 
-        if cpfp_priv is not None:
+        if cpfp_seed is not None:
             cpfp_secret_file = os.path.join(self.datadir_with_network, "cpfp_secret")
             with open(cpfp_secret_file, "wb") as f:
-                f.write(cpfp_priv)
+                f.write(cpfp_seed)
 
         with open(self.conf_file, "w") as f:
             f.write(f"data_dir = '{datadir}'\n")
@@ -176,7 +176,7 @@ class ManagerRevaultd(Revaultd):
         bitcoind_rpc,
         bitcoind_cookie,
         man_config,
-        cpfp_priv,
+        cpfp_seed,
     ):
         """The wallet daemon for a manager.
         Needs to know all xpubs, and needs to be able to connect to the
@@ -195,7 +195,7 @@ class ManagerRevaultd(Revaultd):
             stk_config=None,
             man_config=man_config,
             wt_process=None,
-            cpfp_priv=cpfp_priv,
+            cpfp_seed=cpfp_seed,
         )
         assert self.man_keychain is not None
 
@@ -232,7 +232,7 @@ class StakeholderRevaultd(Revaultd):
             stk_config=stk_config,
             man_config=None,
             wt_process=wt_process,
-            cpfp_priv=None,
+            cpfp_seed=None,
         )
         assert self.stk_keychain is not None
 
@@ -252,7 +252,7 @@ class StkManRevaultd(Revaultd):
         stk_config,
         man_config,
         wt_process,
-        cpfp_priv,
+        cpfp_seed,
     ):
         """A revaultd instance that is both stakeholder and manager."""
         super(StkManRevaultd, self).__init__(
@@ -268,5 +268,5 @@ class StkManRevaultd(Revaultd):
             stk_config=stk_config,
             man_config=man_config,
             wt_process=wt_process,
-            cpfp_priv=cpfp_priv,
+            cpfp_seed=cpfp_seed,
         )

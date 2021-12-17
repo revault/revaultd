@@ -19,8 +19,8 @@ use revault_net::{
 use revault_tx::{
     bitcoin::{
         secp256k1,
-        util::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey},
-        Address, BlockHash, PublicKey as BitcoinPublicKey, Script, TxOut,
+        util::bip32::{self, ChildNumber, ExtendedPrivKey, ExtendedPubKey},
+        Address, BlockHash, Network, PublicKey as BitcoinPublicKey, Script, TxOut,
     },
     miniscript::descriptor::{DescriptorPublicKey, DescriptorTrait},
     scripts::{
@@ -32,6 +32,8 @@ use revault_tx::{
         UnvaultTransaction,
     },
 };
+
+const CPFP_SEED_FILE_SIZE: usize = 32;
 
 /// The status of a [Vault], depends both on the block chain and the set of pre-signed
 /// transactions
@@ -173,16 +175,18 @@ impl std::error::Error for NoiseKeyError {}
 
 #[derive(Debug)]
 enum CpfpKeyError {
-    ReadingKey(io::Error),
-    InvalidKey(String),
+    InvalidSeedFile,
+    ReadingSeed(io::Error),
+    InvalidSeed(bip32::Error),
     KeyNotInDescriptor(String),
 }
 
 impl fmt::Display for CpfpKeyError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::ReadingKey(e) => write!(f, "Error reading CPFP key: '{}'", e),
-            Self::InvalidKey(e) => write!(f, "Invalid CPFP key: '{}'", e),
+            Self::InvalidSeedFile => write!(f, "Invalid CPFP seed file"),
+            Self::ReadingSeed(e) => write!(f, "Error reading CPFP seed: '{}'", e),
+            Self::InvalidSeed(e) => write!(f, "Invalid CPFP seed: '{}'", e),
             Self::KeyNotInDescriptor(s) => {
                 write!(
                     f,
@@ -235,20 +239,34 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, NoiseK
     Ok(noise_secret)
 }
 
-fn read_cpfp_key(secret_file: PathBuf) -> Result<Option<ExtendedPrivKey>, CpfpKeyError> {
+// Read the CPFP extended private key from the BIP32 seed stored in the given file.
+fn read_cpfp_key(
+    secret_file: PathBuf,
+    network: Network,
+) -> Result<Option<ExtendedPrivKey>, CpfpKeyError> {
     // No file? No key :)
     let mut cpfp_secret_fd = match fs::File::open(secret_file) {
         Ok(fd) => fd,
         Err(_) => return Ok(None),
     };
 
-    let mut buffer = [0; 78];
+    if cpfp_secret_fd
+        .metadata()
+        .map_err(CpfpKeyError::ReadingSeed)?
+        .len()
+        != CPFP_SEED_FILE_SIZE as u64
+    {
+        return Err(CpfpKeyError::InvalidSeedFile);
+    }
+
+    let mut seed_buffer = [0; CPFP_SEED_FILE_SIZE];
     cpfp_secret_fd
-        .read_exact(&mut buffer)
-        .map_err(CpfpKeyError::ReadingKey)?;
-    ExtendedPrivKey::decode(&buffer)
+        .read_exact(&mut seed_buffer)
+        .map_err(CpfpKeyError::ReadingSeed)?;
+
+    ExtendedPrivKey::new_master(network, &seed_buffer)
+        .map_err(CpfpKeyError::InvalidSeed)
         .map(Option::Some)
-        .map_err(|e| CpfpKeyError::InvalidKey(e.to_string()))
 }
 
 /// A vault is defined as a confirmed utxo paying to the Vault Descriptor for which
@@ -394,7 +412,12 @@ impl RevaultD {
 
         let cpfp_key = if our_man_xpub.is_some() {
             let cpfp_key_file = [data_dir_str, "cpfp_secret"].iter().collect();
-            let key = read_cpfp_key(cpfp_key_file)?;
+            let net = if config.bitcoind_config.network == Network::Bitcoin {
+                Network::Bitcoin
+            } else {
+                Network::Testnet
+            };
+            let key = read_cpfp_key(cpfp_key_file, net)?;
             if let Some(key) = key {
                 // Checking if the key is in the cpfp descriptor
                 let secp_ctx = secp256k1::Secp256k1::signing_only();

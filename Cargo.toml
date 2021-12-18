@@ -17,9 +17,6 @@ path = "src/bin/daemon.rs"
 name = "revault-cli"
 path = "src/bin/cli.rs"
 
-[features]
-bench = []
-
 [dependencies]
 revault_tx = { git = "https://github.com/revault/revault_tx", features = ["use-serde"] }
 revault_net = { git = "https://github.com/revault/revault_net" }

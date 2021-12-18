@@ -1,4 +1,4 @@
-use crate::common::config::BitcoindConfig;
+use crate::daemon::config::BitcoindConfig;
 use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
     bitcoin::{

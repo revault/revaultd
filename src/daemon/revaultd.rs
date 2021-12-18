@@ -1,4 +1,4 @@
-use crate::common::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
+use crate::daemon::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
 
 use std::{
     collections::HashMap,
@@ -700,7 +700,7 @@ impl RevaultD {
 #[cfg(test)]
 mod tests {
     use super::RevaultD;
-    use crate::common::config::Config;
+    use crate::daemon::config::Config;
 
     use std::path::PathBuf;
 

@@ -2,7 +2,7 @@ pub mod interface;
 pub mod poller;
 pub mod utils;
 
-use crate::common::config::BitcoindConfig;
+use crate::daemon::config::BitcoindConfig;
 use crate::daemon::{
     database::DatabaseError, revaultd::RevaultD, threadmessages::BitcoindMessageOut,
 };

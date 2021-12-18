@@ -1,5 +1,6 @@
 mod bitcoind;
 mod communication;
+pub mod config;
 mod control;
 mod database;
 mod jsonrpc;
@@ -28,6 +29,8 @@ use std::{
     sync::{mpsc, Arc, RwLock},
     thread, time,
 };
+
+pub const VERSION: &str = "0.3.0";
 
 pub fn daemon_main(mut revaultd: RevaultD) {
     let user_role = match (revaultd.is_stakeholder(), revaultd.is_manager()) {

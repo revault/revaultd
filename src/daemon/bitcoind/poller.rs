@@ -1,4 +1,4 @@
-use crate::common::config::BitcoindConfig;
+use crate::daemon::config::BitcoindConfig;
 use crate::daemon::{
     bitcoind::{
         interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},

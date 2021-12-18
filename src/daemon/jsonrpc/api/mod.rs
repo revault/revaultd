@@ -5,7 +5,7 @@
 mod error;
 use error::Error;
 
-use crate::common::VERSION;
+use crate::daemon::VERSION;
 use crate::daemon::{
     bitcoind::interface::WalletTransaction,
     communication::{

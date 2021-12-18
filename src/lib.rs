@@ -32,8 +32,38 @@ use std::{
     io::{self, Write},
     panic, process,
     sync::{mpsc, Arc, RwLock},
-    thread, time,
+    thread,
 };
+
+// A panic in any thread should stop the main thread, and print the panic.
+fn setup_panic_hook() {
+    panic::set_hook(Box::new(move |panic_info| {
+        let file = panic_info
+            .location()
+            .map(|l| l.file())
+            .unwrap_or_else(|| "'unknown'");
+        let line = panic_info
+            .location()
+            .map(|l| l.line().to_string())
+            .unwrap_or_else(|| "'unknown'".to_string());
+
+        let bt = backtrace::Backtrace::new();
+        let info = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned());
+        log::error!(
+            "panic occurred at line {} of file {}: {:?}\n{:?}",
+            line,
+            file,
+            info,
+            bt
+        );
+
+        process::exit(1);
+    }));
+}
 
 pub fn daemon_main(mut revaultd: RevaultD) {
     let user_role = match (revaultd.is_stakeholder(), revaultd.is_manager()) {
@@ -42,6 +72,8 @@ pub fn daemon_main(mut revaultd: RevaultD) {
         (true, true) => UserRole::ManagerStakeholder,
         _ => unreachable!(),
     };
+
+    setup_panic_hook();
 
     // First and foremost
     log::info!("Setting up database");
@@ -110,60 +142,4 @@ pub fn daemon_main(mut revaultd: RevaultD) {
     // We are always logging to stdout, should it be then piped to the log file (if daemon) or
     // not. So just make sure that all messages were actually written.
     io::stdout().flush().expect("Flushing stdout");
-}
-
-// This creates the log file automagically if it doesn't exist, and logs on stdout
-// if None is given
-pub fn setup_logger(log_level: log::LevelFilter) -> Result<(), fern::InitError> {
-    let dispatcher = fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "[{}][{}][{}] {}",
-                time::SystemTime::now()
-                    .duration_since(time::UNIX_EPOCH)
-                    .unwrap_or_else(|e| {
-                        println!("Can't get time since epoch: '{}'. Using a dummy value.", e);
-                        time::Duration::from_secs(0)
-                    })
-                    .as_secs(),
-                record.target(),
-                record.level(),
-                message
-            ))
-        })
-        .level(log_level);
-
-    dispatcher.chain(std::io::stdout()).apply()?;
-
-    Ok(())
-}
-
-// A panic in any thread should stop the main thread, and print the panic.
-pub fn setup_panic_hook() {
-    panic::set_hook(Box::new(move |panic_info| {
-        let file = panic_info
-            .location()
-            .map(|l| l.file())
-            .unwrap_or_else(|| "'unknown'");
-        let line = panic_info
-            .location()
-            .map(|l| l.line().to_string())
-            .unwrap_or_else(|| "'unknown'".to_string());
-
-        let bt = backtrace::Backtrace::new();
-        let info = panic_info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned());
-        log::error!(
-            "panic occurred at line {} of file {}: {:?}\n{:?}",
-            line,
-            file,
-            info,
-            bt
-        );
-
-        process::exit(1);
-    }));
 }

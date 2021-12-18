@@ -1,9 +1,9 @@
 use revault_net::sodiumoxide;
 use revault_tx::bitcoin::hashes::hex::ToHex;
-use std::{env, path::PathBuf, process};
+use std::{env, path::PathBuf, process, time};
 
 use daemonize_simple::Daemonize;
-use revaultd::{config::Config, daemon_main, setup_logger, setup_panic_hook, RevaultD};
+use revaultd::{config::Config, daemon_main, RevaultD};
 
 fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     if args.len() == 1 {
@@ -17,6 +17,30 @@ fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     }
 
     Some(PathBuf::from(args[2].to_owned()))
+}
+
+fn setup_logger(log_level: log::LevelFilter) -> Result<(), fern::InitError> {
+    let dispatcher = fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "[{}][{}][{}] {}",
+                time::SystemTime::now()
+                    .duration_since(time::UNIX_EPOCH)
+                    .unwrap_or_else(|e| {
+                        println!("Can't get time since epoch: '{}'. Using a dummy value.", e);
+                        time::Duration::from_secs(0)
+                    })
+                    .as_secs(),
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
+        .level(log_level);
+
+    dispatcher.chain(std::io::stdout()).apply()?;
+
+    Ok(())
 }
 
 fn main() {
@@ -51,8 +75,6 @@ fn main() {
         "Coordinator static public key: '{}'",
         revaultd.coordinator_noisekey.0.to_hex()
     );
-
-    setup_panic_hook();
 
     if revaultd.daemon {
         let log_file = revaultd.log_file();

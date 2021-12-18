@@ -1,6 +1,6 @@
 ///! Background thread that will poll the coordinator for signatures
 use crate::daemon::{
-    control::{get_presigs, wts_share_emer_signatures, CommunicationError},
+    control::{get_presigs, send_coord_sig_msg, wts_share_emer_signatures, CommunicationError},
     database::{
         actions::{db_mark_emer_shared, db_update_presigned_txs, db_update_vault_status},
         bitcointx::RevaultTx,
@@ -18,7 +18,7 @@ use revault_tx::{
 };
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path,
     sync::mpsc,
     sync::{Arc, RwLock},
@@ -73,13 +73,19 @@ impl From<revault_net::Error> for SignatureFetcherError {
 // Send a `get_sigs` message to the Coordinator to fetch other stakeholders' signatures for this
 // transaction (https://github.com/revault/practical-revault/blob/master/messages.md#get_sigs).
 // If the Coordinator hands us some new signatures, update the transaction we are passed.
-fn get_sigs<C: secp256k1::Verification>(
+// If we are a stakeholder and our signature is missing, we send it to the coordinator
+fn sync_sigs<C: secp256k1::Verification>(
     transport: &mut KKTransport,
     stk_keys: &[BitcoinPubKey],
-    tx: &mut impl RevaultTransaction,
+    our_stk_key: &Option<BitcoinPubKey>,
+    tx: &mut RevaultTx,
     secp: &secp256k1::Secp256k1<C>,
 ) -> Result<(), SignatureFetcherError> {
     let signatures = get_presigs(transport, tx.txid())?;
+    let mut contains_our_signature = false;
+    let our_stk_key = our_stk_key.map(|k| k.key);
+
+    log::debug!("Syncing {} signature", tx.type_str());
 
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {
@@ -98,9 +104,9 @@ fn get_sigs<C: secp256k1::Verification>(
             );
             continue;
         }
+        contains_our_signature |= Some(key) == our_stk_key;
 
-        // FIXME: don't blindly assume 0 here..
-        if tx.psbt().inputs[0].partial_sigs.contains_key(&pubkey) {
+        if tx.signatures().contains_key(&pubkey.key) {
             continue;
         }
 
@@ -110,11 +116,26 @@ fn get_sigs<C: secp256k1::Verification>(
             pubkey,
             tx.txid()
         );
-        if let Err(e) = tx.add_signature(0, pubkey.key, sig, secp) {
+        if let Err(e) = tx.add_signature(pubkey.key, sig, secp) {
             // FIXME: should we loudly fail instead ? If the coordinator is sending us bad
             // signatures something shady's happening.
             log::error!("Error while adding signature for presigned tx: '{}'", e);
             continue;
+        }
+    }
+
+    if let Some(our_stk_key) = our_stk_key {
+        if !contains_our_signature {
+            // Oh, the coordinator didn't have our signature. Here it is!
+            if let Some(our_sig) = tx.signatures().remove(&our_stk_key) {
+                log::info!(
+                    "Coordinator didn't have our signature for transaction '{}', sending",
+                    tx.txid()
+                );
+                let mut map = BTreeMap::new();
+                map.insert(our_stk_key, our_sig);
+                send_coord_sig_msg(transport, tx.txid(), map)?;
+            }
         }
     }
 
@@ -181,28 +202,22 @@ fn fetch_all_signatures(
 
     for (db_vault, mut db_txs) in vault_txs {
         let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
+        let our_stk_key = revaultd.our_stk_xpub_at(db_vault.derivation_index);
 
         for db_tx in &mut db_txs {
-            match db_tx.psbt {
-                RevaultTx::Unvault(ref mut unvault_tx) => {
-                    log::debug!("Fetching Unvault signature");
-                    get_sigs(&mut transport, &stk_keys, unvault_tx, &revaultd.secp_ctx)?;
-                }
-                RevaultTx::Cancel(ref mut cancel_tx) => {
-                    log::debug!("Fetching Cancel signature");
-                    get_sigs(&mut transport, &stk_keys, cancel_tx, &revaultd.secp_ctx)?;
-                }
-                RevaultTx::Emergency(ref mut emer_tx) => {
-                    log::debug!("Fetching Emergency signature");
-                    debug_assert!(revaultd.is_stakeholder());
-                    get_sigs(&mut transport, &stk_keys, emer_tx, &revaultd.secp_ctx)?;
-                }
-                RevaultTx::UnvaultEmergency(ref mut unemer_tx) => {
-                    log::debug!("Fetching Unvault Emergency signature");
-                    debug_assert!(revaultd.is_stakeholder());
-                    get_sigs(&mut transport, &stk_keys, unemer_tx, &revaultd.secp_ctx)?;
-                }
-            };
+            if matches!(
+                db_tx.psbt,
+                RevaultTx::Emergency(_) | RevaultTx::UnvaultEmergency(_)
+            ) {
+                assert!(revaultd.is_stakeholder())
+            }
+            sync_sigs(
+                &mut transport,
+                &stk_keys,
+                &our_stk_key,
+                &mut db_tx.psbt,
+                &revaultd.secp_ctx,
+            )?;
         }
 
         // NOTE: In theory, the deposit could have been reorged out and the presigned

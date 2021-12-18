@@ -569,7 +569,7 @@ fn send_wt_sig_msg(
 // which generates fresh unsigned transactions.
 //
 // `sigs` MUST contain valid signatures (including the attached sighash type)
-fn send_coord_sig_msg(
+pub fn send_coord_sig_msg(
     transport: &mut KKTransport,
     id: Txid,
     sigs: BTreeMap<secp256k1::PublicKey, secp256k1::Signature>,

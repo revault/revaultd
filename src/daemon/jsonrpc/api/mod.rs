@@ -709,7 +709,7 @@ impl RpcApi for RpcImpl {
             })?;
             cancel_db_tx
                 .psbt
-                .add_signature(secp_ctx, key.key, sig)
+                .add_signature(key.key, sig, secp_ctx)
                 .map_err(|e| {
                     JsonRpcError::invalid_params(format!(
                         "Invalid signature '{}' in Cancel PSBT: '{}'",
@@ -729,7 +729,7 @@ impl RpcApi for RpcImpl {
             })?;
             emer_db_tx
                 .psbt
-                .add_signature(secp_ctx, key.key, sig)
+                .add_signature(key.key, sig, secp_ctx)
                 .map_err(|e| {
                     JsonRpcError::invalid_params(format!(
                         "Invalid signature '{}' in Emergency PSBT: '{}'",
@@ -749,7 +749,7 @@ impl RpcApi for RpcImpl {
             })?;
             unvault_emer_db_tx
                 .psbt
-                .add_signature(secp_ctx, key.key, sig)
+                .add_signature(key.key, sig, secp_ctx)
                 .map_err(|e| {
                     JsonRpcError::invalid_params(format!(
                         "Invalid signature '{}' in UnvaultEmergency PSBT: '{}'",
@@ -912,7 +912,7 @@ impl RpcApi for RpcImpl {
 
             unvault_db_tx
                 .psbt
-                .add_signature(secp_ctx, key.key, sig)
+                .add_signature(key.key, sig, secp_ctx)
                 .map_err(|e| {
                     JsonRpcError::invalid_params(format!(
                         "Invalid signature '{}' in Unvault PSBT: '{}'",

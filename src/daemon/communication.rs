@@ -344,6 +344,7 @@ pub struct ServerStatus {
     pub reachable: bool,
 }
 
+/// Make a dummy connection to the coordinator to check whether it's up
 pub fn coordinator_status(revaultd: &RevaultD) -> ServerStatus {
     let reachable = KKTransport::connect(
         revaultd.coordinator_host,
@@ -358,6 +359,7 @@ pub fn coordinator_status(revaultd: &RevaultD) -> ServerStatus {
     }
 }
 
+/// Make a dummy connection to the cosigning servers to check whether they're up
 pub fn cosigners_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
     let mut cosigners = Vec::new();
     if let Some(c) = &revaultd.cosigs {
@@ -373,6 +375,7 @@ pub fn cosigners_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
     cosigners
 }
 
+/// Make a dummy connection to the watchtowers to check whether they're up
 pub fn watchtowers_status(revaultd: &RevaultD) -> Vec<ServerStatus> {
     let mut watchtowers = Vec::new();
     if let Some(w) = &revaultd.watchtowers {

@@ -1,6 +1,5 @@
 use crate::daemon::{
-    bitcoind::BitcoindError,
-    control::{CommunicationError, RpcControlError},
+    bitcoind::BitcoindError, communication::CommunicationError, control::RpcControlError,
     database::DatabaseError,
 };
 

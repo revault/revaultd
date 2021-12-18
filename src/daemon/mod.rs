@@ -1,4 +1,5 @@
 mod bitcoind;
+mod communication;
 mod control;
 mod database;
 mod jsonrpc;

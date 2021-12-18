@@ -1,4 +1,4 @@
-use crate::daemon::{database::schema::DbTransaction, revaultd::RevaultD};
+use crate::{database::schema::DbTransaction, revaultd::RevaultD};
 
 use revault_net::{
     message::{
@@ -423,7 +423,7 @@ pub fn check_spend_transaction_size(revaultd: &RevaultD, spend_tx: SpendTransact
 
 #[cfg(test)]
 mod tests {
-    use crate::daemon::{
+    use crate::{
         communication::*,
         database::{
             bitcointx::{RevaultTx, TransactionType},

@@ -1,5 +1,5 @@
 ///! Background thread that will poll the coordinator for signatures
-use crate::daemon::{
+use crate::{
     communication::{
         get_presigs, send_coord_sig_msg, wts_share_emer_signatures, CommunicationError,
     },

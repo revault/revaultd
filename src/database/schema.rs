@@ -1,4 +1,4 @@
-use crate::daemon::{
+use crate::{
     database::bitcointx::{RevaultTx, TransactionType},
     revaultd::VaultStatus,
 };

@@ -1,7 +1,7 @@
 //! Here we handle incoming connections and communication on the RPC socket.
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
-use crate::daemon::{
+use crate::{
     control::RpcUtils,
     jsonrpc::{
         api::{JsonRpcMetaData, RpcApi, RpcImpl},
@@ -484,7 +484,7 @@ pub fn rpcserver_loop(
 #[cfg(test)]
 mod tests {
     use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, UserRole};
-    use crate::daemon::utils::test_utils::{dummy_rpcutil, test_datadir};
+    use crate::utils::test_utils::{dummy_rpcutil, test_datadir};
 
     use std::{
         fs,

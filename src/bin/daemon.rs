@@ -3,7 +3,7 @@ use revault_tx::bitcoin::hashes::hex::ToHex;
 use std::{env, path::PathBuf, process};
 
 use daemonize_simple::Daemonize;
-use revaultd::daemon::{config::Config, daemon_main, setup_logger, setup_panic_hook, RevaultD};
+use revaultd::{config::Config, daemon_main, setup_logger, setup_panic_hook, RevaultD};
 
 fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     if args.len() == 1 {

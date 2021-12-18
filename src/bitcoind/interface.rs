@@ -1,5 +1,5 @@
-use crate::daemon::config::BitcoindConfig;
-use crate::daemon::{bitcoind::BitcoindError, revaultd::BlockchainTip};
+use crate::config::BitcoindConfig;
+use crate::{bitcoind::BitcoindError, revaultd::BlockchainTip};
 use revault_tx::{
     bitcoin::{
         blockdata::constants::COIN_VALUE, consensus::encode, util::bip32::ChildNumber,

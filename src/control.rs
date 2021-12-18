@@ -2,7 +2,7 @@
 //! with servers, with bitcoind, ..). Requests may originate from the RPC server or the signature
 //! fetcher thread.
 
-use crate::daemon::{
+use crate::{
     bitcoind::{interface::WalletTransaction, BitcoindError},
     database::{
         interface::{
@@ -681,7 +681,7 @@ pub struct RpcUtils {
 
 #[cfg(test)]
 mod tests {
-    use crate::daemon::{
+    use crate::{
         control::*,
         database::{
             actions::{
@@ -707,7 +707,7 @@ mod tests {
             hashes::hex::FromHex,
             secp256k1,
             util::{amount::Amount, bip32::ChildNumber},
-            PublicKey as BitcoinPubKey
+            PublicKey as BitcoinPubKey,
         },
         transactions::{
             CancelTransaction, EmergencyTransaction, RevaultTransaction,

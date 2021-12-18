@@ -1,4 +1,4 @@
-use crate::daemon::{
+use crate::{
     bitcoind::BitcoindError, communication::CommunicationError, control::RpcControlError,
     database::DatabaseError,
 };

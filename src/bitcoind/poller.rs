@@ -1,5 +1,5 @@
-use crate::daemon::config::BitcoindConfig;
-use crate::daemon::{
+use crate::config::BitcoindConfig;
+use crate::{
     bitcoind::{
         interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},
         utils::{

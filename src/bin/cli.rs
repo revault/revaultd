@@ -1,4 +1,4 @@
-use revaultd::daemon::config::{config_folder_path, Config};
+use revaultd::config::{config_folder_path, Config};
 
 use std::{
     env,

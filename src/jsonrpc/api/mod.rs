@@ -5,8 +5,8 @@
 mod error;
 use error::Error;
 
-use crate::daemon::VERSION;
-use crate::daemon::{
+use crate::VERSION;
+use crate::{
     bitcoind::interface::WalletTransaction,
     communication::{
         announce_spend_transaction, check_spend_transaction_size, coord_share_rev_signatures,

@@ -1,6 +1,6 @@
 [package]
 name = "revaultd"
-version = "0.0.3"
+version = "0.3.0"
 authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 repository = "https://github.com/revault/revaultd"
@@ -21,8 +21,8 @@ path = "src/bin/cli.rs"
 bench = []
 
 [dependencies]
-revault_tx = { git = "https://github.com/revault/revault_tx", features = ["use-serde"] }
-revault_net = { git = "https://github.com/revault/revault_net" }
+revault_tx = { version = "0.4.1", features = ["use-serde"] }
+revault_net = "0.2.1"
 
 # In order to have a backtrace on panic, because the 
 # stdlib does not have a programmatic interface yet 

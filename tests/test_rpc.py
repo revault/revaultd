@@ -23,7 +23,7 @@ def test_getinfo(revaultd_manager, bitcoind):
     res = revaultd_manager.rpc.call("getinfo")
     assert res["network"] == "regtest"
     assert res["sync"] == 1.0
-    assert res["version"] == "0.0.2"
+    assert res["version"] == "0.3.0"
     assert res["vaults"] == 0
     # revaultd_manager always deploys with N = 2, M = 3, threshold = M
     assert res["managers_threshold"] == 3

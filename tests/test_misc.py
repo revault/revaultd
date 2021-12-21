@@ -433,7 +433,7 @@ def test_batched_cpfp_transaction(revault_network, bitcoind):
 
     # At this point, one of the first unvaults gets mined, but not the other. Feerate
     # spikes and makes us feebump: we'll create a CPFP tx spending the remaining unconfirmed
-    # Unvault from the first batch, and the 3 unvaults of the second spend.
+    # Unvault from the first batch, and the 2 unvaults of the second spend.
     revault_network.bitcoind_proxy.mocks["estimatesmartfee"] = {
         "feerate": 30 * 1_000 / COIN  # 30 is 6sats/vb above, should trigger CPFP
     }
@@ -452,14 +452,24 @@ def test_batched_cpfp_transaction(revault_network, bitcoind):
     for txid in unvaults:
         assert txid in cpfp_entry["depends"]
 
-    # Now get to be able to broadcast the second Spend.
-    bitcoind.generate_block(CSV, wait_for_mempool=unvaults)
+    # Now get to be able to broadcast the second Spend. Note that both Spend transactions
+    # are only broadcastable at the last block, but revaultd might be lagging behind: it
+    # is possible it polls the tip at block CSV-1 and actually manage to broadcast a Spend
+    # since bitcoind is already at block CSV. It would then trigger CPFP for the Spend(s)
+    # alone when mining the last block, and fail the test later on when we assert that we
+    # CPFP the two spends and the unvaults at once.
+    # Therefore we make sure revaultd is sync'ed before we mine the last block.
+    height = man.rpc.getinfo()["blockheight"]
+    bitcoind.generate_block(CSV - 1, wait_for_mempool=unvaults + [cpfp_txid])
+    wait_for(lambda: man.rpc.getinfo()["blockheight"] == height + CSV - 1)
+    bitcoind.generate_block(1)
     man.wait_for_logs(
         [
             f"broadcasted Spend tx '{first_spend}'",
             f"broadcasted Spend tx '{second_spend}'",
         ]
     )
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == 2)
 
     # In the meantime, we attempt a third Spend.
     third_spend_psbt = revault_network.broadcast_unvaults_anyhow(

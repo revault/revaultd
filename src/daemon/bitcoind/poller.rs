@@ -611,6 +611,9 @@ fn maybe_cpfp_txs(
         .collect();
 
     // TODO: std transaction max size check and split
+    // FIXME: to_cpfp might include some transactions that aren't confirmed, but
+    // have already been CPFPed. If that's the case, cpfp_package will fail and
+    // won't CPFP any transaction.
     if !to_cpfp.is_empty() {
         cpfp_package(revaultd, bitcoind, to_cpfp, current_feerate)?;
     } else {

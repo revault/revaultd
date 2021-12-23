@@ -53,7 +53,7 @@ impl<'a> BitcoindThread for BitcoindSender {
             self.0
                 .send(BitcoindMessageOut::BroadcastTransactions(
                     transactions,
-                    bitrep_tx.clone(),
+                    bitrep_tx,
                 ))
                 .expect("Sending to bitcoind thread");
             bitrep_rx.recv().expect("Receiving from bitcoind thread")?;

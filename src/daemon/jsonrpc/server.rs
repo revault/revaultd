@@ -37,7 +37,7 @@ fn trimmed(mut vec: Vec<u8>, bytes_read: usize) -> Vec<u8> {
     // Until there is some whatever-newline character, pop.
     while let Some(byte) = vec.last() {
         // Of course, we assume utf-8
-        if byte < &0x0a || byte > &0x0d {
+        if !(&0x0a..=&0x0d).contains(&byte) {
             break;
         }
         vec.pop();

@@ -161,7 +161,7 @@ impl BitcoinD {
         method: &'a str,
         params: &'b [Box<serde_json::value::RawValue>],
     ) -> Result<Json, BitcoindError> {
-        let req = client.build_request(method, &params);
+        let req = client.build_request(method, params);
         log::trace!("Sending to bitcoind: {:#?}", req);
 
         // Trying to be robust on bitcoind's spurious failures. We try to support bitcoind failing
@@ -184,7 +184,7 @@ impl BitcoinD {
         }
     }
 
-    fn make_requests<'a, 'b>(
+    fn make_requests(
         &self,
         client: &Client,
         reqs: &[jsonrpc::Request],
@@ -196,11 +196,11 @@ impl BitcoinD {
         // example, if we got the RPC listening address or path to the cookie wrong).
         let start = Instant::now();
         loop {
-            match client.send_batch(&reqs.clone()) {
+            match client.send_batch(reqs) {
                 Ok(resp) => {
                     let res = resp
                         .into_iter()
-                        .filter_map(|r| r)
+                        .flatten()
                         .map(|resp| resp.result())
                         .collect::<Result<Vec<Json>, jsonrpc::Error>>()
                         .map_err(BitcoindError::Server)?;
@@ -222,33 +222,33 @@ impl BitcoinD {
         }
     }
 
-    fn make_node_request<'a, 'b>(
+    fn make_node_request(
         &self,
-        method: &'a str,
-        params: &'b [Box<serde_json::value::RawValue>],
+        method: &str,
+        params: &[Box<serde_json::value::RawValue>],
     ) -> Result<Json, BitcoindError> {
         self.make_request(&self.node_client, method, params)
     }
 
-    fn make_watchonly_request<'a, 'b>(
+    fn make_watchonly_request(
         &self,
-        method: &'a str,
-        params: &'b [Box<serde_json::value::RawValue>],
+        method: &str,
+        params: &[Box<serde_json::value::RawValue>],
     ) -> Result<Json, BitcoindError> {
         self.make_request(&self.watchonly_client, method, params)
     }
 
-    fn make_node_requests<'a, 'b>(
+    fn make_node_requests(
         &self,
         requests: &[jsonrpc::Request],
     ) -> Result<Vec<Json>, BitcoindError> {
         self.make_requests(&self.node_client, requests)
     }
 
-    fn make_cpfp_request<'a, 'b>(
+    fn make_cpfp_request(
         &self,
-        method: &'a str,
-        params: &'b [Box<serde_json::value::RawValue>],
+        method: &str,
+        params: &[Box<serde_json::value::RawValue>],
     ) -> Result<Json, BitcoindError> {
         self.make_request(&self.cpfp_client, method, params)
     }
@@ -263,7 +263,7 @@ impl BitcoinD {
                 .as_str()
                 .expect("API break, 'getblockhash' didn't return a string."),
         )
-        .expect(&format!("Invalid blockhash given by 'getblockhash'")))
+        .expect("Invalid blockhash given by 'getblockhash'"))
     }
 
     pub fn get_tip(&self) -> Result<BlockchainTip, BitcoindError> {
@@ -372,7 +372,7 @@ impl BitcoinD {
                     "No or invalid 'warning' in 'unloadwallet' result".to_string(),
                 )
             })?;
-        if warning.len() > 0 {
+        if !warning.is_empty() {
             Err(BitcoindError::Custom(warning.to_string()))
         } else {
             Ok(())
@@ -431,7 +431,7 @@ impl BitcoinD {
             .collect();
 
         let res = self.make_request(
-            &client,
+            client,
             "importdescriptors",
             &params!(Json::Array(all_descriptors)),
         )?;
@@ -586,10 +586,10 @@ impl BitcoinD {
         req.map(|r| {
             r.as_array()
                 .expect("API break, 'listunspent' didn't return an array.")
-                .into_iter()
+                .iter()
                 .filter_map(|utxo| {
                     let utxo = ListUnspentEntry::from(utxo);
-                    if label.or(utxo.label.as_deref()) == utxo.label.as_deref() {
+                    if label.or_else(|| utxo.label.as_deref()) == utxo.label.as_deref() {
                         Some(utxo)
                     } else {
                         None
@@ -663,7 +663,7 @@ impl BitcoinD {
         //    are missing (ie were spent)
         let (mut new_conf, mut new_spent) = (HashMap::new(), HashMap::new());
         for (op, utxo_info) in unvault_utxos {
-            if let Some(confirmed) = unspent_list.get(&op) {
+            if let Some(confirmed) = unspent_list.get(op) {
                 if *confirmed && !utxo_info.is_confirmed {
                     new_conf.insert(*op, utxo_info.clone());
                 }
@@ -853,9 +853,9 @@ impl BitcoinD {
                 let input_outpoint = OutPoint { txid, vout };
 
                 if spent_outpoint == &input_outpoint {
-                    return Ok(Txid::from_str(spending_txid).map(|txid| Some(txid)).expect(
-                        &format!("bitcoind gave an invalid txid in 'listsinceblock'"),
-                    ));
+                    return Ok(Txid::from_str(spending_txid)
+                        .map(Some)
+                        .expect("bitcoind gave an invalid txid in 'listsinceblock'"));
                 }
             }
         }
@@ -1017,8 +1017,8 @@ impl From<&Json> for ListUnspentEntry {
         }) {
             // If we have a descriptor, we derive only once, so the derivation index must be
             // between `/` and `]`
-            let derivation_index_start = d.find("/");
-            let derivation_index_end = d.find("]");
+            let derivation_index_start = d.find('/');
+            let derivation_index_end = d.find(']');
             if let Some(s) = derivation_index_start {
                 if let Some(e) = derivation_index_end {
                     // Also we always use normal derivation

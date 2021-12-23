@@ -6,7 +6,7 @@ use std::{
     fmt, fs,
     io::{self, Read, Write},
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     time,
     vec::Vec,
@@ -224,7 +224,7 @@ fn read_or_create_noise_key(secret_file: PathBuf) -> Result<NoisePrivKey, NoiseK
         let mut fd = options
             .open(secret_file)
             .map_err(NoiseKeyError::WritingKey)?;
-        fd.write_all(&noise_secret.as_ref())
+        fd.write_all(noise_secret.as_ref())
             .map_err(NoiseKeyError::WritingKey)?;
     } else {
         let mut noise_secret_fd = fs::File::open(secret_file).map_err(NoiseKeyError::ReadingKey)?;
@@ -358,7 +358,7 @@ pub struct RevaultD {
     // TODO: servers connection stuff
 }
 
-fn create_datadir(datadir_path: &PathBuf) -> Result<(), std::io::Error> {
+fn create_datadir(datadir_path: &Path) -> Result<(), std::io::Error> {
     #[cfg(unix)]
     return {
         use fs::DirBuilder;
@@ -432,7 +432,7 @@ impl RevaultD {
                             unreachable!();
                         }
                     })
-                    .ok_or(CpfpKeyError::KeyNotInDescriptor(pubkey.to_string()))?;
+                    .ok_or_else(|| CpfpKeyError::KeyNotInDescriptor(pubkey.to_string()))?;
             } else {
                 log::warn!(
                     "CPFP key not found, consider creating a cpfp_secret file in the datadir. \
@@ -657,15 +657,12 @@ impl RevaultD {
         self.unvault_descriptor
             .xpubs()
             .into_iter()
-            .filter_map(|xpub| {
+            .filter(|xpub| {
                 match xpub {
-                    DescriptorPublicKey::SinglePub(_) => None, // Cosig
+                    DescriptorPublicKey::SinglePub(_) => false, // Cosig
                     DescriptorPublicKey::XPub(_) => {
-                        if stk_xpubs.contains(&xpub) {
-                            None // Stakeholder
-                        } else {
-                            Some(xpub) // Manager
-                        }
+                        // Either Manager or Stakeholder
+                        !stk_xpubs.contains(xpub)
                     }
                 }
             })

@@ -101,7 +101,7 @@ fn maybe_confirm_spend(
 ) -> Result<bool, BitcoindError> {
     let tx = bitcoind.get_wallet_transaction(spend_txid)?;
     if let (Some(height), Some(time)) = (tx.blockheight, tx.blocktime) {
-        db_mark_spent_unvault(&db_path, db_vault.id, time)?;
+        db_mark_spent_unvault(db_path, db_vault.id, time)?;
         log::debug!(
             "Spend tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &spend_txid,
@@ -133,7 +133,7 @@ fn mark_confirmed_spends(
         let unvault_outpoint = unvault_txin.outpoint();
         let spend_txid = &db_vault.final_txid.expect("Must be set for 'spending'");
 
-        match maybe_confirm_spend(&db_path, bitcoind, &db_vault, &spend_txid) {
+        match maybe_confirm_spend(&db_path, bitcoind, &db_vault, spend_txid) {
             Ok(false) => {}
             Ok(true) => continue,
             Err(e) => {
@@ -187,7 +187,7 @@ fn mark_unvaulted(
     db_vault: &DbVault,
 ) -> Result<(), BitcoindError> {
     // FIXME: remove this unwrap in favour of an Error enum variant for txs not found
-    let unvault_tx = db_unvault_transaction(&db_path, db_vault.id)?
+    let unvault_tx = db_unvault_transaction(db_path, db_vault.id)?
         .unwrap()
         .psbt
         .assert_unvault();
@@ -198,7 +198,7 @@ fn mark_unvaulted(
     let unvault_txin = unvault_tx.revault_unvault_txin(&unvault_descriptor);
     let unvault_outpoint = unvault_txin.outpoint();
 
-    db_confirm_unvault(&db_path, &unvault_tx.tx().txid())?;
+    db_confirm_unvault(db_path, &unvault_tx.tx().txid())?;
 
     let txo = unvault_txin.into_txout().into_txout();
     unvaults_cache.insert(
@@ -227,7 +227,7 @@ fn maybe_confirm_cancel(
 ) -> Result<bool, BitcoindError> {
     let tx = bitcoind.get_wallet_transaction(cancel_txid)?;
     if let (Some(height), Some(time)) = (tx.blockheight, tx.blocktime) {
-        db_mark_canceled_unvault(&db_path, db_vault.id, time)?;
+        db_mark_canceled_unvault(db_path, db_vault.id, time)?;
         log::debug!(
             "Cancel tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &cancel_txid,
@@ -284,7 +284,7 @@ fn maybe_confirm_unemer(
 ) -> Result<bool, BitcoindError> {
     let transaction = bitcoind.get_wallet_transaction(unemer_txid)?;
     if let (Some(height), Some(blocktime)) = (transaction.blockheight, transaction.blocktime) {
-        db_mark_emergencied_unvault(&db_path, db_vault.id, blocktime)?;
+        db_mark_emergencied_unvault(db_path, db_vault.id, blocktime)?;
         log::warn!(
             "UnvaultEmergency tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &unemer_txid,
@@ -347,7 +347,7 @@ fn maybe_confirm_emer(
 ) -> Result<bool, BitcoindError> {
     let transaction = bitcoind.get_wallet_transaction(emer_txid)?;
     if let (Some(height), Some(blocktime)) = (transaction.blockheight, transaction.blocktime) {
-        db_mark_emergencied_vault(&db_path, db_vault.id, blocktime)?;
+        db_mark_emergencied_vault(db_path, db_vault.id, blocktime)?;
         log::warn!(
             "Emergency tx '{}', spending vault {:x?} was confirmed at height '{}'",
             &emer_txid,
@@ -717,7 +717,7 @@ fn unconfirm_unvault(
             .is_confirmed = false;
     } else if matches!(vault.status, VaultStatus::Canceled | VaultStatus::Canceling) {
         // Just in case, rebroadcast it.
-        let cancel_tx = match db_cancel_dbtx(&db_tx, vault.id)? {
+        let cancel_tx = match db_cancel_dbtx(db_tx, vault.id)? {
             Some(tx) => tx,
             None => {
                 log::error!(
@@ -837,7 +837,7 @@ fn comprehensive_rescan(
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<(), BitcoindError> {
     log::info!("Starting rescan of all vaults in db..");
-    let mut vaults = db_vaults_dbtx(&db_tx)?;
+    let mut vaults = db_vaults_dbtx(db_tx)?;
     let mut tip = bitcoind.get_tip()?;
 
     // Try to get the last tip
@@ -1149,7 +1149,7 @@ fn update_tip(
         let bit_curr_hash = bitcoind.getblockhash(current_tip.height)?;
         if bit_curr_hash == current_tip.hash || current_tip.height == 0 {
             // We moved forward, everything is fine.
-            new_tip_event(&revaultd, bitcoind, &tip, unvaults_cache)?;
+            new_tip_event(revaultd, bitcoind, &tip, unvaults_cache)?;
             return Ok(current_tip);
         }
     }
@@ -1215,7 +1215,7 @@ fn unvault_spender(
     }
 
     // Finally, fetch the spending transaction
-    if let Some(spender_txid) = bitcoind.get_spender_txid(&unvault_outpoint, &previous_tip.hash)? {
+    if let Some(spender_txid) = bitcoind.get_spender_txid(unvault_outpoint, &previous_tip.hash)? {
         // FIXME: be smarter, all the information are in the previous call, no need for a
         // second one.
 
@@ -1247,11 +1247,11 @@ fn handle_spent_unvault(
     previous_tip: &BlockchainTip,
     unvault_outpoint: &OutPoint,
 ) -> Result<(), BitcoindError> {
-    match unvault_spender(revaultd, bitcoind, previous_tip, &unvault_outpoint)? {
+    match unvault_spender(revaultd, bitcoind, previous_tip, unvault_outpoint)? {
         Some(UnvaultSpender::Cancel(txid)) => {
-            db_cancel_unvault(&db_path, &unvault_outpoint.txid, &txid)?;
+            db_cancel_unvault(db_path, &unvault_outpoint.txid, &txid)?;
             unvaults_cache
-                .remove(&unvault_outpoint)
+                .remove(unvault_outpoint)
                 .expect("An unknown unvault got spent?");
             log::debug!(
                 "Unvault transaction at {} is now being canceled",
@@ -1259,14 +1259,14 @@ fn handle_spent_unvault(
             );
 
             // Immediately check if it was confirmed, just in case
-            let (db_vault, _) = db_vault_by_unvault_txid(&db_path, &unvault_outpoint.txid)?
+            let (db_vault, _) = db_vault_by_unvault_txid(db_path, &unvault_outpoint.txid)?
                 .ok_or_else(|| {
                     BitcoindError::Custom(format!(
                         "No vault for Unvault '{}'",
                         &unvault_outpoint.txid
                     ))
                 })?;
-            match maybe_confirm_cancel(&db_path, bitcoind, &db_vault, &txid) {
+            match maybe_confirm_cancel(db_path, bitcoind, &db_vault, &txid) {
                 Ok(_) => {}
                 Err(e) => {
                     log::error!("Error checking if Cancel '{}' is confirmed: '{}'", &txid, e);
@@ -1274,8 +1274,8 @@ fn handle_spent_unvault(
             }
         }
         Some(UnvaultSpender::Spend(txid)) => {
-            db_spend_unvault(&db_path, &unvault_outpoint.txid, &txid)?;
-            unvaults_cache.remove(&unvault_outpoint).ok_or_else(|| {
+            db_spend_unvault(db_path, &unvault_outpoint.txid, &txid)?;
+            unvaults_cache.remove(unvault_outpoint).ok_or_else(|| {
                 BitcoindError::Custom("An unknown unvault got spent?".to_string())
             })?;
             log::debug!(
@@ -1284,14 +1284,14 @@ fn handle_spent_unvault(
             );
 
             // Immediately check if it was confirmed, just in case
-            let (db_vault, _) = db_vault_by_unvault_txid(&db_path, &unvault_outpoint.txid)?
+            let (db_vault, _) = db_vault_by_unvault_txid(db_path, &unvault_outpoint.txid)?
                 .ok_or_else(|| {
                     BitcoindError::Custom(format!(
                         "No vault for Unvault '{}'",
                         &unvault_outpoint.txid
                     ))
                 })?;
-            match maybe_confirm_spend(&db_path, bitcoind, &db_vault, &txid) {
+            match maybe_confirm_spend(db_path, bitcoind, &db_vault, &txid) {
                 Ok(_) => {}
                 Err(e) => {
                     log::error!("Error checking if Spend '{}' is confirmed: '{}'", &txid, e);
@@ -1299,8 +1299,8 @@ fn handle_spent_unvault(
             }
         }
         Some(UnvaultSpender::Emergency(txid)) => {
-            db_emer_unvault(&db_path, &unvault_outpoint.txid)?;
-            unvaults_cache.remove(&unvault_outpoint).ok_or_else(|| {
+            db_emer_unvault(db_path, &unvault_outpoint.txid)?;
+            unvaults_cache.remove(unvault_outpoint).ok_or_else(|| {
                 BitcoindError::Custom("An unknown unvault got spent?".to_string())
             })?;
             log::warn!(
@@ -1309,14 +1309,14 @@ fn handle_spent_unvault(
             );
 
             // Immediately check if it was confirmed, just in case
-            let (db_vault, _) = db_vault_by_unvault_txid(&db_path, &unvault_outpoint.txid)?
+            let (db_vault, _) = db_vault_by_unvault_txid(db_path, &unvault_outpoint.txid)?
                 .ok_or_else(|| {
                     BitcoindError::Custom(format!(
                         "No vault for Unvault '{}'",
                         &unvault_outpoint.txid
                     ))
                 })?;
-            match maybe_confirm_unemer(&db_path, bitcoind, &db_vault, &txid) {
+            match maybe_confirm_unemer(db_path, bitcoind, &db_vault, &txid) {
                 Ok(_) => {}
                 Err(e) => {
                     log::error!(
@@ -1494,7 +1494,7 @@ fn handle_spent_deposit(
     deposit_outpoint: OutPoint,
     utxo: UtxoInfo,
 ) -> Result<(), BitcoindError> {
-    let unvault_txin = match unvault_txin_from_deposit(&revaultd, &deposit_outpoint, utxo.txo) {
+    let unvault_txin = match unvault_txin_from_deposit(revaultd, &deposit_outpoint, utxo.txo) {
         Ok(txin) => txin,
         Err(e) => {
             log::error!(
@@ -1516,7 +1516,7 @@ fn handle_spent_deposit(
             &deposit_outpoint
         );
 
-        db_unvault_deposit(&db_path, &unvault_outpoint.txid)?;
+        db_unvault_deposit(db_path, &unvault_outpoint.txid)?;
         unvaults_cache.insert(
             unvault_outpoint,
             UtxoInfo {
@@ -1533,10 +1533,10 @@ fn handle_spent_deposit(
 
     // Was it spent by the Emergency transaction?
     let db_vault =
-        db_vault_by_deposit(&db_path, &deposit_outpoint)?.expect("Spent deposit doesn't exist?");
+        db_vault_by_deposit(db_path, &deposit_outpoint)?.expect("Spent deposit doesn't exist?");
     if let Some(emer_txid) = emer_txid(revaultd, &db_vault)? {
         if bitcoind.is_current(&emer_txid)? {
-            db_mark_emergencying_vault(&db_path, db_vault.id)?;
+            db_mark_emergencying_vault(db_path, db_vault.id)?;
             deposits_cache
                 .remove(&deposit_outpoint)
                 .expect("It was in spent_deposits, it must still be here.");
@@ -1589,7 +1589,7 @@ fn update_utxos(
         new_unconf: new_deposits,
         new_conf: conf_deposits,
         new_spent: spent_deposits,
-    } = bitcoind.sync_deposits(&deposits_cache, revaultd.read().unwrap().min_conf)?;
+    } = bitcoind.sync_deposits(deposits_cache, revaultd.read().unwrap().min_conf)?;
 
     for (outpoint, utxo) in new_deposits {
         handle_new_deposit(revaultd, &db_path, bitcoind, deposits_cache, outpoint, utxo)?;
@@ -1615,7 +1615,7 @@ fn update_utxos(
     let UnvaultsState {
         new_conf: conf_unvaults,
         new_spent: spent_unvaults,
-    } = bitcoind.sync_unvaults(&unvaults_cache)?;
+    } = bitcoind.sync_unvaults(unvaults_cache)?;
 
     for (outpoint, _) in conf_unvaults {
         db_confirm_unvault(&db_path, &outpoint.txid)?;
@@ -1708,7 +1708,7 @@ fn bitcoind_sync_status(
     // (~7h for 500_000 blocks), so we divide it by 2 here in order to be
     // conservative. Eg if 10_000 are left to be downloaded we'll check back
     // in ~4min.
-    let delta = headers.checked_sub(blocks).unwrap_or(0);
+    let delta = headers.saturating_sub(blocks);
     *sleep_duration = Some(std::cmp::max(
         Duration::from_secs(delta / 20 / 2),
         Duration::from_secs(5),
@@ -1758,10 +1758,11 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         // currently supported by bitcoind) if there are more than 15 stakeholders.
         // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
         // the derivation index mess ourselves :'(
-        let mut addresses = revaultd.all_deposit_addresses();
-        for i in 0..addresses.len() {
-            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
-        }
+        let addresses: Vec<_> = revaultd
+            .all_deposit_addresses()
+            .into_iter()
+            .map(|a| bitcoind.addr_descriptor(&a))
+            .collect::<Result<Vec<_>, _>>()?;
         log::trace!("Importing deposit descriptors '{:?}'", &addresses);
         bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
 
@@ -1769,10 +1770,11 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
         // deposit and unvault descriptors..
         // FIXME: maybe we actually have, with the derivation_index_map ?
-        let mut addresses = revaultd.all_unvault_addresses();
-        for i in 0..addresses.len() {
-            addresses[i] = bitcoind.addr_descriptor(&addresses[i])?;
-        }
+        let addresses: Vec<_> = revaultd
+            .all_unvault_addresses()
+            .into_iter()
+            .map(|a| bitcoind.addr_descriptor(&a))
+            .collect::<Result<Vec<_>, _>>()?;
         log::trace!("Importing unvault descriptors '{:?}'", &addresses);
         bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
     }
@@ -1799,7 +1801,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
             // Now, import descriptors.
             let mut keymap: KeyMap = KeyMap::new();
             let cpfp_private_key = DescriptorSecretKey::XPrv(DescriptorXKey {
-                xkey: cpfp_key.clone(),
+                xkey: cpfp_key,
                 origin: None,
                 derivation_path: Default::default(),
                 wildcard: Wildcard::Unhardened,

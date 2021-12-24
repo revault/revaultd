@@ -1,13 +1,13 @@
 [package]
 name = "revaultd"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 repository = "https://github.com/revault/revaultd"
 license-file = "LICENCE"
 keywords = ["revault", "bitcoin", "vault"]
 description = "Revault wallet daemon"
-exclude = [".github/"]
+exclude = [".github/", "tests/"]
 
 [[bin]]
 name = "revaultd"

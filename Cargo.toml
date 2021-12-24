@@ -7,7 +7,7 @@ repository = "https://github.com/revault/revaultd"
 license-file = "LICENCE"
 keywords = ["revault", "bitcoin", "vault"]
 description = "Revault wallet daemon"
-exclude = [".github/", "tests/"]
+exclude = [".github/", ".cirrus.yml", "tests/",  "test_data/", "contrib/", "pyproject.toml"]
 
 [[bin]]
 name = "revaultd"

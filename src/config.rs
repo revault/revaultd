@@ -163,11 +163,30 @@ pub struct Config {
 }
 
 #[derive(PartialEq, Eq, Debug)]
-pub struct ConfigError(pub String);
+pub enum ConfigError {
+    DatadirNotFound,
+    FileNotFound,
+    ReadingFile(String),
+    Unexpected(String),
+}
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Configuration error: {}", self.0)
+        match &self {
+            Self::DatadirNotFound => write!(f, "Could not locate the configuration directory."),
+            Self::FileNotFound => write!(f, "Could not locate the configuration file."),
+            Self::ReadingFile(e) => write!(f, "Failed to read configuration file: {}", e),
+            Self::Unexpected(e) => write!(f, "Configuration error: {}", e),
+        }
+    }
+}
+
+impl From<std::io::Error> for ConfigError {
+    fn from(e: std::io::Error) -> Self {
+        match e.kind() {
+            std::io::ErrorKind::NotFound => Self::FileNotFound,
+            _ => Self::ReadingFile(e.to_string()),
+        }
     }
 }
 
@@ -215,16 +234,12 @@ impl Config {
     /// file. We don't allow to set them via the command line or environment variables to avoid a
     /// futile duplication.
     pub fn from_file(custom_path: Option<PathBuf>) -> Result<Config, ConfigError> {
-        let config_file = custom_path.unwrap_or(config_file_path().ok_or_else(|| {
-            ConfigError("Could not locate the default data directory.".to_owned())
-        })?);
+        let config_file =
+            custom_path.unwrap_or(config_file_path().ok_or_else(|| ConfigError::DatadirNotFound)?);
 
-        let config = std::fs::read(&config_file)
-            .map_err(|e| ConfigError(format!("Reading configuration file: {}", e)))
-            .and_then(|file_content| {
-                toml::from_slice::<Config>(&file_content)
-                    .map_err(|e| ConfigError(format!("Parsing configuration file: {}", e)))
-            })?;
+        let config = toml::from_slice::<Config>(&std::fs::read(&config_file)?)
+            .map_err(|e| ConfigError::ReadingFile(format!("Parsing configuration file: {}", e)))?;
+
         let stk_xpubs = config.scripts_config.deposit_descriptor.xpubs();
 
         // Checking the network of the xpubs in the descriptors
@@ -239,7 +254,7 @@ impl Config {
                 match bitcoind_net {
                     Network::Bitcoin => {
                         if xpub.xkey.network != Network::Bitcoin {
-                            return Err(ConfigError(format!(
+                            return Err(ConfigError::Unexpected(format!(
                                 "Our bitcoin network is {} but one xpub has network {}",
                                 config.bitcoind_config.network, xpub.xkey.network
                             )));
@@ -247,7 +262,7 @@ impl Config {
                     }
                     _ => {
                         if xpub.xkey.network != Network::Testnet {
-                            return Err(ConfigError(format!(
+                            return Err(ConfigError::Unexpected(format!(
                                 "Our bitcoin network is {} but one xpub has network {}",
                                 config.bitcoind_config.network, xpub.xkey.network
                             )));
@@ -266,7 +281,7 @@ impl Config {
             });
 
             if !stk_xpubs.iter().any(|x| x == &our_desc_xpub) {
-                return Err(ConfigError(format!(
+                return Err(ConfigError::Unexpected(format!(
                     r#"Our "stakeholder_config" xpub is not part of the given stakeholders' xpubs: {}"#,
                     stk_config.xpub
                 )));
@@ -277,7 +292,7 @@ impl Config {
             let signet_special_case =
                 bitcoind_net == Network::Signet && emer_addr_net == Network::Testnet;
             if emer_addr_net != bitcoind_net && !signet_special_case {
-                return Err(ConfigError(format!(
+                return Err(ConfigError::Unexpected(format!(
                     r#"Our "emergency_address" is for '{}' but bitcoind is on '{}'"#,
                     emer_addr_net, bitcoind_net
                 )));
@@ -308,7 +323,7 @@ impl Config {
                 .collect();
 
             if !man_xpubs.iter().any(|x| x == &our_desc_xpub) {
-                return Err(ConfigError(format!(
+                return Err(ConfigError::Unexpected(format!(
                     r#"Our "manager_config" xpub is not part of the given managers' xpubs: {}"#,
                     man_config.xpub
                 )));

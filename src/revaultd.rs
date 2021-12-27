@@ -343,22 +343,46 @@ pub struct RevaultD {
     // TODO: servers connection stuff
 }
 
-fn create_datadir(datadir_path: &Path) -> Result<(), std::io::Error> {
+fn create_datadir(datadir_path: &Path) -> Result<(), DatadirError> {
     #[cfg(unix)]
     return {
         use fs::DirBuilder;
         use std::os::unix::fs::DirBuilderExt;
 
         let mut builder = DirBuilder::new();
-        builder.mode(0o700).recursive(true).create(datadir_path)
+        builder
+            .mode(0o700)
+            .recursive(true)
+            .create(datadir_path)
+            .map_err(|e| DatadirError::CreateDatadir(datadir_path.to_path_buf(), e.to_string()))
     };
 
     #[cfg(not(unix))]
     return {
         // FIXME: make Windows secure (again?)
         fs::create_dir_all(datadir_path)
+            .map_err(|e| DatadirError::CreateDatadir(datadir_path.to_path_buf(), e.to_string()))
     };
 }
+
+#[derive(Debug)]
+pub enum DatadirError {
+    CreateDatadir(PathBuf, String),
+    DefaultNotFound,
+}
+
+impl fmt::Display for DatadirError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::CreateDatadir(path, e) => {
+                write!(f, "Could not create data directory '{:?}': {}", path, e)
+            }
+            Self::DefaultNotFound => write!(f, "Could not locate the default data directory "),
+        }
+    }
+}
+
+impl std::error::Error for DatadirError {}
 
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
@@ -378,7 +402,7 @@ impl RevaultD {
 
         let mut data_dir = config
             .data_dir
-            .unwrap_or(config_folder_path().ok_or(StartupError::DefaultDatadir)?);
+            .unwrap_or(config_folder_path().ok_or(DatadirError::DefaultNotFound)?);
         data_dir.push(config.bitcoind_config.network.to_string());
         if !data_dir.as_path().exists() {
             create_datadir(&data_dir)?;

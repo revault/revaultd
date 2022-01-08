@@ -498,3 +498,84 @@ def test_batched_cpfp_transaction(revault_network, bitcoind):
     man.wait_for_log(f"broadcasted Spend tx '{third_spend}'")
     bitcoind.generate_block(1, wait_for_mempool=[third_spend])
     wait_for(lambda: len(man.rpc.listvaults(["spent"])["vaults"]) == len(vaults))
+
+
+def test_rbfed_cpfp_transaction(revault_network, bitcoind):
+    """We don't have explicit RBF logic, but since we signal for it we should
+    be able to replace a previous CPFP with a higher-fee, higher-feerate one.
+    NOTE: we unfortunately can't replace it with one adding new to_be_cpfped transactions
+    as it would add new unconfirmed inputs. Hopefully this is going to change soon.
+    """
+    rn = revault_network
+    CSV = 6
+    rn.deploy(
+        2,
+        1,
+        csv=CSV,
+        with_watchtowers=False,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 1 * 1_000 / COIN}},
+    )
+    man = rn.mans()[0]
+
+    vaults = rn.fundmany(list(range(1, 4)))
+    rn.activate_fresh_vaults(vaults)
+
+    # Trigger CPFP for all the unvaults
+    unvaults = get_unvault_txids(man, vaults)
+    revault_network.broadcast_unvaults_anyhow(vaults, priority=True)
+    revault_network.bitcoind_proxy.mocks["estimatesmartfee"] = {
+        "feerate": 50 * 1_000 / COIN
+    }
+    bitcoind.generate_blocks_censor(1, unvaults)
+    man.wait_for_log(
+        f"CPFPed transactions with ids '{{.*{unvaults[0]}.*}}'",
+    )
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == len(unvaults) + 1)
+    cpfp_txid = next(
+        txid for txid in bitcoind.rpc.getrawmempool() if txid not in unvaults
+    )
+    cpfp_entry = bitcoind.rpc.getmempoolentry(cpfp_txid)
+    assert cpfp_entry["fees"]["ancestor"] * COIN / cpfp_entry["ancestorsize"] >= 50
+    assert len(cpfp_entry["depends"]) == len(unvaults)
+    for txid in unvaults:
+        assert txid in cpfp_entry["depends"]
+
+    # Now if the feerate spikes we should be able to replace the former CPFP tx
+    # with an updated one.
+    revault_network.bitcoind_proxy.mocks["estimatesmartfee"] = {
+        "feerate": 80 * 1_000 / COIN
+    }
+    bitcoind.generate_blocks_censor(1, unvaults)
+    wait_for(lambda: cpfp_txid not in bitcoind.rpc.getrawmempool())
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == len(unvaults) + 1)
+    new_cpfp_txid = next(
+        txid for txid in bitcoind.rpc.getrawmempool() if txid not in unvaults
+    )
+    assert new_cpfp_txid != cpfp_txid
+    cpfp_entry = bitcoind.rpc.getmempoolentry(new_cpfp_txid)
+    assert cpfp_entry["fees"]["ancestor"] * COIN / cpfp_entry["ancestorsize"] >= 80
+    assert len(cpfp_entry["depends"]) == len(unvaults)
+    for txid in unvaults:
+        assert txid in cpfp_entry["depends"]
+
+    # And if the first Unvault automagically gets confirmed alone and feerate
+    # continue to spike, we can replace the CPFP with one paying a higher feerate
+    # (and fee) but spending only the two remaining ones
+    revault_network.bitcoind_proxy.mocks["estimatesmartfee"] = {
+        "feerate": 110 * 1_000 / COIN
+    }
+    bitcoind.generate_blocks_censor(1, unvaults[1:])
+    man.wait_for_log(f"Unvault transaction at {unvaults[0]}.* is now confirmed")
+    bitcoind.generate_blocks_censor(1, unvaults[1:])
+    cpfp_txid = new_cpfp_txid
+    wait_for(lambda: cpfp_txid not in bitcoind.rpc.getrawmempool())
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == len(unvaults[1:]) + 1)
+    new_cpfp_txid = next(
+        txid for txid in bitcoind.rpc.getrawmempool() if txid not in unvaults[1:]
+    )
+    assert new_cpfp_txid != cpfp_txid
+    cpfp_entry = bitcoind.rpc.getmempoolentry(new_cpfp_txid)
+    assert len(cpfp_entry["depends"]) == len(unvaults[1:])
+    for txid in unvaults[1:]:
+        assert txid in cpfp_entry["depends"]
+    assert unvaults[0] not in cpfp_entry["depends"]

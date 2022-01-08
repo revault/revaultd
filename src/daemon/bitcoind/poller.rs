@@ -30,10 +30,10 @@ use crate::daemon::{
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, secp256k1::Secp256k1, Amount, OutPoint, Txid},
+    bitcoin::{consensus::encode, secp256k1, Amount, OutPoint, Txid},
     error::TransactionCreationError,
     miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
-    scripts::DerivedCpfpDescriptor,
+    scripts::CpfpDescriptor,
     transactions::{
         CpfpTransaction, CpfpableTransaction, RevaultTransaction, SpendTransaction,
         UnvaultTransaction,
@@ -412,10 +412,14 @@ impl ToBeCpfped {
         }
     }
 
-    pub fn cpfp_txin(&self, der_desc: &DerivedCpfpDescriptor) -> Option<CpfpTxIn> {
+    pub fn cpfp_txin(
+        &self,
+        desc: &CpfpDescriptor,
+        secp: &secp256k1::Secp256k1<impl secp256k1::Verification>,
+    ) -> Option<CpfpTxIn> {
         match self {
-            Self::Spend(s) => s.cpfp_txin(der_desc),
-            Self::Unvault(u) => u.cpfp_txin(der_desc),
+            Self::Spend(s) => s.cpfp_txin(desc, secp),
+            Self::Unvault(u) => u.cpfp_txin(desc, secp),
         }
     }
 
@@ -441,53 +445,23 @@ impl ToBeCpfped {
 fn cpfp_package(
     revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    mut tx_package: Vec<ToBeCpfped>,
+    to_be_cpfped: Vec<ToBeCpfped>,
     target_feerate: u64,
 ) -> Result<(), BitcoindError> {
     let revaultd = revaultd.read().unwrap();
+    let cpfp_descriptor = &revaultd.cpfp_descriptor;
 
     // First of all, compute all the information we need from the to-be-cpfped transactions.
-    let mut txids = HashSet::with_capacity(tx_package.len());
+    let mut txids = HashSet::with_capacity(to_be_cpfped.len());
     let mut package_weight = 0;
     let mut package_fees = Amount::from_sat(0);
-    for tx in tx_package.iter() {
+    let mut txins = Vec::with_capacity(to_be_cpfped.len());
+    for tx in to_be_cpfped.iter() {
         txids.insert(tx.txid());
         package_weight += tx.max_weight();
         package_fees += tx.fees();
         assert!(((package_fees.as_sat() * 1000 / package_weight) as u64) < target_feerate);
-    }
-    let tx_feerate = (package_fees.as_sat() * 1_000 / package_weight) as u64; // to sats/kWU
-    assert!(tx_feerate < target_feerate);
-    let added_feerate = target_feerate - tx_feerate;
-
-    // FIXME: it's a shame to have to get the derivation paths from bitcoind, but we need to
-    // for the Spend CPFP output derivation index. We have all the info and should be able to
-    // make it work without this hack.
-    let listunspent: Vec<_> = bitcoind.list_unspent_cpfp()?;
-    // FIXME: drain_filter would be PERFECT for this but it's nightly only :(
-    let (mut my_listunspent, listunspent): (Vec<_>, Vec<_>) = listunspent
-        .into_iter()
-        .partition(|l| txids.contains(&l.outpoint.txid));
-    if my_listunspent.len() != tx_package.len() {
-        log::warn!(
-            "We need to feebump a package containing the following txids: {:?},\n
-                but we found listunspents only for {:?}",
-            txids,
-            my_listunspent
-                .iter()
-                .map(|l| l.outpoint.txid)
-                .collect::<Vec<_>>()
-        );
-        return Ok(());
-    }
-    my_listunspent.sort_by_key(|l| l.outpoint.txid);
-    tx_package.sort_by_key(|tx| tx.txid());
-    // I can do this as I just ordered by txid
-    let mut txins = Vec::with_capacity(tx_package.len());
-    for (i, tx) in tx_package.into_iter().enumerate() {
-        let derived_cpfp_descriptor = revaultd
-            .derived_cpfp_descriptor(my_listunspent[i].derivation_index.expect("Must be here"));
-        match tx.cpfp_txin(&derived_cpfp_descriptor) {
+        match tx.cpfp_txin(cpfp_descriptor, &revaultd.secp_ctx) {
             Some(txin) => txins.push(txin),
             None => {
                 log::error!("No CPFP txin for tx '{}'", tx.txid());
@@ -495,13 +469,17 @@ fn cpfp_package(
             }
         }
     }
+    let tx_feerate = (package_fees.as_sat() * 1_000 / package_weight) as u64; // to sats/kWU
+    assert!(tx_feerate < target_feerate);
+    let added_feerate = target_feerate - tx_feerate;
 
     // Then construct the child PSBT
-    let confirmed_cpfp_utxos: Vec<_> = listunspent
+    let confirmed_cpfp_utxos: Vec<_> = bitcoind
+        .list_unspent_cpfp()?
         .into_iter()
         .filter_map(|l| {
-            // Not considering UTXOs still in mempool
-            if l.confirmations < 1 {
+            // Not considering our own outputs nor UTXOs still in mempool
+            if txids.contains(&l.outpoint.txid) || l.confirmations < 1 {
                 None
             } else {
                 let txout = CpfpTxOut::new(
@@ -611,9 +589,7 @@ fn maybe_cpfp_txs(
         .collect();
 
     // TODO: std transaction max size check and split
-    // FIXME: to_cpfp might include some transactions that aren't confirmed, but
-    // have already been CPFPed. If that's the case, cpfp_package will fail and
-    // won't CPFP any transaction.
+    // TODO: smarter RBF (especially opportunistically with the fee delta)
     if !to_cpfp.is_empty() {
         cpfp_package(revaultd, bitcoind, to_cpfp, current_feerate)?;
     } else {
@@ -1806,7 +1782,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
                 derivation_path: Default::default(),
                 wildcard: Wildcard::Unhardened,
             });
-            let sign_ctx = Secp256k1::signing_only();
+            let sign_ctx = secp256k1::Secp256k1::signing_only();
             let cpfp_public_key = cpfp_private_key
                 .as_public(&sign_ctx)
                 .expect("We never use hardened");

@@ -1,3 +1,19 @@
+use revault_tx::bitcoin::Amount;
+
+use std::fmt;
+
+use serde::Serializer;
+
+/// Serialize a field as a string
+pub fn ser_to_string<T: fmt::Display, S: Serializer>(field: T, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&field.to_string())
+}
+
+/// Serialize an amount as sats
+pub fn ser_amount<S: Serializer>(amount: &Amount, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(amount.as_sat())
+}
+
 #[cfg(test)]
 pub mod test_utils {
     use crate::config::Config;

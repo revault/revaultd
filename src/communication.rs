@@ -338,7 +338,7 @@ pub fn get_presigs(
     Ok(resp.signatures)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ServerStatus {
     pub host: String,
     pub reachable: bool,

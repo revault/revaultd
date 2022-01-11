@@ -2,6 +2,7 @@ pub use revault_net;
 pub use revault_tx;
 
 mod bitcoind;
+pub mod commands;
 mod communication;
 pub mod config;
 mod control;
@@ -12,6 +13,7 @@ mod sigfetcher;
 mod threadmessages;
 mod utils;
 
+// FIXME: make it an integer
 pub const VERSION: &str = "0.3.1";
 
 use crate::{
@@ -26,6 +28,7 @@ use crate::{
     threadmessages::BitcoindSender,
 };
 
+// FIXME
 pub use crate::revaultd::RevaultD;
 
 use std::{

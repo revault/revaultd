@@ -1,6 +1,6 @@
 use crate::{
-    bitcoind::BitcoindError, communication::CommunicationError, control::RpcControlError,
-    database::DatabaseError,
+    bitcoind::BitcoindError, commands::CommandError, communication::CommunicationError,
+    control::RpcControlError, database::DatabaseError,
 };
 
 use std::sync::mpsc::{RecvError, SendError};
@@ -23,6 +23,12 @@ impl From<CommunicationError> for Error {
     }
 }
 
+impl From<BitcoindError> for JsonRpcError {
+    fn from(e: BitcoindError) -> JsonRpcError {
+        Error::from(e).into()
+    }
+}
+
 impl From<CommunicationError> for JsonRpcError {
     fn from(e: CommunicationError) -> JsonRpcError {
         Error::from(e).into()
@@ -41,6 +47,46 @@ impl From<RpcControlError> for Error {
             RpcControlError::TransactionNotFound => ErrorCode::INTERNAL_ERROR,
         };
         Error(code, e.to_string())
+    }
+}
+
+impl From<CommandError> for JsonRpcError {
+    fn from(e: CommandError) -> Self {
+        match e {
+            CommandError::UnknownOutpoint(_) => {
+                Error(ErrorCode::RESOURCE_NOT_FOUND_ERROR, e.to_string()).into()
+            }
+            CommandError::InvalidStatus(..) => {
+                Error(ErrorCode::INVALID_STATUS_ERROR, e.to_string()).into()
+            }
+            CommandError::InvalidStatusFor(..) => {
+                Error(ErrorCode::INVALID_STATUS_ERROR, e.to_string()).into()
+            }
+            CommandError::InvalidParams(e) => JsonRpcError::invalid_params(e),
+            CommandError::Communication(e) => e.into(),
+            CommandError::Bitcoind(e) => e.into(),
+            CommandError::Tx(_) => JsonRpcError {
+                code: ServerError(ErrorCode::INTERNAL_ERROR as i64),
+                message: e.to_string(),
+                data: None,
+            },
+            CommandError::SpendFeerateTooLow(_, _) => JsonRpcError::invalid_params(e.to_string()),
+            // TODO: some of these probably need specific error codes
+            CommandError::SpendTooLarge
+            | CommandError::SpendUnknownUnVault(_)
+            | CommandError::UnknownSpend(_)
+            | CommandError::SpendSpent(_)
+            | CommandError::SpendNotEnoughSig(_, _)
+            | CommandError::SpendInvalidSig(_)
+            | CommandError::MissingCpfpKey
+            | CommandError::StakeholderOnly
+            | CommandError::ManagerOnly => JsonRpcError {
+                code: ServerError(ErrorCode::INTERNAL_ERROR as i64),
+                message: e.to_string(),
+                data: None,
+            },
+            CommandError::Race => JsonRpcError::internal_error(),
+        }
     }
 }
 

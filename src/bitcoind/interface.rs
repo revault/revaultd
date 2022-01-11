@@ -22,6 +22,7 @@ use jsonrpc::{
     client::Client,
     simple_http::{Error as HttpError, SimpleHttpTransport},
 };
+use serde::Serialize;
 use serde_json::Value as Json;
 
 // The minimum deposit value according to revault_tx depends also on the unvault's
@@ -919,9 +920,10 @@ impl BitcoinD {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WalletTransaction {
     pub hex: String,
+    #[serde(rename = "received_at")]
     pub received_time: u32,
     // None if unconfirmed
     pub blockheight: Option<u32>,

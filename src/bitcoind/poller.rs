@@ -1565,7 +1565,11 @@ fn update_utxos(
         new_unconf: new_deposits,
         new_conf: conf_deposits,
         new_spent: spent_deposits,
-    } = bitcoind.sync_deposits(deposits_cache, revaultd.read().unwrap().min_conf)?;
+    } = bitcoind.sync_deposits(
+        deposits_cache,
+        previous_tip,
+        revaultd.read().unwrap().min_conf,
+    )?;
 
     for (outpoint, utxo) in new_deposits {
         handle_new_deposit(revaultd, &db_path, bitcoind, deposits_cache, outpoint, utxo)?;
@@ -1591,7 +1595,7 @@ fn update_utxos(
     let UnvaultsState {
         new_conf: conf_unvaults,
         new_spent: spent_unvaults,
-    } = bitcoind.sync_unvaults(unvaults_cache)?;
+    } = bitcoind.sync_unvaults(unvaults_cache, previous_tip)?;
 
     for (outpoint, _) in conf_unvaults {
         db_confirm_unvault(&db_path, &outpoint.txid)?;

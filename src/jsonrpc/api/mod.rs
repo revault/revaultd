@@ -1478,6 +1478,11 @@ impl RpcApi for RpcImpl {
             vault.status,
             VaultStatus::Unvaulting | VaultStatus::Unvaulted | VaultStatus::Spending
         ) {
+            log::error!(
+                "Invalid status for {:?}, vault: {:?}",
+                deposit_outpoint,
+                vault
+            );
             return Err(invalid_status!(vault.status, VaultStatus::Unvaulting));
         }
 

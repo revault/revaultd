@@ -5,16 +5,17 @@
 mod error;
 use error::Error;
 
-use crate::common::VERSION;
-use crate::daemon::{
+use crate::VERSION;
+use crate::{
     bitcoind::interface::WalletTransaction,
-    control::{
+    communication::{
         announce_spend_transaction, check_spend_transaction_size, coord_share_rev_signatures,
-        coordinator_status, cosigners_status, fetch_cosigs_signatures, finalized_emer_txs,
-        get_history, listvaults_from_db, onchain_txs, presigned_txs, share_unvault_signatures,
-        vaults_from_deposits, watchtowers_status, wts_share_emer_signatures,
-        wts_share_second_stage_signatures, HistoryEventKind, ListSpendEntry, ListSpendStatus,
-        RpcUtils,
+        coordinator_status, cosigners_status, fetch_cosigs_signatures, share_unvault_signatures,
+        watchtowers_status, wts_share_emer_signatures, wts_share_second_stage_signatures,
+    },
+    control::{
+        finalized_emer_txs, get_history, listvaults_from_db, onchain_txs, presigned_txs,
+        vaults_from_deposits, HistoryEventKind, ListSpendEntry, ListSpendStatus, RpcUtils,
     },
     database::{
         actions::{

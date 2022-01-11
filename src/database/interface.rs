@@ -1,4 +1,4 @@
-use crate::daemon::{
+use crate::{
     database::{
         bitcointx::{RevaultTx, TransactionType},
         schema::{DbSpendTransaction, DbTransaction, DbVault, DbWallet},
@@ -934,11 +934,9 @@ pub fn db_vaults_with_txids_in_period(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::daemon::database::actions::{
-        db_confirm_deposit, db_insert_new_unconfirmed_vault, setup_db,
-    };
-    use crate::daemon::jsonrpc::UserRole;
-    use crate::daemon::utils::test_utils::{dummy_revaultd, test_datadir};
+    use crate::database::actions::{db_confirm_deposit, db_insert_new_unconfirmed_vault, setup_db};
+    use crate::jsonrpc::UserRole;
+    use crate::utils::test_utils::{dummy_revaultd, test_datadir};
     use revault_tx::{bitcoin::OutPoint, transactions::transaction_chain};
 
     use std::{fs, str::FromStr};

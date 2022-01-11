@@ -1,6 +1,8 @@
 ///! Background thread that will poll the coordinator for signatures
-use crate::daemon::{
-    control::{get_presigs, send_coord_sig_msg, wts_share_emer_signatures, CommunicationError},
+use crate::{
+    communication::{
+        get_presigs, send_coord_sig_msg, wts_share_emer_signatures, CommunicationError,
+    },
     database::{
         actions::{db_mark_emer_shared, db_update_presigned_txs, db_update_vault_status},
         bitcointx::RevaultTx,

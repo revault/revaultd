@@ -1,7 +1,7 @@
 #[cfg(test)]
 pub mod test_utils {
-    use crate::common::config::Config;
-    use crate::daemon::{
+    use crate::config::Config;
+    use crate::{
         bitcoind::{interface::WalletTransaction, BitcoindError},
         database::interface::db_exec,
         jsonrpc::UserRole,

@@ -143,7 +143,9 @@ def test_reorged_deposit_status(revault_network, bitcoind):
                 "Rescan of all vaults in db done.",
             ]
         )
-        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) == 1)
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])["vaults"]) == 1
+        )
         for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
             assert w.rpc.listvaults()["vaults"][0][field] is None
 

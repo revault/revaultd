@@ -1,12 +1,8 @@
 use crate::config::BitcoindConfig;
 use crate::{bitcoind::BitcoindError, revaultd::BlockchainTip};
-use revault_tx::{
-    bitcoin::{
-        blockdata::constants::COIN_VALUE, consensus::encode, util::bip32::ChildNumber,
-        util::psbt::PartiallySignedTransaction as Psbt, Amount, BlockHash, OutPoint, Script,
-        Transaction, TxOut, Txid,
-    },
-    transactions::{DUST_LIMIT, UNVAULT_CPFP_VALUE},
+use revault_tx::bitcoin::{
+    consensus::encode, util::bip32::ChildNumber, util::psbt::PartiallySignedTransaction as Psbt,
+    Address, Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
 };
 
 use std::{
@@ -25,10 +21,6 @@ use jsonrpc::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-
-// The minimum deposit value according to revault_tx depends also on the unvault's
-// transaction fee. To have a one-value-fits-all, just take a 5% leeway.
-const MIN_DEPOSIT_VALUE: u64 = (DUST_LIMIT + UNVAULT_CPFP_VALUE) * 105 / 100;
 
 // If bitcoind takes more than 3 minutes to answer one of our queries, fail.
 const RPC_SOCKET_TIMEOUT: u64 = 180;
@@ -527,28 +519,6 @@ impl BitcoinD {
         self.import_fresh_descriptor(descriptor, UNVAULT_UTXOS_LABEL.to_string())
     }
 
-    pub fn list_unspent_deposits(
-        &self,
-        min_amount: Option<u64>,
-    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
-        self.list_unspent(
-            &self.watchonly_client,
-            min_amount,
-            Some(DEPOSIT_UTXOS_LABEL),
-        )
-    }
-
-    pub fn list_unspent_unvaults(
-        &self,
-        min_amount: Option<u64>,
-    ) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
-        self.list_unspent(
-            &self.watchonly_client,
-            min_amount,
-            Some(UNVAULT_UTXOS_LABEL),
-        )
-    }
-
     pub fn list_unspent_cpfp(&self) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
         // For some weird reason, listunspent with the cpfp wallet doesn't return the label
         // (maybe because we only have one descriptor anyways?), so we pass `None` as a label
@@ -601,46 +571,113 @@ impl BitcoinD {
         })
     }
 
+    fn list_since_block(
+        &self,
+        tip: &BlockchainTip,
+        label: Option<&'static str>,
+    ) -> Result<Vec<ListSinceBlockTransaction>, BitcoindError> {
+        let req = if tip.height == 0 {
+            self.make_request(&self.watchonly_client, "listsinceblock", &params!())?
+        } else {
+            self.make_request(
+                &self.watchonly_client,
+                "listsinceblock",
+                &params!(Json::String(tip.hash.to_string())),
+            )?
+        };
+        Ok(req
+            .get("transactions")
+            .expect("API break, listsinceblock doesn't have a transaction field")
+            .as_array()
+            .expect("API break, listsinceblock transactions is not an array")
+            .iter()
+            .filter_map(|t| {
+                let t = ListSinceBlockTransaction::from(t);
+                if label.or_else(|| t.label.as_deref()) == t.label.as_deref() {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
+    pub fn list_deposits_since_block(
+        &self,
+        tip: &BlockchainTip,
+    ) -> Result<Vec<ListSinceBlockTransaction>, BitcoindError> {
+        self.list_since_block(tip, Some(DEPOSIT_UTXOS_LABEL))
+    }
+
+    pub fn list_unvaults_since_block(
+        &self,
+        tip: &BlockchainTip,
+    ) -> Result<Vec<ListSinceBlockTransaction>, BitcoindError> {
+        self.list_since_block(tip, Some(UNVAULT_UTXOS_LABEL))
+    }
+
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
     /// We take the currently known deposit utxos, and return the new, confirmed and spent ones.
     pub fn sync_deposits(
         &self,
         deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
+        db_tip: &BlockchainTip,
         min_conf: u32,
     ) -> Result<DepositsState, BitcoindError> {
-        let (mut new_utxos, mut confirmed_utxos) = (HashMap::new(), HashMap::new());
-        // All seen utxos, if an utxo remains unseen by listunspent then it's spent.
-        let mut spent_utxos = deposits_utxos.clone();
-        let utxos = self.list_unspent_deposits(Some(MIN_DEPOSIT_VALUE / COIN_VALUE))?;
+        let (mut new_unconf, mut new_conf, mut new_spent) =
+            (HashMap::new(), HashMap::new(), HashMap::new());
 
-        for unspent in utxos {
-            // Not obvious at first sight:
-            //  - spent_utxos == existing_utxos before the loop
-            //  - listunspent won't send duplicated entries
-            //  - remove() will return None if it was not present in the map
-            // Therefore if there is an utxo at this outpoint, it's an already known deposit
-            if let Some(map_utxo) = spent_utxos.remove(&unspent.outpoint) {
-                // It may be known but still unconfirmed, though.
-                if !map_utxo.is_confirmed && unspent.confirmations >= min_conf as u64 {
-                    confirmed_utxos.insert(unspent.outpoint, map_utxo);
+        // First, we check the existing deposits to see whether the unconfirmed got confirmed or if
+        // any was spent.
+        // FIXME: batch those calls to gettxout
+        for (outpoint, info) in deposits_utxos {
+            let confirmations = self.get_unspent_outpoint_confirmations(&outpoint)?;
+            if let Some(confirmations) = confirmations {
+                if !info.is_confirmed && confirmations >= min_conf as i32 {
+                    new_conf.insert(
+                        *outpoint,
+                        UtxoInfo {
+                            txo: info.txo.clone(),
+                            is_confirmed: true,
+                        },
+                    );
                 }
-                continue;
+            } else {
+                // We've seen it unspent and now it's not here anymore: it's spent.
+                new_spent.insert(*outpoint, info.clone());
             }
-            new_utxos.insert(
-                unspent.outpoint,
-                UtxoInfo {
-                    txo: unspent.txo,
-                    // All new utxos are marked as unconfirmed. This allows for a proper state
-                    // transition.
-                    is_confirmed: false,
-                },
-            );
+        }
+
+        // Second, we scan for new ones.
+        let utxos = self.list_deposits_since_block(db_tip)?;
+        for utxo in utxos {
+            if utxo.is_receive {
+                if deposits_utxos.get(&utxo.outpoint).is_none() {
+                    // Alright, I don't have this outpoint in the cache... But maybe I don't have
+                    // it because it's spent already! Let's check.
+                    if self
+                        .get_unspent_outpoint_confirmations(&utxo.outpoint)?
+                        .is_some()
+                    {
+                        // If I've never heard about it, and it's not already spent, then it's new
+                        new_unconf.insert(
+                            utxo.outpoint,
+                            UtxoInfo {
+                                txo: utxo.txo,
+                                // All new utxos are marked as unconfirmed. This allows for a proper state
+                                // transition.
+                                is_confirmed: false,
+                            },
+                        );
+                    }
+                }
+            }
         }
 
         Ok(DepositsState {
-            new_unconf: new_utxos,
-            new_conf: confirmed_utxos,
-            new_spent: spent_utxos,
+            new_unconf,
+            new_conf,
+            new_spent,
         })
     }
 
@@ -649,28 +686,36 @@ impl BitcoinD {
     pub fn sync_unvaults(
         &self,
         unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
+        db_tip: &BlockchainTip,
     ) -> Result<UnvaultsState, BitcoindError> {
-        // Since we don't need to care about new utxos the logic here is more
-        // straightforward than in sync_deposits.
-        //
-        // 1. Fetch the Unvault utxos from the watchonly wallet into a
-        //    (outpoint, confirmed) mapping
-        let unspent_list: HashMap<OutPoint, bool> = self
-            .list_unspent_unvaults(None)?
-            .iter()
-            .map(|utxo| (utxo.outpoint, utxo.confirmations > 0))
-            .collect();
-
-        // 2. Loop through all known Unvault utxos, check if some confirmed or
-        //    are missing (ie were spent)
         let (mut new_conf, mut new_spent) = (HashMap::new(), HashMap::new());
-        for (op, utxo_info) in unvault_utxos {
-            if let Some(confirmed) = unspent_list.get(op) {
-                if *confirmed && !utxo_info.is_confirmed {
-                    new_conf.insert(*op, utxo_info.clone());
+        // FIXME: batch those calls to gettxout
+        for (outpoint, info) in unvault_utxos {
+            if self
+                .get_unspent_outpoint_confirmations(&outpoint)?
+                .is_none()
+            {
+                new_spent.insert(*outpoint, info.clone());
+            }
+        }
+
+        let utxos = self.list_unvaults_since_block(db_tip)?;
+        for utxo in utxos {
+            let is_confirmed = utxo.confirmations > 0;
+            if utxo.is_receive && is_confirmed {
+                if let Some(UtxoInfo {
+                    is_confirmed: false,
+                    ..
+                }) = unvault_utxos.get(&utxo.outpoint)
+                {
+                    new_conf.insert(
+                        utxo.outpoint,
+                        UtxoInfo {
+                            txo: utxo.txo,
+                            is_confirmed,
+                        },
+                    );
                 }
-            } else {
-                new_spent.insert(*op, utxo_info.clone());
             }
         }
 
@@ -680,7 +725,6 @@ impl BitcoinD {
         })
     }
 
-    // FIXME: this should return a struct not a footguny tuple.
     /// Get the raw transaction as hex, the blockheight it was included in if
     /// it's confirmed, as well as the reception time.
     pub fn get_wallet_transaction(&self, txid: &Txid) -> Result<WalletTransaction, BitcoindError> {
@@ -919,6 +963,28 @@ impl BitcoinD {
         // TODO: Calculate the fallback feerate using the blockchain!
         Ok(None)
     }
+
+    /// Returns the number of confirmations of an unspent tx. Returns `None` if given a spent or
+    /// non-existent tx
+    pub fn get_unspent_outpoint_confirmations(
+        &self,
+        outpoint: &OutPoint,
+    ) -> Result<Option<i32>, BitcoindError> {
+        // gettxout should be used for UTXOs, but this API is about txs,
+        // so we always ask txid:0
+        let res = self.make_watchonly_request(
+            "gettxout",
+            &params!(
+                Json::String(outpoint.txid.to_string()),
+                Json::Number(serde_json::Number::from(outpoint.vout))
+            ),
+        )?;
+        Ok(res.get("confirmations").map(|a| {
+            a.as_i64()
+                .expect("Invalid confirmations in `gettxout` response: not an i64")
+                as i32
+        }))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -939,6 +1005,7 @@ pub struct UtxoInfo {
     pub is_confirmed: bool,
 }
 
+#[derive(Debug, Clone)]
 /// Onchain state of the deposit UTxOs
 pub struct DepositsState {
     /// The set of newly "received" deposit utxos
@@ -969,7 +1036,7 @@ pub struct ListUnspentEntry {
     pub outpoint: OutPoint,
     pub txo: TxOut,
     pub label: Option<String>,
-    pub confirmations: u64,
+    pub confirmations: i32,
     pub derivation_index: Option<ChildNumber>,
 }
 
@@ -1005,9 +1072,10 @@ impl From<&Json> for ListUnspentEntry {
             .as_sat();
         let confirmations = utxo
             .get("confirmations")
-            .map(|a| a.as_u64())
+            .map(|a| a.as_i64())
             .flatten()
-            .expect("API break, 'listunspent' entry didn't contain a valid 'confirmations'.");
+            .expect("API break, 'listunspent' entry didn't contain a valid 'confirmations'.")
+            as i32;
         let label = utxo
             .get("label")
             .map(|l| l.as_str())
@@ -1045,6 +1113,83 @@ impl From<&Json> for ListUnspentEntry {
             confirmations,
             label,
             derivation_index,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ListSinceBlockTransaction {
+    pub outpoint: OutPoint,
+    pub txo: TxOut,
+    pub is_receive: bool,
+    pub label: Option<String>,
+    pub confirmations: i32,
+}
+
+impl From<&Json> for ListSinceBlockTransaction {
+    fn from(j: &Json) -> Self {
+        let category = j
+            .get("category")
+            .map(|c| c.as_str())
+            .flatten()
+            .expect("API break, 'listsinceblock' didn't cointain a valid category")
+            .to_string();
+        let is_receive = category == "receive" || category == "generate";
+        let txid = j
+            .get("txid")
+            .map(|a| a.as_str())
+            .flatten()
+            .expect("API break, 'listsinceblock' entry didn't contain a string 'txid'.");
+        let txid = Txid::from_str(txid).expect("Converting txid from str in 'listsinceblock': {}.");
+        let vout = j
+            .get("vout")
+            .map(|a| a.as_u64())
+            .flatten()
+            .expect("API break, 'listsinceblock' entry didn't contain a valid 'vout'.");
+        let script_pubkey =
+            j.get("address")
+                .map(|s| s.as_str())
+                .flatten()
+                .map(|s| {
+                    Address::from_str(s).expect(
+                    "API break, 'listsinceblock' entry didn't contain a valid script_pubkey",
+                ).script_pubkey()
+                })
+                .expect("API break, 'listsinceblock' entry didn't contain a string script_pubkey.");
+        let amount_negative = !is_receive;
+        let amount = j
+            .get("amount")
+            .map(|a| a.as_f64())
+            .flatten()
+            .map(|a| if amount_negative { -a } else { a })
+            .expect("API break, 'listsinceblock' entry didn't contain a valid 'amount'.");
+        let value = Amount::from_btc(amount)
+            .expect("Could not convert 'listsinceblock' entry's 'amount' to an Amount")
+            .as_sat();
+        let confirmations = j
+            .get("confirmations")
+            .map(|a| a.as_i64())
+            .flatten()
+            .expect("API break, 'listsinceblock' entry didn't contain a valid 'confirmations'.")
+            as i32;
+        let label = j
+            .get("label")
+            .map(|l| l.as_str())
+            .flatten()
+            .map(|l| l.to_string());
+
+        ListSinceBlockTransaction {
+            outpoint: OutPoint {
+                txid,
+                vout: vout as u32, // Bitcoin makes this safe
+            },
+            is_receive,
+            label,
+            txo: TxOut {
+                value,
+                script_pubkey,
+            },
+            confirmations,
         }
     }
 }

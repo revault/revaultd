@@ -3,6 +3,34 @@ use revault_tx::bitcoin::{Transaction as BitcoinTransaction, Txid};
 
 use std::sync::mpsc::{sync_channel, Sender, SyncSender};
 
+/// Outgoing to the signature fetcher thread
+#[derive(Debug)]
+pub enum SigFetcherMessageOut {
+    Shutdown,
+}
+
+pub trait SigFetcherThread {
+    fn shutdown(&self);
+}
+
+/// Interface to the sigfetcher thread using synchronous MPSCs.
+#[derive(Debug, Clone)]
+pub struct SigFetcherSender(Sender<SigFetcherMessageOut>);
+
+impl SigFetcherThread for SigFetcherSender {
+    fn shutdown(&self) {
+        self.0
+            .send(SigFetcherMessageOut::Shutdown)
+            .expect("Sending shutdown to sigfetcher thread")
+    }
+}
+
+impl From<Sender<SigFetcherMessageOut>> for SigFetcherSender {
+    fn from(s: Sender<SigFetcherMessageOut>) -> Self {
+        SigFetcherSender(s)
+    }
+}
+
 /// Outgoing to the bitcoind poller thread
 #[derive(Debug)]
 pub enum BitcoindMessageOut {
@@ -13,12 +41,6 @@ pub enum BitcoindMessageOut {
         Vec<BitcoinTransaction>,
         SyncSender<Result<(), BitcoindError>>,
     ),
-}
-
-/// Outgoing to the signature fetcher thread
-#[derive(Debug)]
-pub enum SigFetcherMessageOut {
-    Shutdown,
 }
 
 /// Interface to communicate with bitcoind client thread.

@@ -112,7 +112,7 @@ addr = "127.0.0.1:8332"
             revaultd,
             bitcoind_conn: BitcoindSender::from(bitcoind_tx),
             bitcoind_thread,
-            sigfetcher_tx,
+            sigfetcher_conn: sigfetcher_tx.into(),
             sigfetcher_thread,
         }
     }

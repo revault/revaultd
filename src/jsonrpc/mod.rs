@@ -3,11 +3,11 @@ pub mod server;
 
 use crate::{
     revaultd::RevaultD,
-    threadmessages::{BitcoindSender, SigFetcherMessageOut},
+    threadmessages::{BitcoindSender, SigFetcherSender},
 };
 
 use std::{
-    sync::{mpsc::Sender, Arc, RwLock},
+    sync::{Arc, RwLock},
     thread::JoinHandle,
 };
 
@@ -25,6 +25,6 @@ pub struct RpcUtils {
     pub revaultd: Arc<RwLock<RevaultD>>,
     pub bitcoind_conn: BitcoindSender,
     pub bitcoind_thread: Arc<RwLock<JoinHandle<()>>>,
-    pub sigfetcher_tx: Sender<SigFetcherMessageOut>,
+    pub sigfetcher_conn: SigFetcherSender,
     pub sigfetcher_thread: Arc<RwLock<JoinHandle<()>>>,
 }

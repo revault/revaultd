@@ -3,7 +3,7 @@ use revault_tx::bitcoin::hashes::hex::ToHex;
 use std::{env, path::PathBuf, process, time};
 
 use daemonize_simple::Daemonize;
-use revaultd::{config::Config, daemon_main, RevaultD};
+use revaultd::{config::Config, daemon_start, rpc_server_loop, RevaultD};
 
 fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     if args.len() == 1 {
@@ -94,5 +94,6 @@ fn main() {
         println!("Started revaultd daemon");
     }
 
-    daemon_main(revaultd);
+    let daemon_handle = daemon_start(revaultd);
+    rpc_server_loop(daemon_handle);
 }

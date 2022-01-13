@@ -3,7 +3,6 @@
 //! `server` mod.
 
 mod error;
-use error::Error;
 
 use crate::{
     commands::{
@@ -14,7 +13,7 @@ use crate::{
     },
     jsonrpc::{RpcUtils, UserRole},
     revaultd::VaultStatus,
-    threadmessages::{BitcoindThread, SigFetcherMessageOut},
+    threadmessages::{BitcoindThread, SigFetcherThread},
 };
 
 use revault_tx::{
@@ -233,10 +232,7 @@ impl RpcApi for RpcImpl {
         log::info!("Stopping revaultd");
 
         meta.rpc_utils.bitcoind_conn.shutdown();
-        meta.rpc_utils
-            .sigfetcher_tx
-            .send(SigFetcherMessageOut::Shutdown)
-            .map_err(Error::from)?;
+        meta.rpc_utils.sigfetcher_conn.shutdown();
         meta.shutdown();
 
         Ok(())

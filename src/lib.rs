@@ -24,7 +24,7 @@ use crate::{
         RpcUtils, UserRole,
     },
     sigfetcher::signature_fetcher_loop,
-    threadmessages::BitcoindSender,
+    threadmessages::{BitcoindSender, SigFetcherSender},
 };
 
 use std::{
@@ -64,14 +64,15 @@ fn setup_panic_hook() {
     }));
 }
 
-pub fn daemon_main(mut revaultd: RevaultD) {
-    let user_role = match (revaultd.is_stakeholder(), revaultd.is_manager()) {
-        (true, false) => UserRole::Stakeholder,
-        (false, true) => UserRole::Manager,
-        (true, true) => UserRole::ManagerStakeholder,
-        _ => unreachable!(),
-    };
+pub struct DaemonHandle {
+    pub revaultd: Arc<RwLock<RevaultD>>,
+    pub bitcoind: BitcoindSender,
+    pub sigfetcher: SigFetcherSender,
+    pub bitcoind_thread: thread::JoinHandle<()>,
+    pub sigfetcher_thread: thread::JoinHandle<()>,
+}
 
+pub fn daemon_start(mut revaultd: RevaultD) -> DaemonHandle {
     setup_panic_hook();
 
     // First and foremost
@@ -80,9 +81,6 @@ pub fn daemon_main(mut revaultd: RevaultD) {
 
     log::info!("Setting up bitcoind connection");
     let bitcoind = start_bitcoind(&mut revaultd).expect("Error setting up bitcoind");
-
-    log::info!("Starting JSONRPC server");
-    let socket = rpcserver_setup(revaultd.rpc_socket_file()).expect("Setting up JSONRPC server");
 
     // We start two threads, the bitcoind one to poll bitcoind for chain updates,
     // and the sigfetcher one to poll the coordinator for missing signatures
@@ -99,7 +97,7 @@ pub fn daemon_main(mut revaultd: RevaultD) {
     let revaultd = Arc::new(RwLock::new(revaultd));
     let bit_revaultd = revaultd.clone();
     let bitcoind_thread = thread::spawn(move || {
-        bitcoind_main_loop(bitcoind_rx, bit_revaultd, Arc::new(RwLock::new(bitcoind)))
+        bitcoind_main_loop(bitcoind_rx, bit_revaultd, bitcoind)
             .expect("Error in bitcoind main loop");
     });
 
@@ -113,17 +111,42 @@ pub fn daemon_main(mut revaultd: RevaultD) {
         "revaultd started on network {}",
         revaultd.read().unwrap().bitcoind_config.network
     );
+    let bitcoind: BitcoindSender = bitcoind_tx.into();
+    let sigfetcher: SigFetcherSender = sigfetcher_tx.into();
+    DaemonHandle {
+        revaultd,
+        bitcoind,
+        sigfetcher,
+        bitcoind_thread,
+        sigfetcher_thread,
+    }
+}
+
+pub fn rpc_server_loop(daemon: DaemonHandle) {
+    log::info!("Starting JSONRPC server");
+    let socket = rpcserver_setup(daemon.revaultd.read().unwrap().rpc_socket_file())
+        .expect("Setting up JSONRPC server");
+    let user_role = match (
+        daemon.revaultd.read().unwrap().is_stakeholder(),
+        daemon.revaultd.read().unwrap().is_manager(),
+    ) {
+        (true, false) => UserRole::Stakeholder,
+        (false, true) => UserRole::Manager,
+        (true, true) => UserRole::ManagerStakeholder,
+        _ => unreachable!(),
+    };
 
     // Handle RPC commands until we die.
-    let bitcoind_thread = Arc::new(RwLock::new(bitcoind_thread));
-    let sigfetcher_thread = Arc::new(RwLock::new(sigfetcher_thread));
+    let bitcoind_thread = Arc::new(RwLock::new(daemon.bitcoind_thread));
+    let sigfetcher_thread = Arc::new(RwLock::new(daemon.sigfetcher_thread));
     let rpc_utils = RpcUtils {
-        revaultd,
-        bitcoind_conn: BitcoindSender::from(bitcoind_tx),
+        revaultd: daemon.revaultd,
+        bitcoind_conn: daemon.bitcoind,
         bitcoind_thread: bitcoind_thread.clone(),
-        sigfetcher_tx,
+        sigfetcher_conn: daemon.sigfetcher,
         sigfetcher_thread: sigfetcher_thread.clone(),
     };
+
     rpcserver_loop(socket, user_role, rpc_utils).expect("Error in the main loop");
 
     // If the RPC server loop stops, we've been told to shutdown!

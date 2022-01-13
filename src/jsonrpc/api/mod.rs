@@ -11,7 +11,7 @@ use crate::{
         presigned_transactions, revault, revocationtxs, set_spend_tx, set_unvault_tx,
         update_spend_tx, HistoryEventKind, ListSpendStatus,
     },
-    jsonrpc::{RpcUtils, UserRole},
+    jsonrpc::RpcUtils,
     revaultd::VaultStatus,
     threadmessages::{BitcoindThread, SigFetcherThread},
 };
@@ -40,16 +40,14 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct JsonRpcMetaData {
     pub shutdown: Arc<AtomicBool>,
-    pub role: UserRole,
     pub rpc_utils: RpcUtils,
 }
 impl jsonrpc_core::Metadata for JsonRpcMetaData {}
 
 impl JsonRpcMetaData {
-    pub fn new(role: UserRole, rpc_utils: RpcUtils) -> Self {
+    pub fn new(rpc_utils: RpcUtils) -> Self {
         JsonRpcMetaData {
             shutdown: Arc::from(AtomicBool::from(false)),
-            role,
             rpc_utils,
         }
     }

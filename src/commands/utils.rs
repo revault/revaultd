@@ -472,10 +472,11 @@ mod tests {
             },
             schema::{DbTransaction, DbVault},
         },
-        jsonrpc::UserRole,
         revaultd::{RevaultD, VaultStatus},
         setup_db,
-        utils::test_utils::{dummy_revaultd, insert_vault_in_db, test_datadir, MockBitcoindThread},
+        utils::test_utils::{
+            dummy_revaultd, insert_vault_in_db, test_datadir, MockBitcoindThread, UserRole,
+        },
     };
     use revault_tx::{
         bitcoin::{

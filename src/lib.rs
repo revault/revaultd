@@ -21,7 +21,7 @@ use crate::{
     database::actions::setup_db,
     jsonrpc::{
         server::{rpcserver_loop, rpcserver_setup},
-        RpcUtils, UserRole,
+        RpcUtils,
     },
     sigfetcher::signature_fetcher_loop,
     threadmessages::{BitcoindSender, SigFetcherSender},
@@ -126,15 +126,6 @@ pub fn rpc_server_loop(daemon: DaemonHandle) {
     log::info!("Starting JSONRPC server");
     let socket = rpcserver_setup(daemon.revaultd.read().unwrap().rpc_socket_file())
         .expect("Setting up JSONRPC server");
-    let user_role = match (
-        daemon.revaultd.read().unwrap().is_stakeholder(),
-        daemon.revaultd.read().unwrap().is_manager(),
-    ) {
-        (true, false) => UserRole::Stakeholder,
-        (false, true) => UserRole::Manager,
-        (true, true) => UserRole::ManagerStakeholder,
-        _ => unreachable!(),
-    };
 
     // Handle RPC commands until we die.
     let bitcoind_thread = Arc::new(RwLock::new(daemon.bitcoind_thread));
@@ -147,7 +138,7 @@ pub fn rpc_server_loop(daemon: DaemonHandle) {
         sigfetcher_thread: sigfetcher_thread.clone(),
     };
 
-    rpcserver_loop(socket, user_role, rpc_utils).expect("Error in the main loop");
+    rpcserver_loop(socket, rpc_utils).expect("Error in the main loop");
 
     // If the RPC server loop stops, we've been told to shutdown!
     let bitcoind_thread = unsafe { Arc::into_raw(bitcoind_thread).read().into_inner() };

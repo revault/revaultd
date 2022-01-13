@@ -429,8 +429,7 @@ mod tests {
             bitcointx::{RevaultTx, TransactionType},
             schema::DbTransaction,
         },
-        jsonrpc::UserRole,
-        utils::test_utils::{dummy_revaultd, test_datadir},
+        utils::test_utils::{dummy_revaultd, test_datadir, UserRole},
     };
     use revault_net::{
         message, sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair,

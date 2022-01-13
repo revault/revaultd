@@ -1,11 +1,9 @@
 //! Here we handle incoming connections and communication on the RPC socket.
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
-use crate::{
-    jsonrpc::{
-        api::{JsonRpcMetaData, RpcApi, RpcImpl},
-        UserRole, RpcUtils
-    },
+use crate::jsonrpc::{
+    api::{JsonRpcMetaData, RpcApi, RpcImpl},
+    RpcUtils,
 };
 
 use std::{
@@ -464,14 +462,10 @@ pub fn rpcserver_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error> 
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
-pub fn rpcserver_loop(
-    listener: UnixListener,
-    user_role: UserRole,
-    rpc_utils: RpcUtils,
-) -> Result<(), io::Error> {
+pub fn rpcserver_loop(listener: UnixListener, rpc_utils: RpcUtils) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
-    let metadata = JsonRpcMetaData::new(user_role, rpc_utils);
+    let metadata = JsonRpcMetaData::new(rpc_utils);
 
     log::info!("JSONRPC server started.");
     #[cfg(not(windows))]
@@ -482,8 +476,8 @@ pub fn rpcserver_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed, UserRole};
-    use crate::utils::test_utils::{dummy_rpcutil, test_datadir};
+    use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed};
+    use crate::utils::test_utils::{dummy_rpcutil, test_datadir, UserRole};
 
     use std::{
         fs,
@@ -509,7 +503,7 @@ mod tests {
 
         let socket = rpcserver_setup(rpc_socket_path.clone()).unwrap();
         let server_loop_thread = thread::spawn(move || {
-            rpcserver_loop(socket, UserRole::Stakeholder, rpcutils).unwrap_or_else(|e| {
+            rpcserver_loop(socket, rpcutils).unwrap_or_else(|e| {
                 panic!("Error in JSONRPC server event loop: {}", e.to_string());
             })
         });

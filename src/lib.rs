@@ -8,6 +8,7 @@ pub mod config;
 mod database;
 mod jsonrpc;
 mod revaultd;
+pub use crate::revaultd::*;
 mod sigfetcher;
 mod threadmessages;
 mod utils;
@@ -25,9 +26,6 @@ use crate::{
     sigfetcher::signature_fetcher_loop,
     threadmessages::BitcoindSender,
 };
-
-// FIXME
-pub use crate::revaultd::RevaultD;
 
 use std::{
     io::{self, Write},

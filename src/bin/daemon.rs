@@ -1,9 +1,14 @@
 use revault_net::sodiumoxide;
 use revault_tx::bitcoin::hashes::hex::ToHex;
-use std::{env, path::PathBuf, process, time};
+use std::{
+    env,
+    io::{self, Write},
+    path::PathBuf,
+    process, time,
+};
 
 use daemonize_simple::Daemonize;
-use revaultd::{config::Config, daemon_start, rpc_server_loop, RevaultD};
+use revaultd::{config::Config, DaemonHandle, RevaultD};
 
 fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     if args.len() == 1 {
@@ -94,6 +99,10 @@ fn main() {
         println!("Started revaultd daemon");
     }
 
-    let daemon_handle = daemon_start(revaultd);
-    rpc_server_loop(daemon_handle);
+    let daemon_handle = DaemonHandle::start(revaultd);
+    daemon_handle.rpc_server();
+
+    // We are always logging to stdout, should it be then piped to the log file (if self) or
+    // not. So just make sure that all messages were actually written.
+    io::stdout().flush().expect("Flushing stdout");
 }

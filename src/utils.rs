@@ -98,7 +98,7 @@ addr = "127.0.0.1:8332"
         let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
         let (sigfetcher_tx, sigfetcher_rx) = mpsc::channel();
 
-        let bitcoind_thread = Arc::from(RwLock::from(thread::spawn(move || {
+        let _ = Arc::from(RwLock::from(thread::spawn(move || {
             for msg in bitcoind_rx {
                 match msg {
                     BitcoindMessageOut::Shutdown => return,
@@ -106,7 +106,7 @@ addr = "127.0.0.1:8332"
                 }
             }
         })));
-        let sigfetcher_thread = Arc::from(RwLock::from(thread::spawn(move || {
+        let _ = Arc::from(RwLock::from(thread::spawn(move || {
             for msg in sigfetcher_rx {
                 match msg {
                     SigFetcherMessageOut::Shutdown => return,
@@ -117,9 +117,7 @@ addr = "127.0.0.1:8332"
         RpcUtils {
             revaultd,
             bitcoind_conn: BitcoindSender::from(bitcoind_tx),
-            bitcoind_thread,
             sigfetcher_conn: sigfetcher_tx.into(),
-            sigfetcher_thread,
         }
     }
 

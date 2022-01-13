@@ -6,16 +6,13 @@ use crate::{
     threadmessages::{BitcoindSender, SigFetcherSender},
 };
 
-use std::{
-    sync::{Arc, RwLock},
-    thread::JoinHandle,
-};
+use std::sync::{Arc, RwLock};
 
+// TODO: would be nice to harmonize with DaemonHandle..
+/// Data needed to handle JSONRPC requests.
 #[derive(Clone)]
 pub struct RpcUtils {
     pub revaultd: Arc<RwLock<RevaultD>>,
     pub bitcoind_conn: BitcoindSender,
-    pub bitcoind_thread: Arc<RwLock<JoinHandle<()>>>,
     pub sigfetcher_conn: SigFetcherSender,
-    pub sigfetcher_thread: Arc<RwLock<JoinHandle<()>>>,
 }

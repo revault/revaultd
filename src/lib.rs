@@ -5,7 +5,6 @@ mod bitcoind;
 pub mod commands;
 mod communication;
 pub mod config;
-mod control;
 mod database;
 mod jsonrpc;
 mod revaultd;
@@ -18,11 +17,10 @@ pub const VERSION: &str = "0.3.1";
 
 use crate::{
     bitcoind::{bitcoind_main_loop, start_bitcoind},
-    control::RpcUtils,
     database::actions::setup_db,
     jsonrpc::{
         server::{rpcserver_loop, rpcserver_setup},
-        UserRole,
+        RpcUtils, UserRole,
     },
     sigfetcher::signature_fetcher_loop,
     threadmessages::BitcoindSender,

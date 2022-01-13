@@ -3,7 +3,10 @@
 //! fetcher thread.
 
 use crate::{
-    bitcoind::BitcoindError,
+    commands::{
+        CommandError, HistoryEvent, HistoryEventKind, ListPresignedTxEntry, ListVaultsEntry,
+        VaultPresignedTransaction,
+    },
     database::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
@@ -15,68 +18,23 @@ use crate::{
     },
     revaultd::{RevaultD, VaultStatus},
     threadmessages::*,
-    utils::{ser_amount, ser_to_string},
 };
 
 use revault_tx::{
     bitcoin::{
-        consensus::encode, hashes::hex::FromHex, util::bip32::ChildNumber, Address, Amount,
-        OutPoint, Transaction as BitcoinTransaction, Txid,
+        consensus::encode, hashes::hex::FromHex, Amount, OutPoint,
+        Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
-    transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
-    },
+    transactions::RevaultTransaction,
 };
 
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    sync::{mpsc::Sender, Arc, RwLock},
-    thread::JoinHandle,
 };
 
-use serde::{Deserialize, Serialize, Serializer};
-
-/// A presigned transaction
-#[derive(Debug, Clone, Serialize)]
-pub struct VaultPresignedTransaction<T: RevaultTransaction> {
-    pub psbt: T,
-    // FIXME: is it really necessary?.. It's mostly contained in the PSBT already
-    #[serde(rename(serialize = "hex"), serialize_with = "serialize_option_tx_hex")]
-    pub transaction: Option<BitcoinTransaction>,
-}
-
-/// Contains the presigned transactions (Unvault, Cancel, Emergency, UnvaultEmergency)
-/// of a specific vault
-#[derive(Debug)]
-pub struct VaultPresignedTransactions {
-    pub outpoint: OutPoint,
-    pub unvault: VaultPresignedTransaction<UnvaultTransaction>,
-    pub cancel: VaultPresignedTransaction<CancelTransaction>,
-    // None if not stakeholder
-    pub emergency: Option<VaultPresignedTransaction<EmergencyTransaction>>,
-    pub unvault_emergency: Option<VaultPresignedTransaction<UnvaultEmergencyTransaction>>,
-}
-
-/// Contains information regarding a specific vault
-#[derive(Debug, Clone, Serialize)]
-pub struct ListVaultsEntry {
-    #[serde(serialize_with = "ser_amount")]
-    pub amount: Amount,
-    pub blockheight: u32,
-    #[serde(serialize_with = "ser_to_string")]
-    pub status: VaultStatus,
-    pub txid: Txid,
-    pub vout: u32,
-    pub derivation_index: ChildNumber,
-    pub address: Address,
-    pub funded_at: Option<u32>,
-    pub secured_at: Option<u32>,
-    pub delegated_at: Option<u32>,
-    pub moved_at: Option<u32>,
-}
+use serde::Serializer;
 
 fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
 where
@@ -86,7 +44,8 @@ where
     s.serialize_str(&tx_hex)
 }
 
-fn serialize_option_tx_hex<S>(tx: &Option<BitcoinTransaction>, s: S) -> Result<S::Ok, S::Error>
+/// Serialize an optional transaction as hex or null
+pub fn serialize_option_tx_hex<S>(tx: &Option<BitcoinTransaction>, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -97,59 +56,14 @@ where
     }
 }
 
-/// Error specific to calls that originated from the RPC server.
-#[derive(Debug)]
-pub enum RpcControlError {
-    InvalidStatus(VaultStatus, OutPoint),
-    UnknownOutPoint(OutPoint),
-    Database(DatabaseError),
-    Tx(revault_tx::Error),
-    Bitcoind(BitcoindError),
-    ThreadCommunication(String),
-    /// An error returned when, given a previous poll of the state of the vault
-    /// in database a certain pre-signed transaction should be present but it was
-    /// not. Could be due to another thread wiping all the txs due to for instance
-    /// a block chain reorg.
-    TransactionNotFound,
+/// Serialize a field as a string
+pub fn ser_to_string<T: fmt::Display, S: Serializer>(field: T, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&field.to_string())
 }
 
-impl From<DatabaseError> for RpcControlError {
-    fn from(e: DatabaseError) -> Self {
-        Self::Database(e)
-    }
-}
-
-impl From<revault_tx::Error> for RpcControlError {
-    fn from(e: revault_tx::Error) -> Self {
-        Self::Tx(e)
-    }
-}
-
-impl From<BitcoindError> for RpcControlError {
-    fn from(e: BitcoindError) -> Self {
-        Self::Bitcoind(e)
-    }
-}
-
-impl fmt::Display for RpcControlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::UnknownOutPoint(ref o) => write!(f, "No vault at '{}'", o),
-            Self::InvalidStatus(status, outpoint) => write!(
-                f,
-                "Invalid vault status '{}' for deposit outpoint '{}'",
-                status, outpoint
-            ),
-            Self::Database(ref e) => write!(f, "Database error: '{}'", e),
-            Self::Tx(ref e) => write!(f, "Transaction handling error: '{}'", e),
-            Self::Bitcoind(ref e) => write!(f, "Bitcoind error: '{}'", e),
-            Self::ThreadCommunication(ref e) => write!(f, "Thread communication error: '{}'", e),
-            Self::TransactionNotFound => write!(
-                f,
-                "Transaction not found although it should have been in database"
-            ),
-        }
-    }
+/// Serialize an amount as sats
+pub fn ser_amount<S: Serializer>(amount: &Amount, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(amount.as_sat())
 }
 
 /// List the vaults from DB, and filter out the info the RPC wants
@@ -195,9 +109,6 @@ pub fn listvaults_from_db(
     })
 }
 
-// FIXME: remove this aweful circular deps, needed because of vaults_from_deposits
-// TODO: we should probably merge commands and control.rs into a single commands mod
-use crate::commands::CommandError;
 /// Get all vaults from a list of deposit outpoints, if they are not in a given status.
 ///
 /// # Errors
@@ -228,8 +139,6 @@ pub fn vaults_from_deposits(
     Ok(vaults)
 }
 
-// FIXME: circular dep
-use crate::commands::ListPresignedTxEntry;
 // FIXME: make this a DB query altogether...
 /// List all the presigned transactions from these confirmed vaults.
 ///
@@ -546,41 +455,11 @@ pub fn gethistory<T: BitcoindThread>(
     Ok(events)
 }
 
-#[derive(Debug, Serialize)]
-pub struct HistoryEvent {
-    pub kind: HistoryEventKind,
-    pub date: u32,
-    pub blockheight: u32,
-    pub amount: Option<u64>,
-    pub fee: Option<u64>,
-    pub txid: Txid,
-    pub vaults: Vec<OutPoint>,
-}
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub enum HistoryEventKind {
-    #[serde(rename = "cancel")]
-    Cancel,
-    #[serde(rename = "deposit")]
-    Deposit,
-    #[serde(rename = "spend")]
-    Spend,
-}
-
-#[derive(Clone)]
-pub struct RpcUtils {
-    pub revaultd: Arc<RwLock<RevaultD>>,
-    pub bitcoind_conn: BitcoindSender,
-    pub bitcoind_thread: Arc<RwLock<JoinHandle<()>>>,
-    pub sigfetcher_tx: Sender<SigFetcherMessageOut>,
-    pub sigfetcher_thread: Arc<RwLock<JoinHandle<()>>>,
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         bitcoind::interface::WalletTransaction,
-        control::*,
         database::{
             actions::{
                 db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
@@ -1100,7 +979,7 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains(
-                    &RpcControlError::InvalidStatus(VaultStatus::Unconfirmed, outpoints[0])
+                    &CommandError::InvalidStatusFor(VaultStatus::Unconfirmed, outpoints[0])
                         .to_string()
                 )
         );
@@ -1115,7 +994,7 @@ mod tests {
             vaults_from_deposits(&db_file, &vec![wrong_outpoint], &vec![],)
                 .unwrap_err()
                 .to_string()
-                .contains(&RpcControlError::UnknownOutPoint(wrong_outpoint).to_string())
+                .contains(&CommandError::UnknownOutpoint(wrong_outpoint).to_string())
         );
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());

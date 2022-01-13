@@ -10,10 +10,9 @@ use crate::{
         del_spend_tx, emergency, get_history, get_servers_statuses, get_spend_tx, get_unvault_tx,
         getinfo, getrevocationtxs, list_spend_txs, listvaults, onchain_transactions,
         presigned_transactions, revault, revocationtxs, set_spend_tx, set_unvault_tx,
-        update_spend_tx, ListSpendStatus,
+        update_spend_tx, HistoryEventKind, ListSpendStatus,
     },
-    control::{HistoryEventKind, RpcUtils},
-    jsonrpc::UserRole,
+    jsonrpc::{RpcUtils, UserRole},
     revaultd::VaultStatus,
     threadmessages::{BitcoindThread, SigFetcherMessageOut},
 };

@@ -4,6 +4,7 @@
 //! All commands here assume an accessible and sane database. They will **panic** on a failure
 //! to query it.
 
+mod utils;
 pub use crate::{
     bitcoind::{interface::WalletTransaction, BitcoindError},
     communication::ServerStatus,
@@ -14,10 +15,6 @@ use crate::{
         coordinator_status, cosigners_status, fetch_cosigs_signatures, share_unvault_signatures,
         watchtowers_status, wts_share_emer_signatures, wts_share_second_stage_signatures,
         CommunicationError,
-    },
-    control::{
-        finalized_emer_txs, gethistory, listvaults_from_db, presigned_txs, vaults_from_deposits,
-        HistoryEvent, HistoryEventKind, ListVaultsEntry, VaultPresignedTransaction,
     },
     database::{
         actions::{
@@ -33,8 +30,11 @@ use crate::{
     },
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
     threadmessages::BitcoindThread,
-    utils::ser_to_string,
     VERSION,
+};
+use utils::{
+    finalized_emer_txs, gethistory, listvaults_from_db, presigned_txs, ser_amount, ser_to_string,
+    serialize_option_tx_hex, vaults_from_deposits,
 };
 
 use revault_tx::{
@@ -243,7 +243,25 @@ pub fn getinfo(revaultd: &RevaultD, bitcoind: &impl BitcoindThread) -> GetInfoRe
     }
 }
 
-/// Information about all our current vaults
+/// Information about a vault.
+#[derive(Debug, Clone, Serialize)]
+pub struct ListVaultsEntry {
+    #[serde(serialize_with = "ser_amount")]
+    pub amount: Amount,
+    pub blockheight: u32,
+    #[serde(serialize_with = "ser_to_string")]
+    pub status: VaultStatus,
+    pub txid: Txid,
+    pub vout: u32,
+    pub derivation_index: bip32::ChildNumber,
+    pub address: Address,
+    pub funded_at: Option<u32>,
+    pub secured_at: Option<u32>,
+    pub delegated_at: Option<u32>,
+    pub moved_at: Option<u32>,
+}
+
+/// Information about all our current vaults.
 #[derive(Debug, Clone, Serialize)]
 pub struct ListVaultsResult {
     pub vaults: Vec<ListVaultsEntry>,
@@ -726,6 +744,15 @@ pub fn set_unvault_tx(
     )?;
 
     Ok(())
+}
+
+/// A vault's presigned transaction.
+#[derive(Debug, Clone, Serialize)]
+pub struct VaultPresignedTransaction<T: RevaultTransaction> {
+    pub psbt: T,
+    // FIXME: is it really necessary?.. It's mostly contained in the PSBT already
+    #[serde(rename(serialize = "hex"), serialize_with = "serialize_option_tx_hex")]
+    pub transaction: Option<BitcoinTransaction>,
 }
 
 /// Information about a vault's presigned transactions.
@@ -1402,6 +1429,29 @@ pub fn get_servers_statuses(revaultd: &RevaultD) -> ServersStatuses {
         cosigners,
         watchtowers,
     }
+}
+
+/// The type of an accounting event.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum HistoryEventKind {
+    #[serde(rename = "cancel")]
+    Cancel,
+    #[serde(rename = "deposit")]
+    Deposit,
+    #[serde(rename = "spend")]
+    Spend,
+}
+
+/// An accounting event.
+#[derive(Debug, Serialize)]
+pub struct HistoryEvent {
+    pub kind: HistoryEventKind,
+    pub date: u32,
+    pub blockheight: u32,
+    pub amount: Option<u64>,
+    pub fee: Option<u64>,
+    pub txid: Txid,
+    pub vaults: Vec<OutPoint>,
 }
 
 /// Get a paginated list of accounting events. This returns a maximum of `limit` events occuring

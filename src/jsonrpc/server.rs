@@ -2,10 +2,9 @@
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
 use crate::{
-    control::RpcUtils,
     jsonrpc::{
         api::{JsonRpcMetaData, RpcApi, RpcImpl},
-        UserRole,
+        UserRole, RpcUtils
     },
 };
 

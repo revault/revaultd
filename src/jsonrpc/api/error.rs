@@ -1,6 +1,6 @@
 use crate::{
     bitcoind::BitcoindError, commands::CommandError, communication::CommunicationError,
-    control::RpcControlError, database::DatabaseError,
+    database::DatabaseError,
 };
 
 use std::sync::mpsc::{RecvError, SendError};
@@ -32,21 +32,6 @@ impl From<BitcoindError> for JsonRpcError {
 impl From<CommunicationError> for JsonRpcError {
     fn from(e: CommunicationError) -> JsonRpcError {
         Error::from(e).into()
-    }
-}
-
-impl From<RpcControlError> for Error {
-    fn from(e: RpcControlError) -> Error {
-        let code = match e {
-            RpcControlError::InvalidStatus(..) => ErrorCode::INVALID_STATUS_ERROR,
-            RpcControlError::UnknownOutPoint(_) => ErrorCode::RESOURCE_NOT_FOUND_ERROR,
-            RpcControlError::Database(_) => ErrorCode::INTERNAL_ERROR,
-            RpcControlError::Tx(_) => ErrorCode::INTERNAL_ERROR,
-            RpcControlError::Bitcoind(_) => ErrorCode::BITCOIND_ERROR,
-            RpcControlError::ThreadCommunication(_) => ErrorCode::INTERNAL_ERROR,
-            RpcControlError::TransactionNotFound => ErrorCode::INTERNAL_ERROR,
-        };
-        Error(code, e.to_string())
     }
 }
 

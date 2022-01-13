@@ -17,8 +17,8 @@ mod utils;
 pub const VERSION: &str = "0.3.1";
 
 use crate::{
-    bitcoind::{bitcoind_main_loop, start_bitcoind},
-    database::actions::setup_db,
+    bitcoind::{bitcoind_main_loop, start_bitcoind, BitcoindError},
+    database::{actions::setup_db, DatabaseError},
     jsonrpc::{
         server::{rpcserver_loop, rpcserver_setup},
         RpcUtils,
@@ -28,7 +28,7 @@ use crate::{
 };
 
 use std::{
-    panic, process,
+    error, fmt, panic, process,
     sync::{mpsc, Arc, RwLock},
     thread,
 };
@@ -63,6 +63,35 @@ fn setup_panic_hook() {
     }));
 }
 
+#[derive(Debug)]
+pub enum StartupError {
+    Db(DatabaseError),
+    Bitcoind(BitcoindError),
+}
+
+impl fmt::Display for StartupError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Db(e) => write!(f, "Database error when starting revaultd: '{}'", e),
+            Self::Bitcoind(e) => write!(f, "Bitcoind error when starting revaultd: '{}'", e),
+        }
+    }
+}
+
+impl error::Error for StartupError {}
+
+impl From<BitcoindError> for StartupError {
+    fn from(e: BitcoindError) -> Self {
+        Self::Bitcoind(e)
+    }
+}
+
+impl From<DatabaseError> for StartupError {
+    fn from(e: DatabaseError) -> Self {
+        Self::Db(e)
+    }
+}
+
 // FIXME: the fields shouldn't be publicly accessible
 pub struct DaemonHandle {
     pub revaultd: Arc<RwLock<RevaultD>>,
@@ -77,15 +106,15 @@ impl DaemonHandle {
     ///
     /// **Note**: we internally use threads, and set a panic hook. A downstream application must
     /// not overwrite this panic hook.
-    pub fn start(mut revaultd: RevaultD) -> Self {
+    pub fn start(mut revaultd: RevaultD) -> Result<Self, StartupError> {
         setup_panic_hook();
 
         // First and foremost
         log::info!("Setting up database");
-        setup_db(&mut revaultd).expect("Error setting up database");
+        setup_db(&mut revaultd)?;
 
         log::info!("Setting up bitcoind connection");
-        let bitcoind = start_bitcoind(&mut revaultd).expect("Error setting up bitcoind");
+        let bitcoind = start_bitcoind(&mut revaultd)?;
 
         // We start two threads, the bitcoind one to poll bitcoind for chain updates,
         // and the sigfetcher one to poll the coordinator for missing signatures
@@ -118,13 +147,13 @@ impl DaemonHandle {
         );
         let bitcoind: BitcoindSender = bitcoind_tx.into();
         let sigfetcher: SigFetcherSender = sigfetcher_tx.into();
-        Self {
+        Ok(Self {
             revaultd,
             bitcoind,
             sigfetcher,
             bitcoind_thread,
             sigfetcher_thread,
-        }
+        })
     }
 
     // NOTE: this moves out the data as it should not be reused after shutdown

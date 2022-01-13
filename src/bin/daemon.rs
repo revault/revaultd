@@ -81,25 +81,33 @@ fn main() {
         revaultd.coordinator_noisekey.0.to_hex()
     );
 
-    if revaultd.daemon {
-        let log_file = revaultd.log_file();
+    let daemonize = revaultd.daemon;
+    let chdir = revaultd.data_dir.clone();
+    let log_file = revaultd.log_file();
+    // TODO: Make this configurable for inits
+    let pid_file = revaultd.pid_file();
+    let daemon_handle = DaemonHandle::start(revaultd).unwrap_or_else(|e| {
+        // The panic hook will log::error
+        panic!("Starting Revault daemon: {}", e);
+    });
+    // NOTE: it's safe to daemonize now, as revaultd doesn't carry any open DB connection
+    // https://www.sqlite.org/howtocorrupt.html#_carrying_an_open_database_connection_across_a_fork_
+    if daemonize {
         let daemon = Daemonize {
-            // TODO: Make this configurable for inits
-            pid_file: Some(revaultd.pid_file()),
+            pid_file: Some(pid_file),
             stdout_file: Some(log_file.clone()),
             stderr_file: Some(log_file),
-            chdir: Some(revaultd.data_dir.clone()),
+            chdir: Some(chdir),
             append: true,
             ..Daemonize::default()
         };
         daemon.doit().unwrap_or_else(|e| {
-            eprintln!("Error daemonizing: {}", e);
-            process::exit(1);
+            // The panic hook will log::error
+            panic!("Error daemonizing: {}", e);
         });
         println!("Started revaultd daemon");
     }
 
-    let daemon_handle = DaemonHandle::start(revaultd);
     daemon_handle.rpc_server();
 
     // We are always logging to stdout, should it be then piped to the log file (if self) or

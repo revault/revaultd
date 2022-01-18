@@ -108,7 +108,12 @@ fn main() {
         println!("Started revaultd daemon");
     }
 
-    daemon_handle.rpc_server();
+    // Listen for incoming commands, then shutdown when we are stopped
+    daemon_handle
+        .rpc_server()
+        .expect("Fatal error in JSONRPC server");
+    log::info!("Stopping revaultd");
+    daemon_handle.shutdown();
 
     // We are always logging to stdout, should it be then piped to the log file (if self) or
     // not. So just make sure that all messages were actually written.

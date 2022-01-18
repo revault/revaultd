@@ -11,9 +11,8 @@ use crate::{
         presigned_transactions, revault, revocationtxs, set_spend_tx, set_unvault_tx,
         update_spend_tx, HistoryEventKind, ListSpendStatus,
     },
-    jsonrpc::RpcUtils,
     revaultd::VaultStatus,
-    threadmessages::{BitcoindThread, SigFetcherThread},
+    DaemonControl,
 };
 
 use revault_tx::{
@@ -40,12 +39,12 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct JsonRpcMetaData {
     pub shutdown: Arc<AtomicBool>,
-    pub rpc_utils: RpcUtils,
+    pub rpc_utils: DaemonControl,
 }
 impl jsonrpc_core::Metadata for JsonRpcMetaData {}
 
 impl JsonRpcMetaData {
-    pub fn new(rpc_utils: RpcUtils) -> Self {
+    pub fn new(rpc_utils: DaemonControl) -> Self {
         JsonRpcMetaData {
             shutdown: Arc::from(AtomicBool::from(false)),
             rpc_utils,
@@ -227,12 +226,8 @@ impl RpcApi for RpcImpl {
     type Metadata = JsonRpcMetaData;
 
     fn stop(&self, meta: JsonRpcMetaData) -> jsonrpc_core::Result<()> {
-        log::info!("Stopping revaultd");
-
-        meta.rpc_utils.bitcoind_conn.shutdown();
-        meta.rpc_utils.sigfetcher_conn.shutdown();
+        // Stop the server loop. Caller will clean up itself.
         meta.shutdown();
-
         Ok(())
     }
 

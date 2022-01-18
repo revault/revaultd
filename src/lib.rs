@@ -19,16 +19,12 @@ pub const VERSION: &str = "0.3.1";
 use crate::{
     bitcoind::{bitcoind_main_loop, start_bitcoind, BitcoindError},
     database::{actions::setup_db, DatabaseError},
-    jsonrpc::{
-        server::{rpcserver_loop, rpcserver_setup},
-        RpcUtils,
-    },
     sigfetcher::signature_fetcher_loop,
     threadmessages::{BitcoindSender, BitcoindThread, SigFetcherSender, SigFetcherThread},
 };
 
 use std::{
-    error, fmt, panic, process,
+    error, fmt, io, panic, process,
     sync::{mpsc, Arc, RwLock},
     thread,
 };
@@ -92,13 +88,45 @@ impl From<DatabaseError> for StartupError {
     }
 }
 
-// FIXME: the fields shouldn't be publicly accessible
-pub struct DaemonHandle {
+// FIXME: private fields
+#[derive(Clone)]
+pub struct DaemonControl {
     pub revaultd: Arc<RwLock<RevaultD>>,
-    pub bitcoind: BitcoindSender,
-    pub sigfetcher: SigFetcherSender,
-    pub bitcoind_thread: thread::JoinHandle<()>,
-    pub sigfetcher_thread: thread::JoinHandle<()>,
+    pub bitcoind_conn: BitcoindSender,
+    pub sigfetcher_conn: SigFetcherSender,
+}
+
+impl DaemonControl {
+    pub fn new(
+        revaultd: Arc<RwLock<RevaultD>>,
+        bitcoind_conn: BitcoindSender,
+        sigfetcher_conn: SigFetcherSender,
+    ) -> Self {
+        Self {
+            revaultd,
+            bitcoind_conn,
+            sigfetcher_conn,
+        }
+    }
+
+    /// Send a shutdown message to the threads
+    pub(crate) fn send_shutdown(&self) {
+        self.bitcoind_conn.shutdown();
+        self.sigfetcher_conn.shutdown();
+    }
+
+    // TODO: make it optional at compile time
+    /// Start and bind the server to the configured UNIX socket
+    pub fn rpc_server_setup(&self) -> Result<jsonrpc::server::UnixListener, io::Error> {
+        let socket_file = self.revaultd.read().unwrap().rpc_socket_file();
+        jsonrpc::server::rpcserver_setup(socket_file)
+    }
+}
+
+pub struct DaemonHandle {
+    pub control: DaemonControl,
+    bitcoind_thread: thread::JoinHandle<()>,
+    sigfetcher_thread: thread::JoinHandle<()>,
 }
 
 impl DaemonHandle {
@@ -148,9 +176,7 @@ impl DaemonHandle {
         let bitcoind: BitcoindSender = bitcoind_tx.into();
         let sigfetcher: SigFetcherSender = sigfetcher_tx.into();
         Ok(Self {
-            revaultd,
-            bitcoind,
-            sigfetcher,
+            control: DaemonControl::new(revaultd, bitcoind, sigfetcher),
             bitcoind_thread,
             sigfetcher_thread,
         })
@@ -159,8 +185,7 @@ impl DaemonHandle {
     // NOTE: this moves out the data as it should not be reused after shutdown
     /// Shut down the Revault daemon.
     pub fn shutdown(self) {
-        self.bitcoind.shutdown();
-        self.sigfetcher.shutdown();
+        self.control.send_shutdown();
 
         self.bitcoind_thread
             .join()
@@ -170,20 +195,12 @@ impl DaemonHandle {
             .expect("Joining sigfetcher thread");
     }
 
-    /// Run the RPC server until it receives a 'stop' command, then shutdown the daemon.
-    pub fn rpc_server(self) {
+    // TODO: make it optional at compilation time
+    /// Start the JSONRPC server and listen for commands until we are stopped
+    pub fn rpc_server(&self) -> Result<(), io::Error> {
         log::info!("Starting JSONRPC server");
-        let socket = rpcserver_setup(self.revaultd.read().unwrap().rpc_socket_file())
-            .expect("Setting up JSONRPC server");
 
-        // Handle RPC commands until we die.
-        let rpc_utils = RpcUtils {
-            revaultd: self.revaultd.clone(),
-            bitcoind_conn: self.bitcoind.clone(),
-            sigfetcher_conn: self.sigfetcher.clone(),
-        };
-        rpcserver_loop(socket, rpc_utils).expect("Error in the main loop");
-
-        self.shutdown();
+        let socket = self.control.rpc_server_setup()?;
+        jsonrpc::server::rpcserver_loop(socket, self.control.clone())
     }
 }

@@ -1,10 +1,8 @@
 //! Here we handle incoming connections and communication on the RPC socket.
 //! Actual JSONRPC2 commands are handled in the `api` mod.
 
-use crate::jsonrpc::{
-    api::{JsonRpcMetaData, RpcApi, RpcImpl},
-    RpcUtils,
-};
+use crate::jsonrpc::api::{JsonRpcMetaData, RpcApi, RpcImpl};
+use crate::DaemonControl;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -15,12 +13,13 @@ use std::{
 };
 
 #[cfg(not(windows))]
-use mio::{
-    net::{UnixListener, UnixStream},
-    Events, Interest, Poll, Token,
-};
+pub use mio::net::UnixListener;
+#[cfg(not(windows))]
+use mio::{net::UnixStream, Events, Interest, Poll, Token};
 #[cfg(windows)]
-use uds_windows::{UnixListener, UnixStream};
+pub use uds_windows::UnixListener;
+#[cfg(windows)]
+use uds_windows::UnixStream;
 
 use jsonrpc_core::{futures::Future, Call, MethodCall, Response};
 
@@ -462,7 +461,7 @@ pub fn rpcserver_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error> 
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
-pub fn rpcserver_loop(listener: UnixListener, rpc_utils: RpcUtils) -> Result<(), io::Error> {
+pub fn rpcserver_loop(listener: UnixListener, rpc_utils: DaemonControl) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
     let metadata = JsonRpcMetaData::new(rpc_utils);

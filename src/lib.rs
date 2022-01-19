@@ -6,6 +6,7 @@ pub mod commands;
 mod communication;
 pub mod config;
 mod database;
+#[cfg(not(windows))]
 mod jsonrpc;
 mod revaultd;
 mod sigfetcher;

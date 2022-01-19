@@ -174,9 +174,9 @@ of the vaults is unknown or not at least `funded`.
 The output PSBTs may be unsigned, partially signed, or finalized (depending on each
 vault's state).
 
-| Parameter   | Type         | Description                                                                                     |
-| ----------- | ------------ | ----------------------------------------------------------------------------------------------- |
-| `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints                           |
+| Parameter   | Type         | Description                                                                                                 |
+| ----------- | ------------ | ----------------------------------------------------------------------------------------------------------- |
+| `outpoints` | string array | Vault IDs -- optional, filter the list with the given vault Outpoints (empty array equivalent to no filter) |
 
 
 ### Response

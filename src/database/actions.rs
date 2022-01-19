@@ -910,8 +910,7 @@ pub fn db_mark_rebroadcastable_spend(
 mod test {
     use super::*;
     use crate::database::schema::DbSpendTransaction;
-    use crate::jsonrpc::UserRole;
-    use crate::utils::test_utils::{dummy_revaultd, test_datadir};
+    use crate::utils::test_utils::{dummy_revaultd, test_datadir, UserRole};
     use revault_tx::{
         bitcoin::{
             Network, OutPoint, PrivateKey as BitcoinPrivKey, PublicKey as BitcoinPubKey,

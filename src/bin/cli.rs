@@ -89,12 +89,9 @@ fn socket_file(conf_file: Option<PathBuf>) -> PathBuf {
         eprintln!("Error getting config: {}", e);
         process::exit(1);
     });
-    let data_dir = config.data_dir.unwrap_or_else(|| {
-        config_folder_path().unwrap_or_else(|e| {
-            eprintln!("{}", e);
-            process::exit(1);
-        })
-    });
+    let data_dir = config
+        .data_dir
+        .unwrap_or_else(|| config_folder_path().unwrap());
     let data_dir = data_dir.to_str().expect("Datadir is valid unicode");
 
     [

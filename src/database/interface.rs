@@ -935,8 +935,7 @@ pub fn db_vaults_with_txids_in_period(
 mod test {
     use super::*;
     use crate::database::actions::{db_confirm_deposit, db_insert_new_unconfirmed_vault, setup_db};
-    use crate::jsonrpc::UserRole;
-    use crate::utils::test_utils::{dummy_revaultd, test_datadir};
+    use crate::utils::test_utils::{dummy_revaultd, test_datadir, UserRole};
     use revault_tx::{bitcoin::OutPoint, transactions::transaction_chain};
 
     use std::{fs, str::FromStr};

@@ -164,8 +164,9 @@ fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransacti
 pub fn bitcoind_main_loop(
     rx: Receiver<BitcoindMessageOut>,
     revaultd: Arc<RwLock<RevaultD>>,
-    bitcoind: Arc<RwLock<BitcoinD>>,
+    bitcoind: BitcoinD,
 ) -> Result<(), BitcoindError> {
+    let bitcoind = Arc::new(RwLock::new(bitcoind));
     // The verification progress announced by bitcoind *at startup* thus won't be updated
     // after startup check. Should be *exactly* 1.0 when synced, but hey, floats so we are
     // careful.

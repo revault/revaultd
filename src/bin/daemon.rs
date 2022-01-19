@@ -1,9 +1,12 @@
 use revault_net::sodiumoxide;
-use revault_tx::bitcoin::hashes::hex::ToHex;
-use std::{env, path::PathBuf, process, time};
+use std::{
+    env,
+    io::{self, Write},
+    path::PathBuf,
+    process, time,
+};
 
-use daemonize_simple::Daemonize;
-use revaultd::{config::Config, daemon_main, RevaultD};
+use revaultd::{config::Config, DaemonHandle};
 
 fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     if args.len() == 1 {
@@ -61,38 +64,19 @@ fn main() {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });
-    // FIXME: should probably be from_db(), would allow us to not use Option members
-    let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
-        log::error!("Error creating global state: {}", e);
-        process::exit(1);
+
+    let daemon_handle = DaemonHandle::start(config).unwrap_or_else(|e| {
+        // The panic hook will log::error
+        panic!("Starting Revault daemon: {}", e);
     });
+    // Listen for incoming commands, then shutdown when we are stopped
+    daemon_handle
+        .rpc_server()
+        .expect("Fatal error in JSONRPC server");
+    log::info!("Stopping revaultd");
+    daemon_handle.shutdown();
 
-    log::info!(
-        "Using Noise static public key: '{}'",
-        revaultd.noise_pubkey().0.to_hex()
-    );
-    log::debug!(
-        "Coordinator static public key: '{}'",
-        revaultd.coordinator_noisekey.0.to_hex()
-    );
-
-    if revaultd.daemon {
-        let log_file = revaultd.log_file();
-        let daemon = Daemonize {
-            // TODO: Make this configurable for inits
-            pid_file: Some(revaultd.pid_file()),
-            stdout_file: Some(log_file.clone()),
-            stderr_file: Some(log_file),
-            chdir: Some(revaultd.data_dir.clone()),
-            append: true,
-            ..Daemonize::default()
-        };
-        daemon.doit().unwrap_or_else(|e| {
-            eprintln!("Error daemonizing: {}", e);
-            process::exit(1);
-        });
-        println!("Started revaultd daemon");
-    }
-
-    daemon_main(revaultd);
+    // We are always logging to stdout, should it be then piped to the log file (if self) or
+    // not. So just make sure that all messages were actually written.
+    io::stdout().flush().expect("Flushing stdout");
 }

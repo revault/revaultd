@@ -164,12 +164,10 @@ def test_getrevocationtxs(revault_network, bitcoind):
     with pytest.raises(RpcError, match="This is a stakeholder command"):
         rn.man(0).rpc.getrevocationtxs(deposit)
 
-    # If the vault isn't confirmed, it'll fail (note: it's racy for others but
-    # behaviour is the same is the vault isn't known)
+    # If the vault isn't confirmed, it'll fail
     for n in stks:
-        with pytest.raises(
-            RpcError, match=".* does not refer to a known and confirmed vault"
-        ):
+        wait_for(lambda: len(n.rpc.listvaults([], [deposit])["vaults"]) == 1)
+        with pytest.raises(RpcError, match="Invalid vault status"):
             n.rpc.getrevocationtxs(deposit)
 
     # Now, get it confirmed. They all derived the same transactions
@@ -197,7 +195,7 @@ def test_getunvaulttx(revault_network):
 
     # We can't query for an unknow vault
     invalid_outpoint = f"{'0'*64}:1"
-    with pytest.raises(RpcError, match="No vault at"):
+    with pytest.raises(RpcError, match=f"No vault at '{invalid_outpoint}'"):
         stks[0].rpc.getunvaulttx(invalid_outpoint)
 
     tx = stks[0].rpc.getunvaulttx(outpoint)

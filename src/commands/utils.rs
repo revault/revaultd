@@ -3,7 +3,10 @@
 //! fetcher thread.
 
 use crate::{
-    bitcoind::{interface::WalletTransaction, BitcoindError},
+    commands::{
+        CommandError, HistoryEvent, HistoryEventKind, ListPresignedTxEntry, ListVaultsEntry,
+        VaultPresignedTransaction,
+    },
     database::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
@@ -19,81 +22,19 @@ use crate::{
 
 use revault_tx::{
     bitcoin::{
-        consensus::encode, hashes::hex::FromHex, util::bip32::ChildNumber, Address, Amount,
-        OutPoint, Transaction as BitcoinTransaction, Txid,
+        consensus::encode, hashes::hex::FromHex, Amount, OutPoint,
+        Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
-    transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
-        UnvaultEmergencyTransaction, UnvaultTransaction,
-    },
+    transactions::RevaultTransaction,
 };
 
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    sync::{mpsc::Sender, Arc, RwLock},
-    thread::JoinHandle,
 };
 
-use serde::{Deserialize, Serialize, Serializer};
-
-/// A presigned transaction
-#[derive(Debug, Serialize)]
-pub struct VaultPresignedTransaction<T: RevaultTransaction> {
-    pub psbt: T,
-    #[serde(rename(serialize = "hex"), serialize_with = "serialize_option_tx_hex")]
-    pub transaction: Option<BitcoinTransaction>,
-}
-
-/// Contains the presigned transactions (Unvault, Cancel, Emergency, UnvaultEmergency)
-/// of a specific vault
-#[derive(Debug)]
-pub struct VaultPresignedTransactions {
-    pub outpoint: OutPoint,
-    pub unvault: VaultPresignedTransaction<UnvaultTransaction>,
-    pub cancel: VaultPresignedTransaction<CancelTransaction>,
-    // None if not stakeholder
-    pub emergency: Option<VaultPresignedTransaction<EmergencyTransaction>>,
-    pub unvault_emergency: Option<VaultPresignedTransaction<UnvaultEmergencyTransaction>>,
-}
-
-/// Contains the transactions that have been broadcasted for a specific vault
-#[derive(Debug)]
-pub struct VaultOnchainTransactions {
-    pub outpoint: OutPoint,
-    pub deposit: WalletTransaction,
-    pub unvault: Option<WalletTransaction>,
-    pub cancel: Option<WalletTransaction>,
-    // Always None if not stakeholder
-    pub emergency: Option<WalletTransaction>,
-    pub unvault_emergency: Option<WalletTransaction>,
-    pub spend: Option<WalletTransaction>,
-}
-
-/// Contains the spend transaction for a specific vault
-#[derive(Debug, Serialize)]
-pub struct ListSpendEntry {
-    pub deposit_outpoints: Vec<OutPoint>,
-    pub psbt: SpendTransaction,
-    pub cpfp_index: usize,
-    pub change_index: Option<usize>,
-}
-
-/// Contains information regarding a specific vault
-#[derive(Debug)]
-pub struct ListVaultsEntry {
-    pub amount: Amount,
-    pub blockheight: u32,
-    pub status: VaultStatus,
-    pub deposit_outpoint: OutPoint,
-    pub derivation_index: ChildNumber,
-    pub address: Address,
-    pub funded_at: Option<u32>,
-    pub secured_at: Option<u32>,
-    pub delegated_at: Option<u32>,
-    pub moved_at: Option<u32>,
-}
+use serde::Serializer;
 
 fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
 where
@@ -103,7 +44,8 @@ where
     s.serialize_str(&tx_hex)
 }
 
-fn serialize_option_tx_hex<S>(tx: &Option<BitcoinTransaction>, s: S) -> Result<S::Ok, S::Error>
+/// Serialize an optional transaction as hex or null
+pub fn serialize_option_tx_hex<S>(tx: &Option<BitcoinTransaction>, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -114,67 +56,14 @@ where
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ListSpendStatus {
-    NonFinal,
-    Pending,
-    Broadcasted,
+/// Serialize a field as a string
+pub fn ser_to_string<T: fmt::Display, S: Serializer>(field: T, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&field.to_string())
 }
 
-/// Error specific to calls that originated from the RPC server.
-#[derive(Debug)]
-pub enum RpcControlError {
-    InvalidStatus(VaultStatus, OutPoint),
-    UnknownOutPoint(OutPoint),
-    Database(DatabaseError),
-    Tx(revault_tx::Error),
-    Bitcoind(BitcoindError),
-    ThreadCommunication(String),
-    /// An error returned when, given a previous poll of the state of the vault
-    /// in database a certain pre-signed transaction should be present but it was
-    /// not. Could be due to another thread wiping all the txs due to for instance
-    /// a block chain reorg.
-    TransactionNotFound,
-}
-
-impl From<DatabaseError> for RpcControlError {
-    fn from(e: DatabaseError) -> Self {
-        Self::Database(e)
-    }
-}
-
-impl From<revault_tx::Error> for RpcControlError {
-    fn from(e: revault_tx::Error) -> Self {
-        Self::Tx(e)
-    }
-}
-
-impl From<BitcoindError> for RpcControlError {
-    fn from(e: BitcoindError) -> Self {
-        Self::Bitcoind(e)
-    }
-}
-
-impl fmt::Display for RpcControlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::UnknownOutPoint(ref o) => write!(f, "No vault at '{}'", o),
-            Self::InvalidStatus(status, outpoint) => write!(
-                f,
-                "Invalid vault status '{}' for deposit outpoint '{}'",
-                status, outpoint
-            ),
-            Self::Database(ref e) => write!(f, "Database error: '{}'", e),
-            Self::Tx(ref e) => write!(f, "Transaction handling error: '{}'", e),
-            Self::Bitcoind(ref e) => write!(f, "Bitcoind error: '{}'", e),
-            Self::ThreadCommunication(ref e) => write!(f, "Thread communication error: '{}'", e),
-            Self::TransactionNotFound => write!(
-                f,
-                "Transaction not found although it should have been in database"
-            ),
-        }
-    }
+/// Serialize an amount as sats
+pub fn ser_amount<S: Serializer>(amount: &Amount, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(amount.as_sat())
 }
 
 /// List the vaults from DB, and filter out the info the RPC wants
@@ -201,11 +90,13 @@ pub fn listvaults_from_db(
                 }
 
                 let address = revaultd.vault_address(db_vault.derivation_index);
+                let op = db_vault.deposit_outpoint;
                 Some(ListVaultsEntry {
                     amount: db_vault.amount,
                     blockheight: db_vault.blockheight,
                     status: db_vault.status,
-                    deposit_outpoint: db_vault.deposit_outpoint,
+                    txid: op.txid,
+                    vout: op.vout,
                     derivation_index: db_vault.derivation_index,
                     funded_at: db_vault.funded_at,
                     secured_at: db_vault.secured_at,
@@ -227,39 +118,45 @@ pub fn vaults_from_deposits(
     db_path: &std::path::Path,
     outpoints: &[OutPoint],
     invalid_statuses: &[VaultStatus],
-) -> Result<Vec<DbVault>, RpcControlError> {
+) -> Result<Vec<DbVault>, CommandError> {
     let mut vaults = Vec::with_capacity(outpoints.len());
 
     for outpoint in outpoints.iter() {
         // Note: being smarter with SQL queries implies enabling the 'table' feature of rusqlite
         // with a shit ton of dependencies.
-        if let Some(vault) = db_vault_by_deposit(db_path, outpoint)? {
+        if let Some(vault) =
+            db_vault_by_deposit(db_path, outpoint).expect("Database must be available")
+        {
             if invalid_statuses.contains(&vault.status) {
-                return Err(RpcControlError::InvalidStatus(vault.status, *outpoint));
+                return Err(CommandError::InvalidStatusFor(vault.status, *outpoint));
             }
             vaults.push(vault);
         } else {
-            return Err(RpcControlError::UnknownOutPoint(*outpoint));
+            return Err(CommandError::UnknownOutpoint(*outpoint));
         }
     }
 
     Ok(vaults)
 }
 
+// FIXME: make this a DB query altogether...
 /// List all the presigned transactions from these confirmed vaults.
+///
+/// Will panic on database failure.
+/// Will return None if any transaction could not be fetched from DB.
 pub fn presigned_txs(
     revaultd: &RevaultD,
     db_vaults: Vec<DbVault>,
-) -> Result<Vec<VaultPresignedTransactions>, RpcControlError> {
+) -> Option<Vec<ListPresignedTxEntry>> {
     let db_path = &revaultd.db_file();
 
     // For each presigned transaction, append it as well as its extracted version if it's final.
     let mut tx_list = Vec::with_capacity(db_vaults.len());
     for db_vault in db_vaults {
-        let outpoint = db_vault.deposit_outpoint;
+        let vault_outpoint = db_vault.deposit_outpoint;
 
-        let unvault_psbt = db_unvault_transaction(db_path, db_vault.id)?
-            .ok_or(RpcControlError::TransactionNotFound)?
+        let unvault_psbt = db_unvault_transaction(db_path, db_vault.id)
+            .expect("Database must be available")?
             .psbt
             .assert_unvault();
         let mut finalized_unvault = unvault_psbt.clone();
@@ -272,8 +169,8 @@ pub fn presigned_txs(
             psbt: unvault_psbt,
         };
 
-        let cancel_db_tx = db_cancel_transaction(db_path, db_vault.id)?
-            .ok_or(RpcControlError::TransactionNotFound)?;
+        let cancel_db_tx =
+            db_cancel_transaction(db_path, db_vault.id).expect("Database must be available")?;
         let cancel_psbt = cancel_db_tx.psbt.assert_cancel();
         let mut finalized_cancel = cancel_psbt.clone();
         let cancel = VaultPresignedTransaction {
@@ -288,8 +185,8 @@ pub fn presigned_txs(
         let mut emergency = None;
         let mut unvault_emergency = None;
         if revaultd.is_stakeholder() {
-            let emer_db_tx = db_emer_transaction(db_path, db_vault.id)?
-                .ok_or(RpcControlError::TransactionNotFound)?;
+            let emer_db_tx =
+                db_emer_transaction(db_path, db_vault.id).expect("Database must be available")?;
             let emer_psbt = emer_db_tx.psbt.assert_emer();
             let mut finalized_emer = emer_psbt.clone();
             emergency = Some(VaultPresignedTransaction {
@@ -301,8 +198,8 @@ pub fn presigned_txs(
                 psbt: emer_psbt,
             });
 
-            let unemer_db_tx = db_unvault_emer_transaction(db_path, db_vault.id)?
-                .ok_or(RpcControlError::TransactionNotFound)?;
+            let unemer_db_tx = db_unvault_emer_transaction(db_path, db_vault.id)
+                .expect("Database must be available")?;
             let unemer_psbt = unemer_db_tx.psbt.assert_unvault_emer();
             let mut finalized_unemer = unemer_psbt.clone();
             unvault_emergency = Some(VaultPresignedTransaction {
@@ -315,8 +212,8 @@ pub fn presigned_txs(
             });
         }
 
-        tx_list.push(VaultPresignedTransactions {
-            outpoint,
+        tx_list.push(ListPresignedTxEntry {
+            vault_outpoint,
             unvault,
             cancel,
             emergency,
@@ -324,120 +221,28 @@ pub fn presigned_txs(
         });
     }
 
-    Ok(tx_list)
-}
-
-/// List all the onchain transactions from these vaults.
-pub fn onchain_txs<T: BitcoindThread>(
-    revaultd: &RevaultD,
-    bitcoind_conn: &T,
-    db_vaults: Vec<DbVault>,
-) -> Result<Vec<VaultOnchainTransactions>, RpcControlError> {
-    let db_path = &revaultd.db_file();
-
-    let mut tx_list = Vec::with_capacity(db_vaults.len());
-    for db_vault in db_vaults {
-        let outpoint = db_vault.deposit_outpoint;
-
-        // If the vault exist, there must always be a deposit transaction available.
-        let deposit = bitcoind_conn
-            .wallet_tx(db_vault.deposit_outpoint.txid)?
-            .expect("Vault exists but not deposit tx?");
-
-        // For the other transactions, it depends on the status of the vault. For the sake of
-        // simplicity bitcoind will tell us (but we could have some optimisation eventually here,
-        // eg returning None early on Funded vaults).
-        let (unvault, cancel, emergency, unvault_emergency, spend) = match db_vault.status {
-            VaultStatus::Unvaulting | VaultStatus::Unvaulted => {
-                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
-                    .ok_or(RpcControlError::TransactionNotFound)?;
-                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-                (unvault, None, None, None, None)
-            }
-            VaultStatus::Spending | VaultStatus::Spent => {
-                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
-                    .ok_or(RpcControlError::TransactionNotFound)?;
-                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-                let spend = if let Some(spend_txid) = db_vault.final_txid {
-                    bitcoind_conn.wallet_tx(spend_txid)?
-                } else {
-                    None
-                };
-                (unvault, None, None, None, spend)
-            }
-            VaultStatus::Canceling | VaultStatus::Canceled => {
-                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
-                    .ok_or(RpcControlError::TransactionNotFound)?;
-                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-                let cancel = if let Some(cancel_txid) = db_vault.final_txid {
-                    bitcoind_conn.wallet_tx(cancel_txid)?
-                } else {
-                    None
-                };
-                (unvault, cancel, None, None, None)
-            }
-            VaultStatus::EmergencyVaulting | VaultStatus::EmergencyVaulted => {
-                // Emergencies are only for stakeholders!
-                if revaultd.is_stakeholder() {
-                    let emer_db_tx = db_emer_transaction(db_path, db_vault.id)?
-                        .ok_or(RpcControlError::TransactionNotFound)?;
-                    let emergency = bitcoind_conn.wallet_tx(emer_db_tx.psbt.txid())?;
-                    (None, None, emergency, None, None)
-                } else {
-                    (None, None, None, None, None)
-                }
-            }
-            VaultStatus::UnvaultEmergencyVaulting | VaultStatus::UnvaultEmergencyVaulted => {
-                let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)?
-                    .ok_or(RpcControlError::TransactionNotFound)?;
-                let unvault = bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-
-                // Emergencies are only for stakeholders!
-                if revaultd.is_stakeholder() {
-                    let unemer_db_tx = db_emer_transaction(db_path, db_vault.id)?
-                        .ok_or(RpcControlError::TransactionNotFound)?;
-                    let unvault_emergency = bitcoind_conn.wallet_tx(unemer_db_tx.psbt.txid())?;
-                    (unvault, None, None, unvault_emergency, None)
-                } else {
-                    (unvault, None, None, None, None)
-                }
-            }
-            // Other statuses do not have on chain transactions apart the deposit.
-            VaultStatus::Unconfirmed
-            | VaultStatus::Funded
-            | VaultStatus::Securing
-            | VaultStatus::Secured
-            | VaultStatus::Activating
-            | VaultStatus::Active => (None, None, None, None, None),
-        };
-
-        tx_list.push(VaultOnchainTransactions {
-            outpoint,
-            deposit,
-            unvault,
-            cancel,
-            emergency,
-            unvault_emergency,
-            spend,
-        });
-    }
-
-    Ok(tx_list)
+    Some(tx_list)
 }
 
 /// Get all the finalized Emergency transactions for each vault, depending on wether the Unvault
 /// was already broadcast or not (ie get the one spending from the deposit or the Unvault tx).
-pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>, RpcControlError> {
+pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>, CommandError> {
     let db_path = revaultd.db_file();
 
-    let emer_iter = db_signed_emer_txs(&db_path)?.into_iter().map(|mut tx| {
-        tx.finalize(&revaultd.secp_ctx)?;
-        Ok(tx.into_psbt().extract_tx())
-    });
-    let unemer_iter = db_signed_unemer_txs(&db_path)?.into_iter().map(|mut tx| {
-        tx.finalize(&revaultd.secp_ctx)?;
-        Ok(tx.into_psbt().extract_tx())
-    });
+    let emer_iter = db_signed_emer_txs(&db_path)
+        .expect("Database must be accessible")
+        .into_iter()
+        .map(|mut tx| {
+            tx.finalize(&revaultd.secp_ctx)?;
+            Ok(tx.into_psbt().extract_tx())
+        });
+    let unemer_iter = db_signed_unemer_txs(&db_path)
+        .expect("Database must be accessible")
+        .into_iter()
+        .map(|mut tx| {
+            tx.finalize(&revaultd.secp_ctx)?;
+            Ok(tx.into_psbt().extract_tx())
+        });
 
     emer_iter
         .chain(unemer_iter)
@@ -445,20 +250,21 @@ pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>
         .map_err(|e| e.into())
 }
 
-/// get_history retrieves a limited list of events which occured between two given dates.
-pub fn get_history<T: BitcoindThread>(
+/// gethistory retrieves a limited list of events which occured between two given dates.
+pub fn gethistory<T: BitcoindThread>(
     revaultd: &RevaultD,
     bitcoind_conn: &T,
     start: u32,
     end: u32,
     limit: u64,
     kind: Vec<HistoryEventKind>,
-) -> Result<Vec<HistoryEvent>, RpcControlError> {
+) -> Result<Vec<HistoryEvent>, CommandError> {
     let db_path = revaultd.db_file();
     // All vaults which have one transaction (either the funding, the canceling, the unvaulting, the spending)
     // inside the date range are retrieved.
     // This list might include vaults that were consumed again outside the range.
-    let vaults = db_vaults_with_txids_in_period(&db_path, start, end, limit)?;
+    let vaults = db_vaults_with_txids_in_period(&db_path, start, end, limit)
+        .expect("Database must be accessible");
 
     // Used to retrieve the deposit from the Cancel outputs. Not a vector since the Cancel only
     // ever has a single deposit output.
@@ -649,40 +455,11 @@ pub fn get_history<T: BitcoindThread>(
     Ok(events)
 }
 
-#[derive(Debug, Serialize)]
-pub struct HistoryEvent {
-    pub kind: HistoryEventKind,
-    pub date: u32,
-    pub blockheight: u32,
-    pub amount: Option<u64>,
-    pub fee: Option<u64>,
-    pub txid: Txid,
-    pub vaults: Vec<OutPoint>,
-}
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub enum HistoryEventKind {
-    #[serde(rename = "cancel")]
-    Cancel,
-    #[serde(rename = "deposit")]
-    Deposit,
-    #[serde(rename = "spend")]
-    Spend,
-}
-
-#[derive(Clone)]
-pub struct RpcUtils {
-    pub revaultd: Arc<RwLock<RevaultD>>,
-    pub bitcoind_conn: BitcoindSender,
-    pub bitcoind_thread: Arc<RwLock<JoinHandle<()>>>,
-    pub sigfetcher_tx: Sender<SigFetcherMessageOut>,
-    pub sigfetcher_thread: Arc<RwLock<JoinHandle<()>>>,
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
-        control::*,
+        bitcoind::interface::WalletTransaction,
         database::{
             actions::{
                 db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
@@ -695,10 +472,11 @@ mod tests {
             },
             schema::{DbTransaction, DbVault},
         },
-        jsonrpc::UserRole,
         revaultd::{RevaultD, VaultStatus},
         setup_db,
-        utils::test_utils::{dummy_revaultd, insert_vault_in_db, test_datadir, MockBitcoindThread},
+        utils::test_utils::{
+            dummy_revaultd, insert_vault_in_db, test_datadir, MockBitcoindThread, UserRole,
+        },
     };
     use revault_tx::{
         bitcoin::{
@@ -1102,7 +880,8 @@ mod tests {
             assert_eq!(res.amount, v.db_vault.amount);
             assert_eq!(res.blockheight, v.db_vault.blockheight);
             assert_eq!(res.status, v.db_vault.status);
-            assert_eq!(res.deposit_outpoint, v.db_vault.deposit_outpoint);
+            assert_eq!(res.txid, v.db_vault.deposit_outpoint.txid);
+            assert_eq!(res.vout, v.db_vault.deposit_outpoint.vout);
             assert_eq!(
                 res.derivation_index,
                 ChildNumber::from_normal_idx(0).unwrap()
@@ -1201,7 +980,7 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains(
-                    &RpcControlError::InvalidStatus(VaultStatus::Unconfirmed, outpoints[0])
+                    &CommandError::InvalidStatusFor(VaultStatus::Unconfirmed, outpoints[0])
                         .to_string()
                 )
         );
@@ -1216,7 +995,7 @@ mod tests {
             vaults_from_deposits(&db_file, &vec![wrong_outpoint], &vec![],)
                 .unwrap_err()
                 .to_string()
-                .contains(&RpcControlError::UnknownOutPoint(wrong_outpoint).to_string())
+                .contains(&CommandError::UnknownOutpoint(wrong_outpoint).to_string())
         );
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
@@ -1234,18 +1013,16 @@ mod tests {
         let _ = create_vaults(&man_revaultd);
 
         // vault[0] is not confirmed, no presigned txs here!
-        assert_eq!(
-            presigned_txs(&stake_revaultd, vec![vaults[0].db_vault.clone()])
-                .unwrap_err()
-                .to_string(),
-            RpcControlError::TransactionNotFound.to_string()
-        );
+        assert!(presigned_txs(&stake_revaultd, vec![vaults[0].db_vault.clone()]).is_none());
 
         // vault[1] is funded, no txs is final
         // The stakeholder has all the txs
         let stake_txs = presigned_txs(&stake_revaultd, vec![vaults[1].db_vault.clone()]).unwrap();
         assert_eq!(stake_txs.len(), 1);
-        assert_eq!(stake_txs[0].outpoint, vaults[1].db_vault.deposit_outpoint);
+        assert_eq!(
+            stake_txs[0].vault_outpoint,
+            vaults[1].db_vault.deposit_outpoint
+        );
         assert_eq!(
             stake_txs[0].cancel.psbt,
             vaults[1].transactions.as_ref().unwrap().initial_cancel
@@ -1284,7 +1061,10 @@ mod tests {
         // The manager has the same txs, but no emergency
         let man_txs = presigned_txs(&man_revaultd, vec![vaults[1].db_vault.clone()]).unwrap();
         assert_eq!(man_txs.len(), 1);
-        assert_eq!(man_txs[0].outpoint, vaults[1].db_vault.deposit_outpoint);
+        assert_eq!(
+            man_txs[0].vault_outpoint,
+            vaults[1].db_vault.deposit_outpoint
+        );
         assert_eq!(
             man_txs[0].cancel.psbt,
             vaults[1].transactions.as_ref().unwrap().initial_cancel
@@ -1302,7 +1082,10 @@ mod tests {
         // The stakeholder has all the txs
         let stake_txs = presigned_txs(&stake_revaultd, vec![vaults[2].db_vault.clone()]).unwrap();
         assert_eq!(stake_txs.len(), 1);
-        assert_eq!(stake_txs[0].outpoint, vaults[2].db_vault.deposit_outpoint);
+        assert_eq!(
+            stake_txs[0].vault_outpoint,
+            vaults[2].db_vault.deposit_outpoint
+        );
         assert_eq!(
             stake_txs[0].cancel.psbt,
             *vaults[2]
@@ -1355,7 +1138,10 @@ mod tests {
         // The manager has the same txs, but no emergency
         let man_txs = presigned_txs(&man_revaultd, vec![vaults[2].db_vault.clone()]).unwrap();
         assert_eq!(man_txs.len(), 1);
-        assert_eq!(man_txs[0].outpoint, vaults[2].db_vault.deposit_outpoint);
+        assert_eq!(
+            man_txs[0].vault_outpoint,
+            vaults[2].db_vault.deposit_outpoint
+        );
         assert_eq!(
             man_txs[0].cancel.psbt,
             *vaults[2]
@@ -1379,7 +1165,10 @@ mod tests {
         // The stakeholder has all the txs
         let stake_txs = presigned_txs(&stake_revaultd, vec![vaults[3].db_vault.clone()]).unwrap();
         assert_eq!(stake_txs.len(), 1);
-        assert_eq!(stake_txs[0].outpoint, vaults[3].db_vault.deposit_outpoint);
+        assert_eq!(
+            stake_txs[0].vault_outpoint,
+            vaults[3].db_vault.deposit_outpoint
+        );
         assert_eq!(
             stake_txs[0].cancel.psbt,
             *vaults[3]
@@ -1438,7 +1227,10 @@ mod tests {
         // The manager has the same txs, but no emergency
         let man_txs = presigned_txs(&man_revaultd, vec![vaults[3].db_vault.clone()]).unwrap();
         assert_eq!(man_txs.len(), 1);
-        assert_eq!(man_txs[0].outpoint, vaults[3].db_vault.deposit_outpoint);
+        assert_eq!(
+            man_txs[0].vault_outpoint,
+            vaults[3].db_vault.deposit_outpoint
+        );
         assert_eq!(
             man_txs[0].cancel.psbt,
             *vaults[3]
@@ -1570,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_history() {
+    fn test_gethistory() {
         let datadir = test_datadir();
         let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
         setup_db(&mut revaultd).unwrap();
@@ -1671,7 +1463,7 @@ mod tests {
         );
         let bitcoind_conn = MockBitcoindThread::new(txs);
 
-        let events = get_history(
+        let events = gethistory(
             &revaultd,
             &bitcoind_conn,
             0,
@@ -1718,7 +1510,7 @@ mod tests {
         assert_eq!(events[3].vaults, vec![deposit1_outpoint]);
 
         // retrieve events later in history
-        let events = get_history(
+        let events = gethistory(
             &revaultd,
             &bitcoind_conn,
             0,

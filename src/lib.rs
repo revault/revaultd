@@ -8,7 +8,6 @@ pub mod config;
 mod database;
 mod jsonrpc;
 mod revaultd;
-pub use crate::revaultd::*;
 mod sigfetcher;
 mod threadmessages;
 mod utils;
@@ -16,18 +15,24 @@ mod utils;
 // FIXME: make it an integer
 pub const VERSION: &str = "0.3.1";
 
+pub use crate::revaultd::{CpfpKeyError, NoiseKeyError};
 use crate::{
     bitcoind::{bitcoind_main_loop, start_bitcoind, BitcoindError},
+    config::Config,
     database::{actions::setup_db, DatabaseError},
+    revaultd::RevaultD,
     sigfetcher::signature_fetcher_loop,
     threadmessages::{BitcoindSender, BitcoindThread, SigFetcherSender, SigFetcherThread},
 };
+use revault_tx::bitcoin::hashes::hex::ToHex;
 
 use std::{
     error, fmt, io, panic, process,
     sync::{mpsc, Arc, RwLock},
     thread,
 };
+
+use daemonize_simple::Daemonize;
 
 // A panic in any thread should stop the main thread, and print the panic.
 fn setup_panic_hook() {
@@ -61,6 +66,10 @@ fn setup_panic_hook() {
 
 #[derive(Debug)]
 pub enum StartupError {
+    Cpfp(CpfpKeyError),
+    Noise(NoiseKeyError),
+    Io(io::Error),
+    DefaultDatadir,
     Db(DatabaseError),
     Bitcoind(BitcoindError),
 }
@@ -68,6 +77,10 @@ pub enum StartupError {
 impl fmt::Display for StartupError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Self::Cpfp(e) => write!(f, "{}", e),
+            Self::Noise(e) => write!(f, "{}", e),
+            Self::Io(e) => write!(f, "{}", e),
+            Self::DefaultDatadir => write!(f, "Could not locate the default data directory."),
             Self::Db(e) => write!(f, "Database error when starting revaultd: '{}'", e),
             Self::Bitcoind(e) => write!(f, "Bitcoind error when starting revaultd: '{}'", e),
         }
@@ -82,9 +95,27 @@ impl From<BitcoindError> for StartupError {
     }
 }
 
+impl From<CpfpKeyError> for StartupError {
+    fn from(e: CpfpKeyError) -> Self {
+        Self::Cpfp(e)
+    }
+}
+
 impl From<DatabaseError> for StartupError {
     fn from(e: DatabaseError) -> Self {
         Self::Db(e)
+    }
+}
+
+impl From<io::Error> for StartupError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<NoiseKeyError> for StartupError {
+    fn from(e: NoiseKeyError) -> Self {
+        Self::Noise(e)
     }
 }
 
@@ -133,8 +164,22 @@ impl DaemonHandle {
     ///
     /// **Note**: we internally use threads, and set a panic hook. A downstream application must
     /// not overwrite this panic hook.
-    pub fn start(mut revaultd: RevaultD) -> Result<Self, StartupError> {
+    pub fn start(config: Config) -> Result<Self, StartupError> {
         setup_panic_hook();
+
+        // FIXME: should probably be from_db(), would allow us to not use Option members
+        let mut revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
+            log::error!("Error creating global state: {}", e);
+            process::exit(1);
+        });
+        log::info!(
+            "Using Noise static public key: '{}'",
+            revaultd.noise_pubkey().0.to_hex()
+        );
+        log::debug!(
+            "Coordinator static public key: '{}'",
+            revaultd.coordinator_noisekey.0.to_hex()
+        );
 
         // First and foremost
         log::info!("Setting up database");
@@ -142,6 +187,26 @@ impl DaemonHandle {
 
         log::info!("Setting up bitcoind connection");
         let bitcoind = start_bitcoind(&mut revaultd)?;
+
+        // NOTE: it's safe to daemonize now, as we don't carry any open DB connection
+        // https://www.sqlite.org/howtocorrupt.html#_carrying_an_open_database_connection_across_a_fork_
+        if revaultd.daemon {
+            log::info!("Daemonizing");
+            let log_file = revaultd.log_file();
+            let daemon = Daemonize {
+                // TODO: Make this configurable for inits
+                pid_file: Some(revaultd.pid_file()),
+                stdout_file: Some(log_file.clone()),
+                stderr_file: Some(log_file),
+                chdir: Some(revaultd.data_dir.clone()),
+                append: true,
+                ..Daemonize::default()
+            };
+            daemon.doit().unwrap_or_else(|e| {
+                // The panic hook will log::error
+                panic!("Error daemonizing: {}", e);
+            });
+        }
 
         // We start two threads, the bitcoind one to poll bitcoind for chain updates,
         // and the sigfetcher one to poll the coordinator for missing signatures

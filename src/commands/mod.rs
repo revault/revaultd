@@ -8,6 +8,7 @@ mod utils;
 pub use crate::{
     bitcoind::{interface::WalletTransaction, BitcoindError},
     communication::ServerStatus,
+    revaultd::{BlockchainTip, VaultStatus},
 };
 use crate::{
     communication::{
@@ -28,7 +29,6 @@ use crate::{
             db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status,
         },
     },
-    revaultd::{BlockchainTip, VaultStatus},
     threadmessages::BitcoindThread,
     DaemonControl, VERSION,
 };

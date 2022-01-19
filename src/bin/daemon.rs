@@ -1,5 +1,4 @@
 use revault_net::sodiumoxide;
-use revault_tx::bitcoin::hashes::hex::ToHex;
 use std::{
     env,
     io::{self, Write},
@@ -7,8 +6,7 @@ use std::{
     process, time,
 };
 
-use daemonize_simple::Daemonize;
-use revaultd::{config::Config, DaemonHandle, RevaultD};
+use revaultd::{config::Config, DaemonHandle};
 
 fn parse_args(args: Vec<String>) -> Option<PathBuf> {
     if args.len() == 1 {
@@ -66,48 +64,11 @@ fn main() {
         eprintln!("Error setting up logger: {}", e);
         process::exit(1);
     });
-    // FIXME: should probably be from_db(), would allow us to not use Option members
-    let revaultd = RevaultD::from_config(config).unwrap_or_else(|e| {
-        log::error!("Error creating global state: {}", e);
-        process::exit(1);
-    });
 
-    log::info!(
-        "Using Noise static public key: '{}'",
-        revaultd.noise_pubkey().0.to_hex()
-    );
-    log::debug!(
-        "Coordinator static public key: '{}'",
-        revaultd.coordinator_noisekey.0.to_hex()
-    );
-
-    let daemonize = revaultd.daemon;
-    let chdir = revaultd.data_dir.clone();
-    let log_file = revaultd.log_file();
-    // TODO: Make this configurable for inits
-    let pid_file = revaultd.pid_file();
-    let daemon_handle = DaemonHandle::start(revaultd).unwrap_or_else(|e| {
+    let daemon_handle = DaemonHandle::start(config).unwrap_or_else(|e| {
         // The panic hook will log::error
         panic!("Starting Revault daemon: {}", e);
     });
-    // NOTE: it's safe to daemonize now, as revaultd doesn't carry any open DB connection
-    // https://www.sqlite.org/howtocorrupt.html#_carrying_an_open_database_connection_across_a_fork_
-    if daemonize {
-        let daemon = Daemonize {
-            pid_file: Some(pid_file),
-            stdout_file: Some(log_file.clone()),
-            stderr_file: Some(log_file),
-            chdir: Some(chdir),
-            append: true,
-            ..Daemonize::default()
-        };
-        daemon.doit().unwrap_or_else(|e| {
-            // The panic hook will log::error
-            panic!("Error daemonizing: {}", e);
-        });
-        println!("Started revaultd daemon");
-    }
-
     // Listen for incoming commands, then shutdown when we are stopped
     daemon_handle
         .rpc_server()

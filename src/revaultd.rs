@@ -1,4 +1,7 @@
-use crate::config::{config_folder_path, BitcoindConfig, Config, ConfigError};
+use crate::{
+    config::{config_folder_path, BitcoindConfig, Config},
+    StartupError,
+};
 
 use std::{
     collections::HashMap,
@@ -153,7 +156,7 @@ impl fmt::Display for VaultStatus {
 
 /// An error related to the initialization of communication keys.
 #[derive(Debug)]
-enum NoiseKeyError {
+pub enum NoiseKeyError {
     ReadingKey(io::Error),
     WritingKey(io::Error),
 }
@@ -359,7 +362,7 @@ fn create_datadir(datadir_path: &Path) -> Result<(), std::io::Error> {
 
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
-    pub fn from_config(config: Config) -> Result<RevaultD, Box<dyn std::error::Error>> {
+    pub fn from_config(config: Config) -> Result<RevaultD, StartupError> {
         let our_man_xpub = config.manager_config.as_ref().map(|x| x.xpub);
         let our_stk_xpub = config.stakeholder_config.as_ref().map(|x| x.xpub);
         // Config should have checked that!
@@ -373,16 +376,12 @@ impl RevaultD {
             .clone()
             .map(|x| x.emergency_address);
 
-        let mut data_dir = config.data_dir.unwrap_or(config_folder_path()?);
+        let mut data_dir = config
+            .data_dir
+            .unwrap_or(config_folder_path().ok_or(StartupError::DefaultDatadir)?);
         data_dir.push(config.bitcoind_config.network.to_string());
         if !data_dir.as_path().exists() {
-            if let Err(e) = create_datadir(&data_dir) {
-                return Err(Box::from(ConfigError(format!(
-                    "Could not create data dir '{:?}': {}.",
-                    data_dir,
-                    e.to_string()
-                ))));
-            }
+            create_datadir(&data_dir)?;
         }
         data_dir = fs::canonicalize(data_dir)?;
 
@@ -426,8 +425,6 @@ impl RevaultD {
             None
         };
 
-        // TODO: support hidden services
-        let coordinator_host = SocketAddr::from_str(&config.coordinator_host)?;
         let coordinator_noisekey = config.coordinator_noise_key;
         let coordinator_poll_interval = config.coordinator_poll_seconds;
 
@@ -462,7 +459,7 @@ impl RevaultD {
             daemon,
             emergency_address,
             noise_secret,
-            coordinator_host,
+            coordinator_host: config.coordinator_host,
             coordinator_noisekey,
             coordinator_poll_interval,
             cosigs,

@@ -135,8 +135,9 @@ pub struct Config {
     pub stakeholder_config: Option<StakeholderConfig>,
     /// Some() if we are a manager
     pub manager_config: Option<ManagerConfig>,
-    /// The host of the sync server (may be an IP or a hidden service)
-    pub coordinator_host: String,
+    // TODO: support hidden services
+    /// The host of the sync server
+    pub coordinator_host: SocketAddr,
     /// The Noise static public key of the sync server
     #[serde(deserialize_with = "deserialize_noisepubkey")]
     pub coordinator_noise_key: NoisePubkey,
@@ -180,7 +181,7 @@ impl std::error::Error for ConfigError {}
 /// Rationale: we want to have the database, RPC socket, etc.. in the same folder as the
 /// configuration file but for Linux the XDG specifoes a data directory (`~/.local/share/`)
 /// different from the configuration one (`~/.config/`).
-pub fn config_folder_path() -> Result<PathBuf, ConfigError> {
+pub fn config_folder_path() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     let configs_dir = dirs::home_dir();
 
@@ -194,15 +195,13 @@ pub fn config_folder_path() -> Result<PathBuf, ConfigError> {
         #[cfg(not(target_os = "linux"))]
         path.push("Revault");
 
-        return Ok(path);
+        return Some(path);
     }
 
-    Err(ConfigError(
-        "Could not locate the configuration directory.".to_owned(),
-    ))
+    None
 }
 
-fn config_file_path() -> Result<PathBuf, ConfigError> {
+fn config_file_path() -> Option<PathBuf> {
     config_folder_path().map(|mut path| {
         path.push("revault.toml");
         path
@@ -216,7 +215,9 @@ impl Config {
     /// file. We don't allow to set them via the command line or environment variables to avoid a
     /// futile duplication.
     pub fn from_file(custom_path: Option<PathBuf>) -> Result<Config, ConfigError> {
-        let config_file = custom_path.unwrap_or(config_file_path()?);
+        let config_file = custom_path.unwrap_or(config_file_path().ok_or_else(|| {
+            ConfigError("Could not locate the default data directory.".to_owned())
+        })?);
 
         let config = std::fs::read(&config_file)
             .map_err(|e| ConfigError(format!("Reading configuration file: {}", e)))

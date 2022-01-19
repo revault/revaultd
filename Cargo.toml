@@ -12,10 +12,16 @@ exclude = [".github/", ".cirrus.yml", "tests/",  "test_data/", "contrib/", "pypr
 [[bin]]
 name = "revaultd"
 path = "src/bin/daemon.rs"
+required-features = ["jsonrpc_server"]
 
 [[bin]]
 name = "revault-cli"
 path = "src/bin/cli.rs"
+required-features = ["jsonrpc_server"]
+
+[features]
+default = ["jsonrpc_server"]
+jsonrpc_server = ["jsonrpc-core", "jsonrpc-derive", "mio"]
 
 [dependencies]
 revault_tx = { git = "https://github.com/revault/revault_tx", features = ["use-serde"] }
@@ -54,6 +60,6 @@ rusqlite = { version = "0.26.3", features = ["bundled", "unlock_notify"] }
 libc = "0.2.80"
 
 # For the JSONRPC server
-jsonrpc-core = "15.1"
-jsonrpc-derive = "15.1"
-mio = { version = "0.7", features = ["default", "os-poll", "os-util", "uds"] }
+jsonrpc-core = { version = "15.1", optional = true }
+jsonrpc-derive = { version = "15.1", optional = true }
+mio = { version = "0.7", features = ["default", "os-poll", "os-util", "uds"], optional = true }

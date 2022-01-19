@@ -189,7 +189,7 @@ macro_rules! manager_only {
 
 impl DaemonControl {
     /// Get information about the current state of the daemon
-    pub fn getinfo(&self) -> GetInfoResult {
+    pub fn get_info(&self) -> GetInfoResult {
         let revaultd = self.revaultd.read().unwrap();
 
         // This means blockheight == 0 for IBD.
@@ -198,7 +198,7 @@ impl DaemonControl {
             ..
         } = db_tip(&revaultd.db_file()).expect("Database must not be dead");
         let number_of_vaults = self
-            .listvaults(None, None)
+            .list_vaults(None, None)
             .vaults
             .iter()
             .filter(|l| {
@@ -225,7 +225,7 @@ impl DaemonControl {
     }
 
     /// List the current vaults, optionally filtered by status and/or deposit outpoints.
-    pub fn listvaults(
+    pub fn list_vaults(
         &self,
         statuses: Option<Vec<VaultStatus>>,
         deposit_outpoints: Option<Vec<OutPoint>>,
@@ -253,7 +253,7 @@ impl DaemonControl {
     /// ## Errors
     /// - If called by a non-stakeholder
     /// - If called for an unknown or unconfirmed vault
-    pub fn getrevocationtxs(
+    pub fn get_revocation_txs(
         &self,
         deposit_outpoint: OutPoint,
     ) -> Result<RevocationTransactions, CommandError> {
@@ -302,7 +302,7 @@ impl DaemonControl {
     /// - If called for a non-stakeholder
     /// - If called for an unknown or not 'funded' vault
     /// - If given insane revocation txs PSBTs (without our signatures, with invalid sigs, ..)
-    pub fn revocationtxs(
+    pub fn set_revocation_txs(
         &self,
         deposit_outpoint: OutPoint,
         cancel_tx: CancelTransaction,
@@ -715,7 +715,7 @@ impl DaemonControl {
     /// # Errors
     /// - If an outpoint does not refer to a known deposit, or if the status of the vault is
     /// part of `invalid_statuses`.
-    pub fn presigned_transactions(
+    pub fn list_presigned_txs(
         &self,
         outpoints: &[OutPoint],
     ) -> Result<Vec<ListPresignedTxEntry>, CommandError> {
@@ -736,7 +736,7 @@ impl DaemonControl {
     /// # Errors
     /// - If an outpoint does not refer to a known deposit, or if the status of the vault is
     /// part of `invalid_statuses`.
-    pub fn onchain_transactions(
+    pub fn list_onchain_txs(
         &self,
         outpoints: &[OutPoint],
     ) -> Result<Vec<ListOnchainTxEntry>, CommandError> {

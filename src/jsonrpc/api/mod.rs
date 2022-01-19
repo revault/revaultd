@@ -227,7 +227,7 @@ impl RpcApi for RpcImpl {
     }
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        Ok(json!(meta.rpc_utils.getinfo()))
+        Ok(json!(meta.rpc_utils.get_info()))
     }
 
     fn help(&self, _: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
@@ -319,7 +319,7 @@ impl RpcApi for RpcImpl {
             None
         };
 
-        let res = meta.rpc_utils.listvaults(statuses, outpoints);
+        let res = meta.rpc_utils.list_vaults(statuses, outpoints);
         Ok(json!(res))
     }
 
@@ -341,7 +341,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let res = meta.rpc_utils.getrevocationtxs(outpoint)?;
+        let res = meta.rpc_utils.get_revocation_txs(outpoint)?;
         Ok(json!(res))
     }
 
@@ -353,8 +353,12 @@ impl RpcApi for RpcImpl {
         emergency_tx: EmergencyTransaction,
         unvault_emergency_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.rpc_utils
-            .revocationtxs(outpoint, cancel_tx, emergency_tx, unvault_emergency_tx)?;
+        meta.rpc_utils.set_revocation_txs(
+            outpoint,
+            cancel_tx,
+            emergency_tx,
+            unvault_emergency_tx,
+        )?;
         Ok(json!({}))
     }
 
@@ -386,7 +390,7 @@ impl RpcApi for RpcImpl {
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let pres_txs = meta
             .rpc_utils
-            .presigned_transactions(&outpoints.as_deref().unwrap_or(&[]))?;
+            .list_presigned_txs(&outpoints.as_deref().unwrap_or(&[]))?;
         Ok(json!({ "presigned_transactions": pres_txs }))
     }
 
@@ -397,7 +401,7 @@ impl RpcApi for RpcImpl {
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let txs = meta
             .rpc_utils
-            .onchain_transactions(&outpoints.as_deref().unwrap_or(&[]))?;
+            .list_onchain_txs(&outpoints.as_deref().unwrap_or(&[]))?;
         Ok(json!({
             "onchain_transactions": txs,
         }))

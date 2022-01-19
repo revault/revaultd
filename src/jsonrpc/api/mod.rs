@@ -5,12 +5,7 @@
 mod error;
 
 use crate::{
-    commands::{
-        del_spend_tx, emergency, get_history, get_servers_statuses, get_spend_tx, get_unvault_tx,
-        getinfo, getrevocationtxs, list_spend_txs, listvaults, onchain_transactions,
-        presigned_transactions, revault, revocationtxs, set_spend_tx, set_unvault_tx,
-        update_spend_tx, HistoryEventKind, ListSpendStatus,
-    },
+    commands::{HistoryEventKind, ListSpendStatus},
     revaultd::VaultStatus,
     DaemonControl,
 };
@@ -232,10 +227,7 @@ impl RpcApi for RpcImpl {
     }
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let bitcoind = meta.rpc_utils.bitcoind_conn;
-
-        Ok(json!(getinfo(&revaultd, &bitcoind)))
+        Ok(json!(meta.rpc_utils.getinfo()))
     }
 
     fn help(&self, _: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
@@ -327,14 +319,11 @@ impl RpcApi for RpcImpl {
             None
         };
 
-        let res = listvaults(
-            &meta.rpc_utils.revaultd.read().unwrap(),
-            statuses,
-            outpoints,
-        );
+        let res = meta.rpc_utils.listvaults(statuses, outpoints);
         Ok(json!(res))
     }
 
+    // TODO: make it a command
     fn getdepositaddress(
         &self,
         meta: Self::Metadata,
@@ -353,9 +342,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let res = getrevocationtxs(&revaultd, outpoint)?;
-
+        let res = meta.rpc_utils.getrevocationtxs(outpoint)?;
         Ok(json!(res))
     }
 
@@ -367,15 +354,8 @@ impl RpcApi for RpcImpl {
         emergency_tx: EmergencyTransaction,
         unvault_emergency_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        revocationtxs(
-            &revaultd,
-            outpoint,
-            cancel_tx,
-            emergency_tx,
-            unvault_emergency_tx,
-        )?;
-
+        meta.rpc_utils
+            .revocationtxs(outpoint, cancel_tx, emergency_tx, unvault_emergency_tx)?;
         Ok(json!({}))
     }
 
@@ -384,9 +364,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let unvault_tx = get_unvault_tx(&revaultd, outpoint)?;
-
+        let unvault_tx = meta.rpc_utils.get_unvault_tx(outpoint)?;
         Ok(json!({
             "unvault_tx": unvault_tx,
         }))
@@ -398,10 +376,7 @@ impl RpcApi for RpcImpl {
         outpoint: OutPoint,
         unvault_tx: UnvaultTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-
-        set_unvault_tx(&revaultd, outpoint, unvault_tx)?;
-
+        meta.rpc_utils.set_unvault_tx(outpoint, unvault_tx)?;
         Ok(json!({}))
     }
 
@@ -410,9 +385,9 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoints: Option<Vec<OutPoint>>, // FIXME: this needs not be a Vec
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-
-        let pres_txs = presigned_transactions(&revaultd, &outpoints.as_deref().unwrap_or(&[]))?;
+        let pres_txs = meta
+            .rpc_utils
+            .presigned_transactions(&outpoints.as_deref().unwrap_or(&[]))?;
         Ok(json!({ "presigned_transactions": pres_txs }))
     }
 
@@ -421,10 +396,9 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let bitcoind = meta.rpc_utils.bitcoind_conn;
-
-        let txs = onchain_transactions(&revaultd, &bitcoind, &outpoints.as_deref().unwrap_or(&[]))?;
+        let txs = meta
+            .rpc_utils
+            .onchain_transactions(&outpoints.as_deref().unwrap_or(&[]))?;
         Ok(json!({
             "onchain_transactions": txs,
         }))
@@ -443,8 +417,9 @@ impl RpcApi for RpcImpl {
             ));
         }
 
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let tx = get_spend_tx(&revaultd, &outpoints, destinations, feerate_vb)?;
+        let tx = meta
+            .rpc_utils
+            .get_spend_tx(&outpoints, destinations, feerate_vb)?;
         Ok(json!({
             "spend_tx": tx,
         }))
@@ -455,9 +430,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         spend_tx: SpendTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        update_spend_tx(&revaultd, spend_tx)?;
-
+        meta.rpc_utils.update_spend_tx(spend_tx)?;
         Ok(json!({}))
     }
 
@@ -466,9 +439,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         spend_txid: Txid,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        del_spend_tx(&revaultd, &spend_txid)?;
-
+        meta.rpc_utils.del_spend_tx(&spend_txid)?;
         Ok(json!({}))
     }
 
@@ -477,9 +448,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         status: Option<Vec<ListSpendStatus>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let txs = list_spend_txs(&revaultd, status.as_deref())?;
-
+        let txs = meta.rpc_utils.list_spend_txs(status.as_deref())?;
         Ok(json!({ "spend_txs": txs }))
     }
 
@@ -490,10 +459,7 @@ impl RpcApi for RpcImpl {
         priority: Option<bool>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let priority = priority.unwrap_or(false);
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let bitcoind = meta.rpc_utils.bitcoind_conn;
-        set_spend_tx(&revaultd, &bitcoind, &spend_txid, priority)?;
-
+        meta.rpc_utils.set_spend_tx(&spend_txid, priority)?;
         Ok(json!({}))
     }
 
@@ -502,24 +468,17 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         deposit_outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let bitcoind = meta.rpc_utils.bitcoind_conn;
-        revault(&revaultd, &bitcoind, &deposit_outpoint)?;
-
+        meta.rpc_utils.revault(&deposit_outpoint)?;
         Ok(json!({}))
     }
 
     fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let bitcoind = meta.rpc_utils.bitcoind_conn;
-        emergency(&revaultd, &bitcoind)?;
-
+        meta.rpc_utils.emergency()?;
         Ok(json!({}))
     }
 
     fn getserverstatus(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-        let status = get_servers_statuses(&revaultd);
+        let status = meta.rpc_utils.get_servers_statuses();
         Ok(json!(status))
     }
 
@@ -532,17 +491,7 @@ impl RpcApi for RpcImpl {
         end: u32,
         limit: u64,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let revaultd = meta.rpc_utils.revaultd.read().unwrap();
-
-        let events = get_history(
-            &revaultd,
-            &meta.rpc_utils.bitcoind_conn,
-            start,
-            end,
-            limit,
-            kind,
-        )?;
-
+        let events = meta.rpc_utils.get_history(start, end, limit, kind)?;
         Ok(json!({
             "events": events,
         }))

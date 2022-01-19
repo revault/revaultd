@@ -8,7 +8,7 @@ pub mod test_utils {
         threadmessages::{
             BitcoindMessageOut, BitcoindSender, BitcoindThread, SigFetcherMessageOut,
         },
-        RpcUtils,
+        DaemonControl,
     };
     use revault_tx::bitcoin::{
         util::bip32::ChildNumber, Amount, OutPoint, Transaction as BitcoinTransaction, Txid,
@@ -92,7 +92,7 @@ addr = "127.0.0.1:8332"
 
     // Get a dummy handle for the RPC calls.
     // FIXME: we could do something cleaner at some point
-    pub fn dummy_rpcutil(datadir: PathBuf, role: UserRole) -> RpcUtils {
+    pub fn dummy_rpcutil(datadir: PathBuf, role: UserRole) -> DaemonControl {
         let revaultd = Arc::from(RwLock::from(dummy_revaultd(datadir, role)));
 
         let (bitcoind_tx, bitcoind_rx) = mpsc::channel();
@@ -114,7 +114,7 @@ addr = "127.0.0.1:8332"
             }
         })));
 
-        RpcUtils {
+        DaemonControl {
             revaultd,
             bitcoind_conn: BitcoindSender::from(bitcoind_tx),
             sigfetcher_conn: sigfetcher_tx.into(),

@@ -88,12 +88,11 @@ impl From<DatabaseError> for StartupError {
     }
 }
 
-// FIXME: private fields
 #[derive(Clone)]
 pub struct DaemonControl {
-    pub revaultd: Arc<RwLock<RevaultD>>,
-    pub bitcoind_conn: BitcoindSender,
-    pub sigfetcher_conn: SigFetcherSender,
+    revaultd: Arc<RwLock<RevaultD>>,
+    bitcoind_conn: BitcoindSender,
+    sigfetcher_conn: SigFetcherSender,
 }
 
 impl DaemonControl {

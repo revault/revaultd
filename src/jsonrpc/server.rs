@@ -461,10 +461,13 @@ pub fn rpcserver_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error> 
 }
 
 /// The main event loop for the JSONRPC interface, polling the UDS listener
-pub fn rpcserver_loop(listener: UnixListener, rpc_utils: DaemonControl) -> Result<(), io::Error> {
+pub fn rpcserver_loop(
+    listener: UnixListener,
+    daemon_control: DaemonControl,
+) -> Result<(), io::Error> {
     let mut jsonrpc_io = jsonrpc_core::MetaIoHandler::<JsonRpcMetaData, _>::default();
     jsonrpc_io.extend_with(RpcImpl.to_delegate());
-    let metadata = JsonRpcMetaData::new(rpc_utils);
+    let metadata = JsonRpcMetaData::new(daemon_control);
 
     log::info!("JSONRPC server started.");
     #[cfg(not(windows))]

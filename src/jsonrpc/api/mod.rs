@@ -34,15 +34,15 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct JsonRpcMetaData {
     pub shutdown: Arc<AtomicBool>,
-    pub rpc_utils: DaemonControl,
+    pub daemon_control: DaemonControl,
 }
 impl jsonrpc_core::Metadata for JsonRpcMetaData {}
 
 impl JsonRpcMetaData {
-    pub fn new(rpc_utils: DaemonControl) -> Self {
+    pub fn new(daemon_control: DaemonControl) -> Self {
         JsonRpcMetaData {
             shutdown: Arc::from(AtomicBool::from(false)),
-            rpc_utils,
+            daemon_control,
         }
     }
 
@@ -227,7 +227,7 @@ impl RpcApi for RpcImpl {
     }
 
     fn getinfo(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        Ok(json!(meta.rpc_utils.get_info()))
+        Ok(json!(meta.daemon_control.get_info()))
     }
 
     fn help(&self, _: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
@@ -319,7 +319,7 @@ impl RpcApi for RpcImpl {
             None
         };
 
-        let res = meta.rpc_utils.list_vaults(statuses, outpoints);
+        let res = meta.daemon_control.list_vaults(statuses, outpoints);
         Ok(json!(res))
     }
 
@@ -329,9 +329,9 @@ impl RpcApi for RpcImpl {
         index: Option<bip32::ChildNumber>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let address = if let Some(index) = index {
-            meta.rpc_utils.get_deposit_address_at(index)
+            meta.daemon_control.get_deposit_address_at(index)
         } else {
-            meta.rpc_utils.get_deposit_address()
+            meta.daemon_control.get_deposit_address()
         };
         Ok(json!({ "address": address.to_string() }))
     }
@@ -341,7 +341,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let res = meta.rpc_utils.get_revocation_txs(outpoint)?;
+        let res = meta.daemon_control.get_revocation_txs(outpoint)?;
         Ok(json!(res))
     }
 
@@ -353,7 +353,7 @@ impl RpcApi for RpcImpl {
         emergency_tx: EmergencyTransaction,
         unvault_emergency_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.rpc_utils.set_revocation_txs(
+        meta.daemon_control.set_revocation_txs(
             outpoint,
             cancel_tx,
             emergency_tx,
@@ -367,7 +367,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let unvault_tx = meta.rpc_utils.get_unvault_tx(outpoint)?;
+        let unvault_tx = meta.daemon_control.get_unvault_tx(outpoint)?;
         Ok(json!({
             "unvault_tx": unvault_tx,
         }))
@@ -379,7 +379,7 @@ impl RpcApi for RpcImpl {
         outpoint: OutPoint,
         unvault_tx: UnvaultTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.rpc_utils.set_unvault_tx(outpoint, unvault_tx)?;
+        meta.daemon_control.set_unvault_tx(outpoint, unvault_tx)?;
         Ok(json!({}))
     }
 
@@ -389,7 +389,7 @@ impl RpcApi for RpcImpl {
         outpoints: Option<Vec<OutPoint>>, // FIXME: this needs not be a Vec
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let pres_txs = meta
-            .rpc_utils
+            .daemon_control
             .list_presigned_txs(&outpoints.as_deref().unwrap_or(&[]))?;
         Ok(json!({ "presigned_transactions": pres_txs }))
     }
@@ -400,7 +400,7 @@ impl RpcApi for RpcImpl {
         outpoints: Option<Vec<OutPoint>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let txs = meta
-            .rpc_utils
+            .daemon_control
             .list_onchain_txs(&outpoints.as_deref().unwrap_or(&[]))?;
         Ok(json!({
             "onchain_transactions": txs,
@@ -421,7 +421,7 @@ impl RpcApi for RpcImpl {
         }
 
         let tx = meta
-            .rpc_utils
+            .daemon_control
             .get_spend_tx(&outpoints, destinations, feerate_vb)?;
         Ok(json!({
             "spend_tx": tx,
@@ -433,7 +433,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         spend_tx: SpendTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.rpc_utils.update_spend_tx(spend_tx)?;
+        meta.daemon_control.update_spend_tx(spend_tx)?;
         Ok(json!({}))
     }
 
@@ -442,7 +442,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         spend_txid: Txid,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.rpc_utils.del_spend_tx(&spend_txid)?;
+        meta.daemon_control.del_spend_tx(&spend_txid)?;
         Ok(json!({}))
     }
 
@@ -451,7 +451,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         status: Option<Vec<ListSpendStatus>>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let txs = meta.rpc_utils.list_spend_txs(status.as_deref())?;
+        let txs = meta.daemon_control.list_spend_txs(status.as_deref())?;
         Ok(json!({ "spend_txs": txs }))
     }
 
@@ -462,7 +462,7 @@ impl RpcApi for RpcImpl {
         priority: Option<bool>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let priority = priority.unwrap_or(false);
-        meta.rpc_utils.set_spend_tx(&spend_txid, priority)?;
+        meta.daemon_control.set_spend_tx(&spend_txid, priority)?;
         Ok(json!({}))
     }
 
@@ -471,17 +471,17 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         deposit_outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.rpc_utils.revault(&deposit_outpoint)?;
+        meta.daemon_control.revault(&deposit_outpoint)?;
         Ok(json!({}))
     }
 
     fn emergency(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.rpc_utils.emergency()?;
+        meta.daemon_control.emergency()?;
         Ok(json!({}))
     }
 
     fn getserverstatus(&self, meta: Self::Metadata) -> jsonrpc_core::Result<serde_json::Value> {
-        let status = meta.rpc_utils.get_servers_statuses();
+        let status = meta.daemon_control.get_servers_statuses();
         Ok(json!(status))
     }
 
@@ -494,7 +494,7 @@ impl RpcApi for RpcImpl {
         end: u32,
         limit: u64,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let events = meta.rpc_utils.get_history(start, end, limit, kind)?;
+        let events = meta.daemon_control.get_history(start, end, limit, kind)?;
         Ok(json!({
             "events": events,
         }))

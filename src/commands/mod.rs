@@ -237,6 +237,16 @@ impl DaemonControl {
         }
     }
 
+    /// Get the deposit address at the lowest still unused derivation index
+    pub fn get_deposit_address(&self) -> Address {
+        self.revaultd.read().unwrap().deposit_address()
+    }
+
+    // Internal only, used for testing
+    pub(crate) fn get_deposit_address_at(&self, index: bip32::ChildNumber) -> Address {
+        self.revaultd.read().unwrap().vault_address(index)
+    }
+
     /// Get the revocation transactions for the vault identified by this outpoint.
     /// Returns None if there are no *confirmed* vault at this outpoint.
     ///

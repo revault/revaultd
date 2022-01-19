@@ -323,16 +323,15 @@ impl RpcApi for RpcImpl {
         Ok(json!(res))
     }
 
-    // TODO: make it a command
     fn getdepositaddress(
         &self,
         meta: Self::Metadata,
         index: Option<bip32::ChildNumber>,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         let address = if let Some(index) = index {
-            meta.rpc_utils.revaultd.read().unwrap().vault_address(index)
+            meta.rpc_utils.get_deposit_address_at(index)
         } else {
-            meta.rpc_utils.revaultd.read().unwrap().deposit_address()
+            meta.rpc_utils.get_deposit_address()
         };
         Ok(json!({ "address": address.to_string() }))
     }

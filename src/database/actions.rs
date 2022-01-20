@@ -475,6 +475,21 @@ fn db_status_from_unvault_txid(
     })
 }
 
+/// Mark an active vault as being in 'unvaulting' state from the Unvault txid
+pub fn db_unvault_deposit(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
+}
+
+/// Mark a vault as being in the 'unvaulted' state, out of the Unvault txid
+pub fn db_confirm_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
+}
+
+/// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid
+pub fn db_emer_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
+}
+
 fn db_status_and_final_txid_from_unvault_txid(
     db_path: &Path,
     unvault_txid: &Txid,
@@ -496,16 +511,6 @@ fn db_status_and_final_txid_from_unvault_txid(
 
         Ok(())
     })
-}
-
-/// Mark an active vault as being in 'unvaulting' state from the Unvault txid
-pub fn db_unvault_deposit(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
-}
-
-/// Mark a vault as being in the 'unvaulted' state, out of the Unvault txid
-pub fn db_confirm_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
 }
 
 /// Mark a vault as being in the 'canceling' state, out of the Unvault txid
@@ -534,11 +539,6 @@ pub fn db_spend_unvault(
         VaultStatus::Spending,
         spend_txid,
     )
-}
-
-/// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid
-pub fn db_emer_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
 }
 
 /// Update vault status and moved_at timestamp with the given status and blocktime.

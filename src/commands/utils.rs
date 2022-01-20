@@ -116,7 +116,7 @@ pub fn listvaults_from_db(
                 let op = db_vault.deposit_outpoint;
                 Some(ListVaultsEntry {
                     amount: db_vault.amount,
-                    blockheight: db_vault.blockheight,
+                    blockheight: db_vault.deposit_blockheight,
                     status: db_vault.status,
                     txid: op.txid,
                     vout: op.vout,
@@ -320,7 +320,7 @@ pub fn gethistory<T: BitcoindThread>(
             events.push(HistoryEvent {
                 kind: HistoryEventKind::Deposit,
                 date: vault.funded_at.expect("Vault is funded"),
-                blockheight: vault.blockheight,
+                blockheight: vault.deposit_blockheight.expect("Vault is funded"),
                 amount: Some(vault.amount.as_sat()),
                 fee: None,
                 txid: vault.deposit_outpoint.txid,
@@ -901,7 +901,7 @@ mod tests {
             )
             .unwrap()[0];
             assert_eq!(res.amount, v.db_vault.amount);
-            assert_eq!(res.blockheight, v.db_vault.blockheight);
+            assert_eq!(res.blockheight, v.db_vault.deposit_blockheight);
             assert_eq!(res.status, v.db_vault.status);
             assert_eq!(res.txid, v.db_vault.deposit_outpoint.txid);
             assert_eq!(res.vout, v.db_vault.deposit_outpoint.vout);

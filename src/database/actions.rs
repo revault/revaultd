@@ -261,14 +261,13 @@ pub fn db_insert_new_unconfirmed_vault(
         let derivation_index: u32 = derivation_index.into();
         tx.execute(
             "INSERT INTO vaults ( \
-                wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
-                funded_at, secured_at, delegated_at, moved_at, final_txid \
+                wallet_id, status, deposit_blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
+                funded_at, secured_at, delegated_at, moved_at, final_txid
             ) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL, NULL, NULL)",
+             VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL)",
             params![
                 wallet_id,
                 VaultStatus::Unconfirmed as u32,
-                0, // FIXME: it should probably be NULL instead, but no big deal
                 deposit_outpoint.txid.to_vec(),
                 deposit_outpoint.vout,
                 amount_to_i64(amount),
@@ -330,7 +329,7 @@ pub fn db_confirm_deposit(
     db_exec(db_path, |db_tx| {
         db_tx
             .execute(
-                "UPDATE vaults SET status = (?1), blockheight = (?2), funded_at = (?3) WHERE id = (?4)",
+                "UPDATE vaults SET status = (?1), deposit_blockheight = (?2), funded_at = (?3) WHERE id = (?4)",
                 params![VaultStatus::Funded as u32, blockheight, blocktime, vault_id,],
             )
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
@@ -375,7 +374,7 @@ pub fn db_unconfirm_deposit_dbtx(
         params![vault_id],
     )?;
     db_tx.execute(
-        "UPDATE vaults SET status = (?1), blockheight = (?2), \
+        "UPDATE vaults SET status = (?1), deposit_blockheight = (?2), \
          funded_at = NULL, secured_at = NULL, delegated_at = NULL \
          WHERE id = (?3)",
         params![VaultStatus::Unconfirmed as u32, 0, vault_id],

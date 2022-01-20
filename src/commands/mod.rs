@@ -1440,7 +1440,7 @@ pub struct ListVaultsEntry {
         deserialize_with = "deser_amount_from_sats"
     )]
     pub amount: Amount,
-    pub blockheight: u32,
+    pub blockheight: Option<u32>,
     #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub status: VaultStatus,
     pub txid: Txid,

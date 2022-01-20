@@ -218,7 +218,7 @@ impl TryFrom<&Row<'_>> for DbVault {
                 id
             ))))
         })?;
-        let blockheight = row.get(3)?;
+        let deposit_blockheight = row.get(3)?;
         let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(4)?)
             .map_err(|e| FromSqlError::Other(Box::new(e)))?;
         let deposit_outpoint = OutPoint {
@@ -239,7 +239,7 @@ impl TryFrom<&Row<'_>> for DbVault {
             id,
             wallet_id,
             status,
-            blockheight,
+            deposit_blockheight,
             deposit_outpoint,
             amount,
             derivation_index,

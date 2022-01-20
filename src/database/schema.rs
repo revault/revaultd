@@ -38,7 +38,7 @@ CREATE TABLE wallets (
 );
 
 /* This stores the vaults we heard about. The deposit may be unconfirmed,
- * in which case the blockheight will be 0 (FIXME: should be NULL instead?).
+ * in which case the deposit_blockheight will be NULL.
  * For any vault entry a deposit transaction MUST be present in bitcoind's
  * wallet.
  * The final_txid is stored to not harass bitcoind trying to guess the
@@ -50,7 +50,7 @@ CREATE TABLE vaults (
     id INTEGER PRIMARY KEY NOT NULL,
     wallet_id INTEGER NOT NULL,
     status INTEGER NOT NULL,
-    blockheight INTEGER NOT NULL,
+    deposit_blockheight INTEGER,
     deposit_txid BLOB NOT NULL,
     deposit_vout INTEGER NOT NULL,
     amount INTEGER NOT NULL,
@@ -139,7 +139,7 @@ pub struct DbVault {
     pub id: u32, // FIXME: should be an i64
     pub wallet_id: u32,
     pub status: VaultStatus,
-    pub blockheight: u32,
+    pub deposit_blockheight: Option<u32>,
     pub deposit_outpoint: OutPoint,
     pub amount: Amount,
     pub derivation_index: ChildNumber,

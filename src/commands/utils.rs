@@ -251,7 +251,7 @@ pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>
 }
 
 /// gethistory retrieves a limited list of events which occured between two given dates.
-pub fn gethistory<T: BitcoindThread>(
+pub fn gethistory<T: BitcoindThread + ?Sized>(
     revaultd: &RevaultD,
     bitcoind_conn: &T,
     start: u32,

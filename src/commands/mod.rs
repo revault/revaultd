@@ -8,7 +8,7 @@ mod utils;
 pub use crate::{
     bitcoind::{interface::WalletTransaction, BitcoindError},
     communication::ServerStatus,
-    revaultd::{BlockchainTip, VaultStatus},
+    revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use crate::{
     communication::{
@@ -30,7 +30,7 @@ use crate::{
         },
     },
     threadmessages::BitcoindThread,
-    DaemonControl, VERSION,
+    VERSION,
 };
 use utils::{
     finalized_emer_txs, gethistory, listvaults_from_db, presigned_txs, ser_amount, ser_to_string,
@@ -53,7 +53,7 @@ use revault_tx::{
     txouts::{DepositTxOut, SpendTxOut},
 };
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, sync::RwLockReadGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -187,10 +187,12 @@ macro_rules! manager_only {
     };
 }
 
-impl DaemonControl {
+pub trait DaemonCommands {
+    fn revaultd(&self) -> RwLockReadGuard<RevaultD>;
+    fn bitcoind(&self) -> &dyn BitcoindThread;
     /// Get information about the current state of the daemon
-    pub fn get_info(&self) -> GetInfoResult {
-        let revaultd = self.revaultd.read().unwrap();
+    fn get_info(&self) -> GetInfoResult {
+        let revaultd = self.revaultd();
 
         // This means blockheight == 0 for IBD.
         let BlockchainTip {
@@ -213,7 +215,7 @@ impl DaemonControl {
             version: VERSION.to_string(),
             network: revaultd.bitcoind_config.network,
             blockheight: blockheight as i32,
-            sync: self.bitcoind_conn.sync_progress(),
+            sync: self.bitcoind().sync_progress(),
             vaults: number_of_vaults,
             managers_threshold: revaultd.managers_threshold(),
             descriptors: GetInfoDescriptors {
@@ -225,12 +227,12 @@ impl DaemonControl {
     }
 
     /// List the current vaults, optionally filtered by status and/or deposit outpoints.
-    pub fn list_vaults(
+    fn list_vaults(
         &self,
         statuses: Option<Vec<VaultStatus>>,
         deposit_outpoints: Option<Vec<OutPoint>>,
     ) -> ListVaultsResult {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         ListVaultsResult {
             vaults: listvaults_from_db(&revaultd, statuses, deposit_outpoints)
                 .expect("Database must be available"),
@@ -238,13 +240,13 @@ impl DaemonControl {
     }
 
     /// Get the deposit address at the lowest still unused derivation index
-    pub fn get_deposit_address(&self) -> Address {
-        self.revaultd.read().unwrap().deposit_address()
+    fn get_deposit_address(&self) -> Address {
+        self.revaultd().deposit_address()
     }
 
     // Internal only, used for testing
-    pub(crate) fn get_deposit_address_at(&self, index: bip32::ChildNumber) -> Address {
-        self.revaultd.read().unwrap().vault_address(index)
+    fn get_deposit_address_at(&self, index: bip32::ChildNumber) -> Address {
+        self.revaultd().vault_address(index)
     }
 
     /// Get the revocation transactions for the vault identified by this outpoint.
@@ -253,11 +255,11 @@ impl DaemonControl {
     /// ## Errors
     /// - If called by a non-stakeholder
     /// - If called for an unknown or unconfirmed vault
-    pub fn get_revocation_txs(
+    fn get_revocation_txs(
         &self,
         deposit_outpoint: OutPoint,
     ) -> Result<RevocationTransactions, CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         stakeholder_only!(revaultd);
         let db_path = &revaultd.db_file();
 
@@ -302,14 +304,14 @@ impl DaemonControl {
     /// - If called for a non-stakeholder
     /// - If called for an unknown or not 'funded' vault
     /// - If given insane revocation txs PSBTs (without our signatures, with invalid sigs, ..)
-    pub fn set_revocation_txs(
+    fn set_revocation_txs(
         &self,
         deposit_outpoint: OutPoint,
         cancel_tx: CancelTransaction,
         emergency_tx: EmergencyTransaction,
         unvault_emergency_tx: UnvaultEmergencyTransaction,
     ) -> Result<(), CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         stakeholder_only!(revaultd);
         let db_path = revaultd.db_file();
         let secp_ctx = &revaultd.secp_ctx;
@@ -538,11 +540,11 @@ impl DaemonControl {
     /// ## Errors
     /// - If called for a non stakeholder
     /// - If called for an unknown or not 'funded' vault
-    pub fn get_unvault_tx(
+    fn get_unvault_tx(
         &self,
         deposit_outpoint: OutPoint,
     ) -> Result<UnvaultTransaction, CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         stakeholder_only!(revaultd);
         let db_path = &revaultd.db_file();
         assert!(revaultd.is_stakeholder());
@@ -589,12 +591,12 @@ impl DaemonControl {
     /// - If called for a non-stakeholder
     /// - If called for an unknown or not 'secured' vault
     /// - If passed an insane Unvault transaction (no sig for ourselves, invalid sig, ..)
-    pub fn set_unvault_tx(
+    fn set_unvault_tx(
         &self,
         deposit_outpoint: OutPoint,
         unvault_tx: UnvaultTransaction,
     ) -> Result<(), CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         stakeholder_only!(revaultd);
         let db_path = revaultd.db_file();
         let secp_ctx = &revaultd.secp_ctx;
@@ -715,11 +717,11 @@ impl DaemonControl {
     /// # Errors
     /// - If an outpoint does not refer to a known deposit, or if the status of the vault is
     /// part of `invalid_statuses`.
-    pub fn list_presigned_txs(
+    fn list_presigned_txs(
         &self,
         outpoints: &[OutPoint],
     ) -> Result<Vec<ListPresignedTxEntry>, CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         let db_path = revaultd.db_file();
         let db_vaults = if outpoints.is_empty() {
             db_vaults_min_status(&db_path, VaultStatus::Funded).expect("Database must be available")
@@ -736,11 +738,11 @@ impl DaemonControl {
     /// # Errors
     /// - If an outpoint does not refer to a known deposit, or if the status of the vault is
     /// part of `invalid_statuses`.
-    pub fn list_onchain_txs(
+    fn list_onchain_txs(
         &self,
         outpoints: &[OutPoint],
     ) -> Result<Vec<ListOnchainTxEntry>, CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         let db_path = &revaultd.db_file();
 
         let db_vaults = if outpoints.is_empty() {
@@ -756,7 +758,7 @@ impl DaemonControl {
 
             // If the vault exist, there must always be a deposit transaction available.
             let deposit = self
-                .bitcoind_conn
+                .bitcoind()
                 .wallet_tx(db_vault.deposit_outpoint.txid)?
                 .expect("Vault exists but not deposit tx?");
 
@@ -768,16 +770,16 @@ impl DaemonControl {
                     let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
                         .expect("Database must be available")
                         .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
+                    let unvault = self.bitcoind().wallet_tx(unvault_db_tx.psbt.txid())?;
                     (unvault, None, None, None, None)
                 }
                 VaultStatus::Spending | VaultStatus::Spent => {
                     let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
                         .expect("Database must be available")
                         .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
+                    let unvault = self.bitcoind().wallet_tx(unvault_db_tx.psbt.txid())?;
                     let spend = if let Some(spend_txid) = db_vault.final_txid {
-                        self.bitcoind_conn.wallet_tx(spend_txid)?
+                        self.bitcoind().wallet_tx(spend_txid)?
                     } else {
                         None
                     };
@@ -787,9 +789,9 @@ impl DaemonControl {
                     let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
                         .expect("Database must be available")
                         .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
+                    let unvault = self.bitcoind().wallet_tx(unvault_db_tx.psbt.txid())?;
                     let cancel = if let Some(cancel_txid) = db_vault.final_txid {
-                        self.bitcoind_conn.wallet_tx(cancel_txid)?
+                        self.bitcoind().wallet_tx(cancel_txid)?
                     } else {
                         None
                     };
@@ -801,7 +803,7 @@ impl DaemonControl {
                         let emer_db_tx = db_emer_transaction(db_path, db_vault.id)
                             .expect("Database must be available")
                             .ok_or(CommandError::Race)?;
-                        let emergency = self.bitcoind_conn.wallet_tx(emer_db_tx.psbt.txid())?;
+                        let emergency = self.bitcoind().wallet_tx(emer_db_tx.psbt.txid())?;
                         (None, None, emergency, None, None)
                     } else {
                         (None, None, None, None, None)
@@ -811,7 +813,7 @@ impl DaemonControl {
                     let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
                         .expect("Database must be available")
                         .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
+                    let unvault = self.bitcoind().wallet_tx(unvault_db_tx.psbt.txid())?;
 
                     // Emergencies are only for stakeholders!
                     if revaultd.is_stakeholder() {
@@ -819,7 +821,7 @@ impl DaemonControl {
                             .expect("Database must be available")
                             .ok_or(CommandError::Race)?;
                         let unvault_emergency =
-                            self.bitcoind_conn.wallet_tx(unemer_db_tx.psbt.txid())?;
+                            self.bitcoind().wallet_tx(unemer_db_tx.psbt.txid())?;
                         (unvault, None, None, unvault_emergency, None)
                     } else {
                         (unvault, None, None, None, None)
@@ -859,13 +861,13 @@ impl DaemonControl {
     /// - If the Spend transaction creation fails (for instance due to too-high fees or dust outputs)
     /// - If the created Spend transaction's feerate is more than 10% below the required feerate
     /// - If the created Spend transaction is too large to be transmitted to the coordinator
-    pub fn get_spend_tx(
+    fn get_spend_tx(
         &self,
         outpoints: &[OutPoint],
         destinations: BTreeMap<Address, u64>,
         feerate_vb: u64,
     ) -> Result<SpendTransaction, CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         manager_only!(revaultd);
         let db_file = &revaultd.db_file();
 
@@ -1017,8 +1019,8 @@ impl DaemonControl {
     /// - If called for a non-manager
     /// - If the given Spend transaction refers to an unknown Unvault txid
     /// - If the Spend refers to an Unvault of a vault that isn't 'active'
-    pub fn update_spend_tx(&self, spend_tx: SpendTransaction) -> Result<(), CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+    fn update_spend_tx(&self, spend_tx: SpendTransaction) -> Result<(), CommandError> {
+        let revaultd = self.revaultd();
         manager_only!(revaultd);
         let db_path = revaultd.db_file();
         let spend_txid = spend_tx.tx().txid();
@@ -1063,8 +1065,8 @@ impl DaemonControl {
     ///
     /// ## Errors
     /// - If called for a non-manager
-    pub fn del_spend_tx(&self, spend_txid: &Txid) -> Result<(), CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+    fn del_spend_tx(&self, spend_txid: &Txid) -> Result<(), CommandError> {
+        let revaultd = self.revaultd();
         manager_only!(revaultd);
         let db_path = revaultd.db_file();
         db_delete_spend(&db_path, spend_txid).expect("Database must be available");
@@ -1075,11 +1077,11 @@ impl DaemonControl {
     ///
     /// ## Errors
     /// - If called for a non-manager
-    pub fn list_spend_txs(
+    fn list_spend_txs(
         &self,
         statuses: Option<&[ListSpendStatus]>,
     ) -> Result<Vec<ListSpendEntry>, CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+        let revaultd = self.revaultd();
         manager_only!(revaultd);
         let db_path = revaultd.db_file();
 
@@ -1153,8 +1155,8 @@ impl DaemonControl {
     /// - If the txid doesn't refer to a known Spend (must be stored using `updatespendtx` first)
     /// - If the Spend PSBT doesn't contain enough signatures, or contain invalid ones
     /// - If the Spend is too large to be announced
-    pub fn set_spend_tx(&self, spend_txid: &Txid, priority: bool) -> Result<(), CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+    fn set_spend_tx(&self, spend_txid: &Txid, priority: bool) -> Result<(), CommandError> {
+        let revaultd = self.revaultd();
         manager_only!(revaultd);
         let db_path = revaultd.db_file();
 
@@ -1253,7 +1255,7 @@ impl DaemonControl {
                 Ok(unvault_tx.into_psbt().extract_tx())
             })
             .collect::<Result<Vec<BitcoinTransaction>, CommandError>>()?;
-        self.bitcoind_conn.broadcast(bitcoin_txs)?;
+        self.bitcoind().broadcast(bitcoin_txs)?;
         db_mark_broadcastable_spend(&db_path, spend_txid).expect("Database must be available");
 
         Ok(())
@@ -1264,8 +1266,8 @@ impl DaemonControl {
     /// ## Errors
     /// - If the outpoint doesn't refer to an existing, unvaulted (or unvaulting) vault
     /// - If the transaction broadcast fails for some reason
-    pub fn revault(&self, deposit_outpoint: &OutPoint) -> Result<(), CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+    fn revault(&self, deposit_outpoint: &OutPoint) -> Result<(), CommandError> {
+        let revaultd = self.revaultd();
         let db_path = revaultd.db_file();
 
         // Checking that the vault is secured, otherwise we don't have the cancel
@@ -1296,7 +1298,7 @@ impl DaemonControl {
             "Broadcasting Cancel transactions with id '{:?}'",
             transaction.txid()
         );
-        self.bitcoind_conn.broadcast(vec![transaction])?;
+        self.bitcoind().broadcast(vec![transaction])?;
 
         Ok(())
     }
@@ -1305,8 +1307,8 @@ impl DaemonControl {
     ///
     /// ## Errors
     /// - If called for a non-stakeholder
-    pub fn emergency(&self) -> Result<(), CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
+    fn emergency(&self) -> Result<(), CommandError> {
+        let revaultd = self.revaultd();
         stakeholder_only!(revaultd);
 
         // FIXME: there is a ton of edge cases not covered here. We should additionally opt for a
@@ -1314,14 +1316,14 @@ impl DaemonControl {
         // trying to be smart by differentiating between Emer and UnvaultEmer until we die or all
         // vaults are confirmed in the EDV.
         let emers = finalized_emer_txs(&revaultd)?;
-        self.bitcoind_conn.broadcast(emers)?;
+        self.bitcoind().broadcast(emers)?;
 
         Ok(())
     }
 
     /// Get information about all the configured servers.
-    pub fn get_servers_statuses(&self) -> ServersStatuses {
-        let revaultd = self.revaultd.read().unwrap();
+    fn get_servers_statuses(&self) -> ServersStatuses {
+        let revaultd = self.revaultd();
         let coordinator = coordinator_status(&revaultd);
         let cosigners = cosigners_status(&revaultd);
         let watchtowers = watchtowers_status(&revaultd);
@@ -1338,15 +1340,14 @@ impl DaemonControl {
     /// Aiming to give an accounting point of view, the amounts returned by this call are the total
     /// of inflows and outflows net of any change amount (that is technically a transaction output, but
     /// not a cash outflow).
-    pub fn get_history(
+    fn get_history(
         &self,
         start: u32,
         end: u32,
         limit: u64,
         kind: Vec<HistoryEventKind>,
     ) -> Result<Vec<HistoryEvent>, CommandError> {
-        let revaultd = self.revaultd.read().unwrap();
-        gethistory(&revaultd, &self.bitcoind_conn, start, end, limit, kind)
+        gethistory(&self.revaultd(), self.bitcoind(), start, end, limit, kind)
     }
 }
 

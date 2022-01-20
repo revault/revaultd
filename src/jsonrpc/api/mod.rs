@@ -5,7 +5,7 @@
 mod error;
 
 use crate::{
-    commands::{HistoryEventKind, ListSpendStatus},
+    commands::{DaemonCommands, HistoryEventKind, ListSpendStatus},
     revaultd::VaultStatus,
     DaemonControl,
 };

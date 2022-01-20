@@ -18,6 +18,7 @@ pub const VERSION: &str = "0.3.1";
 pub use crate::revaultd::{CpfpKeyError, NoiseKeyError};
 use crate::{
     bitcoind::{bitcoind_main_loop, start_bitcoind, BitcoindError},
+    commands::DaemonCommands,
     config::Config,
     database::{actions::setup_db, DatabaseError},
     revaultd::RevaultD,
@@ -28,7 +29,7 @@ use revault_tx::bitcoin::hashes::hex::ToHex;
 
 use std::{
     error, fmt, io, panic, process,
-    sync::{mpsc, Arc, RwLock},
+    sync::{mpsc, Arc, RwLock, RwLockReadGuard},
     thread,
 };
 
@@ -150,6 +151,15 @@ impl DaemonControl {
     pub fn rpc_server_setup(&self) -> Result<jsonrpc::server::UnixListener, io::Error> {
         let socket_file = self.revaultd.read().unwrap().rpc_socket_file();
         jsonrpc::server::rpcserver_setup(socket_file)
+    }
+}
+
+impl DaemonCommands for DaemonControl {
+    fn revaultd(&self) -> RwLockReadGuard<RevaultD> {
+        self.revaultd.read().unwrap()
+    }
+    fn bitcoind(&self) -> &dyn BitcoindThread {
+        &self.bitcoind_conn
     }
 }
 

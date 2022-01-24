@@ -15,7 +15,7 @@ mod utils;
 // FIXME: make it an integer
 pub const VERSION: &str = "0.3.1";
 
-pub use crate::revaultd::{CpfpKeyError, NoiseKeyError};
+pub use crate::revaultd::{CpfpKeyError, DatadirError, NoiseKeyError};
 use crate::{
     bitcoind::{bitcoind_main_loop, start_bitcoind, BitcoindError},
     config::Config,
@@ -69,7 +69,7 @@ pub enum StartupError {
     Cpfp(CpfpKeyError),
     Noise(NoiseKeyError),
     Io(io::Error),
-    DefaultDatadir,
+    Datadir(DatadirError),
     Db(DatabaseError),
     Bitcoind(BitcoindError),
 }
@@ -80,7 +80,7 @@ impl fmt::Display for StartupError {
             Self::Cpfp(e) => write!(f, "{}", e),
             Self::Noise(e) => write!(f, "{}", e),
             Self::Io(e) => write!(f, "{}", e),
-            Self::DefaultDatadir => write!(f, "Could not locate the default data directory."),
+            Self::Datadir(e) => write!(f, "{}", e),
             Self::Db(e) => write!(f, "Database error when starting revaultd: '{}'", e),
             Self::Bitcoind(e) => write!(f, "Bitcoind error when starting revaultd: '{}'", e),
         }
@@ -104,6 +104,11 @@ impl From<CpfpKeyError> for StartupError {
 impl From<DatabaseError> for StartupError {
     fn from(e: DatabaseError) -> Self {
         Self::Db(e)
+    }
+}
+impl From<DatadirError> for StartupError {
+    fn from(e: DatadirError) -> Self {
+        Self::Datadir(e)
     }
 }
 

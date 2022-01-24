@@ -87,24 +87,29 @@ impl From<revault_net::Error> for CommunicationError {
     }
 }
 
-// Send a `sig` (https://github.com/revault/practical-revault/blob/master/messages.md#sig)
+// Send a `sigs` (https://github.com/revault/practical-revault/blob/master/messages.md#sigs)
 // message to a watchtower.
-fn send_wt_sig_msg(
+fn send_wt_sigs_msg(
     transport: &mut KKTransport,
     deposit_outpoint: OutPoint,
     derivation_index: ChildNumber,
-    txid: Txid,
-    signatures: BTreeMap<secp256k1::PublicKey, secp256k1::Signature>,
+    emer_tx: &DbTransaction,
+    cancel_tx: &DbTransaction,
+    unemer_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
-    let sig_msg = watchtower::Sig {
+    let signatures = watchtower::Signatures {
+        emergency: emer_tx.psbt.signatures(),
+        cancel: cancel_tx.psbt.signatures(),
+        unvault_emergency: unemer_tx.psbt.signatures(),
+    };
+    let sig_msg = watchtower::Sigs {
         signatures,
-        txid,
         deposit_outpoint,
         derivation_index,
     };
 
     log::debug!("Sending signatures to watchtower: '{:?}'", sig_msg);
-    let sig_result: watchtower::SigResult = transport.send_req(&sig_msg.into())?;
+    let sig_result: watchtower::SigsResult = transport.send_req(&sig_msg.into())?;
     log::debug!(
         "Got response to signatures for '{}' from watchtower: '{:?}'",
         deposit_outpoint,
@@ -149,63 +154,26 @@ pub fn send_coord_sig_msg(
     Ok(())
 }
 
-/// Send the signatures for the Emergency transaction to the Watchtower.
-/// Only sharing the Emergency signature tells the watchtower to be aware of, but
-/// not watch, the vault. Later sharing the UnvaultEmergency and Cancel signatures
-/// will trigger it to watch it.
-// FIXME: better to share all signatures early and to then have another message
-// asking permission before delegating.
-pub fn wts_share_emer_signatures(
+/// Share the revocation transactions' signatures with all our watchtowers.
+pub fn wts_share_rev_signatures(
     noise_secret: &revault_net::noise::SecretKey,
     watchtowers: &[(std::net::SocketAddr, revault_net::noise::PublicKey)],
     deposit_outpoint: OutPoint,
     derivation_index: ChildNumber,
     emer_tx: &DbTransaction,
-) -> Result<(), CommunicationError> {
-    for (wt_host, wt_noisekey) in watchtowers {
-        let mut transport = KKTransport::connect(*wt_host, noise_secret, wt_noisekey)?;
-
-        send_wt_sig_msg(
-            &mut transport,
-            deposit_outpoint,
-            derivation_index,
-            emer_tx.psbt.txid(),
-            emer_tx.psbt.signatures(),
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Send the signatures for the UnvaultEmergency and Cancel transactions to all
-/// our watchtowers. This serves as a signal for watchtowers to start watching for
-/// this vault and they may therefore NACK that we delegate it (eg if they don't
-/// have enough fee reserve).
-pub fn wts_share_second_stage_signatures(
-    noise_secret: &revault_net::noise::SecretKey,
-    watchtowers: &[(std::net::SocketAddr, revault_net::noise::PublicKey)],
-    deposit_outpoint: OutPoint,
-    derivation_index: ChildNumber,
     cancel_tx: &DbTransaction,
-    unvault_emer_tx: &DbTransaction,
+    unemer_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
     for (wt_host, wt_noisekey) in watchtowers {
         let mut transport = KKTransport::connect(*wt_host, noise_secret, wt_noisekey)?;
 
-        // The watchtower enforces a specific sequence in which to exchange transactions
-        send_wt_sig_msg(
+        send_wt_sigs_msg(
             &mut transport,
             deposit_outpoint,
             derivation_index,
-            unvault_emer_tx.psbt.txid(),
-            unvault_emer_tx.psbt.signatures(),
-        )?;
-        send_wt_sig_msg(
-            &mut transport,
-            deposit_outpoint,
-            derivation_index,
-            cancel_tx.psbt.txid(),
-            cancel_tx.psbt.signatures(),
+            emer_tx,
+            cancel_tx,
+            unemer_tx,
         )?;
     }
 

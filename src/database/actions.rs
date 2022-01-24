@@ -262,9 +262,9 @@ pub fn db_insert_new_unconfirmed_vault(
         tx.execute(
             "INSERT INTO vaults ( \
                 wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
-                funded_at, secured_at, delegated_at, moved_at, final_txid, emer_shared \
+                funded_at, secured_at, delegated_at, moved_at, final_txid \
             ) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL, NULL, NULL, 0)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL, NULL, NULL)",
             params![
                 wallet_id,
                 VaultStatus::Unconfirmed as u32,
@@ -654,18 +654,6 @@ pub fn db_mark_activating_vault(db_path: &Path, vault_id: u32) -> Result<(), Dat
         .map_err(|e| DatabaseError(format!("Updating vault to 'securing': {}", e.to_string())))?;
 
         Ok(())
-    })
-}
-
-/// Mark a vault as having its Emergency signature already shared with the watchtowers.
-pub fn db_mark_emer_shared(db_path: &Path, db_vault: &DbVault) -> Result<(), DatabaseError> {
-    db_exec(db_path, |tx| {
-        tx.execute(
-            "UPDATE vaults SET emer_shared = 1 WHERE vaults.id = (?1)",
-            params![db_vault.id],
-        )
-        .map(|_| ())
-        .map_err(DatabaseError::from)
     })
 }
 
@@ -1430,21 +1418,6 @@ mod test {
         .unwrap();
         assert!(db_signed_emer_txs(&db_path).unwrap().is_empty());
         assert_eq!(db_signed_unemer_txs(&db_path).unwrap().len(), 1);
-
-        // Sanity check we can mark the Emergency as shared with the watchtowers
-        assert!(
-            !db_vault_by_deposit(&db_path, &db_vault.deposit_outpoint)
-                .unwrap()
-                .unwrap()
-                .emer_shared
-        );
-        db_mark_emer_shared(&db_path, &db_vault).unwrap();
-        assert!(
-            db_vault_by_deposit(&db_path, &db_vault.deposit_outpoint)
-                .unwrap()
-                .unwrap()
-                .emer_shared
-        );
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }

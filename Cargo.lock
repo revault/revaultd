@@ -438,7 +438,7 @@ dependencies = [
 [[package]]
 name = "revault_net"
 version = "0.2.1"
-source = "git+https://github.com/revault/revault_net#b90a09b8c6ce050edbfde2108c512f801bc42c68"
+source = "git+https://github.com/revault/revault_net#7b985bc729bb9c6a0e48f6361ce93f448bfd4283"
 dependencies = [
  "bitcoin",
  "log",

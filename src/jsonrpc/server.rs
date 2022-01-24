@@ -12,14 +12,8 @@ use std::{
     thread,
 };
 
-#[cfg(not(windows))]
 pub use mio::net::UnixListener;
-#[cfg(not(windows))]
 use mio::{net::UnixStream, Events, Interest, Poll, Token};
-#[cfg(windows)]
-pub use uds_windows::UnixListener;
-#[cfg(windows)]
-use uds_windows::UnixStream;
 
 use jsonrpc_core::{futures::Future, Call, MethodCall, Response};
 
@@ -62,10 +56,6 @@ fn read_bytes_from_stream(stream: &mut dyn io::Read) -> Result<Option<Vec<u8>>, 
                 // done writing.
                 if total_read == buf.len() {
                     buf.resize(total_read * 2, 0);
-                } else {
-                    // But on windows, we do as we'll never receive a WouldBlock..
-                    #[cfg(windows)]
-                    return Ok(Some(trimmed(buf, total_read)));
                 }
             }
             Err(err) => {
@@ -131,7 +121,6 @@ fn write_byte_stream(stream: &mut UnixStream, resp: Vec<u8>) -> Result<Option<Ve
 
 // Used to check if, when receiving an event for a token, we have an ongoing connection and stream
 // for it.
-#[cfg(not(windows))]
 type ConnectionMap = HashMap<Token, (UnixStream, Arc<RwLock<VecDeque<Vec<u8>>>>)>;
 
 fn handle_single_request(
@@ -235,8 +224,7 @@ fn read_handle_request(
     Ok(())
 }
 
-// For all but Windows, we use Mio.
-#[cfg(not(windows))]
+// Our main polling loop
 fn mio_loop(
     mut listener: UnixListener,
     jsonrpc_io: jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
@@ -375,52 +363,6 @@ fn mio_loop(
     }
 }
 
-// For windows, we don't: Mio UDS support for Windows is not yet implemented.
-#[cfg(windows)]
-fn windows_loop(
-    listener: UnixListener,
-    jsonrpc_io: jsonrpc_core::MetaIoHandler<JsonRpcMetaData>,
-    metadata: JsonRpcMetaData,
-) -> Result<(), io::Error> {
-    for mut stream in listener.incoming() {
-        let mut stream = stream?;
-
-        // Ok, so we got something to read (we don't respond to garbage)
-        while let Some(bytes) = read_bytes_from_stream(&mut stream)? {
-            // Is it actually readable?
-            match String::from_utf8(bytes) {
-                Ok(string) => {
-                    // If it is and wants a response, write it directly
-                    if let Some(resp) = jsonrpc_io.handle_request_sync(&string, metadata.clone()) {
-                        let mut resp = Some(resp.into_bytes());
-                        loop {
-                            resp = write_byte_stream(&mut stream, resp.unwrap())?;
-                            if resp.is_none() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "JSONRPC server: error interpreting request: '{}'",
-                        e.to_string()
-                    );
-                }
-            }
-        }
-
-        // We can't loop until is_shutdown() as we block until we got a message.
-        // So, to handle shutdown the cleanest way is to check if the above handler
-        // just set shutdown.
-        if metadata.is_shutdown() {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
 // Tries to bind to the socket, if we are told it's already in use try to connect
 // to check there is actually someone listening and it's not a leftover from a
 // crash.
@@ -448,11 +390,8 @@ fn bind(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
 /// Bind to the UDS at `socket_path`
 pub fn rpcserver_setup(socket_path: PathBuf) -> Result<UnixListener, io::Error> {
     // Create the socket with RW permissions only for the user
-    // FIXME: find a workaround for Windows...
-    #[cfg(unix)]
     let old_umask = unsafe { libc::umask(0o177) };
     let listener = bind(socket_path);
-    #[cfg(unix)]
     unsafe {
         libc::umask(old_umask);
     }
@@ -470,10 +409,7 @@ pub fn rpcserver_loop(
     let metadata = JsonRpcMetaData::new(daemon_control);
 
     log::info!("JSONRPC server started.");
-    #[cfg(not(windows))]
     return mio_loop(listener, jsonrpc_io, metadata);
-    #[cfg(windows)]
-    return windows_loop(listener, jsonrpc_io, metadata);
 }
 
 #[cfg(test)]
@@ -488,10 +424,7 @@ mod tests {
         time::Duration,
     };
 
-    #[cfg(not(windows))]
     use std::os::unix::net::UnixStream;
-    #[cfg(windows)]
-    use uds_windows::UnixStream;
 
     // Redundant with functional tests but useful for testing the Windows loop
     // until the functional tests suite can run on it.
@@ -539,8 +472,6 @@ mod tests {
             )
         );
 
-        // TODO: support this for Windows..
-        #[cfg(not(windows))]
         {
             // Write valid JSONRPC message with a half-written one afterward
             let msg = String::from(

@@ -6,6 +6,7 @@ pub mod commands;
 mod communication;
 pub mod config;
 mod database;
+#[cfg(all(not(windows), feature = "jsonrpc_server"))]
 mod jsonrpc;
 mod revaultd;
 mod sigfetcher;
@@ -150,8 +151,8 @@ impl DaemonControl {
         self.sigfetcher_conn.shutdown();
     }
 
-    // TODO: make it optional at compile time
     /// Start and bind the server to the configured UNIX socket
+    #[cfg(all(not(windows), feature = "jsonrpc_server"))]
     pub fn rpc_server_setup(&self) -> Result<jsonrpc::server::UnixListener, io::Error> {
         let socket_file = self.revaultd.read().unwrap().rpc_socket_file();
         jsonrpc::server::rpcserver_setup(socket_file)
@@ -264,8 +265,8 @@ impl DaemonHandle {
             .expect("Joining sigfetcher thread");
     }
 
-    // TODO: make it optional at compilation time
     /// Start the JSONRPC server and listen for commands until we are stopped
+    #[cfg(all(not(windows), feature = "jsonrpc_server"))]
     pub fn rpc_server(&self) -> Result<(), io::Error> {
         log::info!("Starting JSONRPC server");
 

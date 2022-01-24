@@ -9,10 +9,7 @@ use std::{
 
 use serde_json::Value as Json;
 
-#[cfg(not(windows))]
 use std::os::unix::net::UnixStream;
-#[cfg(windows)]
-use uds_windows::UnixStream;
 
 // Exits with error
 fn show_usage() {

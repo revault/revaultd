@@ -1342,6 +1342,7 @@ mod tests {
         // Let's upgraude vault[2] to Unvaulted...
         // (we can, as we're manually touching the db, even if we don't even have the fully signed
         // unvault!)
+        let unvault_height = 153;
         db_confirm_unvault(
             &db_file,
             &vaults[2]
@@ -1353,6 +1354,7 @@ mod tests {
                 .global
                 .unsigned_tx
                 .txid(),
+            unvault_height,
         )
         .unwrap();
         // I will get one emer and one unvault_emer
@@ -1373,6 +1375,7 @@ mod tests {
                 .global
                 .unsigned_tx
                 .txid(),
+            unvault_height,
         )
         .unwrap();
         // Two unvault emer!

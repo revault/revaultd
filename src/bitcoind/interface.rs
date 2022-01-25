@@ -700,9 +700,11 @@ impl BitcoinD {
                 {
                     new_conf.insert(
                         utxo.outpoint,
-                        UtxoInfo {
+                        BlockHeightUtxoInfo {
                             txo: utxo.txo,
-                            is_confirmed,
+                            confirmation_height: utxo
+                                .blockheight
+                                .expect("Must be here if confirmed"),
                         },
                     );
                 }
@@ -975,6 +977,38 @@ impl BitcoinD {
                 as i32
         }))
     }
+
+    pub fn get_block_stats(&self, blockhash: BlockHash) -> Result<BlockStats, BitcoindError> {
+        let res = self.make_watchonly_request(
+            "getblockheader",
+            &params!(Json::String(blockhash.to_string()),),
+        )?;
+        let confirmations = res
+            .get("confirmations")
+            .map(|a| a.as_i64())
+            .flatten()
+            .expect("Invalid confirmations in `getblockheader` response: not an i64")
+            as i32;
+        let previous_block_str = res
+            .get("previousblockhash")
+            .map(|a| a.as_str())
+            .flatten()
+            .expect("Invalid previousblockhash in `getblockheader` response: not a string");
+        let previous_blockhash = BlockHash::from_str(previous_block_str)
+            .expect("Invalid previousblockhash hex in `getblockheader` response");
+        let height = res
+            .get("height")
+            .map(|a| a.as_u64())
+            .flatten()
+            .expect("Invalid height in `getblockheader` response: not an u32")
+            as u32;
+        Ok(BlockStats {
+            confirmations,
+            previous_blockhash,
+            height,
+            blockhash,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -996,6 +1030,20 @@ pub struct UtxoInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct BlockHeightUtxoInfo {
+    pub txo: TxOut,
+    pub confirmation_height: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockStats {
+    pub confirmations: i32,
+    pub previous_blockhash: BlockHash,
+    pub blockhash: BlockHash,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone)]
 /// Onchain state of the deposit UTxOs
 pub struct DepositsState {
     /// The set of newly "received" deposit utxos
@@ -1009,7 +1057,7 @@ pub struct DepositsState {
 /// Onchain state of the Unvault UTxOs
 pub struct UnvaultsState {
     /// The set of newly confirmed unvault utxos
-    pub new_conf: HashMap<OutPoint, UtxoInfo>,
+    pub new_conf: HashMap<OutPoint, BlockHeightUtxoInfo>,
     /// The set of newly spent unvault utxos
     pub new_spent: HashMap<OutPoint, UtxoInfo>,
 }
@@ -1114,6 +1162,7 @@ pub struct ListSinceBlockTransaction {
     pub is_receive: bool,
     pub label: Option<String>,
     pub confirmations: i32,
+    pub blockheight: Option<u32>,
 }
 
 impl From<&Json> for ListSinceBlockTransaction {
@@ -1162,6 +1211,11 @@ impl From<&Json> for ListSinceBlockTransaction {
             .flatten()
             .expect("API break, 'listsinceblock' entry didn't contain a valid 'confirmations'.")
             as i32;
+        let blockheight = j
+            .get("blockheight")
+            .map(|a| a.as_u64())
+            .flatten()
+            .map(|b| b as u32);
         let label = j
             .get("label")
             .map(|l| l.as_str())
@@ -1180,6 +1234,7 @@ impl From<&Json> for ListSinceBlockTransaction {
                 script_pubkey,
             },
             confirmations,
+            blockheight,
         }
     }
 }

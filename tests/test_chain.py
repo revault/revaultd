@@ -33,23 +33,36 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
 
     # Now reorg the last block. This should not affect us, but we should detect
     # it.
-    bitcoind.simple_reorg(bitcoind.rpc.getblockcount() - 1)
+    reorg_height = bitcoind.rpc.getblockcount() - 1
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = ancestor_height - vault["blockheight"] + 1
+    bitcoind.simple_reorg(reorg_height)
     stk.wait_for_logs(
         [
             "Detected reorg",
-            # 7 because simple_reorg() adds a block
-            f"Vault deposit '{deposit}' still has '7' confirmations",
+            f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+            # The rescan code will log how many confirmations from the ancestor the vault has...
+            f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
+            # ...then, it's going to walk through the new chain and confirm it again
+            f"Vault at {deposit} is now confirmed"
+            # We want revaultd to acknowledge our latest tip before continuing (it could take a while)
+            f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
         ]
     )
     stk.wait_for_deposits([deposit])
 
     # Now actually reorg the deposit. This should not affect us
-    bitcoind.simple_reorg(vault["blockheight"])
+    reorg_height = vault["blockheight"]
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = ancestor_height - vault["blockheight"] + 1
+    bitcoind.simple_reorg(reorg_height)
     stk.wait_for_logs(
         [
             "Detected reorg",
-            # 8 because simple_reorg() adds a block
-            f"Vault deposit '{deposit}' still has '8' confirmations",
+            f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+            f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
+            f"Vault at {deposit} is now confirmed",
+            f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
         ]
     )
     stk.wait_for_deposits([deposit])
@@ -57,11 +70,17 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
     # Now reorg the deposit and shift the transaction up 3 blocks, since we are
     # adding an extra one during the reorg we should still have 6 confs and be
     # fine
-    bitcoind.simple_reorg(vault["blockheight"], shift=3)
+    reorg_height = vault["blockheight"]
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = ancestor_height - vault["blockheight"] + 1
+    bitcoind.simple_reorg(reorg_height, shift=3)
     stk.wait_for_logs(
         [
             "Detected reorg",
-            f"Vault deposit '{deposit}' still has '6' confirmations",
+            f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+            f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
+            f"Vault at {deposit} is now confirmed",
+            f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
         ]
     )
     stk.wait_for_deposits([deposit])
@@ -69,12 +88,19 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
     # Now reorg the deposit and shift the transaction up 2 blocks, since we are
     # adding an extra one during the reorg we should end up with 5 confs, and
     # mark the vault as unconfirmed
-    bitcoind.simple_reorg(vault["blockheight"] + 3, shift=2)
+    reorg_height = vault["blockheight"] + 3
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height, shift=2)
     stk.wait_for_logs(
         [
             "Detected reorg",
-            f"Vault deposit '{deposit}' ended up with '5' confirmations",
+            f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+            f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
             "Rescan of all vaults in db done.",
+            f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
         ]
     )
     wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "unconfirmed")
@@ -90,6 +116,7 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
             f"Vault deposit '{deposit}' is already unconfirmed",
             "Rescan of all vaults in db done.",
             f"Vault at {deposit} is now confirmed",
+            f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
         ]
     )
     wait_for(lambda: stk.rpc.listvaults()["vaults"][0]["status"] == "funded")
@@ -97,13 +124,18 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
     for field in ["secured_at", "delegated_at", "moved_at"]:
         assert stk.rpc.listvaults()["vaults"][0][field] is None
 
-    # Now try to completely evict it from the chain with a 6-blocks reorg. We
-    # should mark it as unconfirmed (but it's not the same codepath).
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 2, shift=-1)
+    # Now try to completely evict it from the chain with a 6-blocks reorg.
+    reorg_height = vault["blockheight"] + 3 + 2
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height, shift=-1)
     stk.wait_for_logs(
         [
             "Detected reorg",
-            f"Vault deposit '{deposit}' ended up without confirmation",
+            f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+            f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
             "Rescan of all vaults in db done.",
         ]
     )
@@ -167,27 +199,39 @@ def test_reorged_deposit_status(revault_network, bitcoind):
     vault = revault_network.fund(0.14)
     revault_network.secure_vault(vault)
     deposit = f"{vault['txid']}:{vault['vout']}"
+    stk = revault_network.stk(0)
 
     # Reorg the deposit. This should not affect us as the transaction did not
     # shift
+    reorg_height = vault["blockheight"]
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = ancestor_height - vault["blockheight"] + 1
     bitcoind.simple_reorg(vault["blockheight"])
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                # 7 because simple_reorg() adds a block
-                f"Vault deposit '{deposit}' still has '7' confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
+                "Rescan of all vaults in db done.",
+                f"Vault at {deposit} is now confirmed",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
 
     # Now actually shift it (7 + 1 - 3 == 5)
-    bitcoind.simple_reorg(vault["blockheight"], shift=3)
+    reorg_height = vault["blockheight"]
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = ancestor_height - vault["blockheight"] + 1
+    bitcoind.simple_reorg(reorg_height, shift=3)
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault deposit '{deposit}' ended up with '5' confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
         wait_for(
@@ -210,22 +254,37 @@ def test_reorged_deposit_status(revault_network, bitcoind):
 
     # Now do the same dance with the 'active' status
     revault_network.activate_vault(vault)
-    bitcoind.simple_reorg(vault["blockheight"] + 3)
+    reorg_height = vault["blockheight"] + 3
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height)
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
                 # 7 because simple_reorg() adds a block
-                f"Vault deposit '{deposit}' still has '7' confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
+                "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
-    bitcoind.simple_reorg(vault["blockheight"] + 3, shift=3)
+    reorg_height = vault["blockheight"] + 3
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height, shift=3)
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault deposit '{deposit}' ended up with '5' confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
@@ -240,26 +299,40 @@ def test_reorged_deposit_status(revault_network, bitcoind):
 
     # If we are stopped during the reorg, we recover in the same way at startup
     revault_network.stop_wallets()
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3)
+    reorg_height = vault["blockheight"] + 3 + 3
+    ancestor_height = reorg_height - 1
+    bitcoind.simple_reorg(reorg_height)
     revault_network.start_wallets()
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                # 7 because simple_reorg() adds a block
-                f"Vault deposit '{deposit}' still has '7' confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
+                "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
 
     revault_network.stop_wallets()
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3, shift=3)
+    reorg_height = vault["blockheight"] + 3 + 3
+    ancestor_height = reorg_height - 1
+    bitcoind.simple_reorg(reorg_height, shift=3)
     revault_network.start_wallets()
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault deposit '{deposit}' ended up with '5' confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
@@ -278,34 +351,51 @@ def test_reorged_deposit_status(revault_network, bitcoind):
 
     # Keep track of the deposit transaction for later use as we'll reorg deeply enough that
     # bitcoind won't add the transactions back to mempool.
-    deposit_tx = revault_network.stk(0).rpc.listonchaintransactions([deposit])[
-        "onchain_transactions"
-    ][0]["deposit"]["hex"]
+    deposit_tx = stk.rpc.listonchaintransactions([deposit])["onchain_transactions"][0][
+        "deposit"
+    ]["hex"]
 
     # If the deposit is not unconfirmed, it's fine
     revault_network.spend_vaults_anyhow([vault])
+    logging.info(f"{bitcoind.rpc.getbestblockhash()}")
     for w in revault_network.mans():
         assert len(w.rpc.listspendtxs()["spend_txs"]) == 1
         for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
             assert w.rpc.listvaults()["vaults"][0][field] is not None, field
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3)
+    reorg_height = vault["blockheight"] + 3 + 3 + 3
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height)
+    logging.info(f"{bitcoind.rpc.getbestblockhash()}")
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault deposit '{deposit}' still has .* confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
 
     # If it is then we'll mark it back as unvaulting
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3, shift=-1)
+    reorg_height = vault["blockheight"] + 3 + 3 + 3
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height, shift=-1)
+    logging.info(f"{bitcoind.rpc.getbestblockhash()}")
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault deposit '{deposit}' ended up without confirmation",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == 1)
@@ -318,7 +408,11 @@ def test_reorged_deposit_status(revault_network, bitcoind):
     # Re-confirm the vault, get it active, then unvault and cancel it.
     bitcoind.rpc.sendrawtransaction(deposit_tx)
     bitcoind.generate_block(1, wait_for_mempool=2)
-    vault = revault_network.stk(0).rpc.listvaults(
+    logging.info(f"{bitcoind.rpc.getbestblockhash()}")
+    for w in revault_network.participants():
+        wait_for(lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == 1)
+
+    vault = stk.rpc.listvaults(
         # NB: 'unvaulting' because we reuse a vault that was previously spent! (ie
         # the Spend transaction is in the walelt and therefore we don't keep track
         # of the Unvault confirmation)
@@ -327,25 +421,39 @@ def test_reorged_deposit_status(revault_network, bitcoind):
     revault_network.cancel_vault(vault)
 
     # If the deposit is not unconfirmed, nothing changes
-    bitcoind.simple_reorg(vault["blockheight"], shift=2)
+    reorg_height = vault["blockheight"]
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height, shift=2)
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault deposit '{deposit}' still has .* confirmations",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
 
     # If it is then it'll be marked as 'canceling'
     logging.debug(f"Before block count {bitcoind.rpc.getblockcount()}")
-    bitcoind.simple_reorg(vault["blockheight"] + 2, shift=-1)
+    reorg_height = vault["blockheight"] + 2
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height, shift=-1)
     for w in revault_network.participants():
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault deposit '{deposit}' ended up without confirmation",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
         wait_for(lambda: len(w.rpc.listvaults(["canceling"])["vaults"]) == 1)
@@ -542,6 +650,7 @@ def test_reorged_cancel(revault_network, bitcoind):
     cancel_tx = mans[0].rpc.listonchaintransactions([deposit])["onchain_transactions"][
         0
     ]["cancel"]
+    logging.info(mans[0].rpc.listonchaintransactions([deposit]))
 
     # Reorging, but not unconfirming the cancel
     bitcoind.simple_reorg(cancel_tx["blockheight"])
@@ -549,8 +658,10 @@ def test_reorged_cancel(revault_network, bitcoind):
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault {deposit}'s Cancel transaction is still confirmed",
+                f"Vault {deposit}'s Unvault transaction .* got unconfirmed",
+                f"Unvault transaction at .* is now being canceled",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
 
@@ -562,6 +673,7 @@ def test_reorged_cancel(revault_network, bitcoind):
                 "Detected reorg",
                 f"Vault {deposit}'s Cancel transaction .* got unconfirmed",
                 "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
             ]
         )
     for w in stks + mans:

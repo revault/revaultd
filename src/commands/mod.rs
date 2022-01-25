@@ -14,8 +14,7 @@ use crate::{
     communication::{
         announce_spend_transaction, check_spend_transaction_size, coord_share_rev_signatures,
         coordinator_status, cosigners_status, fetch_cosigs_signatures, share_unvault_signatures,
-        watchtowers_status, wts_share_emer_signatures, wts_share_second_stage_signatures,
-        CommunicationError,
+        watchtowers_status, wts_share_rev_signatures, CommunicationError,
     },
     database::{
         actions::{
@@ -503,19 +502,40 @@ impl DaemonControl {
             .expect("The database must be available");
         db_mark_securing_vault(&db_path, db_vault.id).expect("The database must be available");
 
-        // If this made the Emergency fully signed and we are a stakeholder, share
-        // it with our watchtowers.
-        let emer_db_tx = db_emer_transaction(&db_path, db_vault.id)
-            .expect("The database must be available")
+        // Now, check whether this made all revocation transactions fully signed
+        let emer_tx = db_emer_transaction(&db_path, db_vault.id)
+            .expect("Database must be available")
             .ok_or(CommandError::Race)?;
-        if !db_vault.emer_shared && emer_db_tx.psbt.unwrap_emer().is_finalizable(secp_ctx) {
+        let cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
+            .expect("Database must be available")
+            .ok_or(CommandError::Race)?;
+        let unemer_tx = db_unvault_emer_transaction(&db_path, db_vault.id)
+            .expect("Database must be available")
+            .ok_or(CommandError::Race)?;
+        let all_rev_fully_signed = emer_tx
+            .psbt
+            .unwrap_emer()
+            .is_finalizable(&revaultd.secp_ctx)
+            && cancel_tx
+                .psbt
+                .unwrap_cancel()
+                .is_finalizable(&revaultd.secp_ctx)
+            && unemer_tx
+                .psbt
+                .unwrap_unvault_emer()
+                .is_finalizable(&revaultd.secp_ctx);
+
+        // If it did, share their signatures with our watchtowers
+        if all_rev_fully_signed {
             if let Some(ref watchtowers) = revaultd.watchtowers {
-                wts_share_emer_signatures(
+                wts_share_rev_signatures(
                     &revaultd.noise_secret,
                     &watchtowers,
                     db_vault.deposit_outpoint,
                     db_vault.derivation_index,
-                    &emer_db_tx,
+                    &emer_tx,
+                    &cancel_tx,
+                    &unemer_tx,
                 )?;
             }
         }
@@ -673,25 +693,6 @@ impl DaemonControl {
                         sig, e
                     ))
                 })?;
-        }
-
-        // The watchtower(s) MUST have our second-stage (UnvaultEmer, Cancel) signatures
-        // before we share the Unvault one.
-        if let Some(ref watchtowers) = revaultd.watchtowers {
-            let unemer_db_tx = db_unvault_emer_transaction(&db_path, db_vault.id)
-                .expect("The database must be available")
-                .ok_or(CommandError::Race)?;
-            let cancel_db_tx = db_cancel_transaction(&db_path, db_vault.id)
-                .expect("The database must be available")
-                .ok_or(CommandError::Race)?;
-            wts_share_second_stage_signatures(
-                &revaultd.noise_secret,
-                &watchtowers,
-                db_vault.deposit_outpoint,
-                db_vault.derivation_index,
-                &cancel_db_tx,
-                &unemer_db_tx,
-            )?;
         }
 
         // Sanity checks passed. Store it then share it.

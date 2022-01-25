@@ -1,12 +1,14 @@
 ///! Background thread that will poll the coordinator for signatures
 use crate::{
     communication::{
-        get_presigs, send_coord_sig_msg, wts_share_emer_signatures, CommunicationError,
+        get_presigs, send_coord_sig_msg, wts_share_rev_signatures, CommunicationError,
     },
     database::{
-        actions::{db_mark_emer_shared, db_update_presigned_txs, db_update_vault_status},
+        actions::{db_update_presigned_txs, db_update_vault_status},
         bitcointx::RevaultTx,
-        interface::{db_emer_transaction, db_sig_missing},
+        interface::{
+            db_cancel_transaction, db_emer_transaction, db_sig_missing, db_unvault_emer_transaction,
+        },
         schema::{DbTransaction, DbVault},
         DatabaseError,
     },
@@ -144,44 +146,60 @@ fn sync_sigs<C: secp256k1::Verification>(
     Ok(())
 }
 
-// If we are a stakeholder, share the signatures for the Emergency transaction
+// If we are a stakeholder, share the signatures for our revocation transactions
 // with all our watchtowers.
 fn maybe_wt_share_signatures(
     revaultd: &RevaultD,
     db_path: &path::Path,
     db_vault: &DbVault,
 ) -> Result<(), SignatureFetcherError> {
-    if db_vault.emer_shared {
-        return Ok(());
-    }
     let watchtowers = match revaultd.watchtowers {
         Some(ref wt) => wt,
         None => return Ok(()),
     };
 
-    // It should always be here, apart from a very edgy race condition.
+    // They should always be there, apart from a very edgy race condition.
     let emer_tx = db_emer_transaction(db_path, db_vault.id)?
         .ok_or(SignatureFetcherError::MissingTransaction)?;
-    if emer_tx
+    if !emer_tx
         .psbt
         .unwrap_emer()
         .is_finalizable(&revaultd.secp_ctx)
     {
-        log::debug!(
-            "Sharing emergency signatures with watchtowers for vault at '{}'",
-            &db_vault.deposit_outpoint
-        );
-        wts_share_emer_signatures(
-            &revaultd.noise_secret,
-            watchtowers,
-            db_vault.deposit_outpoint,
-            db_vault.derivation_index,
-            &emer_tx,
-        )?;
-        // FIXME: what if only part of the watchtowers got the sig? The WT should
-        // be less strict on that..
-        db_mark_emer_shared(db_path, db_vault)?;
+        return Ok(());
     }
+    let cancel_tx = db_cancel_transaction(db_path, db_vault.id)?
+        .ok_or(SignatureFetcherError::MissingTransaction)?;
+    if !cancel_tx
+        .psbt
+        .unwrap_cancel()
+        .is_finalizable(&revaultd.secp_ctx)
+    {
+        return Ok(());
+    }
+    let unemer_tx = db_unvault_emer_transaction(db_path, db_vault.id)?
+        .ok_or(SignatureFetcherError::MissingTransaction)?;
+    if !unemer_tx
+        .psbt
+        .unwrap_unvault_emer()
+        .is_finalizable(&revaultd.secp_ctx)
+    {
+        return Ok(());
+    }
+
+    log::debug!(
+        "Sharing revocation signatures with watchtowers for vault at '{}'",
+        &db_vault.deposit_outpoint
+    );
+    wts_share_rev_signatures(
+        &revaultd.noise_secret,
+        watchtowers,
+        db_vault.deposit_outpoint,
+        db_vault.derivation_index,
+        &emer_tx,
+        &cancel_tx,
+        &unemer_tx,
+    )?;
 
     Ok(())
 }

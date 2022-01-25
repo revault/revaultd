@@ -140,9 +140,9 @@ addr = "127.0.0.1:8332"
             tx.execute(
             "INSERT INTO vaults ( \
                 wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
-                funded_at, moved_at, final_txid, emer_shared \
+                funded_at, moved_at, final_txid \
             ) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 wallet_id,
                 status as u32,

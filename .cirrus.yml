@@ -28,21 +28,6 @@ task:
     folder: $CARGO_HOME/registry
     fingerprint_script: cat Cargo.lock
   before_cache_script: rm -rf $CARGO_HOME/registry/index
-  target_cache:
-    folder: target
-    fingerprint_script:
-      - rustc --version
-      - cat Cargo.lock
-  bitcoind_cache:
-    folder: $BITCOIND_DIR_NAME
-  coordinatord_cache:
-    folder: tests/servers/coordinatord
-    fingerprint_script:
-      - cd tests/servers/coordinatord && git rev-parse HEAD
-  cosignerd_cache:
-    folder: tests/servers/cosignerd
-    fingerprint_script:
-      - cd tests/servers/cosignerd && git rev-parse HEAD
 
   test_script: |
     set -xe

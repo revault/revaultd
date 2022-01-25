@@ -26,16 +26,6 @@ def test_wt_share_revocation_txs(revault_network, bitcoind):
             f"Registered a new vault at '{deposit}'",
         )
 
-    rn.activate_vault(v)
-    for stk in rn.stks():
-        stk.watchtower.wait_for_logs(
-            [
-                f"Got UnEmer transaction signatures for vault at '{deposit}'",
-                f"Got Cancel transaction signatures for vault at '{deposit}'."
-                " Now watching for Unvault broadcast.",
-            ]
-        )
-
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_wt_policy(directory, revault_network, bitcoind):

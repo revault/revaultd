@@ -113,6 +113,53 @@ def test_reorged_deposit(revaultd_stakeholder, bitcoind):
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_reorg_repro(revault_network, bitcoind):
+    # A csv of 2 because bitcoind would discard updating the mempool if the reorg is >10
+    # blocks long.
+    revault_network.deploy(4, 2, csv=2, with_watchtowers=False)
+    vault = revault_network.fund(0.14)
+    logging.info(vault)
+    revault_network.secure_vault(vault)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    stk = revault_network.stk(0)
+    deposit_tx = stk.rpc.listonchaintransactions([deposit])["onchain_transactions"][0][
+        "deposit"
+    ]["hex"]
+    revault_network.activate_vault(vault)
+    revault_network.spend_vaults_anyhow([vault])
+    reorg_height = vault["blockheight"] - 3 - 3 - 3
+    ancestor_height = reorg_height - 1
+    conf_since_ancestor = (
+        ancestor_height - stk.rpc.listvaults()["vaults"][0]["blockheight"] + 1
+    )
+    bitcoind.simple_reorg(reorg_height)
+    for w in revault_network.participants():
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Unwinding the state until the common ancestor: {bitcoind.rpc.getblockhash(ancestor_height)}",
+                f"Vault deposit '{deposit}' ended up with '{conf_since_ancestor}' confirmations",
+                "Rescan of all vaults in db done.",
+                f"New tip event: BlockchainTip {{ height: {bitcoind.rpc.getblockcount()}, hash: { bitcoind.rpc.getbestblockhash() } }}",
+            ]
+        )
+    # Re-confirm the vault, get it active, then unvault and cancel it.
+    bitcoind.rpc.sendrawtransaction(deposit_tx)
+    bitcoind.generate_block(1, wait_for_mempool=2)
+    logging.info(f"{bitcoind.rpc.getbestblockhash()}")
+    for w in revault_network.participants():
+        wait_for(lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == 1)
+
+    vault = stk.rpc.listvaults(
+        # NB: 'unvaulting' because we reuse a vault that was previously spent! (ie
+        # the Spend transaction is in the walelt and therefore we don't keep track
+        # of the Unvault confirmation)
+        ["unvaulting"]
+    )["vaults"][0]
+    revault_network.cancel_vault(vault)
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_deposit_status(revault_network, bitcoind):
     # A csv of 2 because bitcoind would discard updating the mempool if the reorg is >10
     # blocks long.

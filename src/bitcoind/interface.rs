@@ -651,26 +651,16 @@ impl BitcoinD {
         // Second, we scan for new ones.
         let utxos = self.list_deposits_since_block(db_tip)?;
         for utxo in utxos {
-            if utxo.is_receive {
-                if deposits_utxos.get(&utxo.outpoint).is_none() {
-                    // Alright, I don't have this outpoint in the cache... But maybe I don't have
-                    // it because it's spent already! Let's check.
-                    if self
-                        .get_unspent_outpoint_confirmations(&utxo.outpoint)?
-                        .is_some()
-                    {
-                        // If I've never heard about it, and it's not already spent, then it's new
-                        new_unconf.insert(
-                            utxo.outpoint,
-                            UtxoInfo {
-                                txo: utxo.txo,
-                                // All new utxos are marked as unconfirmed. This allows for a proper state
-                                // transition.
-                                is_confirmed: false,
-                            },
-                        );
-                    }
-                }
+            if utxo.is_receive && deposits_utxos.get(&utxo.outpoint).is_none() {
+                new_unconf.insert(
+                    utxo.outpoint,
+                    UtxoInfo {
+                        txo: utxo.txo,
+                        // All new utxos are first marked as unconfirmed. This allows for a
+                        // proper state transition.
+                        is_confirmed: false,
+                    },
+                );
             }
         }
 

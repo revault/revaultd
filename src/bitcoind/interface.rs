@@ -643,8 +643,26 @@ impl BitcoinD {
                     );
                 }
             } else {
-                // We've seen it unspent and now it's not here anymore: it's spent.
-                new_spent.insert(*outpoint, info.clone());
+                // Only a 'funded' vault can get to 'unvaulting'.
+                if info.is_confirmed {
+                    // We've seen it unspent and now it's not here anymore: it's spent.
+                    new_spent.insert(*outpoint, info.clone());
+                } else {
+                    let confs = self
+                        .get_wallet_transaction(&outpoint.txid)?
+                        .blockheight
+                        .map(|bh| db_tip.height.checked_add(1).unwrap().checked_sub(bh))
+                        .flatten();
+                    if confs >= Some(min_conf) {
+                        new_conf.insert(
+                            *outpoint,
+                            UtxoInfo {
+                                txo: info.txo.clone(),
+                                is_confirmed: true,
+                            },
+                        );
+                    }
+                }
             }
         }
 

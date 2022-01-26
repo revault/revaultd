@@ -4,7 +4,7 @@ use crate::{
         interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},
         utils::{
             cancel_txid, emer_txid, populate_deposit_cache, populate_unvaults_cache,
-            presigned_transactions, unemer_txid, unvault_txin_from_deposit,
+            presigned_transactions, unemer_txid, unvault_txin_from_deposit, vault_deposit_utxo,
         },
         BitcoindError,
     },
@@ -725,17 +725,21 @@ fn unconfirm_unvault(
     Ok(())
 }
 
-// Rewind the state of a vault for which the Unvault transaction was never broadcast.
+// Mark a vault as unconfirmed in DB, and update the caches accordingly.
 // Will panic if called for an unconfirmed vault.
 fn unconfirm_vault(
-    revaultd: &Arc<RwLock<RevaultD>>,
+    revaultd: &RevaultD,
     bitcoind: &BitcoinD,
     db_tx: &rusqlite::Transaction,
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
     vault: &DbVault,
 ) -> Result<(), BitcoindError> {
-    // Just in case, rebroadcast the deposit transaction anyways
+    let unvault_tx = db_unvault_dbtx(db_tx, vault.id)?;
+
+    // Just in case, rebroadcast the deposit transaction
+    // TODO: rework the re-broadcast mechanism, it's awful at the moment.
+    // TODO: If it was in an Emergency status, re-broadcast all the Emergency transactions
     let deposit_txid = vault.deposit_outpoint.txid;
     match bitcoind.rebroadcast_wallet_tx(&deposit_txid) {
         Ok(()) => {}
@@ -746,58 +750,50 @@ fn unconfirm_vault(
         ),
     }
 
-    match vault.status {
-        VaultStatus::Unconfirmed => unreachable!("Unconfirming a confirmed vault"),
-        VaultStatus::Unvaulting
-        | VaultStatus::Unvaulted
-        | VaultStatus::Spending
-        | VaultStatus::Spent
-        | VaultStatus::Canceling
-        | VaultStatus::Canceled
-        | VaultStatus::UnvaultEmergencyVaulting
-        | VaultStatus::UnvaultEmergencyVaulted => {
-            // If it was already at the 'second layer' (in the transaction chain, post Unvault
-            // broadcast), just rewind the state to this point. This is tremendously unlikely in
-            // real conditions (min conf for the deposits + say, X blocks of CSV if Spent already
-            // so that'd be a reorg of several dozens of blocks).
-            let unvault_tx = db_unvault_dbtx(db_tx, vault.id)?.ok_or_else(|| {
-                BitcoindError::Custom(format!(
-                    "Vault '{}' has status '{}' but no Unvault in database!",
-                    vault.deposit_outpoint, vault.status
-                ))
-            })?;
-            unconfirm_unvault(
-                revaultd,
-                bitcoind,
-                db_tx,
-                unvaults_cache,
-                vault,
-                &unvault_tx,
-            )?;
-
-            // TODO: if it was in UnvaultEmergency, re-broadcast all the Emergency transactions
-
-            Ok(())
-        }
-        VaultStatus::Funded
-        | VaultStatus::Securing
-        | VaultStatus::Secured
-        | VaultStatus::Activating
-        | VaultStatus::Active
-        | VaultStatus::EmergencyVaulting
-        | VaultStatus::EmergencyVaulted => {
-            // If it was still at the 'first layer', just mark it as unconfirmed.
-            db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
-            deposits_cache
-                .get_mut(&vault.deposit_outpoint)
-                .expect("Not unvaulted yet")
-                .is_confirmed = false;
-
-            // TODO: If it was in Emergency, re-broadcast all the Emergency transactions
-
-            Ok(())
-        }
+    // If it was at the second stage, unconfirm the Unvault first. It will re-broadcast
+    // the necessary transactions
+    if matches!(
+        vault.status,
+        VaultStatus::Unvaulted
+            | VaultStatus::Spending
+            | VaultStatus::Spent
+            | VaultStatus::Canceling
+            | VaultStatus::Canceled
+            | VaultStatus::UnvaultEmergencyVaulting
+            | VaultStatus::UnvaultEmergencyVaulted
+    ) {
+        unconfirm_unvault(
+            revaultd,
+            bitcoind,
+            db_tx,
+            unvaults_cache,
+            vault,
+            unvault_tx
+                .as_ref()
+                .expect("Must be in DB for these statuses"),
+        )?;
     }
+
+    // In any case, it must not stay in the unvaults cache
+    if let Some(ref unvault_tx) = unvault_tx {
+        let der_unvault_descriptor = revaultd
+            .unvault_descriptor
+            .derive(vault.derivation_index, &revaultd.secp_ctx);
+        let unvault_txin = unvault_tx.revault_unvault_txin(&der_unvault_descriptor);
+        let unvault_outpoint = unvault_txin.outpoint();
+        unvaults_cache.remove(&unvault_outpoint);
+    };
+
+    // Insert it in the deposit cache as unconfirmed, equivalent to update it to
+    // unconfirmed if already present.
+    let mut utxo = vault_deposit_utxo(revaultd, vault);
+    utxo.is_confirmed = false;
+    deposits_cache.insert(vault.deposit_outpoint, utxo);
+
+    // Finally unconfirm it from DB and wipe all associated transactions
+    db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
+
+    Ok(())
 }
 
 // Get our state up to date with bitcoind.
@@ -848,7 +844,7 @@ fn comprehensive_rescan(
             let deposit_conf = ancestor.height as i32 - deposit_blockheight as i32 + 1;
             if deposit_conf < min_conf as i32 {
                 unconfirm_vault(
-                    revaultd,
+                    &revaultd.read().unwrap(),
                     bitcoind,
                     db_tx,
                     deposits_cache,

@@ -81,6 +81,22 @@ pub fn presigned_transactions(
     }
 }
 
+/// Derive the deposit UTxO of this vault
+pub fn vault_deposit_utxo(revaultd: &RevaultD, db_vault: &DbVault) -> UtxoInfo {
+    let der_deposit_descriptor = revaultd
+        .deposit_descriptor
+        .derive(db_vault.derivation_index, &revaultd.secp_ctx);
+    let script_pubkey = der_deposit_descriptor.inner().script_pubkey();
+    let txo = TxOut {
+        script_pubkey,
+        value: db_vault.amount.as_sat(),
+    };
+    UtxoInfo {
+        txo,
+        is_confirmed: !matches!(db_vault.status, VaultStatus::Unconfirmed),
+    }
+}
+
 /// Fill up the deposit UTXOs cache from db vaults
 pub fn populate_deposit_cache(
     revaultd: &RevaultD,
@@ -89,21 +105,8 @@ pub fn populate_deposit_cache(
     let mut cache = HashMap::with_capacity(db_vaults.len());
 
     for db_vault in db_vaults.into_iter() {
-        let der_deposit_descriptor = revaultd
-            .deposit_descriptor
-            .derive(db_vault.derivation_index, &revaultd.secp_ctx);
-        let script_pubkey = der_deposit_descriptor.inner().script_pubkey();
-        let txo = TxOut {
-            script_pubkey,
-            value: db_vault.amount.as_sat(),
-        };
-        cache.insert(
-            db_vault.deposit_outpoint,
-            UtxoInfo {
-                txo,
-                is_confirmed: !matches!(db_vault.status, VaultStatus::Unconfirmed),
-            },
-        );
+        let utxo_info = vault_deposit_utxo(revaultd, &db_vault);
+        cache.insert(db_vault.deposit_outpoint, utxo_info);
         log::debug!("Loaded deposit '{}' from db", db_vault.deposit_outpoint);
     }
 

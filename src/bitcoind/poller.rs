@@ -634,22 +634,49 @@ fn new_tip_event(
     Ok(())
 }
 
-// Rewind the state of a vault for which the Unvault transaction was already broadcast
+// Rewind the state of a vault whose Unvault transaction got unconfirmed.
+// Panics if the status of the vault isn't at the "second stage".
 fn unconfirm_unvault(
-    revaultd: &Arc<RwLock<RevaultD>>,
+    revaultd: &RevaultD,
     bitcoind: &BitcoinD,
     db_tx: &rusqlite::Transaction,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
     vault: &DbVault,
     unvault_tx: &UnvaultTransaction,
 ) -> Result<(), BitcoindError> {
+    assert!(matches!(
+        vault.status,
+        VaultStatus::Unvaulted
+            | VaultStatus::Spending
+            | VaultStatus::Spent
+            | VaultStatus::Canceling
+            | VaultStatus::Canceled
+            | VaultStatus::UnvaultEmergencyVaulting
+            | VaultStatus::UnvaultEmergencyVaulted
+    ));
     let unvault_txid = unvault_tx.txid();
 
-    // Mark it as 'unvaulting', note however that if it was Spent or Canceled it will be marked as
-    // 'spending' or 'canceling' right away by the bitcoind polling loop as `listunspent` will
-    // consider the Unvault transaction as spent if a wallet transaction was recorded spending it
-    // **even if it becomes invalid**.
+    // First of all, downgrade the vault back to 'unvaulting' in DB.
     db_unconfirm_unvault_dbtx(db_tx, vault.id)?;
+    // Then repopulate the cache (we remove the entry on spend) accordingly. This replaces
+    // the entry if the status is 'unvaulted'.
+    let der_unvault_descriptor = revaultd
+        .unvault_descriptor
+        .derive(vault.derivation_index, &revaultd.secp_ctx);
+    let unvault_txin = unvault_tx.revault_unvault_txin(&der_unvault_descriptor);
+    let unvault_outpoint = unvault_txin.outpoint();
+    let txo = unvault_txin.into_txout().into_txout();
+    unvaults_cache.insert(
+        unvault_outpoint,
+        UtxoInfo {
+            txo,
+            is_confirmed: false,
+        },
+    );
+
+    // If there is any, don't forget to rebroadcast the Spend transaction at the next tip update!
+    // NOTE: it's a NOP if there is no Spend tx (eg if we are a stakeholder)
+    db_mark_rebroadcastable_spend(db_tx, &unvault_txid)?;
 
     // bitcoind's wallet may need a small kick-in for large reorgs (which won't happen on mainnet
     // but hey).
@@ -662,39 +689,9 @@ fn unconfirm_unvault(
         ),
     }
 
-    // Then either repopulate the cache (we remove the entry on spend) or update the
-    // cache accordingly.
-    let der_unvault_descriptor = revaultd
-        .read()
-        .unwrap()
-        .unvault_descriptor
-        .derive(vault.derivation_index, &revaultd.read().unwrap().secp_ctx);
-    let unvault_txin = unvault_tx.revault_unvault_txin(&der_unvault_descriptor);
-    let unvault_outpoint = unvault_txin.outpoint();
-    let txo = unvault_txin.into_txout().into_txout();
-    if matches!(vault.status, VaultStatus::Spent | VaultStatus::Spending) {
-        // Don't forget rebroadcast the Spend transaction at the next tip update!
-        // NOTE: it won't do anything if there is no spend_transaction awaiting (eg for a
-        // stakeholder).
-        db_mark_rebroadcastable_spend(db_tx, &unvault_txid)?;
-
-        // Still re-insert it, even if it'll be removed at the next `listunspent` poll
-        unvaults_cache.insert(
-            unvault_outpoint,
-            UtxoInfo {
-                txo,
-                is_confirmed: false,
-            },
-        );
-    } else if matches!(vault.status, VaultStatus::Unvaulted) {
-        // If it was only 'unvaulted', we still have it in the cache. (as conf'ed, so mark it as
-        // unconf'ed now)
-        unvaults_cache
-            .get_mut(&unvault_outpoint)
-            .expect("Db unvault not in cache for 'unvaulted'?")
-            .is_confirmed = false;
-    } else if matches!(vault.status, VaultStatus::Canceled | VaultStatus::Canceling) {
-        // Just in case, rebroadcast it.
+    // If it was Canceled, rebroadcast the tx just in case (TODO: is it necessary? If so do the
+    // same for Emergency!)
+    if matches!(vault.status, VaultStatus::Canceled | VaultStatus::Canceling) {
         let cancel_tx = match db_cancel_dbtx(db_tx, vault.id)? {
             Some(tx) => tx,
             None => {
@@ -711,15 +708,6 @@ fn unconfirm_unvault(
             Ok(()) => {}
             Err(e) => log::debug!("Error re-broadcasting Cancel tx '{}': '{}'", cancel_txid, e),
         }
-
-        // Still re-insert it, even if it'll be removed at the next `listunspent` poll
-        unvaults_cache.insert(
-            unvault_outpoint,
-            UtxoInfo {
-                txo,
-                is_confirmed: false,
-            },
-        );
     }
 
     Ok(())
@@ -937,7 +925,7 @@ fn comprehensive_rescan(
                     let unvault_txid = unvault_tx.txid();
 
                     unconfirm_unvault(
-                        revaultd,
+                        &revaultd.read().unwrap(),
                         bitcoind,
                         db_tx,
                         unvaults_cache,

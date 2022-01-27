@@ -827,10 +827,15 @@ fn comprehensive_rescan(
         if let Some(deposit_blockheight) = vault.deposit_blockheight {
             // Did this vault become confirmed in the old chain?
             let min_conf = revaultd.read().unwrap().min_conf;
-            log::error!("ANCESTOR: {:?}", ancestor);
-            log::error!("VAULT: {:?}", vault);
-            let deposit_conf = ancestor.height as i32 - deposit_blockheight as i32 + 1;
-            if deposit_conf < min_conf as i32 {
+            let deposit_conf = ancestor
+                .height
+                .checked_add(1)
+                .unwrap()
+                .checked_sub(deposit_blockheight)
+                .unwrap_or(0);
+            if deposit_conf < min_conf {
+                // FIXME: should we instead only wipe it if it was completely unconfirmed? That's
+                // kinda the point of having a minimum number of confs.
                 unconfirm_vault(
                     &revaultd.read().unwrap(),
                     bitcoind,
@@ -840,7 +845,7 @@ fn comprehensive_rescan(
                     &vault,
                 )?;
                 log::warn!(
-                    "Vault deposit '{}' ended up with '{}' confirmations (<{})",
+                    "Vault deposit '{}' has {} confirmations at common ancestor height (< {})",
                     vault.deposit_outpoint,
                     deposit_conf,
                     min_conf,
@@ -849,7 +854,7 @@ fn comprehensive_rescan(
             }
 
             log::debug!(
-                "Vault deposit '{}' still has '{}' confirmations (>={}), not doing anything",
+                "Vault deposit '{}' still has '{}' confirmations (>={}) at common ancestor height",
                 vault.deposit_outpoint,
                 deposit_conf,
                 min_conf

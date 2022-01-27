@@ -159,202 +159,253 @@ def test_reorg_repro(revault_network, bitcoind):
     revault_network.cancel_vault(vault)
 
 
+def timestamps_from_status(status):
+    """Given a vault status, what timestamps should be present."""
+    assert status != "unconfirmed"
+    timestamps = ["funded_at"]
+
+    # FIXME: how about the emergency statuses?
+    if status in ["secured", "active", "spent", "canceled"]:
+        timestamps.append("secured_at")
+    if status in ["active", "spent", "canceled"]:
+        timestamps.append("delegated_at")
+    if status in ["spend", "canceled"]:
+        timestamps.append("moved_at")
+
+    return timestamps
+
+
+def reorg(revault_network, bitcoind, stop_wallets, height, shift=0):
+    if stop_wallets:
+        revault_network.stop_wallets()
+    bitcoind.simple_reorg(height, shift=shift)
+    if stop_wallets:
+        revault_network.start_wallets()
+
+
+def reorg_deposit(revault_network, bitcoind, deposit, stop_wallets, target_status):
+    """Reorganize the chain around a deposit according to different scenarii.
+    The deposit must refer to a vault that is at least confirmed.
+    The `stop_wallets` parameter controls whether to stop the daemons during a reorg.
+    The `target_status` parameter indicates the expected status of the vault if its
+    deposit transaction gets unconfirmed then re-confirmed.
+    """
+    vault = revault_network.stk(0).rpc.listvaults([], [deposit])["vaults"][0]
+    initial_confs = bitcoind.rpc.getblockcount() - vault["blockheight"] + 1
+    logging.info(
+        f"Initial vault blockheight {vault['blockheight']} ({initial_confs} confs)"
+    )
+
+    # Sanity check the timestamps
+    for field in timestamps_from_status(vault["status"]):
+        assert vault[field] is not None, field
+
+    # Mine a block and reorg it, it should not affect us since the deposit would still
+    # have more than 6 confs.
+    bitcoind.generate_block(1)
+    height = bitcoind.rpc.getblockcount()
+    for w in revault_network.participants():
+        wait_for(lambda: w.rpc.getinfo()["blockheight"] == height)
+    reorg(revault_network, bitcoind, stop_wallets, height)
+    new_tip = f"{height + 1}.*{bitcoind.rpc.getblockhash(height + 1)}"
+    for w in revault_network.participants():
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Found common ancestor at height {height - 1}",
+                f"Vault deposit '{deposit}' still has {initial_confs} confirmations at common ancestor",
+                "Rescan .*done",
+                f"New tip.* {new_tip}",
+            ]
+        )
+        v = w.rpc.listvaults([], [deposit])["vaults"][0]
+        assert v["status"] == vault["status"]
+        for field in timestamps_from_status(vault["status"]):
+            assert v[field] is not None, field
+    for w in revault_network.participants():
+        wait_for(lambda: w.rpc.getinfo()["blockheight"] == height + 1)
+
+    height = bitcoind.rpc.getblockcount()
+    vault = w.rpc.listvaults([], [deposit])["vaults"][0]
+    confs = height + 1 - vault["blockheight"]
+    logging.info(
+        f"After first reorg. Vault blockheight {vault['blockheight']} ({confs} confs)"
+    )
+
+    # Now actually shift it out.
+    # It won't transition to 'funded'...
+    reorg(revault_network, bitcoind, stop_wallets, vault["blockheight"], shift=-1)
+    new_tip = f"{height + 1}.*{bitcoind.rpc.getblockhash(height + 1)}"
+    for w in revault_network.participants():
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Found common ancestor at height {vault['blockheight'] - 1}",
+                f"Vault deposit '{deposit}' has 0 confirmations at common ancestor",
+                "Rescan .*done",
+                f"New tip.* {new_tip}",
+            ]
+        )
+    for w in revault_network.participants():
+        wait_for(lambda: w.rpc.getinfo()["blockheight"] == height + 1)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == "unconfirmed"
+        )
+        vault = w.rpc.listvaults([], [deposit])["vaults"][0]
+        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            assert vault[field] is None, field
+
+    # ... But it will if we re-confirm it!
+    bitcoind.generate_block(6, wait_for_mempool=vault["txid"])
+    for w in revault_network.participants():
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == target_status
+        )
+        vault = w.rpc.listvaults([], [deposit])["vaults"][0]
+        for field in timestamps_from_status(target_status):
+            assert vault[field] is not None, field
+
+    height = bitcoind.rpc.getblockcount()
+    vault = w.rpc.listvaults([], [deposit])["vaults"][0]
+    confs = height + 1 - vault["blockheight"]
+    logging.info(
+        f"After second reorg. Vault blockheight {vault['blockheight']} ({confs} confs)"
+    )
+
+    # Now reorg 1 block of the 6 making the vault funded. This should get the deposit under
+    # the minimum number of confirmations threshold.
+    # But since the newly connected chain has as many blocks, the vault will get back to
+    # 'funded'. And since the deposit didn't change, the signatures on the coordinator are
+    # still valid. It will re-download them and transition back to 'secured' / 'active'. Then
+    # if some second-stage transactions were broadcasted, they will be re-broadcast.
+    reorged_block_height = vault["blockheight"] + 5
+    reorg(revault_network, bitcoind, stop_wallets, reorged_block_height)
+    new_tip = f"{height + 1}.*{bitcoind.rpc.getblockhash(height + 1)}"
+    for w in revault_network.participants():
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Found common ancestor at height {reorged_block_height - 1}",
+                f"Vault deposit '{deposit}' has 5 confirmations at common ancestor",
+                "Rescan .*done",
+                f"New tip.* {new_tip}",
+            ]
+        )
+    for w in revault_network.participants():
+        wait_for(lambda: w.rpc.getinfo()["blockheight"] == height + 1)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == target_status
+        )
+        vault = w.rpc.listvaults([], [deposit])["vaults"][0]
+        for field in timestamps_from_status(target_status):
+            assert vault[field] is not None, field
+
+    height = bitcoind.rpc.getblockcount()
+    vault = w.rpc.listvaults([], [deposit])["vaults"][0]
+    confs = height + 1 - vault["blockheight"]
+    logging.info(
+        f"After third reorg. Vault blockheight {vault['blockheight']} ({confs} confs)"
+    )
+
+    # Now reorg up to the deposit. The same will happen.
+    reorg(revault_network, bitcoind, stop_wallets, vault["blockheight"])
+    new_tip = f"{height + 1}.*{bitcoind.rpc.getblockhash(height + 1)}"
+    for w in revault_network.participants():
+        w.wait_for_logs(
+            [
+                "Detected reorg",
+                f"Found common ancestor at height {vault['blockheight'] - 1}",
+                f"Vault deposit '{deposit}' has 0 confirmations at common ancestor",
+                "Rescan .*done",
+                f"New tip.* {new_tip}",
+            ]
+        )
+    for w in revault_network.participants():
+        wait_for(lambda: w.rpc.getinfo()["blockheight"] == height + 1)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"]
+            == target_status
+        )
+        for field in timestamps_from_status(target_status):
+            assert vault[field] is not None, field
+
+    height = bitcoind.rpc.getblockcount()
+    vault = w.rpc.listvaults([], [deposit])["vaults"][0]
+    confs = height + 1 - vault["blockheight"]
+    logging.info(
+        f"After fourth reorg. Vault blockheight {vault['blockheight']} ({confs} confs)"
+    )
+
+    # TODO: try with tx malleation
+
+
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_deposit_status(revault_network, bitcoind):
-    # A csv of 2 because bitcoind would discard updating the mempool if the reorg is >10
-    # blocks long.
-    revault_network.deploy(4, 2, csv=2, with_watchtowers=False)
+    # NOTE: bitcoind would discard updating the mempool if the reorg is >10 blocks long.
+    revault_network.deploy(4, 2, csv=3, with_watchtowers=False)
+
+    # Play with the chain on a vault which is 'secured'
     vault = revault_network.fund(0.14)
-    revault_network.secure_vault(vault)
     deposit = f"{vault['txid']}:{vault['vout']}"
-
-    # Reorg the deposit. This should not affect us as the transaction did not
-    # shift
-    bitcoind.simple_reorg(vault["blockheight"])
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                # 7 because simple_reorg() adds a block
-                f"Vault deposit '{deposit}' still has '7' confirmations",
-            ]
+    revault_network.secure_vault(vault)
+    for stop_wallets in [True, False]:
+        logging.info(f"For secured vault '{deposit}'. Stop wallets: {stop_wallets}")
+        reorg_deposit(
+            revault_network, bitcoind, deposit, stop_wallets, target_status="secured"
         )
 
-    # Now actually shift it (7 + 1 - 3 == 5)
-    bitcoind.simple_reorg(vault["blockheight"], shift=3)
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                f"Vault deposit '{deposit}' ended up with '5' confirmations",
-                "Rescan of all vaults in db done.",
-            ]
-        )
-        wait_for(
-            lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])["vaults"]) == 1
-        )
-        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
-            assert w.rpc.listvaults()["vaults"][0][field] is None
-
-    # All presigned transactions must have been removed from the db,
-    # if we get it confirmed again, it will re-create the pre-signed
-    # transactions. But they are the very same than previously to the
-    # signatures on the coordinator are still valid therefore the signature
-    # fetcher thread will add them all and the vault will be back to 'secured'
-    # again
-    bitcoind.generate_block(1)
-    for w in revault_network.participants():
-        w.wait_for_secured_vaults([deposit])
-
-    # TODO: eventually try with tx malleation
-
-    # Now do the same dance with the 'active' status
-    revault_network.activate_vault(vault)
-    bitcoind.simple_reorg(vault["blockheight"] + 3)
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                # 7 because simple_reorg() adds a block
-                f"Vault deposit '{deposit}' still has '7' confirmations",
-            ]
-        )
-    bitcoind.simple_reorg(vault["blockheight"] + 3, shift=3)
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                f"Vault deposit '{deposit}' ended up with '5' confirmations",
-                "Rescan of all vaults in db done.",
-            ]
-        )
-        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
-        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
-            assert w.rpc.listvaults()["vaults"][0][field] is None
-    bitcoind.generate_block(1)
-    for w in revault_network.participants():
-        w.wait_for_active_vaults([deposit])
-        assert w.rpc.listvaults([], [deposit])["vaults"][0]["moved_at"] is None
-        for field in ["funded_at", "secured_at", "delegated_at"]:
-            assert w.rpc.listvaults([], [deposit])["vaults"][0][field] is not None
-
-    # If we are stopped during the reorg, we recover in the same way at startup
-    revault_network.stop_wallets()
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3)
-    revault_network.start_wallets()
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                # 7 because simple_reorg() adds a block
-                f"Vault deposit '{deposit}' still has '7' confirmations",
-            ]
+    # Now on a vault that is 'active'
+    vault = revault_network.fund(0.28)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    revault_network.activate_fresh_vaults([vault])
+    for stop_wallets in [True, False]:
+        logging.info(f"For active vault '{deposit}'. Stop wallets: {stop_wallets}")
+        reorg_deposit(
+            revault_network, bitcoind, deposit, stop_wallets, target_status="active"
         )
 
-    revault_network.stop_wallets()
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3, shift=3)
-    revault_network.start_wallets()
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                f"Vault deposit '{deposit}' ended up with '5' confirmations",
-                "Rescan of all vaults in db done.",
-            ]
+    # Now on a vault that is 'unvaulted'
+    vault = revault_network.fund(0.56)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    revault_network.activate_fresh_vaults([vault])
+    revault_network.unvault_vaults_anyhow([vault])
+    for stop_wallets in [True, False]:
+        logging.info(f"For unvaulted vault '{deposit}'. Stop wallets: {stop_wallets}")
+        reorg_deposit(
+            revault_network, bitcoind, deposit, stop_wallets, target_status="unvaulted"
         )
-        wait_for(lambda: len(w.rpc.listvaults(["unconfirmed"], [deposit])) > 0)
-        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
-            assert w.rpc.listvaults()["vaults"][0][field] is None
-    revault_network.stop_wallets()
-    bitcoind.generate_block(1)
-    revault_network.start_wallets()
-    for w in revault_network.participants():
-        w.wait_for_active_vaults([deposit])
-        assert w.rpc.listvaults()["vaults"][0]["moved_at"] is None
-        for field in ["funded_at", "secured_at", "delegated_at"]:
-            assert w.rpc.listvaults()["vaults"][0][field] is not None, field
 
-    # Now do the same dance with a spent vault
-
-    # Keep track of the deposit transaction for later use as we'll reorg deeply enough that
-    # bitcoind won't add the transactions back to mempool.
-    deposit_tx = revault_network.stk(0).rpc.listonchaintransactions([deposit])[
-        "onchain_transactions"
-    ][0]["deposit"]["hex"]
-
-    # If the deposit is not unconfirmed, it's fine
+    # Now on a vault that is 'spent'
+    vault = revault_network.fund(1.12)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    revault_network.activate_fresh_vaults([vault])
     revault_network.spend_vaults_anyhow([vault])
-    for w in revault_network.mans():
-        assert len(w.rpc.listspendtxs()["spend_txs"]) == 1
-        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
-            assert w.rpc.listvaults()["vaults"][0][field] is not None, field
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3)
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                f"Vault deposit '{deposit}' still has .* confirmations",
-                "Rescan of all vaults in db done.",
-            ]
+    for stop_wallets in [True, False]:
+        logging.info(f"For spent vault '{deposit}'. Stop wallets: {stop_wallets}")
+        # Target "unvaulted" as Spend txs get wiped from DB
+        reorg_deposit(
+            revault_network, bitcoind, deposit, stop_wallets, target_status="unvaulted"
         )
 
-    # If it is then we'll mark it back as unvaulting
-    bitcoind.simple_reorg(vault["blockheight"] + 3 + 3 + 3, shift=-1)
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                f"Vault deposit '{deposit}' ended up without confirmation",
-                "Rescan of all vaults in db done.",
-            ]
-        )
-        wait_for(lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == 1)
-        assert w.rpc.listvaults()["vaults"][0]["moved_at"] is None
-        for field in ["funded_at", "secured_at", "delegated_at"]:
-            assert w.rpc.listvaults()["vaults"][0][field] is not None
-
-    # Now the same dance with a canceled vault
-
-    # Re-confirm the vault, get it active, then unvault and cancel it.
-    bitcoind.rpc.sendrawtransaction(deposit_tx)
-    bitcoind.generate_block(1, wait_for_mempool=2)
-    vault = revault_network.stk(0).rpc.listvaults(
-        # NB: 'unvaulting' because we reuse a vault that was previously spent! (ie
-        # the Spend transaction is in the walelt and therefore we don't keep track
-        # of the Unvault confirmation)
-        ["unvaulting"]
-    )["vaults"][0]
+    # And finally the same dance with a 'canceled' vault
+    vault = revault_network.fund(2.24)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    revault_network.activate_fresh_vaults([vault])
+    revault_network.unvault_vaults_anyhow([vault])
     revault_network.cancel_vault(vault)
-
-    # If the deposit is not unconfirmed, nothing changes
-    bitcoind.simple_reorg(vault["blockheight"], shift=2)
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                f"Vault deposit '{deposit}' still has .* confirmations",
-                "Rescan of all vaults in db done.",
-            ]
+    for stop_wallets in [True, False]:
+        logging.info(f"For canceled vault '{deposit}'. Stop wallets: {stop_wallets}")
+        reorg_deposit(
+            revault_network, bitcoind, deposit, stop_wallets, target_status="canceled"
         )
 
-    # If it is then it'll be marked as 'canceling'
-    logging.debug(f"Before block count {bitcoind.rpc.getblockcount()}")
-    bitcoind.simple_reorg(vault["blockheight"] + 2, shift=-1)
-    for w in revault_network.participants():
-        w.wait_for_logs(
-            [
-                "Detected reorg",
-                f"Vault deposit '{deposit}' ended up without confirmation",
-                "Rescan of all vaults in db done.",
-            ]
-        )
-        wait_for(lambda: len(w.rpc.listvaults(["canceling"])["vaults"]) == 1)
-        assert w.rpc.listvaults(["canceling"])["vaults"][0]["moved_at"] is None
-        for field in ["funded_at", "secured_at", "delegated_at"]:
-            assert w.rpc.listvaults()["vaults"][0][field] is not None
-
-    # Now the same dance with an emergencied vault
-    # TODO
+    # TODO: same with 'emergency' and 'unvault_emergency' vaults!
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

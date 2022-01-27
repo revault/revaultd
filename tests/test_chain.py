@@ -346,9 +346,9 @@ def reorg_deposit(revault_network, bitcoind, deposit, stop_wallets, target_statu
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
-def test_reorged_deposit_status(revault_network, bitcoind):
+def test_reorged_deposit_status_1(revault_network, bitcoind):
     # NOTE: bitcoind would discard updating the mempool if the reorg is >10 blocks long.
-    revault_network.deploy(4, 2, csv=3, with_watchtowers=False)
+    revault_network.deploy(4, 2, csv=12, with_watchtowers=False)
 
     # Play with the chain on a vault which is 'secured'
     vault = revault_network.fund(0.14)
@@ -381,6 +381,14 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             revault_network, bitcoind, deposit, stop_wallets, target_status="unvaulted"
         )
 
+    # TODO: same with 'emergency'
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_reorged_deposit_status_2(revault_network, bitcoind):
+    # NOTE: bitcoind would discard updating the mempool if the reorg is >10 blocks long.
+    revault_network.deploy(4, 2, csv=3, with_watchtowers=False)
+
     # Now on a vault that is 'spent'
     vault = revault_network.fund(1.12)
     deposit = f"{vault['txid']}:{vault['vout']}"
@@ -405,7 +413,7 @@ def test_reorged_deposit_status(revault_network, bitcoind):
             revault_network, bitcoind, deposit, stop_wallets, target_status="canceled"
         )
 
-    # TODO: same with 'emergency' and 'unvault_emergency' vaults!
+    # TODO: same with 'unvault_emergency'
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

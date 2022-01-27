@@ -609,13 +609,6 @@ impl BitcoinD {
         self.list_since_block(tip, Some(DEPOSIT_UTXOS_LABEL))
     }
 
-    pub fn list_unvaults_since_block(
-        &self,
-        tip: &BlockchainTip,
-    ) -> Result<Vec<ListSinceBlockTransaction>, BitcoindError> {
-        self.list_since_block(tip, Some(UNVAULT_UTXOS_LABEL))
-    }
-
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
     /// We take the currently known deposit utxos, and return the new, confirmed and spent ones.
     pub fn sync_deposits(
@@ -694,38 +687,21 @@ impl BitcoinD {
     pub fn sync_unvaults(
         &self,
         unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
-        db_tip: &BlockchainTip,
     ) -> Result<UnvaultsState, BitcoindError> {
         let (mut new_conf, mut new_spent) = (HashMap::new(), HashMap::new());
-        // FIXME: batch those calls to gettxout
-        for (outpoint, info) in unvault_utxos {
-            if self
-                .get_unspent_outpoint_confirmations(&outpoint)?
-                .is_none()
-            {
-                new_spent.insert(*outpoint, info.clone());
-            }
-        }
 
-        let utxos = self.list_unvaults_since_block(db_tip)?;
-        for utxo in utxos {
-            let is_confirmed = utxo.confirmations > 0;
-            if utxo.is_receive && is_confirmed {
-                if let Some(UtxoInfo {
-                    is_confirmed: false,
-                    ..
-                }) = unvault_utxos.get(&utxo.outpoint)
-                {
-                    new_conf.insert(
-                        utxo.outpoint,
-                        BlockHeightUtxoInfo {
-                            txo: utxo.txo,
-                            confirmation_height: utxo
-                                .blockheight
-                                .expect("Must be here if confirmed"),
-                        },
-                    );
+        // NOTE: if rescanning, and an Unvault was created, confirmed and then spent while we were
+        // not actively watching, it will be marked as 'spent' immediately. It is necessary to keep
+        // the smooth 'unvaulting' -> 'canceling'/'spending' flow, and we'll check for it when
+        // marking as 'canceled'/'spent' (which implies the Unvault was confirmed, too).
+        // FIXME: batch those calls to gettxout
+        for (outpoint, utxo) in unvault_utxos {
+            if let Some(conf) = self.get_unspent_outpoint_confirmations(&outpoint)? {
+                if conf > 0 {
+                    new_conf.insert(*outpoint, utxo.clone());
                 }
+            } else {
+                new_spent.insert(*outpoint, utxo.clone());
             }
         }
 
@@ -1048,12 +1024,6 @@ pub struct UtxoInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct BlockHeightUtxoInfo {
-    pub txo: TxOut,
-    pub confirmation_height: u32,
-}
-
-#[derive(Debug, Clone)]
 pub struct BlockStats {
     pub confirmations: i32,
     pub previous_blockhash: BlockHash,
@@ -1075,7 +1045,7 @@ pub struct DepositsState {
 /// Onchain state of the Unvault UTxOs
 pub struct UnvaultsState {
     /// The set of newly confirmed unvault utxos
-    pub new_conf: HashMap<OutPoint, BlockHeightUtxoInfo>,
+    pub new_conf: HashMap<OutPoint, UtxoInfo>,
     /// The set of newly spent unvault utxos
     pub new_spent: HashMap<OutPoint, UtxoInfo>,
 }

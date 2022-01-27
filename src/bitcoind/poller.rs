@@ -1541,15 +1541,22 @@ fn update_utxos(
     let UnvaultsState {
         new_conf: conf_unvaults,
         new_spent: spent_unvaults,
-    } = bitcoind.sync_unvaults(unvaults_cache, previous_tip)?;
+    } = bitcoind.sync_unvaults(unvaults_cache)?;
 
-    for (outpoint, info) in conf_unvaults {
-        db_confirm_unvault(&db_path, &outpoint.txid, info.confirmation_height)?;
-        unvaults_cache
-            .get_mut(&outpoint)
-            .ok_or_else(|| BitcoindError::Custom("An unknown unvault got confirmed?".to_string()))?
-            .is_confirmed = true;
-        log::debug!("Unvault transaction at {} is now confirmed", &outpoint);
+    for (outpoint, _) in conf_unvaults {
+        if let Some(bh) = bitcoind.get_wallet_transaction(&outpoint.txid)?.blockheight {
+            db_confirm_unvault(&db_path, &outpoint.txid, bh)?;
+            unvaults_cache
+                .get_mut(&outpoint)
+                .expect("An unknown unvault got confirmed?")
+                .is_confirmed = true;
+            log::debug!("Unvault transaction at {} is now confirmed", &outpoint);
+        } else {
+            log::error!(
+                "Unvault at {} was marked confirmed but actually isn't",
+                &outpoint
+            );
+        }
     }
 
     for (unvault_outpoint, _) in spent_unvaults {

@@ -607,7 +607,7 @@ fn new_tip_event(
     new_tip: &BlockchainTip,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<(), BitcoindError> {
-    log::debug!("New tip event: {:?}", new_tip);
+    log::debug!("New tip: {:?}", new_tip);
     let db_path = revaultd.read().unwrap().db_file();
 
     // First we update it in DB
@@ -807,6 +807,7 @@ fn comprehensive_rescan(
         hash: db_tip.hash,
         height: db_tip.height,
     };
+    log::debug!("Looking for the common ancestor with the disconnected chain");
     while stats.confirmations == -1 {
         stats = bitcoind.get_block_stats(stats.previous_blockhash)?;
         ancestor = BlockchainTip {
@@ -815,7 +816,8 @@ fn comprehensive_rescan(
         };
     }
     log::debug!(
-        "Unwinding the state until the common ancestor: {:?}",
+        "Found common ancestor at height {}: '{}'",
+        ancestor.height,
         ancestor.hash
     );
 
@@ -854,7 +856,7 @@ fn comprehensive_rescan(
             }
 
             log::debug!(
-                "Vault deposit '{}' still has '{}' confirmations (>={}) at common ancestor height",
+                "Vault deposit '{}' still has {} confirmations at common ancestor height (>= {})",
                 vault.deposit_outpoint,
                 deposit_conf,
                 min_conf

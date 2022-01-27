@@ -1430,6 +1430,22 @@ fn handle_spent_deposit(
     // Was it spent by an Unvault tx? No worry if the Unvault txo was spent too, it'll be
     // noticed when we poll them next.
     if bitcoind.is_current(&unvault_outpoint.txid)? {
+        // Edge case: on reorg, we might note a deposit as spent and whatever second stage status
+        // afterward before it goes through all the regular stages. Then the sigfetcher might overwrite
+        // this state when it fetches the signatures from the coordinator.
+        // In order to keep the reorg logic contained in the bitcoind module, temporarily refuse to
+        // notice the spend until we are back to active.
+        // Note this holds in regular cases (assuming signatures availability for managers).
+        if !matches!(
+            db_vault_by_deposit(db_path, &deposit_outpoint)?
+                .unwrap()
+                .status,
+            VaultStatus::Active
+        ) {
+            log::warn!("Noticing a not-active vault as being spent.");
+            return Ok(());
+        }
+
         log::debug!(
             "Found Unvault transaction '{}' in wallet for vault at '{}'",
             &unvault_outpoint.txid,

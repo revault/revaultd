@@ -102,7 +102,7 @@ impl TryFrom<u32> for VaultStatus {
 }
 
 impl FromStr for VaultStatus {
-    type Err = ();
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -122,7 +122,7 @@ impl FromStr for VaultStatus {
             "unvaultemergencyvaulted" => Ok(Self::UnvaultEmergencyVaulted),
             "spending" => Ok(Self::Spending),
             "spent" => Ok(Self::Spent),
-            _ => Err(()),
+            _ => Err(format!("Unknown status: {}", s)),
         }
     }
 }

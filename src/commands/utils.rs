@@ -32,9 +32,10 @@ use revault_tx::{
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    str::FromStr,
 };
 
-use serde::Serializer;
+use serde::{de, Deserialize, Deserializer, Serializer};
 
 fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
 where
@@ -61,9 +62,31 @@ pub fn ser_to_string<T: fmt::Display, S: Serializer>(field: T, s: S) -> Result<S
     s.serialize_str(&field.to_string())
 }
 
+/// Deserialize a type `S` by deserializing a string, then using the `FromStr`
+/// impl of `S` to create the result. The generic type `S` is not required to
+/// implement `Deserialize`.
+pub fn deser_from_str<'de, S, D>(deserializer: D) -> Result<S, D::Error>
+where
+    S: FromStr,
+    S::Err: fmt::Display,
+    D: Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    S::from_str(&s).map_err(de::Error::custom)
+}
+
 /// Serialize an amount as sats
 pub fn ser_amount<S: Serializer>(amount: &Amount, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_u64(amount.as_sat())
+}
+
+/// Deserialize an amount from sats
+pub fn deser_amount_from_sats<'de, D>(deserializer: D) -> Result<Amount, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let a = u64::deserialize(deserializer)?;
+    Ok(Amount::from_sat(a))
 }
 
 /// List the vaults from DB, and filter out the info the RPC wants

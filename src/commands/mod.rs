@@ -32,8 +32,8 @@ use crate::{
     DaemonControl, VERSION,
 };
 use utils::{
-    finalized_emer_txs, gethistory, listvaults_from_db, presigned_txs, ser_amount, ser_to_string,
-    serialize_option_tx_hex, vaults_from_deposits,
+    deser_amount_from_sats, deser_from_str, finalized_emer_txs, gethistory, listvaults_from_db,
+    presigned_txs, ser_amount, ser_to_string, serialize_option_tx_hex, vaults_from_deposits,
 };
 
 use revault_tx::{
@@ -1352,18 +1352,18 @@ impl DaemonControl {
 }
 
 /// Descriptors the daemon was configured with
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetInfoDescriptors {
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub deposit: DepositDescriptor,
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub unvault: UnvaultDescriptor,
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub cpfp: CpfpDescriptor,
 }
 
 /// Information about the current state of the daemon
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetInfoResult {
     pub version: String,
     pub network: Network,
@@ -1375,12 +1375,15 @@ pub struct GetInfoResult {
 }
 
 /// Information about a vault.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListVaultsEntry {
-    #[serde(serialize_with = "ser_amount")]
+    #[serde(
+        serialize_with = "ser_amount",
+        deserialize_with = "deser_amount_from_sats"
+    )]
     pub amount: Amount,
     pub blockheight: u32,
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub status: VaultStatus,
     pub txid: Txid,
     pub vout: u32,
@@ -1393,13 +1396,13 @@ pub struct ListVaultsEntry {
 }
 
 /// Information about all our current vaults.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListVaultsResult {
     pub vaults: Vec<ListVaultsEntry>,
 }
 
 /// Revocation transactions for a given vault
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevocationTransactions {
     pub cancel_tx: CancelTransaction,
     pub emergency_tx: EmergencyTransaction,
@@ -1408,7 +1411,7 @@ pub struct RevocationTransactions {
 }
 
 /// A vault's presigned transaction.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultPresignedTransaction<T: RevaultTransaction> {
     pub psbt: T,
     // FIXME: is it really necessary?.. It's mostly contained in the PSBT already
@@ -1417,7 +1420,7 @@ pub struct VaultPresignedTransaction<T: RevaultTransaction> {
 }
 
 /// Information about a vault's presigned transactions.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPresignedTxEntry {
     pub vault_outpoint: OutPoint,
     pub unvault: VaultPresignedTransaction<UnvaultTransaction>,
@@ -1429,7 +1432,7 @@ pub struct ListPresignedTxEntry {
 }
 
 /// Information about a vault's onchain transactions.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListOnchainTxEntry {
     pub vault_outpoint: OutPoint,
     pub deposit: WalletTransaction,
@@ -1443,7 +1446,7 @@ pub struct ListOnchainTxEntry {
 }
 
 /// Status of a Spend transaction
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ListSpendStatus {
     NonFinal,
@@ -1452,7 +1455,7 @@ pub enum ListSpendStatus {
 }
 
 /// Information about a Spend transaction
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ListSpendEntry {
     pub deposit_outpoints: Vec<OutPoint>,
     pub psbt: SpendTransaction,
@@ -1461,7 +1464,7 @@ pub struct ListSpendEntry {
 }
 
 /// Information about the configured servers.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServersStatuses {
     coordinator: ServerStatus,
     cosigners: Vec<ServerStatus>,
@@ -1480,7 +1483,7 @@ pub enum HistoryEventKind {
 }
 
 /// An accounting event.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct HistoryEvent {
     pub kind: HistoryEventKind,
     pub date: u32,

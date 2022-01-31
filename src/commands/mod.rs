@@ -1466,9 +1466,9 @@ pub struct ListSpendEntry {
 /// Information about the configured servers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServersStatuses {
-    coordinator: ServerStatus,
-    cosigners: Vec<ServerStatus>,
-    watchtowers: Vec<ServerStatus>,
+    pub coordinator: ServerStatus,
+    pub cosigners: Vec<ServerStatus>,
+    pub watchtowers: Vec<ServerStatus>,
 }
 
 /// The type of an accounting event.

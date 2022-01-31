@@ -1482,6 +1482,16 @@ pub enum HistoryEventKind {
     Spend,
 }
 
+impl fmt::Display for HistoryEventKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Cancel => write!(f, "Cancel"),
+            Self::Deposit => write!(f, "Deposit"),
+            Self::Spend => write!(f, "Spend"),
+        }
+    }
+}
+
 /// An accounting event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEvent {

@@ -1446,7 +1446,7 @@ pub struct ListOnchainTxEntry {
 }
 
 /// Status of a Spend transaction
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ListSpendStatus {
     NonFinal,
@@ -1455,7 +1455,7 @@ pub enum ListSpendStatus {
 }
 
 /// Information about a Spend transaction
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListSpendEntry {
     pub deposit_outpoints: Vec<OutPoint>,
     pub psbt: SpendTransaction,
@@ -1472,7 +1472,7 @@ pub struct ServersStatuses {
 }
 
 /// The type of an accounting event.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HistoryEventKind {
     #[serde(rename = "cancel")]
     Cancel,
@@ -1483,7 +1483,7 @@ pub enum HistoryEventKind {
 }
 
 /// An accounting event.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEvent {
     pub kind: HistoryEventKind,
     pub date: u32,

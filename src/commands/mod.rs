@@ -198,7 +198,6 @@ impl DaemonControl {
         } = db_tip(&revaultd.db_file()).expect("Database must not be dead");
         let number_of_vaults = self
             .list_vaults(None, None)
-            .vaults
             .iter()
             .filter(|l| {
                 l.status != VaultStatus::Spent
@@ -226,14 +225,12 @@ impl DaemonControl {
     /// List the current vaults, optionally filtered by status and/or deposit outpoints.
     pub fn list_vaults(
         &self,
-        statuses: Option<Vec<VaultStatus>>,
-        deposit_outpoints: Option<Vec<OutPoint>>,
-    ) -> ListVaultsResult {
+        statuses: Option<&[VaultStatus]>,
+        deposit_outpoints: Option<&[OutPoint]>,
+    ) -> Vec<ListVaultsEntry> {
         let revaultd = self.revaultd.read().unwrap();
-        ListVaultsResult {
-            vaults: listvaults_from_db(&revaultd, statuses, deposit_outpoints)
-                .expect("Database must be available"),
-        }
+        listvaults_from_db(&revaultd, statuses, deposit_outpoints)
+            .expect("Database must be available")
     }
 
     /// Get the deposit address at the lowest still unused derivation index
@@ -1393,12 +1390,6 @@ pub struct ListVaultsEntry {
     pub secured_at: Option<u32>,
     pub delegated_at: Option<u32>,
     pub moved_at: Option<u32>,
-}
-
-/// Information about all our current vaults.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListVaultsResult {
-    pub vaults: Vec<ListVaultsEntry>,
 }
 
 /// Revocation transactions for a given vault

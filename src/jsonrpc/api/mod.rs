@@ -319,8 +319,10 @@ impl RpcApi for RpcImpl {
             None
         };
 
-        let res = meta.daemon_control.list_vaults(statuses, outpoints);
-        Ok(json!(res))
+        let res = meta
+            .daemon_control
+            .list_vaults(statuses.as_deref(), outpoints.as_deref());
+        Ok(json!({ "vaults": res }))
     }
 
     fn getdepositaddress(

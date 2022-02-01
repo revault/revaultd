@@ -93,8 +93,8 @@ where
 // FIXME: we could make this more efficient with smarter SQL queries
 pub fn listvaults_from_db(
     revaultd: &RevaultD,
-    statuses: Option<Vec<VaultStatus>>,
-    outpoints: Option<Vec<OutPoint>>,
+    statuses: Option<&[VaultStatus]>,
+    outpoints: Option<&[OutPoint]>,
 ) -> Result<Vec<ListVaultsEntry>, DatabaseError> {
     db_vaults(&revaultd.db_file()).map(|db_vaults| {
         db_vaults
@@ -896,8 +896,8 @@ mod tests {
         for v in &vaults {
             let res = &listvaults_from_db(
                 &revaultd,
-                Some(vec![v.db_vault.status]),
-                Some(vec![v.db_vault.deposit_outpoint]),
+                Some(&[v.db_vault.status]),
+                Some(&[v.db_vault.deposit_outpoint]),
             )
             .unwrap()[0];
             assert_eq!(res.amount, v.db_vault.amount);
@@ -914,7 +914,7 @@ mod tests {
         // Checking that filters work
         assert_eq!(listvaults_from_db(&revaultd, None, None).unwrap().len(), 4);
         assert_eq!(
-            listvaults_from_db(&revaultd, Some(vec![VaultStatus::Unconfirmed]), None)
+            listvaults_from_db(&revaultd, Some(&[VaultStatus::Unconfirmed]), None)
                 .unwrap()
                 .len(),
             1
@@ -922,8 +922,8 @@ mod tests {
         assert_eq!(
             listvaults_from_db(
                 &revaultd,
-                Some(vec![VaultStatus::Unconfirmed]),
-                Some(vec![vaults[1].db_vault.deposit_outpoint])
+                Some(&[VaultStatus::Unconfirmed]),
+                Some(&[vaults[1].db_vault.deposit_outpoint])
             )
             .unwrap()
             .len(),
@@ -933,7 +933,7 @@ mod tests {
             listvaults_from_db(
                 &revaultd,
                 None,
-                Some(vec![
+                Some(&[
                     vaults[0].db_vault.deposit_outpoint,
                     vaults[1].db_vault.deposit_outpoint
                 ])
@@ -945,7 +945,7 @@ mod tests {
         assert_eq!(
             listvaults_from_db(
                 &revaultd,
-                Some(vec![
+                Some(&[
                     VaultStatus::Unconfirmed,
                     VaultStatus::Funded,
                     VaultStatus::Secured
@@ -959,7 +959,7 @@ mod tests {
         assert_eq!(
             listvaults_from_db(
                 &revaultd,
-                Some(vec![
+                Some(&[
                     VaultStatus::Unconfirmed,
                     VaultStatus::Funded,
                     VaultStatus::Secured,

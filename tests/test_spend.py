@@ -694,3 +694,30 @@ def test_revaulted_spend(revault_network, bitcoind, executor):
             lambda: len(w.rpc.listvaults(["unvaulted"], deposits)["vaults"])
             == len(deposits)
         )
+
+
+# Test that the coordinator will broadcast our spends
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_coordinator_broadcast(revault_network, bitcoind, executor):
+    """
+    Test that the coordinator broadcasts spend transactions when they become valid
+    """
+    CSV = 12
+    revault_network.deploy(2, 2, n_stkmanagers=1, csv=CSV)
+
+    vault = revault_network.fund(0.05)
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+    revault_network.unvault_vaults_anyhow([vault])
+
+    revault_network.stop_wallets()
+
+    bitcoind.generate_block(CSV - 1)
+    bitcoind.generate_block(1, wait_for_mempool=1)
+
+    revault_network.start_wallets()
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spent"])["vaults"]) == 1,
+        )

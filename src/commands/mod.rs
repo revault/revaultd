@@ -1341,7 +1341,7 @@ impl DaemonControl {
         start: u32,
         end: u32,
         limit: u64,
-        kind: Vec<HistoryEventKind>,
+        kind: &[HistoryEventKind],
     ) -> Result<Vec<HistoryEvent>, CommandError> {
         let revaultd = self.revaultd.read().unwrap();
         gethistory(&revaultd, &self.bitcoind_conn, start, end, limit, kind)

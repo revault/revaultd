@@ -280,7 +280,7 @@ pub fn gethistory<T: BitcoindThread>(
     start: u32,
     end: u32,
     limit: u64,
-    kind: Vec<HistoryEventKind>,
+    kind: &[HistoryEventKind],
 ) -> Result<Vec<HistoryEvent>, CommandError> {
     let db_path = revaultd.db_file();
     // All vaults which have one transaction (either the funding, the canceling, the unvaulting, the spending)
@@ -1492,7 +1492,7 @@ mod tests {
             0,
             4,
             20,
-            vec![
+            &[
                 HistoryEventKind::Deposit,
                 HistoryEventKind::Cancel,
                 HistoryEventKind::Spend,
@@ -1539,7 +1539,7 @@ mod tests {
             0,
             2,
             20,
-            vec![
+            &[
                 HistoryEventKind::Deposit,
                 HistoryEventKind::Cancel,
                 HistoryEventKind::Spend,

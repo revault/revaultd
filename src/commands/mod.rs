@@ -860,7 +860,7 @@ impl DaemonControl {
     pub fn get_spend_tx(
         &self,
         outpoints: &[OutPoint],
-        destinations: BTreeMap<Address, u64>,
+        destinations: &BTreeMap<Address, u64>,
         feerate_vb: u64,
     ) -> Result<SpendTransaction, CommandError> {
         let revaultd = self.revaultd.read().unwrap();
@@ -894,11 +894,11 @@ impl DaemonControl {
         }
 
         let txos: Vec<SpendTxOut> = destinations
-            .into_iter()
+            .iter()
             .map(|(addr, value)| {
                 let script_pubkey = addr.script_pubkey();
                 SpendTxOut::new(TxOut {
-                    value,
+                    value: *value,
                     script_pubkey,
                 })
             })

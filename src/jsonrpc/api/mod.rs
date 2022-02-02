@@ -424,7 +424,7 @@ impl RpcApi for RpcImpl {
 
         let tx = meta
             .daemon_control
-            .get_spend_tx(&outpoints, destinations, feerate_vb)?;
+            .get_spend_tx(&outpoints, &destinations, feerate_vb)?;
         Ok(json!({
             "spend_tx": tx,
         }))

@@ -1529,6 +1529,78 @@ mod test {
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
+    #[test]
+    fn test_db_confirm_unvault() {
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let db_path = revaultd.db_file();
+
+        setup_db(&mut revaultd).unwrap();
+
+        // Insert and confirm a deposit
+        let wallet_id = 1;
+        let outpoint = OutPoint::from_str(
+            "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
+        )
+        .unwrap();
+        let amount = Amount::from_sat(123456);
+        let derivation_index = ChildNumber::from(33334);
+        let fresh_emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAVqQwvZ+XLjEW+P90WnqdbVWkC1riPNhF8j9Ca4dM0RiAAAAAAD9////AfhgAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK4iUAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQBAwSBAAAAAQVHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
+        let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQFHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4iAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
+        let fresh_unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAZHNg0DZSHTBSpVaGwH2apdYBRu88ZeeB/XmrijJpvH5AAAAAAD9////AdLKAgAAAAAAIgAg8Wcu+wsgQXcO9MAiWSMtqsVSQkptpfTXJ51MFSdhJAoAAAAAAAEBK0ANAwAAAAAAIgAgtSqMFDOQ2FkdNrt/yUTzVjikth3tOm+um6yLFzLTilcBAwSBAAAAAQWrIQJF6Amv78N3ctJ3+oSlIasXN3/N8H/bu2si9Vu3QNBRuKxRh2R2qRS77fZRBsFKSf1uP2HBT3uhL1oRloisa3apFIPfFe62NUR/RApmlyj0VsJJdJ4CiKxsk1KHZ1IhA5scAvk3lvCVQmoWDTHhcd8utuA6Swf2PolVbdB7yVwnIQIXS76HRC/hWucQkpC43HriwIukm1se8QRc9nIlODCN81KvA37BALJoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
+        let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAcRWqIPG85zGye1nuRlbwWKkko4g91Vd/508Ff6vKklpAAAAAAD9////AkANAwAAAAAAIgAgsT7u0Lo8o2WEfxS1nXWtQzsdJTMJnnOC5fwg0nYPvpowdQAAAAAAACIAIAx0DegrXfBr4D0XdetrGgAT2Q3AZANYm0rJL8L/Epp/AAAAAAABASuIlAMAAAAAACIAIGaHQ5brMNbT+WCtfE/WPW8gkmMir5NXAKRsQZAs9cT2AQMEAQAAAAEFR1IhAwYSJ4FeXdf/XPw6lFHpeMFeGvh88f+rWN2VtnaW75TNIQOn5Sg6nytLwT5FT9z5KmV/LMN1pZRsqbworUMwRdRN0lKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGqIQN0Nj5YtWlqdUtE4VzrCy9fIUbgVSBiSedOJzYY9A0jLqxRh2R2qRQ2UoYTYXFkzWxHTxQLsYl/NGpeVIisa3apFChMb7eFLoSVfMHD7bU9EO0Qn2wqiKxsk1KHZ1IhA2KobMJZNs2+adObuXpg1Ny2DOg/nFo5bqGJdJZWSgKUIQL/DSNFGVoHc5rlzQ4+tEDFvETWR1/NXbg5axpIIYuAhVKvAtY0smgiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhA3Q2Pli1aWp1S0ThXOsLL18hRuBVIGJJ504nNhj0DSMurFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
+        let blockheight = 700000;
+        let blocktime = 700000;
+        db_insert_new_unconfirmed_vault(&db_path, wallet_id, &outpoint, &amount, derivation_index)
+            .unwrap();
+        db_confirm_deposit(
+            &db_path,
+            &outpoint,
+            blockheight,
+            blocktime,
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            Some(&fresh_emer_tx),
+            Some(&fresh_unemer_tx),
+        )
+        .unwrap();
+
+        // We can mark it as unvaulted, it'll set the block height of the first stage tx
+        let blockheight = 701000;
+        let unvault_txid = fresh_unvault_tx.txid();
+        assert!(db_vault_by_deposit(&db_path, &outpoint)
+            .unwrap()
+            .unwrap()
+            .first_stage_tx_blockheight
+            .is_none());
+        db_confirm_unvault(&db_path, &unvault_txid, blockheight).unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
+        assert_eq!(db_vault.first_stage_tx_blockheight.unwrap(), blockheight);
+
+        // Now remove the blockheight and set it back to unvaulting
+        db_exec(&db_path, |tx| db_unconfirm_unvault_dbtx(tx, db_vault.id)).unwrap();
+        assert!(db_vault_by_deposit(&db_path, &outpoint)
+            .unwrap()
+            .unwrap()
+            .first_stage_tx_blockheight
+            .is_none());
+
+        // We can mark it as spending without going through the 'unvaulted' state
+        let spend_txid =
+            Txid::from_str("8e8be4a6b3885c9429ca675ee752166e7cd88c8eb370557aea67bc70c04df454")
+                .unwrap();
+        db_spend_unvault(&db_path, &unvault_txid, &spend_txid).unwrap();
+        assert!(db_vault_by_deposit(&db_path, &outpoint)
+            .unwrap()
+            .unwrap()
+            .first_stage_tx_blockheight
+            .is_none());
+
+        let txids = db_txids_unvaulted_no_bh(&db_path).unwrap();
+        assert_eq!(txids.len(), 1);
+        assert_eq!(txids[0], unvault_txid);
+    }
+
     // There we trigger a concurrent write access to the database by inserting a deposit and
     // updating its presigned transaction in two different thread. It should be fine and one of
     // them just lock thanks to the unlock_notify feature of SQLite https://sqlite.org/unlock_notify.html

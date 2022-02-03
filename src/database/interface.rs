@@ -331,6 +331,29 @@ pub fn db_unvaulted_vaults(
         },
     )
 }
+
+/// Get the txid of the Unvault transaction of the vaults whose Unvault transaction is being spent
+/// but it was not yet marked as confirmed.
+pub fn db_txids_unvaulted_no_bh(db_path: &Path) -> Result<Vec<Txid>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT ptx.txid FROM vaults INNER JOIN presigned_transactions as ptx \
+        ON ptx.vault_id = vaults.id \
+        WHERE ptx.type = (?1) AND vaults.status IN ((?2), (?3), (?4)) AND first_stage_tx_blockheight is NULL",
+        params![
+            TransactionType::Unvault as u32,
+            VaultStatus::Spending as u32,
+            VaultStatus::Canceling as u32,
+            VaultStatus::UnvaultEmergencyVaulting as u32,
+        ],
+        |row| {
+            let txid: Vec<u8> = row.get(0)?;
+            let txid: Txid = encode::deserialize(&txid).expect("Must be valid");
+            Ok(txid)
+        },
+    )
+}
+
 /// Get the vaults that are in the process of being spent, along with the respective Unvault
 /// transaction.
 pub fn db_spending_vaults(

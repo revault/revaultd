@@ -504,6 +504,28 @@ def test_reorged_unvault(revault_network, bitcoind):
             for field in timestamps_from_status("spent"):
                 assert vault[field] is not None, field
 
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_reorged_spend(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(4, 2, csv=CSV, with_watchtowers=False)
+    vaults = revault_network.fundmany([32, 3])
+
+    # Spend the vaults, record the spend time
+    revault_network.activate_fresh_vaults(vaults)
+    deposits, _ = revault_network.spend_vaults_anyhow(vaults)
+    initial_moved_at = revault_network.stk(0).rpc.listvaults(["spent"])["vaults"][0][
+        "moved_at"
+    ]
+
+    # Initial sanity checks..
+    for w in revault_network.participants():
+        wait_for(lambda: w.rpc.getinfo()["blockheight"] == bitcoind.rpc.getblockcount())
+        assert len(w.rpc.listvaults(["spent"], deposits)["vaults"]) == len(deposits)
+        for vault in w.rpc.listvaults(["spent"], deposits)["vaults"]:
+            for field in timestamps_from_status("spent"):
+                assert vault[field] is not None, field
+
     # If we are 'spent' and the Spend gets unconfirmed, it'll get marked for
     # re-broadcast
     blockheight = bitcoind.rpc.getblockcount()
@@ -517,6 +539,8 @@ def test_reorged_unvault(revault_network, bitcoind):
                 "Rescan of all vaults in db done.",
             ]
         )
+
+    # All good if we re-confirm it
     bitcoind.generate_block(1, wait_for_mempool=1)
     for w in revault_network.participants():
         wait_for(
@@ -526,6 +550,8 @@ def test_reorged_unvault(revault_network, bitcoind):
         for vault in w.rpc.listvaults(["spent"], deposits)["vaults"]:
             for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
                 assert vault[field] is not None, field
+            # It's in a new block, it shouldn't have the same timestamp!
+            assert vault["moved_at"] != initial_moved_at
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

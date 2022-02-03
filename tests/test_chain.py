@@ -75,10 +75,19 @@ def timestamps_from_status(status):
         "unvaulted",
         "spending",
         "spent",
+        "canceling",
         "canceled",
     ]:
         timestamps.append("secured_at")
-    if status in ["active", "unvaulting", "unvaulted", "spending", "spent", "canceled"]:
+    if status in [
+        "active",
+        "unvaulting",
+        "unvaulted",
+        "spending",
+        "spent",
+        "canceling",
+        "canceled",
+    ]:
         timestamps.append("delegated_at")
     if status in ["spend", "canceled"]:
         timestamps.append("moved_at")
@@ -548,7 +557,7 @@ def test_reorged_spend(revault_network, bitcoind):
             == len(deposits)
         )
         for vault in w.rpc.listvaults(["spent"], deposits)["vaults"]:
-            for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+            for field in timestamps_from_status("spent"):
                 assert vault[field] is not None, field
             # It's in a new block, it shouldn't have the same timestamp!
             assert vault["moved_at"] != initial_moved_at
@@ -610,7 +619,7 @@ def test_reorged_cancel(revault_network, bitcoind):
             == "canceling"
         )
         assert w.rpc.listvaults([], [deposit])["vaults"][0]["moved_at"] is None
-        for field in ["funded_at", "secured_at", "delegated_at"]:
+        for field in timestamps_from_status("canceling"):
             assert w.rpc.listvaults([], [deposit])["vaults"][0][field] is not None
 
     # Confirming the cancel again
@@ -620,7 +629,7 @@ def test_reorged_cancel(revault_network, bitcoind):
         wait_for(
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
         )
-        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+        for field in timestamps_from_status("canceled"):
             vault = w.rpc.listvaults([], [deposit])["vaults"][0]
             assert vault[field] is not None
             # It's in a new block, it shouldn't have the same timestamp!
@@ -637,7 +646,7 @@ def test_reorged_cancel(revault_network, bitcoind):
         wait_for(
             lambda: w.rpc.listvaults([], [deposit])["vaults"][0]["status"] == "canceled"
         )
-        for field in ["funded_at", "secured_at", "delegated_at", "moved_at"]:
+        for field in timestamps_from_status("canceled"):
             assert [field] is not None
 
 

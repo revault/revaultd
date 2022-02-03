@@ -490,7 +490,8 @@ fn db_update_first_stage_blockheight(
     })
 }
 
-fn db_update_first_stage_blockheight_from_unvault_txid(
+/// Set the first stage tx's blockheight of this vault from its Unvault's txid.
+pub fn db_update_first_stage_blockheight_from_unvault_txid(
     db_path: &Path,
     unvault_txid: &Txid,
     blockheight: u32,

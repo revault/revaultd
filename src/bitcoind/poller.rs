@@ -16,15 +16,15 @@ use crate::{
             db_mark_emergencying_vault, db_mark_rebroadcastable_spend, db_mark_spent_unvault,
             db_spend_unvault, db_unconfirm_cancel_dbtx, db_unconfirm_deposit_dbtx,
             db_unconfirm_emer_dbtx, db_unconfirm_spend_dbtx, db_unconfirm_unemer_dbtx,
-            db_unconfirm_unvault_dbtx, db_unvault_deposit, db_update_deposit_index, db_update_tip,
-            db_update_tip_dbtx,
+            db_unconfirm_unvault_dbtx, db_unvault_deposit, db_update_deposit_index,
+            db_update_first_stage_blockheight_from_unvault_txid, db_update_tip, db_update_tip_dbtx,
         },
         interface::{
             db_broadcastable_spend_transactions, db_cancel_dbtx, db_canceling_vaults,
             db_cpfpable_spends, db_cpfpable_unvaults, db_emering_vaults, db_exec,
-            db_spending_vaults, db_tip, db_unemering_vaults, db_unvault_dbtx,
-            db_unvault_transaction, db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults_dbtx,
-            db_wallet,
+            db_spending_vaults, db_tip, db_txids_unvaulted_no_bh, db_unemering_vaults,
+            db_unvault_dbtx, db_unvault_transaction, db_vault_by_deposit, db_vault_by_unvault_txid,
+            db_vaults_dbtx, db_wallet,
         },
         schema::DbVault,
     },
@@ -88,6 +88,22 @@ fn maybe_broadcast_spend_transactions(
             Err(e) => {
                 log::error!("Error broadcasting Spend tx '{}': '{}'", txid, e);
             }
+        }
+    }
+
+    Ok(())
+}
+
+// Set the blockheight of the Unvault tx if it confirmed for vaults that are "more than unvaulting"
+fn mark_confirmed_unvaults(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+
+    for txid in db_txids_unvaulted_no_bh(&db_path)? {
+        if let Some(bh) = bitcoind.get_wallet_transaction(&txid)?.blockheight {
+            db_update_first_stage_blockheight_from_unvault_txid(&db_path, &txid, bh)?;
         }
     }
 
@@ -620,6 +636,13 @@ fn new_tip_event(
 
     // Then we check if any Spend became mature yet
     maybe_broadcast_spend_transactions(revaultd, bitcoind)?;
+
+    // Did some Unvault transaction confirmed that we haven't noticed yet?
+    // This check is necessary because:
+    //  - We need the blockheight at which it confirmed for reorg handling
+    //  - We don't have a strict unvaulting->unvaulted->[spending/canceling] state
+    //    transition as we have for deposits, for a smoother UX.
+    mark_confirmed_unvaults(revaultd, bitcoind)?;
 
     // Did some Spend transaction confirmed?
     mark_confirmed_spends(revaultd, bitcoind, unvaults_cache)?;
@@ -1577,14 +1600,26 @@ fn update_utxos(
         }
     }
 
-    for (unvault_outpoint, _) in spent_unvaults {
+    for (outpoint, txo) in spent_unvaults {
+        // If the unvault was still marked as unconfirmed, check whether it confirmed first.
+        if !txo.is_confirmed {
+            if let Some(bh) = bitcoind.get_wallet_transaction(&outpoint.txid)?.blockheight {
+                db_confirm_unvault(&db_path, &outpoint.txid, bh)?;
+                unvaults_cache
+                    .get_mut(&outpoint)
+                    .expect("An unknown unvault got confirmed?")
+                    .is_confirmed = true;
+                log::debug!("Unvault transaction at {} is now confirmed", &outpoint);
+            }
+        }
+
         handle_spent_unvault(
             revaultd,
             &db_path,
             bitcoind,
             unvaults_cache,
             previous_tip,
-            &unvault_outpoint,
+            &outpoint,
         )?;
     }
 

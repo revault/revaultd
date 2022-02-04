@@ -51,7 +51,7 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "unconfirmed"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
+    assert vault_list[0]["amount"] == amount_sent * 10**8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
     assert vault_list[0]["blockheight"] == 0
@@ -86,7 +86,7 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
+    assert vault_list[0]["amount"] == amount_sent * 10**8
     assert vault_list[0]["address"] == addr
     assert vault["funded_at"] is not None
     assert vault["secured_at"] is None
@@ -101,7 +101,7 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
+    assert vault_list[0]["amount"] == amount_sent * 10**8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
 
@@ -111,7 +111,7 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 1
     assert vault_list[0]["status"] == "funded"
     assert vault_list[0]["txid"] == txid
-    assert vault_list[0]["amount"] == amount_sent * 10 ** 8
+    assert vault_list[0]["amount"] == amount_sent * 10**8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
 
@@ -906,7 +906,7 @@ def test_getspendtx(revault_network, bitcoind):
     deposits = [deposit]
     amounts = [vault["amount"]]
     for _ in range(10):
-        amount = round(random.random() * 10 ** 8 % 50, 7)
+        amount = round(random.random() * 10**8 % 50, 7)
         vault = revault_network.fund(amount)
         revault_network.secure_vault(vault)
         revault_network.activate_vault(vault)

@@ -83,7 +83,7 @@ pub struct BitcoindConfig {
     pub poll_interval_secs: Duration,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ScriptsConfig {
     #[serde(deserialize_with = "deserialize_fromstr")]
     pub deposit_descriptor: DepositDescriptor,
@@ -126,7 +126,7 @@ pub struct ManagerConfig {
 }
 
 /// Static informations we require to operate
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,

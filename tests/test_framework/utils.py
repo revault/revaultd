@@ -62,7 +62,7 @@ BITCOIND_PATH = os.getenv("BITCOIND_PATH", DEFAULT_BITCOIND_PATH)
 WT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wtplugins")
 
 
-COIN = 10 ** 8
+COIN = 10**8
 
 
 def wait_for(success, timeout=TIMEOUT, debug_fn=None):

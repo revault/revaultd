@@ -65,6 +65,7 @@ CREATE TABLE vaults (
     delegated_at INTEGER,
     moved_at INTEGER,
     final_txid BLOB,
+    UNIQUE (deposit_txid, deposit_vout),
     FOREIGN KEY (wallet_id) REFERENCES wallets (id)
         ON UPDATE RESTRICT
         ON DELETE RESTRICT

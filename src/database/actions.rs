@@ -820,15 +820,25 @@ pub fn db_update_presigned_txs(
         for mut transaction in transactions {
             // Merge the transaction with the in-db ones, in case another thread modified
             // it under our feet.
+            // NOTE: we are looking it up by txid. This is because the id of the DbTransaction
+            // might refer now to another transaction than when it was fetched by the caller of
+            // this function. It was triggered by the reorged deposit tests like so:
+            // 1. The sigfetcher fetches presigned txs A and B (ids 1 and 2) from DB
+            // 2. The poller thread notices a reorg, removes the presigned txs from DB
+            // 3. The poller thread re-confirms vaults out of order (A is now id 2 and B id 1)
+            // 4. Here we update the the DbTx with id 1 (B) with the psbt of A
+            // This actually worked because there was no signature to merge, otherwise it would
+            // have paniced in db_txs_merge_sigs() since the sigs would have been invalid.
             let db_transaction: DbTransaction = db_tx
-                .prepare("SELECT * FROM presigned_transactions WHERE id = (?1)")?
-                .query(params![transaction.id])?
+                .prepare("SELECT * FROM presigned_transactions WHERE txid = (?1)")?
+                .query(params![transaction.psbt.txid().to_vec()])?
                 .next()?
                 // Note this can happen if another thread removed them.
                 .ok_or_else(|| {
                     DatabaseError(format!(
-                        "Transaction with id '{}' (vault id '{}') not found in db",
-                        transaction.id, db_vault.id
+                        "Transaction with txid '{}' (vault id '{}') not found in db",
+                        transaction.psbt.txid(),
+                        db_vault.id
                     ))
                 })?
                 .try_into()?;

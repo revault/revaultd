@@ -375,7 +375,8 @@ pub fn db_unconfirm_deposit_dbtx(
     db_tx.execute(
         "UPDATE vaults SET status = (?1), deposit_blockheight = NULL, \
          first_stage_tx_blockheight = NULL, second_stage_tx_blockheight = NULL, \
-         funded_at = NULL, secured_at = NULL, delegated_at = NULL \
+         funded_at = NULL, secured_at = NULL, delegated_at = NULL, moved_at = NULL, \
+         final_txid = NULL \
          WHERE id = (?2)",
         params![VaultStatus::Unconfirmed as u32, vault_id],
     )?;

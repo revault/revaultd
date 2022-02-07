@@ -359,8 +359,6 @@ pub fn db_unconfirm_deposit_dbtx(
     db_tx: &rusqlite::Transaction,
     vault_id: u32,
 ) -> Result<(), DatabaseError> {
-    // FIXME: don't delete everything. This is unnecessary and confusing.
-
     // This is going to cascade and DELETE the spend_inputs.
     db_tx.execute(
         "DELETE FROM spend_transactions WHERE id = ( \

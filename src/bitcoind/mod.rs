@@ -3,7 +3,11 @@ pub mod poller;
 pub mod utils;
 
 use crate::config::BitcoindConfig;
-use crate::{database::DatabaseError, revaultd::RevaultD, threadmessages::BitcoindMessageOut};
+use crate::{
+    database::DatabaseError,
+    revaultd::{ChecksumError, RevaultD},
+    threadmessages::BitcoindMessageOut,
+};
 use interface::{BitcoinD, WalletTransaction};
 use poller::poller_main;
 use revault_tx::bitcoin::{Network, Txid};
@@ -77,6 +81,12 @@ impl From<simple_http::Error> for BitcoindError {
 impl From<revault_tx::Error> for BitcoindError {
     fn from(e: revault_tx::Error) -> Self {
         Self::RevaultTx(e)
+    }
+}
+
+impl From<ChecksumError> for BitcoindError {
+    fn from(e: ChecksumError) -> Self {
+        Self::Custom(e.to_string())
     }
 }
 

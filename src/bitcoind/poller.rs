@@ -165,7 +165,7 @@ fn mark_confirmed_spends(
 
         if !bitcoind.is_in_mempool(spend_txid)? {
             // At least, is this transaction still in mempool?
-            // If it was evicted, downgrade it to `unvaulted`, the listunspent polling loop will
+            // If it was evicted, downgrade it to `unvaulted`, the polling loop will
             // take care of checking its new state immediately.
             db_downgrade_unvaulted(&db_path, &unvault_tx.txid())?;
 
@@ -282,7 +282,7 @@ fn mark_confirmed_cancels(
 
         if !bitcoind.is_in_mempool(&cancel_tx.txid())? {
             // At least, is this transaction still in mempool?
-            // If it was evicted, downgrade it to `unvaulted`, the listunspent polling loop will
+            // If it was evicted, downgrade it to `unvaulted`, the polling loop will
             // take care of checking its new state immediately.
             mark_unvaulted(revaultd, &db_path, unvaults_cache, &db_vault)?;
         } else {
@@ -339,7 +339,7 @@ fn mark_confirmed_unemers(
 
         if !bitcoind.is_in_mempool(&unemer_txid)? {
             // At least, is this transaction still in mempool?
-            // If it was evicted, downgrade it to `unvaulted`, the listunspent polling loop will
+            // If it was evicted, downgrade it to `unvaulted`, the polling loop will
             // take care of checking its new state immediately.
             mark_unvaulted(revaultd, &db_path, unvaults_cache, &db_vault)?;
             log::warn!(
@@ -1376,11 +1376,11 @@ fn handle_confirmed_deposit(
         if let (Some(height), Some(blocktime)) = (tx.blockheight, tx.blocktime) {
             (height, blocktime)
         } else {
-            // This is theoretically possible if it gets unconfirmed in between the call to
-            // listunspent and this one. This was actually encountered by the reorg tests.
+            // This is theoretically possible if it gets unconfirmed in between the polling
+            // and here. This was actually encountered by the reorg tests.
             log::error!(
                 "Deposit transaction for '{}' isn't confirmed but it's part of the \
-                         confirmed deposits returned by listunspent.",
+                 confirmed deposits returned by listsinceblock.",
                 outpoint
             );
             return Ok(());
@@ -1422,8 +1422,7 @@ fn handle_confirmed_deposit(
     Ok(())
 }
 
-// Called when a deposit UTXO disappears from the listunspent result, ie it was spent. This tries
-// to figure out where it went.
+// Called when we notice that a deposit txo isn't unspent (anymore).
 fn handle_spent_deposit(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     db_path: &Path,
@@ -1509,8 +1508,8 @@ fn handle_spent_deposit(
     // Only remove the deposit from the cache if it's not in mempool nor in block chain.
     if bitcoind.is_current(&deposit_outpoint.txid)? {
         log::error!(
-            "Deposit at '{}' is still current but is not returned by listunspent and \
-             Unvault/Emer transactions aren't seen",
+            "Deposit at '{}' is still current but is spent and Unvault/Emer \
+             transactions aren't seen",
             &deposit_outpoint,
         );
     } else {
@@ -1891,7 +1890,7 @@ pub fn poller_main(
 ) -> Result<(), BitcoindError> {
     let mut last_poll = None;
     let mut sync_waittime = None;
-    // We use a cache for maintaining our deposits' state up-to-date by polling `listunspent`
+    // We use a cache for maintaining our deposits' state up-to-date by polling `listsinceblock`
     let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())?;
     // Same for the unvaults
     let mut unvaults_cache = populate_unvaults_cache(&revaultd.read().unwrap())?;

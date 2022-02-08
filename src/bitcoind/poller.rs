@@ -1557,8 +1557,6 @@ fn update_utxos(
     )?;
 
     for (outpoint, utxo) in new_deposits {
-        // Maybe a quick hack could be: we check in the databse that we don't have this
-        // UTXO already
         handle_new_deposit(revaultd, &db_path, bitcoind, deposits_cache, outpoint, utxo)?;
     }
 

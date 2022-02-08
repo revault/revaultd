@@ -1501,6 +1501,12 @@ fn handle_spent_deposit(
             deposits_cache
                 .remove(&deposit_outpoint)
                 .expect("It was in spent_deposits, it must still be here.");
+
+            log::debug!(
+                "Found Emergency transaction spending deposit '{}'",
+                &deposit_outpoint
+            );
+            return Ok(());
         }
     }
 

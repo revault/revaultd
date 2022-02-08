@@ -381,7 +381,6 @@ fn maybe_confirm_emer(
 fn mark_confirmed_emers(
     revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<(), BitcoindError> {
     let db_path = revaultd.read().unwrap().db_file();
 
@@ -401,12 +400,7 @@ fn mark_confirmed_emers(
         };
 
         if !bitcoind.is_in_mempool(&emer_txid)? {
-            // At least, is this transaction still in mempool?
-            // If it was evicted, downgrade it to `unvaulted`, the listunspent polling loop will
-            // take care of checking its new state immediately.
-            mark_unvaulted(revaultd, &db_path, unvaults_cache, &db_vault)?;
             log::warn!("Emergency tx '{}' was evicted from mempool.", &emer_txid,);
-
             // TODO: broadcast it again, as well as the other Emergency txs in this case!!
         } else {
             log::trace!("Emergency tx '{}' is still unconfirmed", emer_txid);
@@ -651,7 +645,7 @@ fn new_tip_event(
     mark_confirmed_cancels(revaultd, bitcoind, unvaults_cache)?;
 
     // Did some Emergency got confirmed?
-    mark_confirmed_emers(revaultd, bitcoind, unvaults_cache)?;
+    mark_confirmed_emers(revaultd, bitcoind)?;
     mark_confirmed_unemers(revaultd, bitcoind, unvaults_cache)?;
 
     Ok(())

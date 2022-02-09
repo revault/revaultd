@@ -170,6 +170,67 @@ impl From<revault_tx::Error> for CommandError {
     }
 }
 
+impl CommandError {
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            CommandError::UnknownOutpoint(_) => ErrorCode::RESOURCE_NOT_FOUND_ERROR,
+            CommandError::InvalidStatus(..) => ErrorCode::INVALID_STATUS_ERROR,
+            CommandError::InvalidStatusFor(..) => ErrorCode::INVALID_STATUS_ERROR,
+            CommandError::InvalidParams(_) => ErrorCode::INVALID_PARAMS,
+            CommandError::Communication(e) => match e {
+                CommunicationError::Net(_) => ErrorCode::TRANSPORT_ERROR,
+                CommunicationError::WatchtowerNack(_, _) => ErrorCode::WT_SIG_NACK,
+                CommunicationError::SignatureStorage => ErrorCode::COORDINATOR_SIG_STORE_ERROR,
+                CommunicationError::SpendTxStorage => ErrorCode::COORDINATOR_SPEND_STORE_ERROR,
+                CommunicationError::CosigAlreadySigned => ErrorCode::COSIGNER_ALREADY_SIGN_ERROR,
+                CommunicationError::CosigInsanePsbt => ErrorCode::COSIGNER_INSANE_ERROR,
+            },
+            CommandError::Bitcoind(_) => ErrorCode::BITCOIND_ERROR,
+            CommandError::Tx(_) => ErrorCode::INTERNAL_ERROR,
+            CommandError::SpendFeerateTooLow(_, _) => ErrorCode::INVALID_PARAMS,
+            // TODO: some of these probably need specific error codes
+            CommandError::SpendTooLarge
+            | CommandError::SpendUnknownUnVault(_)
+            | CommandError::UnknownSpend(_)
+            | CommandError::SpendSpent(_)
+            | CommandError::SpendNotEnoughSig(_, _)
+            | CommandError::SpendInvalidSig(_)
+            | CommandError::MissingCpfpKey => ErrorCode::INVALID_PARAMS,
+
+            CommandError::StakeholderOnly | CommandError::ManagerOnly => ErrorCode::INVALID_REQUEST,
+            CommandError::Race => ErrorCode::INTERNAL_ERROR,
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+pub enum ErrorCode {
+    /// Invalid Params (identical to jsonrpc error code)
+    INVALID_PARAMS = -32602,
+    /// Invalid Request (identical to jsonrpc error code)
+    INVALID_REQUEST = -32600,
+    /// Internal error (identical to jsonrpc error code)
+    INTERNAL_ERROR = -32603,
+    /// An error internal to revault_net, generally a transport error
+    TRANSPORT_ERROR = 12000,
+    /// The watchtower refused our signatures
+    WT_SIG_NACK = 13_000,
+    /// The Coordinator told us they could not store our signature
+    COORDINATOR_SIG_STORE_ERROR = 13100,
+    /// The Coordinator told us they could not store our Spend transaction
+    COORDINATOR_SPEND_STORE_ERROR = 13101,
+    /// The Cosigning Server returned null to our request!
+    COSIGNER_ALREADY_SIGN_ERROR = 13201,
+    /// The Cosigning Server tried to fool us!
+    COSIGNER_INSANE_ERROR = 13202,
+    /// Bitcoind error
+    BITCOIND_ERROR = 14000,
+    /// Resource not found
+    RESOURCE_NOT_FOUND_ERROR = 15000,
+    /// Vault status was invalid
+    INVALID_STATUS_ERROR = 15001,
+}
+
 macro_rules! stakeholder_only {
     ($revaultd:ident) => {
         if !$revaultd.is_stakeholder() {

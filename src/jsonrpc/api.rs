@@ -2,10 +2,8 @@
 //! *valid* JSONRPC2 commands here. All the communication and parsing is done in the
 //! `server` mod.
 
-mod error;
-
 use crate::{
-    commands::{HistoryEventKind, ListSpendStatus},
+    commands::{CommandError, HistoryEventKind, ListSpendStatus},
     revaultd::VaultStatus,
     DaemonControl,
 };
@@ -27,9 +25,19 @@ use std::{
     },
 };
 
-use jsonrpc_core::Error as JsonRpcError;
+use jsonrpc_core::{types::error::ErrorCode::ServerError, Error as JsonRpcError};
 use jsonrpc_derive::rpc;
 use serde_json::json;
+
+impl From<CommandError> for JsonRpcError {
+    fn from(e: CommandError) -> Self {
+        JsonRpcError {
+            code: ServerError(e.code() as i64),
+            message: e.to_string(),
+            data: None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct JsonRpcMetaData {

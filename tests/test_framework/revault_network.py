@@ -210,6 +210,8 @@ class RevaultNetwork:
             stkonly_noisepubs + stkman_noisepubs,
             stkonly_wt_noisepubs + stkman_wt_noisepubs,
             self.coordinator_port,
+            bitcoind_rpcport,
+            bitcoind_cookie,
             self.postgres_user,
             self.postgres_pass,
             self.postgres_host,

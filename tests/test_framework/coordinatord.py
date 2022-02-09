@@ -13,6 +13,8 @@ class Coordinatord(TailableProc):
         stakeholders_keys,
         watchtowers_keys,
         listen_port,
+        bitcoind_rpc_port,
+        bitcoind_cookie_path,
         postgres_user,
         postgres_pass,
         postgres_host="localhost",
@@ -69,7 +71,12 @@ class Coordinatord(TailableProc):
                 f.write(f'"{k.hex()}", ')
             f.write("]\n")
 
-            f.write(f'listen = "127.0.0.1:{listen_port}"')
+            f.write(f'listen = "127.0.0.1:{listen_port}"\n')
+
+            f.write("[bitcoind_config]\n")
+            f.write(f"cookie_path = '{bitcoind_cookie_path}'\n")
+            f.write(f"addr = '127.0.0.1:{bitcoind_rpc_port}'\n")
+            f.write("broadcast_interval = 5\n")
 
     def postgres_exec(self, sql):
         conn = psycopg2.connect(

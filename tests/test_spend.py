@@ -386,8 +386,8 @@ def test_spends_conflicting(revault_network, bitcoind):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spend_threshold(revault_network, bitcoind, executor):
     CSV = 20
-    managers_threshold = 3
-    revault_network.deploy(17, 8, csv=CSV, managers_threshold=managers_threshold)
+    managers_threshold = 2
+    revault_network.deploy(4, 3, csv=CSV, managers_threshold=managers_threshold)
     man = revault_network.man(0)
 
     # Get some more funds

@@ -32,8 +32,8 @@ use crate::{
     DaemonControl, VERSION,
 };
 use utils::{
-    finalized_emer_txs, gethistory, listvaults_from_db, presigned_txs, ser_amount, ser_to_string,
-    serialize_option_tx_hex, vaults_from_deposits,
+    deser_amount_from_sats, deser_from_str, finalized_emer_txs, gethistory, listvaults_from_db,
+    presigned_txs, ser_amount, ser_to_string, serialize_option_tx_hex, vaults_from_deposits,
 };
 
 use revault_tx::{
@@ -198,7 +198,6 @@ impl DaemonControl {
         } = db_tip(&revaultd.db_file()).expect("Database must not be dead");
         let number_of_vaults = self
             .list_vaults(None, None)
-            .vaults
             .iter()
             .filter(|l| {
                 l.status != VaultStatus::Spent
@@ -226,14 +225,12 @@ impl DaemonControl {
     /// List the current vaults, optionally filtered by status and/or deposit outpoints.
     pub fn list_vaults(
         &self,
-        statuses: Option<Vec<VaultStatus>>,
-        deposit_outpoints: Option<Vec<OutPoint>>,
-    ) -> ListVaultsResult {
+        statuses: Option<&[VaultStatus]>,
+        deposit_outpoints: Option<&[OutPoint]>,
+    ) -> Vec<ListVaultsEntry> {
         let revaultd = self.revaultd.read().unwrap();
-        ListVaultsResult {
-            vaults: listvaults_from_db(&revaultd, statuses, deposit_outpoints)
-                .expect("Database must be available"),
-        }
+        listvaults_from_db(&revaultd, statuses, deposit_outpoints)
+            .expect("Database must be available")
     }
 
     /// Get the deposit address at the lowest still unused derivation index
@@ -863,7 +860,7 @@ impl DaemonControl {
     pub fn get_spend_tx(
         &self,
         outpoints: &[OutPoint],
-        destinations: BTreeMap<Address, u64>,
+        destinations: &BTreeMap<Address, u64>,
         feerate_vb: u64,
     ) -> Result<SpendTransaction, CommandError> {
         let revaultd = self.revaultd.read().unwrap();
@@ -897,11 +894,11 @@ impl DaemonControl {
         }
 
         let txos: Vec<SpendTxOut> = destinations
-            .into_iter()
+            .iter()
             .map(|(addr, value)| {
                 let script_pubkey = addr.script_pubkey();
                 SpendTxOut::new(TxOut {
-                    value,
+                    value: *value,
                     script_pubkey,
                 })
             })
@@ -1344,7 +1341,7 @@ impl DaemonControl {
         start: u32,
         end: u32,
         limit: u64,
-        kind: Vec<HistoryEventKind>,
+        kind: &[HistoryEventKind],
     ) -> Result<Vec<HistoryEvent>, CommandError> {
         let revaultd = self.revaultd.read().unwrap();
         gethistory(&revaultd, &self.bitcoind_conn, start, end, limit, kind)
@@ -1352,18 +1349,18 @@ impl DaemonControl {
 }
 
 /// Descriptors the daemon was configured with
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetInfoDescriptors {
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub deposit: DepositDescriptor,
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub unvault: UnvaultDescriptor,
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub cpfp: CpfpDescriptor,
 }
 
 /// Information about the current state of the daemon
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetInfoResult {
     pub version: String,
     pub network: Network,
@@ -1375,12 +1372,15 @@ pub struct GetInfoResult {
 }
 
 /// Information about a vault.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListVaultsEntry {
-    #[serde(serialize_with = "ser_amount")]
+    #[serde(
+        serialize_with = "ser_amount",
+        deserialize_with = "deser_amount_from_sats"
+    )]
     pub amount: Amount,
     pub blockheight: u32,
-    #[serde(serialize_with = "ser_to_string")]
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
     pub status: VaultStatus,
     pub txid: Txid,
     pub vout: u32,
@@ -1392,14 +1392,8 @@ pub struct ListVaultsEntry {
     pub moved_at: Option<u32>,
 }
 
-/// Information about all our current vaults.
-#[derive(Debug, Clone, Serialize)]
-pub struct ListVaultsResult {
-    pub vaults: Vec<ListVaultsEntry>,
-}
-
 /// Revocation transactions for a given vault
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevocationTransactions {
     pub cancel_tx: CancelTransaction,
     pub emergency_tx: EmergencyTransaction,
@@ -1408,7 +1402,7 @@ pub struct RevocationTransactions {
 }
 
 /// A vault's presigned transaction.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultPresignedTransaction<T: RevaultTransaction> {
     pub psbt: T,
     // FIXME: is it really necessary?.. It's mostly contained in the PSBT already
@@ -1417,7 +1411,7 @@ pub struct VaultPresignedTransaction<T: RevaultTransaction> {
 }
 
 /// Information about a vault's presigned transactions.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPresignedTxEntry {
     pub vault_outpoint: OutPoint,
     pub unvault: VaultPresignedTransaction<UnvaultTransaction>,
@@ -1429,7 +1423,7 @@ pub struct ListPresignedTxEntry {
 }
 
 /// Information about a vault's onchain transactions.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListOnchainTxEntry {
     pub vault_outpoint: OutPoint,
     pub deposit: WalletTransaction,
@@ -1443,7 +1437,7 @@ pub struct ListOnchainTxEntry {
 }
 
 /// Status of a Spend transaction
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ListSpendStatus {
     NonFinal,
@@ -1452,7 +1446,7 @@ pub enum ListSpendStatus {
 }
 
 /// Information about a Spend transaction
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListSpendEntry {
     pub deposit_outpoints: Vec<OutPoint>,
     pub psbt: SpendTransaction,
@@ -1461,15 +1455,15 @@ pub struct ListSpendEntry {
 }
 
 /// Information about the configured servers.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServersStatuses {
-    coordinator: ServerStatus,
-    cosigners: Vec<ServerStatus>,
-    watchtowers: Vec<ServerStatus>,
+    pub coordinator: ServerStatus,
+    pub cosigners: Vec<ServerStatus>,
+    pub watchtowers: Vec<ServerStatus>,
 }
 
 /// The type of an accounting event.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HistoryEventKind {
     #[serde(rename = "cancel")]
     Cancel,
@@ -1479,8 +1473,18 @@ pub enum HistoryEventKind {
     Spend,
 }
 
+impl fmt::Display for HistoryEventKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Cancel => write!(f, "Cancel"),
+            Self::Deposit => write!(f, "Deposit"),
+            Self::Spend => write!(f, "Spend"),
+        }
+    }
+}
+
 /// An accounting event.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEvent {
     pub kind: HistoryEventKind,
     pub date: u32,

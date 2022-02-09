@@ -319,8 +319,10 @@ impl RpcApi for RpcImpl {
             None
         };
 
-        let res = meta.daemon_control.list_vaults(statuses, outpoints);
-        Ok(json!(res))
+        let res = meta
+            .daemon_control
+            .list_vaults(statuses.as_deref(), outpoints.as_deref());
+        Ok(json!({ "vaults": res }))
     }
 
     fn getdepositaddress(
@@ -422,7 +424,7 @@ impl RpcApi for RpcImpl {
 
         let tx = meta
             .daemon_control
-            .get_spend_tx(&outpoints, destinations, feerate_vb)?;
+            .get_spend_tx(&outpoints, &destinations, feerate_vb)?;
         Ok(json!({
             "spend_tx": tx,
         }))
@@ -494,7 +496,9 @@ impl RpcApi for RpcImpl {
         end: u32,
         limit: u64,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        let events = meta.daemon_control.get_history(start, end, limit, kind)?;
+        let events = meta
+            .daemon_control
+            .get_history(start, end, limit, kind.as_ref())?;
         Ok(json!({
             "events": events,
         }))

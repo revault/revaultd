@@ -18,7 +18,7 @@ use revault_tx::{
 
 use std::{collections::BTreeMap, fmt};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The kind of signature the WT refused
 #[derive(Debug)]
@@ -306,7 +306,7 @@ pub fn get_presigs(
     Ok(resp.signatures)
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerStatus {
     pub host: String,
     pub reachable: bool,

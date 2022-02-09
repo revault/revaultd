@@ -32,9 +32,10 @@ use revault_tx::{
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    str::FromStr,
 };
 
-use serde::Serializer;
+use serde::{de, Deserialize, Deserializer, Serializer};
 
 fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
 where
@@ -61,17 +62,39 @@ pub fn ser_to_string<T: fmt::Display, S: Serializer>(field: T, s: S) -> Result<S
     s.serialize_str(&field.to_string())
 }
 
+/// Deserialize a type `S` by deserializing a string, then using the `FromStr`
+/// impl of `S` to create the result. The generic type `S` is not required to
+/// implement `Deserialize`.
+pub fn deser_from_str<'de, S, D>(deserializer: D) -> Result<S, D::Error>
+where
+    S: FromStr,
+    S::Err: fmt::Display,
+    D: Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    S::from_str(&s).map_err(de::Error::custom)
+}
+
 /// Serialize an amount as sats
 pub fn ser_amount<S: Serializer>(amount: &Amount, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_u64(amount.as_sat())
+}
+
+/// Deserialize an amount from sats
+pub fn deser_amount_from_sats<'de, D>(deserializer: D) -> Result<Amount, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let a = u64::deserialize(deserializer)?;
+    Ok(Amount::from_sat(a))
 }
 
 /// List the vaults from DB, and filter out the info the RPC wants
 // FIXME: we could make this more efficient with smarter SQL queries
 pub fn listvaults_from_db(
     revaultd: &RevaultD,
-    statuses: Option<Vec<VaultStatus>>,
-    outpoints: Option<Vec<OutPoint>>,
+    statuses: Option<&[VaultStatus]>,
+    outpoints: Option<&[OutPoint]>,
 ) -> Result<Vec<ListVaultsEntry>, DatabaseError> {
     db_vaults(&revaultd.db_file()).map(|db_vaults| {
         db_vaults
@@ -257,7 +280,7 @@ pub fn gethistory<T: BitcoindThread>(
     start: u32,
     end: u32,
     limit: u64,
-    kind: Vec<HistoryEventKind>,
+    kind: &[HistoryEventKind],
 ) -> Result<Vec<HistoryEvent>, CommandError> {
     let db_path = revaultd.db_file();
     // All vaults which have one transaction (either the funding, the canceling, the unvaulting, the spending)
@@ -873,8 +896,8 @@ mod tests {
         for v in &vaults {
             let res = &listvaults_from_db(
                 &revaultd,
-                Some(vec![v.db_vault.status]),
-                Some(vec![v.db_vault.deposit_outpoint]),
+                Some(&[v.db_vault.status]),
+                Some(&[v.db_vault.deposit_outpoint]),
             )
             .unwrap()[0];
             assert_eq!(res.amount, v.db_vault.amount);
@@ -891,7 +914,7 @@ mod tests {
         // Checking that filters work
         assert_eq!(listvaults_from_db(&revaultd, None, None).unwrap().len(), 4);
         assert_eq!(
-            listvaults_from_db(&revaultd, Some(vec![VaultStatus::Unconfirmed]), None)
+            listvaults_from_db(&revaultd, Some(&[VaultStatus::Unconfirmed]), None)
                 .unwrap()
                 .len(),
             1
@@ -899,8 +922,8 @@ mod tests {
         assert_eq!(
             listvaults_from_db(
                 &revaultd,
-                Some(vec![VaultStatus::Unconfirmed]),
-                Some(vec![vaults[1].db_vault.deposit_outpoint])
+                Some(&[VaultStatus::Unconfirmed]),
+                Some(&[vaults[1].db_vault.deposit_outpoint])
             )
             .unwrap()
             .len(),
@@ -910,7 +933,7 @@ mod tests {
             listvaults_from_db(
                 &revaultd,
                 None,
-                Some(vec![
+                Some(&[
                     vaults[0].db_vault.deposit_outpoint,
                     vaults[1].db_vault.deposit_outpoint
                 ])
@@ -922,7 +945,7 @@ mod tests {
         assert_eq!(
             listvaults_from_db(
                 &revaultd,
-                Some(vec![
+                Some(&[
                     VaultStatus::Unconfirmed,
                     VaultStatus::Funded,
                     VaultStatus::Secured
@@ -936,7 +959,7 @@ mod tests {
         assert_eq!(
             listvaults_from_db(
                 &revaultd,
-                Some(vec![
+                Some(&[
                     VaultStatus::Unconfirmed,
                     VaultStatus::Funded,
                     VaultStatus::Secured,
@@ -1469,7 +1492,7 @@ mod tests {
             0,
             4,
             20,
-            vec![
+            &[
                 HistoryEventKind::Deposit,
                 HistoryEventKind::Cancel,
                 HistoryEventKind::Spend,
@@ -1516,7 +1539,7 @@ mod tests {
             0,
             2,
             20,
-            vec![
+            &[
                 HistoryEventKind::Deposit,
                 HistoryEventKind::Cancel,
                 HistoryEventKind::Spend,

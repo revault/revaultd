@@ -337,8 +337,8 @@ def test_reorged_unvault(revault_network, bitcoind):
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"{deposits[0]}.* Unvault transaction is still confirmed .*'{unvault_tx_a['blockheight']}'",
-                f"{deposits[1]}.* Unvault transaction is still confirmed .*'{unvault_tx_b['blockheight']}'",
+                f"{deposits[0]}.* First Stage transaction is still confirmed .*'{unvault_tx_a['blockheight']}'",
+                f"{deposits[1]}.* First Stage transaction is still confirmed .*'{unvault_tx_b['blockheight']}'",
                 "Rescan .*done",
                 f"New tip.* {new_tip}",
             ]
@@ -496,8 +496,8 @@ def test_reorged_spend(revault_network, bitcoind):
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault {deposits[0]}'s Spend transaction .* got unconfirmed",
-                f"Vault {deposits[1]}'s Spend transaction .* got unconfirmed",
+                f"Vault {deposits[0]}'s Spend transaction got unconfirmed",
+                f"Vault {deposits[1]}'s Spend transaction got unconfirmed",
                 "Rescan of all vaults in db done.",
             ]
         )
@@ -549,7 +549,7 @@ def test_reorged_cancel(revault_network, bitcoind):
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault {deposit}'s Cancel transaction .* got unconfirmed",
+                f"Vault {deposit}'s Cancel transaction got unconfirmed",
                 "Rescan of all vaults in db done.",
             ]
         )
@@ -561,7 +561,7 @@ def test_reorged_cancel(revault_network, bitcoind):
         w.wait_for_logs(
             [
                 "Detected reorg",
-                f"Vault {deposit}'s Cancel transaction .* got unconfirmed",
+                f"Vault {deposit}'s Cancel transaction got unconfirmed",
                 "Rescan of all vaults in db done.",
             ]
         )

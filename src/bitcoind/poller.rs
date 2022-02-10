@@ -804,7 +804,7 @@ fn unconfirm_vault(
 // This handles a block chain reorganization by rewinding our state to the latest common ancestor
 // between the new chain and the fork we were on.
 fn rewind_state(
-    revaultd: &Arc<RwLock<RevaultD>>,
+    revaultd: &RevaultD,
     db_tx: &rusqlite::Transaction,
     db_tip: BlockchainTip,
     bitcoind: &BitcoinD,
@@ -858,7 +858,7 @@ fn rewind_state(
 
         // If it got confirmed (according to our minimum number of confs) in our fork, mark the
         // vault as unconfirmed.
-        let min_conf = revaultd.read().unwrap().min_conf;
+        let min_conf = revaultd.min_conf;
         let deposit_conf = ancestor
             .height
             .checked_add(1)
@@ -869,7 +869,7 @@ fn rewind_state(
             // FIXME: should we instead only wipe it if it was completely unconfirmed? That's
             // kinda the point of having a minimum number of confs.
             unconfirm_vault(
-                &revaultd.read().unwrap(),
+                &revaultd,
                 bitcoind,
                 db_tx,
                 deposits_cache,
@@ -937,7 +937,7 @@ fn rewind_state(
                 let unvault_txid = unvault_tx.txid();
 
                 unconfirm_unvault(
-                    &revaultd.read().unwrap(),
+                    &revaultd,
                     bitcoind,
                     db_tx,
                     unvaults_cache,
@@ -1024,7 +1024,8 @@ fn update_tip(
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<BlockchainTip, BitcoindError> {
-    let current_tip = db_tip(&revaultd.read().unwrap().db_file())?;
+    let db_path = revaultd.read().unwrap().db_file();
+    let current_tip = db_tip(&db_path)?;
     let tip = bitcoind.get_tip()?;
 
     // Nothing changed, shortcut.
@@ -1047,9 +1048,9 @@ fn update_tip(
         &current_tip,
         &tip
     );
-    db_exec(&revaultd.read().unwrap().db_file(), |db_tx| {
+    db_exec(&db_path, |db_tx| {
         rewind_state(
-            revaultd,
+            &revaultd.read().unwrap(),
             db_tx,
             current_tip,
             bitcoind,

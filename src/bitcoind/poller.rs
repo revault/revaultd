@@ -4,7 +4,8 @@ use crate::{
         interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},
         utils::{
             cancel_txid, emer_txid, populate_deposit_cache, populate_unvaults_cache,
-            presigned_transactions, unemer_txid, unvault_txin_from_deposit, vault_deposit_utxo,
+            presigned_transactions, unemer_txid, unvault_txid, unvault_txin_from_deposit,
+            vault_deposit_utxo,
         },
         BitcoindError,
     },
@@ -20,11 +21,10 @@ use crate::{
             db_update_first_stage_blockheight_from_unvault_txid, db_update_tip,
         },
         interface::{
-            db_broadcastable_spend_transactions, db_cancel_dbtx, db_canceling_vaults,
-            db_cpfpable_spends, db_cpfpable_unvaults, db_emering_vaults, db_exec,
-            db_spending_vaults, db_tip, db_txids_unvaulted_no_bh, db_unemering_vaults,
-            db_unvault_dbtx, db_unvault_transaction, db_vault_by_deposit, db_vault_by_unvault_txid,
-            db_vaults_dbtx, db_wallet,
+            db_broadcastable_spend_transactions, db_canceling_vaults, db_cpfpable_spends,
+            db_cpfpable_unvaults, db_emering_vaults, db_exec, db_spending_vaults, db_tip,
+            db_txids_unvaulted_no_bh, db_unemering_vaults, db_unvault_dbtx, db_unvault_transaction,
+            db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults_dbtx, db_wallet,
         },
         schema::DbVault,
     },
@@ -655,7 +655,6 @@ fn new_tip_event(
 // Panics if the status of the vault isn't at the "second stage".
 fn unconfirm_unvault(
     revaultd: &RevaultD,
-    bitcoind: &BitcoinD,
     db_tx: &rusqlite::Transaction,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
     vault: &DbVault,
@@ -695,38 +694,6 @@ fn unconfirm_unvault(
     // NOTE: it's a NOP if there is no Spend tx (eg if we are a stakeholder)
     db_mark_rebroadcastable_spend(db_tx, &unvault_txid)?;
 
-    // bitcoind's wallet may need a small kick-in for large reorgs (which won't happen on mainnet
-    // but hey).
-    match bitcoind.rebroadcast_wallet_tx(&unvault_txid) {
-        Ok(()) => {}
-        Err(e) => log::debug!(
-            "Error re-broadcasting Unvault tx '{}': '{}'",
-            unvault_txid,
-            e
-        ),
-    }
-
-    // If it was Canceled, rebroadcast the tx just in case (TODO: is it necessary? If so do the
-    // same for Emergency!)
-    if matches!(vault.status, VaultStatus::Canceled | VaultStatus::Canceling) {
-        let cancel_tx = match db_cancel_dbtx(db_tx, vault.id)? {
-            Some(tx) => tx,
-            None => {
-                log::error!(
-                    "Vault '{}' has status '{}' but no Cancel in database!",
-                    vault.deposit_outpoint,
-                    vault.status
-                );
-                return Ok(());
-            }
-        };
-        let cancel_txid = cancel_tx.txid();
-        match bitcoind.rebroadcast_wallet_tx(&cancel_txid) {
-            Ok(()) => {}
-            Err(e) => log::debug!("Error re-broadcasting Cancel tx '{}': '{}'", cancel_txid, e),
-        }
-    }
-
     Ok(())
 }
 
@@ -734,26 +701,12 @@ fn unconfirm_unvault(
 // Will panic if called for an unconfirmed vault.
 fn unconfirm_vault(
     revaultd: &RevaultD,
-    bitcoind: &BitcoinD,
     db_tx: &rusqlite::Transaction,
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
     vault: &DbVault,
 ) -> Result<(), BitcoindError> {
     let unvault_tx = db_unvault_dbtx(db_tx, vault.id)?;
-
-    // Just in case, rebroadcast the deposit transaction
-    // TODO: rework the re-broadcast mechanism, it's awful at the moment.
-    // TODO: If it was in an Emergency status, re-broadcast all the Emergency transactions
-    let deposit_txid = vault.deposit_outpoint.txid;
-    match bitcoind.rebroadcast_wallet_tx(&deposit_txid) {
-        Ok(()) => {}
-        Err(e) => log::debug!(
-            "Error re-broadcasting Deposit tx '{}': '{}'",
-            deposit_txid,
-            e
-        ),
-    }
 
     // If it was at the second stage, unconfirm the Unvault first. It will re-broadcast
     // the necessary transactions
@@ -769,7 +722,6 @@ fn unconfirm_vault(
     ) {
         unconfirm_unvault(
             revaultd,
-            bitcoind,
             db_tx,
             unvaults_cache,
             vault,
@@ -799,6 +751,102 @@ fn unconfirm_vault(
     db_unconfirm_deposit_dbtx(db_tx, vault.id)?;
 
     Ok(())
+}
+
+// Rebroadcast the onchain transactions for these vaults according to their status.
+fn rebroadcast_transactions(
+    revaultd: &Arc<RwLock<RevaultD>>,
+    bitcoind: &BitcoinD,
+    db_vaults: &[DbVault],
+) {
+    for db_vault in db_vaults {
+        // Re-broadcast the deposit tx no matter the state of the vault
+        if let Err(e) = bitcoind.rebroadcast_wallet_tx(&db_vault.deposit_outpoint.txid) {
+            log::debug!(
+                "Error re-broadcasting deposit tx for vault {}: '{}'",
+                &db_vault.deposit_outpoint,
+                e
+            );
+        }
+
+        // If it was emergencied, re-broadcast that too.
+        if matches!(
+            db_vault.status,
+            VaultStatus::EmergencyVaulting | VaultStatus::EmergencyVaulted
+        ) {
+            if let Some(emer_txid) =
+                emer_txid(revaultd, &db_vault).expect("Must be able to derive emer txid")
+            {
+                if let Err(e) = bitcoind.rebroadcast_wallet_tx(&emer_txid) {
+                    log::debug!(
+                        "Error re-broadcasting Emergency tx for vault {}: '{}'",
+                        &db_vault.deposit_outpoint,
+                        e
+                    );
+                }
+            }
+        }
+
+        // If no other transaction was previously broadcast, stop there.
+        if matches!(
+            db_vault.status,
+            VaultStatus::Unconfirmed
+                | VaultStatus::Funded
+                | VaultStatus::Securing
+                | VaultStatus::Secured
+                | VaultStatus::Activating
+                | VaultStatus::Active
+                | VaultStatus::EmergencyVaulting
+                | VaultStatus::EmergencyVaulted
+        ) {
+            continue;
+        }
+
+        // It was necessarily unvaulted.
+        let unvault_txid = unvault_txid(&revaultd.read().unwrap(), &db_vault)
+            .expect("Must be able to derive Unvault txid");
+        if let Err(e) = bitcoind.rebroadcast_wallet_tx(&unvault_txid) {
+            log::debug!(
+                "Error re-broadcasting Unvault tx for vault {}: '{}'",
+                &db_vault.deposit_outpoint,
+                e
+            );
+        }
+
+        // If it was emergencied at the unvault level, re-broadcast that too.
+        if matches!(
+            db_vault.status,
+            VaultStatus::UnvaultEmergencyVaulting | VaultStatus::UnvaultEmergencyVaulted
+        ) {
+            if let Some(unemer_txid) =
+                unemer_txid(revaultd, &db_vault).expect("Must be able to derive unvault emer txid")
+            {
+                if let Err(e) = bitcoind.rebroadcast_wallet_tx(&unemer_txid) {
+                    log::debug!(
+                        "Error re-broadcasting Unvault Emergency tx for vault {}: '{}'",
+                        &db_vault.deposit_outpoint,
+                        e
+                    );
+                }
+            }
+        }
+
+        // And same if it was canceled.
+        if matches!(
+            db_vault.status,
+            VaultStatus::Canceling | VaultStatus::Canceled
+        ) {
+            let cancel_txid =
+                cancel_txid(revaultd, &db_vault).expect("Must be able to derive cancel txid");
+            if let Err(e) = bitcoind.rebroadcast_wallet_tx(&cancel_txid) {
+                log::debug!(
+                    "Error re-broadcasting Cancel tx for vault {}: '{}'",
+                    &db_vault.deposit_outpoint,
+                    e
+                );
+            }
+        }
+    }
 }
 
 // Find the common ancestor between the given tip and bitcoind's tip.
@@ -832,9 +880,9 @@ fn rewind_state(
     revaultd: &RevaultD,
     db_tx: &rusqlite::Transaction,
     ancestor: &BlockchainTip,
-    bitcoind: &BitcoinD,
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
+    to_rebroadcast: &mut Vec<DbVault>,
 ) -> Result<(), BitcoindError> {
     log::info!("Starting to rewind our state..");
 
@@ -871,14 +919,8 @@ fn rewind_state(
         if deposit_conf < min_conf {
             // FIXME: should we instead only wipe it if it was completely unconfirmed? That's
             // kinda the point of having a minimum number of confs.
-            unconfirm_vault(
-                &revaultd,
-                bitcoind,
-                db_tx,
-                deposits_cache,
-                unvaults_cache,
-                &vault,
-            )?;
+            unconfirm_vault(&revaultd, db_tx, deposits_cache, unvaults_cache, &vault)?;
+            to_rebroadcast.push(vault);
             log::warn!(
                 "Vault deposit '{}' has {} confirmations at common ancestor height (< {})",
                 vault.deposit_outpoint,
@@ -939,14 +981,8 @@ fn rewind_state(
                 };
                 let unvault_txid = unvault_tx.txid();
 
-                unconfirm_unvault(
-                    &revaultd,
-                    bitcoind,
-                    db_tx,
-                    unvaults_cache,
-                    &vault,
-                    &unvault_tx,
-                )?;
+                unconfirm_unvault(&revaultd, db_tx, unvaults_cache, &vault, &unvault_tx)?;
+                to_rebroadcast.push(vault);
 
                 log::debug!(
                     "Vault {}'s Unvault transaction {} got unconfirmed.",
@@ -997,6 +1033,8 @@ fn rewind_state(
             } else {
                 log::error!("Second stage blockheight is set but vault isn't spent canceled nor unemervaulted?");
             }
+
+            to_rebroadcast.push(vault);
             continue;
         } else {
             log::debug!(
@@ -1043,6 +1081,7 @@ fn update_tip(
         &current_tip,
         &tip
     );
+    let mut to_rebroadcast = vec![];
     // First of all, find the common ancestor between our saved tip and the mainchain.
     let common_ancestor =
         common_ancestor(bitcoind, current_tip).expect("Looking up common ancestor after reorg");
@@ -1052,9 +1091,9 @@ fn update_tip(
             &revaultd.read().unwrap(),
             db_tx,
             &common_ancestor,
-            bitcoind,
             deposits_cache,
             unvaults_cache,
+            &mut to_rebroadcast,
         )
         .expect("Error while rewinding state");
         Ok(())
@@ -1065,6 +1104,8 @@ fn update_tip(
         height: common_ancestor.height + 1,
     };
     db_update_tip(&db_path, &ancestor_next).expect("Updating tip after reorg");
+    // Rebroadcast the transactions of the vaults whose state was reverted.
+    rebroadcast_transactions(&revaultd, bitcoind, &to_rebroadcast);
     log::info!("Rescan of all vaults in db done.");
 
     Ok(current_tip)

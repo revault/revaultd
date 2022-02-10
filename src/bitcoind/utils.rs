@@ -3,7 +3,8 @@ use crate::{
     database::{
         interface::{
             db_cancel_transaction, db_deposits, db_emer_transaction, db_unvault_emer_transaction,
-            db_unvault_from_deposit, db_unvaulted_vaults, db_vault_by_deposit,
+            db_unvault_from_deposit, db_unvault_transaction, db_unvaulted_vaults,
+            db_vault_by_deposit,
         },
         schema::DbVault,
     },
@@ -173,6 +174,29 @@ pub fn unvault_txin_from_deposit(
     };
 
     Ok(unvault_tx.revault_unvault_txin(&unvault_descriptor))
+}
+
+/// Get the Unvault txid of a given vault.
+pub fn unvault_txid(revaultd: &RevaultD, db_vault: &DbVault) -> Result<Txid, BitcoindError> {
+    let db_path = revaultd.db_file();
+
+    let unvault_tx = if let Some(unvault_db_tx) = db_unvault_transaction(&db_path, db_vault.id)? {
+        unvault_db_tx.psbt.assert_unvault()
+    } else {
+        let (unvault_tx, _) = transaction_chain_manager(
+            db_vault.deposit_outpoint,
+            db_vault.amount,
+            &revaultd.deposit_descriptor,
+            &revaultd.unvault_descriptor,
+            &revaultd.cpfp_descriptor,
+            db_vault.derivation_index,
+            revaultd.lock_time,
+            &revaultd.secp_ctx,
+        )?;
+        unvault_tx
+    };
+
+    Ok(unvault_tx.txid())
 }
 
 /// Get the Cancel txid of a give vault, trying first to fetch the transaction from the DB and

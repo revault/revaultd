@@ -17,7 +17,7 @@ use crate::{
             db_spend_unvault, db_unconfirm_cancel_dbtx, db_unconfirm_deposit_dbtx,
             db_unconfirm_emer_dbtx, db_unconfirm_spend_dbtx, db_unconfirm_unemer_dbtx,
             db_unconfirm_unvault_dbtx, db_unvault_deposit, db_update_deposit_index,
-            db_update_first_stage_blockheight_from_unvault_txid, db_update_tip, db_update_tip_dbtx,
+            db_update_first_stage_blockheight_from_unvault_txid, db_update_tip,
         },
         interface::{
             db_broadcastable_spend_transactions, db_cancel_dbtx, db_canceling_vaults,
@@ -801,24 +801,14 @@ fn unconfirm_vault(
     Ok(())
 }
 
-// This handles a block chain reorganization by rewinding our state to the latest common ancestor
-// between the new chain and the fork we were on.
-fn rewind_state(
-    revaultd: &RevaultD,
-    db_tx: &rusqlite::Transaction,
-    db_tip: BlockchainTip,
+// Find the common ancestor between the given tip and bitcoind's tip.
+fn common_ancestor(
     bitcoind: &BitcoinD,
-    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
-    unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
-) -> Result<(), BitcoindError> {
-    log::info!("Starting to rewind our state..");
+    tip: BlockchainTip,
+) -> Result<BlockchainTip, BitcoindError> {
+    let mut stats = bitcoind.get_block_stats(tip.hash)?;
+    let mut ancestor = tip;
 
-    // First of all, we find the common ancestor between our saved tip and the mainchain
-    let mut stats = bitcoind.get_block_stats(db_tip.hash)?;
-    let mut ancestor = BlockchainTip {
-        hash: db_tip.hash,
-        height: db_tip.height,
-    };
     log::info!("Looking for the common ancestor with the disconnected chain");
     while stats.confirmations == -1 {
         stats = bitcoind.get_block_stats(stats.previous_blockhash)?;
@@ -833,8 +823,21 @@ fn rewind_state(
         ancestor.hash
     );
 
-    // Second, for all vaults in DB that had state transitions within our fork, we revert them back
-    // to their state at the common ancestor.
+    Ok(ancestor)
+}
+
+// This handles a block chain reorganization by rewinding our state to the latest common ancestor
+// between the new chain and the fork we were on.
+fn rewind_state(
+    revaultd: &RevaultD,
+    db_tx: &rusqlite::Transaction,
+    ancestor: &BlockchainTip,
+    bitcoind: &BitcoinD,
+    deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
+    unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
+) -> Result<(), BitcoindError> {
+    log::info!("Starting to rewind our state..");
+
     for vault in db_vaults_dbtx(db_tx)? {
         // First, check the deposit transaction.
 
@@ -1003,14 +1006,6 @@ fn rewind_state(
         }
     }
 
-    // 3. We save the block following the ancestor in the db, so we'll rescan the blockchain
-    // starting from there
-    let ancestor_next = BlockchainTip {
-        hash: bitcoind.getblockhash(ancestor.height + 1)?,
-        height: ancestor.height + 1,
-    };
-    db_update_tip_dbtx(db_tx, &ancestor_next)?;
-
     Ok(())
 }
 
@@ -1048,11 +1043,15 @@ fn update_tip(
         &current_tip,
         &tip
     );
+    // First of all, find the common ancestor between our saved tip and the mainchain.
+    let common_ancestor =
+        common_ancestor(bitcoind, current_tip).expect("Looking up common ancestor after reorg");
+    // Then rewind our state down to this block.
     db_exec(&db_path, |db_tx| {
         rewind_state(
             &revaultd.read().unwrap(),
             db_tx,
-            current_tip,
+            &common_ancestor,
             bitcoind,
             deposits_cache,
             unvaults_cache,
@@ -1060,6 +1059,12 @@ fn update_tip(
         .expect("Error while rewinding state");
         Ok(())
     })?;
+    // And save the ancestor's next block, so we'll rescan starting from there.
+    let ancestor_next = BlockchainTip {
+        hash: bitcoind.getblockhash(common_ancestor.height + 1)?,
+        height: common_ancestor.height + 1,
+    };
+    db_update_tip(&db_path, &ancestor_next).expect("Updating tip after reorg");
     log::info!("Rescan of all vaults in db done.");
 
     Ok(current_tip)

@@ -2,9 +2,8 @@ use crate::{
     bitcoind::{interface::UtxoInfo, BitcoindError},
     database::{
         interface::{
-            db_cancel_transaction, db_deposits, db_emer_transaction, db_unvault_emer_transaction,
-            db_unvault_from_deposit, db_unvault_transaction, db_unvaulted_vaults,
-            db_vault_by_deposit,
+            db_deposits, db_emer_transaction, db_unvault_emer_transaction, db_unvault_from_deposit,
+            db_unvault_transaction, db_unvaulted_vaults, db_vault_by_deposit,
         },
         schema::DbVault,
     },
@@ -197,33 +196,28 @@ pub fn unvault_txid(revaultd: &RevaultD, db_vault: &DbVault) -> Result<Txid, Bit
     Ok(unvault_tx.txid())
 }
 
-/// Get the Cancel txid of a give vault, trying first to fetch the transaction from the DB and
-/// falling back to generating it.
-/// Assumes the given deposit outpoint actually corresponds to an existing vaults, will panic
-/// otherwise.
-pub fn cancel_txid(
+/// Get the Cancel txids of a give vault.
+pub fn cancel_txids(
     revaultd: &Arc<RwLock<RevaultD>>,
     db_vault: &DbVault,
-) -> Result<Txid, BitcoindError> {
+) -> Result<Vec<Txid>, BitcoindError> {
     let revaultd = revaultd.read().unwrap();
-    let db_path = revaultd.db_file();
 
-    let cancel_tx = if let Some(cancel_db_tx) = db_cancel_transaction(&db_path, db_vault.id)? {
-        cancel_db_tx.psbt.assert_cancel()
-    } else {
-        let (_, cancel_batch) = transaction_chain_manager(
-            db_vault.deposit_outpoint,
-            db_vault.amount,
-            &revaultd.deposit_descriptor,
-            &revaultd.unvault_descriptor,
-            &revaultd.cpfp_descriptor,
-            db_vault.derivation_index,
-            &revaultd.secp_ctx,
-        )?;
-        cancel_batch.into_feerate_20()
-    };
+    let (_, cancel_batch) = transaction_chain_manager(
+        db_vault.deposit_outpoint,
+        db_vault.amount,
+        &revaultd.deposit_descriptor,
+        &revaultd.unvault_descriptor,
+        &revaultd.cpfp_descriptor,
+        db_vault.derivation_index,
+        &revaultd.secp_ctx,
+    )?;
 
-    Ok(cancel_tx.txid())
+    Ok(cancel_batch
+        .all_feerates()
+        .iter()
+        .map(|cancel_tx| cancel_tx.txid())
+        .collect())
 }
 
 /// Get the Unvault Emergency transaction id, if we are at all able to (ie if we are a stakeholder).

@@ -21,10 +21,10 @@ use crate::{
             db_update_first_stage_blockheight_from_unvault_txid, db_update_tip,
         },
         interface::{
-            db_broadcastable_spend_transactions, db_canceling_vaults, db_cpfpable_spends,
-            db_cpfpable_unvaults, db_emering_vaults, db_exec, db_spending_vaults, db_tip,
-            db_txids_unvaulted_no_bh, db_unemering_vaults, db_unvault_dbtx, db_unvault_transaction,
-            db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults_dbtx, db_wallet,
+            db_broadcastable_spend_transactions, db_cpfpable_spends, db_cpfpable_unvaults,
+            db_emering_vaults, db_exec, db_spending_vaults, db_tip, db_txids_unvaulted_no_bh,
+            db_unemering_vaults, db_unvault_dbtx, db_unvault_transaction, db_vault_by_deposit,
+            db_vault_by_unvault_txid, db_vaults_by_status, db_vaults_dbtx, db_wallet,
         },
         schema::DbVault,
     },
@@ -264,9 +264,11 @@ fn mark_confirmed_cancels(
 ) -> Result<(), BitcoindError> {
     let db_path = revaultd.read().unwrap().db_file();
 
-    for (db_vault, cancel_tx) in db_canceling_vaults(&db_path)? {
-        let cancel_txid = cancel_tx.txid();
-        match maybe_confirm_cancel(&db_path, bitcoind, &db_vault, &cancel_txid) {
+    for db_vault in db_vaults_by_status(&db_path, VaultStatus::Canceling)? {
+        let cancel_txid = &db_vault
+            .final_txid
+            .expect("Must be there in Canceling state");
+        match maybe_confirm_cancel(&db_path, bitcoind, &db_vault, cancel_txid) {
             Ok(false) => {}
             Ok(true) => continue,
             Err(e) => {
@@ -278,7 +280,7 @@ fn mark_confirmed_cancels(
             }
         };
 
-        if !bitcoind.is_in_mempool(&cancel_tx.txid())? {
+        if !bitcoind.is_in_mempool(cancel_txid)? {
             // At least, is this transaction still in mempool?
             // If it was evicted, downgrade it to `unvaulted`, the polling loop will
             // take care of checking its new state immediately.

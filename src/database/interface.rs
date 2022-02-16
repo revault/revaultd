@@ -263,6 +263,19 @@ pub fn db_vaults(db_path: &Path) -> Result<Vec<DbVault>, DatabaseError> {
     })
 }
 
+/// Get all the vaults whose state is `status`.
+pub fn db_vaults_by_status(
+    db_path: &Path,
+    status: VaultStatus,
+) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM vaults WHERE status = (?1)",
+        params![status as u32],
+        |row| row.try_into(),
+    )
+}
+
 /// Get all the vaults where status is *at least* `status`
 pub fn db_vaults_min_status(
     db_path: &Path,
@@ -375,31 +388,6 @@ pub fn db_spending_vaults(
                 .expect("We store it with as_psbt_serialized");
 
             Ok((db_vault, unvault_tx))
-        },
-    )
-}
-
-/// Get the vaults that are in the process of being canceled, along with the respective Cancel
-/// transaction.
-pub fn db_canceling_vaults(
-    db_path: &Path,
-) -> Result<Vec<(DbVault, CancelTransaction)>, DatabaseError> {
-    db_query(
-        db_path,
-        "SELECT vaults.*, ptx.psbt FROM vaults \
-         INNER JOIN presigned_transactions as ptx ON ptx.vault_id = vaults.id \
-         WHERE vaults.status = (?1) AND ptx.type = (?2)",
-        params![
-            VaultStatus::Canceling as u32,
-            TransactionType::Cancel as u32,
-        ],
-        |row| {
-            let db_vault: DbVault = row.try_into()?;
-            let cancel_tx: Vec<u8> = row.get(15)?;
-            let cancel_tx = CancelTransaction::from_psbt_serialized(&cancel_tx)
-                .expect("We store it with as_psbt_serialized");
-
-            Ok((db_vault, cancel_tx))
         },
     )
 }

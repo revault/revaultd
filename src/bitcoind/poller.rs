@@ -159,7 +159,6 @@ fn mark_confirmed_spends(
                     &spend_txid,
                     e
                 );
-                continue;
             }
         };
 
@@ -276,7 +275,6 @@ fn mark_confirmed_cancels(
                     &cancel_txid,
                     e
                 );
-                continue;
             }
         };
 
@@ -333,7 +331,6 @@ fn mark_confirmed_unemers(
                     &unemer_txid,
                     e
                 );
-                continue;
             }
         };
 
@@ -395,7 +392,6 @@ fn mark_confirmed_emers(
                     &emer_txid,
                     e
                 );
-                continue;
             }
         };
 

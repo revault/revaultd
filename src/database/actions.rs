@@ -274,27 +274,23 @@ pub fn db_insert_new_unconfirmed_vault(
     })
 }
 
-macro_rules! db_store_unsigned_transactions {
-    ($db_tx:ident, $vault_id:ident, [$( $tx:ident ),*]) => {
-            $(
-                // We store the transactions without any feebump input. Note that this assertion
-                // would fail if/when we implement multi-inputs Unvaults.
-                assert_eq!($tx.psbt().inputs.len(), 1);
-                // They must be freshly generated..
-                assert!($tx.psbt().inputs[0].partial_sigs.is_empty());
+fn db_store_unsigned_transaction(
+    db_tx: &rusqlite::Transaction,
+    vault_id: u32,
+    tx: &impl RevaultPresignedTransaction,
+    tx_type: TransactionType,
+) -> Result<(), rusqlite::Error> {
+    // It must be freshly generated..
+    assert!(tx.psbt().inputs[0].partial_sigs.is_empty());
 
-                let tx_type = TransactionType::from($tx);
-                let txid = $tx.txid();
-                $db_tx
-                    .execute(
-                        "INSERT INTO presigned_transactions (vault_id, type, psbt, txid, fullysigned) VALUES (?1, ?2, ?3 , ?4, ?5)",
-                        params![$vault_id, tx_type as u32, $tx.as_psbt_serialized(), txid.to_vec(), false as u32],
-                    )
-                    .map_err(|e| {
-                        DatabaseError(format!("Inserting psbt in vault '{}': {}", $vault_id, e))
-                    })?;
-            )*
-    };
+    let txid = tx.txid();
+    db_tx
+        .execute(
+            "INSERT INTO presigned_transactions (vault_id, type, psbt, txid, fullysigned) VALUES (?1, ?2, ?3 , ?4, ?5)",
+            params![vault_id, tx_type as u32, tx.as_psbt_serialized(), txid.to_vec(), false as u32],
+        )?;
+
+    Ok(())
 }
 
 /// Mark an unconfirmed deposit as being in 'Funded' state (confirmed), as well as storing the
@@ -328,17 +324,24 @@ pub fn db_confirm_deposit(
             )
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
 
+        db_store_unsigned_transaction(db_tx, vault_id, unvault_tx, TransactionType::Unvault)?;
+        db_store_unsigned_transaction(db_tx, vault_id, cancel_tx, TransactionType::Cancel)?;
         match (emer_tx, unemer_tx) {
             (Some(emer_tx), Some(unemer_tx)) => {
-                db_store_unsigned_transactions!(
+                db_store_unsigned_transaction(
                     db_tx,
                     vault_id,
-                    [unvault_tx, cancel_tx, emer_tx, unemer_tx]
-                );
+                    emer_tx,
+                    TransactionType::Emergency,
+                )?;
+                db_store_unsigned_transaction(
+                    db_tx,
+                    vault_id,
+                    unemer_tx,
+                    TransactionType::UnvaultEmergency,
+                )?;
             }
-            (None, None) => {
-                db_store_unsigned_transactions!(db_tx, vault_id, [unvault_tx, cancel_tx]);
-            }
+            (None, None) => {}
             _ => unreachable!(),
         }
 

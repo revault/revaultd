@@ -438,11 +438,10 @@ impl ToBeCpfped {
     }
 
     pub fn fees(&self) -> Amount {
-        // TODO(revault_tx): fees() should return an Amount!
-        Amount::from_sat(match self {
+        match self {
             Self::Spend(s) => s.fees(),
             Self::Unvault(u) => u.fees(),
-        })
+        }
     }
 }
 
@@ -1285,7 +1284,8 @@ fn handle_new_deposit(
     outpoint: OutPoint,
     utxo: UtxoInfo,
 ) -> Result<(), BitcoindError> {
-    if utxo.txo.value <= revault_tx::transactions::DUST_LIMIT {
+    // TODO: don't ignore those with the deposit split
+    if utxo.txo.value <= revault_tx::transactions::DEPOSIT_MIN_SATS {
         log::info!(
             "Received a deposit that we considered being dust. Ignoring it. \
                  Outpoint: '{}', amount: '{}'",

@@ -33,7 +33,7 @@ use crate::{
 };
 use utils::{
     deser_amount_from_sats, deser_from_str, finalized_emer_txs, gethistory, listvaults_from_db,
-    presigned_txs, ser_amount, ser_to_string, vaults_from_deposits,
+    presigned_txs, ser_amount, ser_to_string, unvault_tx, vaults_from_deposits,
 };
 
 use revault_tx::{
@@ -45,10 +45,10 @@ use revault_tx::{
     scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, CpfpableTransaction,
-        EmergencyTransaction, RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        EmergencyTransaction, RevaultPresignedTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
-    txins::{DepositTxIn, RevaultTxIn},
+    txins::RevaultTxIn,
     txouts::{DepositTxOut, RevaultTxOut, SpendTxOut},
 };
 
@@ -343,7 +343,7 @@ impl DaemonControl {
             .emergency_address
             .clone()
             .expect("Must be stakeholder");
-        let (_, cancel_tx, emergency_tx, emergency_unvault_tx) = transaction_chain(
+        let (_, cancel_batch, emergency_tx, emergency_unvault_tx) = transaction_chain(
             deposit_outpoint,
             vault.amount,
             &revaultd.deposit_descriptor,
@@ -351,13 +351,12 @@ impl DaemonControl {
             &revaultd.cpfp_descriptor,
             vault.derivation_index,
             emer_address,
-            revaultd.lock_time,
             &revaultd.secp_ctx,
         )
         .expect("We wouldn't have put a vault with an invalid chain in DB");
 
         Ok(RevocationTransactions {
-            cancel_tx,
+            cancel_tx: cancel_batch.into_feerate_20(),
             emergency_tx,
             emergency_unvault_tx,
         })
@@ -432,24 +431,9 @@ impl DaemonControl {
 
         // Alias some vars we'll reuse
         let deriv_index = db_vault.derivation_index;
-        let cancel_sigs = &cancel_tx
-            .psbt()
-            .inputs
-            .get(0)
-            .expect("Cancel tx has a single input, inbefore fee bumping.")
-            .partial_sigs;
-        let emer_sigs = &emergency_tx
-            .psbt()
-            .inputs
-            .get(0)
-            .expect("Emergency tx has a single input, inbefore fee bumping.")
-            .partial_sigs;
-        let unvault_emer_sigs = &unvault_emergency_tx
-            .psbt()
-            .inputs
-            .get(0)
-            .expect("UnvaultEmergency tx has a single input, inbefore fee bumping.")
-            .partial_sigs;
+        let cancel_sigs = cancel_tx.signatures();
+        let emer_sigs = emergency_tx.signatures();
+        let unvault_emer_sigs = unvault_emergency_tx.signatures();
 
         // They must have included *at least* a signature for our pubkey
         let our_pubkey = revaultd
@@ -647,28 +631,8 @@ impl DaemonControl {
             ));
         }
 
-        // Derive the descriptors needed to create the UnvaultTransaction
-        let deposit_descriptor = revaultd
-            .deposit_descriptor
-            .derive(vault.derivation_index, &revaultd.secp_ctx);
-        let deposit_txin = DepositTxIn::new(
-            deposit_outpoint,
-            DepositTxOut::new(vault.amount, &deposit_descriptor),
-        );
-        let unvault_descriptor = revaultd
-            .unvault_descriptor
-            .derive(vault.derivation_index, &revaultd.secp_ctx);
-        let cpfp_descriptor = revaultd
-            .cpfp_descriptor
-            .derive(vault.derivation_index, &revaultd.secp_ctx);
-
-        Ok(UnvaultTransaction::new(
-            deposit_txin,
-            &unvault_descriptor,
-            &cpfp_descriptor,
-            revaultd.lock_time,
-        )
-        .expect("We wouldn't have a vault with an invalid Unvault in DB"))
+        Ok(unvault_tx(&revaultd, &vault)
+            .expect("We wouldn't have a vault with an invalid Unvault in DB"))
     }
 
     /// Set the signed unvault transaction for the vault at this outpoint.
@@ -714,12 +678,7 @@ impl DaemonControl {
             )));
         }
 
-        let sigs = &unvault_tx
-            .psbt()
-            .inputs
-            .get(0)
-            .expect("UnvaultTransaction always has 1 input")
-            .partial_sigs;
+        let sigs = unvault_tx.signatures();
         let stk_keys = revaultd.stakeholders_xpubs_at(db_vault.derivation_index);
         let our_key = revaultd
             .our_stk_xpub_at(db_vault.derivation_index)
@@ -1015,8 +974,8 @@ impl DaemonControl {
             ));
         }
 
-        // Add a change output if it would not be dust according to our standard (200k sats
-        // atm, see DUST_LIMIT).
+        // Add a change output if it would not be dust according to our standard (500k sats
+        // atm, see DEPOSIT_MIN_SATS).
         // 8 (amount) + 1 (len) + 1 (v0) + 1 (push) + 32 (witscript hash)
         const P2WSH_TXO_WEIGHT: u64 = 43 * 4;
         let with_change_weight = nochange_tx
@@ -1027,7 +986,7 @@ impl DaemonControl {
         let want_fees = with_change_weight
             // Mental gymnastic: sat/vbyte to sat/wu rounded up
             .checked_mul(feerate_vb + 3)
-            .map(|vbyte| vbyte.checked_div(4).unwrap());
+            .map(|vbyte| Amount::from_sat(vbyte.checked_div(4).unwrap()));
         let change_value = want_fees.map(|f| cur_fees.checked_sub(f)).flatten();
         log::debug!(
             "Weight with change: '{}'  --  Fees without change: '{}'  --  Wanted feerate: '{}'  \
@@ -1042,11 +1001,14 @@ impl DaemonControl {
         let change_txo = change_value.and_then(|change_value| {
             // The overhead incurred to the value of the CPFP output by the change output
             // See https://github.com/revault/practical-revault/blob/master/transactions.md#spend_tx
-            let cpfp_overhead = 16 * P2WSH_TXO_WEIGHT;
-            if change_value > revault_tx::transactions::DUST_LIMIT + cpfp_overhead {
+            let cpfp_overhead = Amount::from_sat(16 * P2WSH_TXO_WEIGHT);
+            let min_deposit =
+                Amount::from_sat(revault_tx::transactions::DEPOSIT_MIN_SATS) + cpfp_overhead;
+            // TODO: allow such outputs post deposit split
+            if change_value > min_deposit {
                 let change_txo = DepositTxOut::new(
                     // arithmetic checked above
-                    Amount::from_sat(change_value - cpfp_overhead),
+                    change_value - cpfp_overhead,
                     &revaultd
                         .deposit_descriptor
                         .derive(change_index, &revaultd.secp_ctx),
@@ -1191,25 +1153,8 @@ impl DaemonControl {
             let (deposit_amount, mut cpfp_amount) = spent_vaults.iter().fold(
                 (Amount::from_sat(0), Amount::from_sat(0)),
                 |(deposit_total, cpfp_total), (_, vault)| {
-                    let unvault = UnvaultTransaction::new(
-                        DepositTxIn::new(
-                            vault.deposit_outpoint,
-                            DepositTxOut::new(
-                                vault.amount,
-                                &revaultd
-                                    .deposit_descriptor
-                                    .derive(vault.derivation_index, &revaultd.secp_ctx),
-                            ),
-                        ),
-                        &revaultd
-                            .unvault_descriptor
-                            .derive(vault.derivation_index, &revaultd.secp_ctx),
-                        &revaultd
-                            .cpfp_descriptor
-                            .derive(vault.derivation_index, &revaultd.secp_ctx),
-                        revaultd.lock_time,
-                    )
-                    .expect("Spent vault must have a correct unvault transaction");
+                    let unvault = unvault_tx(&revaultd, vault)
+                        .expect("Spent vault must have a correct unvault transaction");
 
                     let cpfp_amount = Amount::from_sat(
                         unvault

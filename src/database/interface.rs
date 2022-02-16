@@ -996,7 +996,7 @@ mod test {
                 derivation_index,
             )
             .unwrap();
-            let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
+            let (unvault_tx, cancel_txs, emer_tx, unemer_tx) = transaction_chain(
                 outpoint,
                 amount,
                 &revaultd.deposit_descriptor,
@@ -1004,7 +1004,6 @@ mod test {
                 &revaultd.cpfp_descriptor,
                 derivation_index,
                 revaultd.emergency_address.clone().unwrap(),
-                revaultd.lock_time,
                 &revaultd.secp_ctx,
             )
             .unwrap();
@@ -1014,7 +1013,7 @@ mod test {
                 i,
                 genesis_timestamp as u32 + i * 600,
                 &unvault_tx,
-                &cancel_tx,
+                cancel_txs.feerate_20(),
                 Some(&emer_tx),
                 Some(&unemer_tx),
             )

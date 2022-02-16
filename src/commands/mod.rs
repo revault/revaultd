@@ -23,9 +23,10 @@ use crate::{
             db_update_spend, db_update_vault_status,
         },
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
-            db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
-            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status,
+            db_cancel_transaction, db_cancel_transaction_by_txid, db_emer_transaction,
+            db_list_spends, db_spend_transaction, db_tip, db_unvault_emer_transaction,
+            db_unvault_transaction, db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults,
+            db_vaults_from_spend, db_vaults_min_status,
         },
     },
     threadmessages::BitcoindThread,
@@ -44,9 +45,9 @@ use revault_tx::{
     miniscript::DescriptorTrait,
     scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
     transactions::{
-        spend_tx_from_deposits, transaction_chain, CancelTransaction, CpfpableTransaction,
-        EmergencyTransaction, RevaultPresignedTransaction, RevaultTransaction, SpendTransaction,
-        UnvaultEmergencyTransaction, UnvaultTransaction,
+        spend_tx_from_deposits, transaction_chain, transaction_chain_manager, CancelTransaction,
+        CpfpableTransaction, EmergencyTransaction, RevaultPresignedTransaction, RevaultTransaction,
+        SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
     txins::RevaultTxIn,
     txouts::{DepositTxOut, RevaultTxOut, SpendTxOut},
@@ -1333,15 +1334,15 @@ impl DaemonControl {
     /// ## Errors
     /// - If the outpoint doesn't refer to an existing, unvaulted (or unvaulting) vault
     /// - If the transaction broadcast fails for some reason
-    pub fn revault(&self, deposit_outpoint: &OutPoint) -> Result<(), CommandError> {
+    pub fn revault(&self, deposit_outpoint: OutPoint) -> Result<(), CommandError> {
         let revaultd = self.revaultd.read().unwrap();
         let db_path = revaultd.db_file();
 
         // Checking that the vault is secured, otherwise we don't have the cancel
         // transaction
-        let vault = db_vault_by_deposit(&db_path, deposit_outpoint)
+        let vault = db_vault_by_deposit(&db_path, &deposit_outpoint)
             .expect("Database must be accessible")
-            .ok_or_else(|| CommandError::UnknownOutpoint(*deposit_outpoint))?;
+            .ok_or_else(|| CommandError::UnknownOutpoint(deposit_outpoint))?;
 
         if !matches!(
             vault.status,
@@ -1353,11 +1354,26 @@ impl DaemonControl {
             ));
         }
 
-        let mut cancel_tx = db_cancel_transaction(&db_path, vault.id)
-            .expect("Database must be available")
-            .ok_or(CommandError::Race)?
-            .psbt
-            .assert_cancel();
+        // Instead of querying all the Cancel txs and checking their feerate, we create the needed
+        // one and quety the BD by txid. It's a roundabout way, but we should move to only have the
+        // signatures and not the PSBTs in DB anyways.
+        let (_, cancel_batch) = transaction_chain_manager(
+            deposit_outpoint,
+            vault.amount,
+            &revaultd.deposit_descriptor,
+            &revaultd.unvault_descriptor,
+            &revaultd.cpfp_descriptor,
+            vault.derivation_index,
+            &revaultd.secp_ctx,
+        )
+        .expect("We wouldn't have put a vault with an invalid chain in DB");
+        // TODO: feerate estimation from bitcoind instead of using the smallest one
+        let mut cancel_tx =
+            db_cancel_transaction_by_txid(&db_path, &cancel_batch.feerate_20().txid())
+                .expect("Database must be available")
+                .ok_or(CommandError::Race)?
+                .psbt
+                .assert_cancel();
 
         cancel_tx.finalize(&revaultd.secp_ctx)?;
         let transaction = cancel_tx.into_psbt().extract_tx();

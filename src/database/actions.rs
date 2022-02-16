@@ -1409,6 +1409,10 @@ mod test {
                 .assert_cancel()
         );
         assert_eq!(
+            db_cancel_transaction(&db_path, db_vault.id).unwrap(),
+            db_cancel_transaction_by_txid(&db_path, &cancel_tx.txid()).unwrap()
+        );
+        assert_eq!(
             unemer_tx,
             db_unvault_emer_transaction(&db_path, db_vault.id)
                 .unwrap()

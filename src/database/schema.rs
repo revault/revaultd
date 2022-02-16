@@ -160,7 +160,7 @@ pub struct DbVault {
 
 // FIXME: naming it "db transaction" was ambiguous..
 /// A row in the "presigned_transactions" table
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DbTransaction {
     pub id: u32, // FIXME: should be an i64
     pub vault_id: u32,

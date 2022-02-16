@@ -481,7 +481,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         deposit_outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.daemon_control.revault(&deposit_outpoint)?;
+        meta.daemon_control.revault(deposit_outpoint)?;
         Ok(json!({}))
     }
 

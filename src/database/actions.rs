@@ -297,13 +297,13 @@ fn db_store_unsigned_transaction(
 /// unsigned "presigned-transactions".
 /// The `emer_tx` and `unemer_tx` may only be passed for stakeholders.
 #[allow(clippy::too_many_arguments)]
-pub fn db_confirm_deposit(
+pub fn db_confirm_deposit<'a>(
     db_path: &Path,
     outpoint: &OutPoint,
     blockheight: u32,
     blocktime: u32,
     unvault_tx: &UnvaultTransaction,
-    cancel_tx: &CancelTransaction,
+    cancel_txs: impl IntoIterator<Item = &'a CancelTransaction>,
     emer_tx: Option<&EmergencyTransaction>,
     unemer_tx: Option<&UnvaultEmergencyTransaction>,
 ) -> Result<(), DatabaseError> {
@@ -325,7 +325,9 @@ pub fn db_confirm_deposit(
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
 
         db_store_unsigned_transaction(db_tx, vault_id, unvault_tx, TransactionType::Unvault)?;
-        db_store_unsigned_transaction(db_tx, vault_id, cancel_tx, TransactionType::Cancel)?;
+        for cancel_tx in cancel_txs {
+            db_store_unsigned_transaction(db_tx, vault_id, cancel_tx, TransactionType::Cancel)?;
+        }
         match (emer_tx, unemer_tx) {
             (Some(emer_tx), Some(unemer_tx)) => {
                 db_store_unsigned_transaction(
@@ -1270,7 +1272,7 @@ mod test {
             blockheight,
             blocktime,
             &fresh_unvault_tx,
-            &fresh_cancel_tx,
+            &[fresh_cancel_tx.clone()],
             Some(&fresh_emer_tx),
             Some(&fresh_unemer_tx),
         )
@@ -1465,7 +1467,7 @@ mod test {
             blockheight,
             blocktime,
             &fresh_unvault_tx,
-            &fresh_cancel_tx,
+            &[fresh_cancel_tx.clone()],
             Some(&fresh_emer_tx),
             Some(&fresh_unemer_tx),
         )
@@ -1477,7 +1479,7 @@ mod test {
             blockheight,
             blocktime,
             &fresh_unvault_tx,
-            &fresh_cancel_tx,
+            &[fresh_cancel_tx],
             Some(&fresh_emer_tx),
             Some(&fresh_unemer_tx),
         )
@@ -1551,7 +1553,7 @@ mod test {
             blockheight,
             blocktime,
             &fresh_unvault_tx,
-            &fresh_cancel_tx,
+            &[fresh_cancel_tx],
             Some(&fresh_emer_tx),
             Some(&fresh_unemer_tx),
         )
@@ -1627,7 +1629,8 @@ mod test {
             blockheight,
             blocktime,
             &fresh_unvault_tx,
-            &fresh_cancel_tx,
+            // Due to MSRV
+            &[fresh_cancel_tx.clone()],
             None,
             None,
         )
@@ -1698,7 +1701,7 @@ mod test {
             9,
             9,
             &fresh_unvault_tx,
-            &fresh_cancel_tx,
+            &[fresh_cancel_tx.clone()],
             None,
             None,
         )
@@ -1793,7 +1796,7 @@ mod test {
             9,
             9,
             &fresh_unvault_tx,
-            &cancel_tx,
+            &[cancel_tx],
             None,
             None,
         )
@@ -1976,7 +1979,7 @@ mod test {
             9,
             9,
             &fresh_unvault_tx,
-            &fresh_cancel_tx,
+            &[fresh_cancel_tx],
             Some(&fresh_emergency_tx),
             Some(&fresh_unvaultemergency_tx),
         )

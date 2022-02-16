@@ -1383,7 +1383,7 @@ fn handle_confirmed_deposit(
 
     let txo_value = utxo.txo.value;
     // emer_tx and unemer_tx are None for managers
-    let (unvault_tx, cancel_tx, emer_tx, unemer_tx) =
+    let (unvault_tx, cancel_batch, emer_tx, unemer_tx) =
         match presigned_transactions(&revaultd.read().unwrap(), outpoint, utxo) {
             Ok(txs) => txs,
             Err(e) => {
@@ -1403,7 +1403,7 @@ fn handle_confirmed_deposit(
         blockheight,
         blocktime,
         &unvault_tx,
-        &cancel_tx,
+        &cancel_batch,
         emer_tx.as_ref(),
         unemer_tx.as_ref(),
     )?;

@@ -74,7 +74,7 @@ CREATE TABLE vaults (
 /* This stores transactions we presign:
  * - Emergency (only for stakeholders)
  * - Unvault
- * - Cancel
+ * - The several Cancel
  * - Unvault Emergency (only for stakeholders)
  */
 CREATE TABLE presigned_transactions (

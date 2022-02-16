@@ -646,7 +646,7 @@ mod tests {
             9, // blockheight
             9, // blocktime
             &transactions[1].as_ref().unwrap().initial_unvault,
-            &transactions[1].as_ref().unwrap().initial_cancel,
+            &[transactions[1].as_ref().unwrap().initial_cancel.clone()],
             Some(&transactions[1].as_ref().unwrap().initial_emer),
             Some(&transactions[1].as_ref().unwrap().initial_unvault_emer),
         )
@@ -666,7 +666,7 @@ mod tests {
             9, // blockheight
             9, // blocktime
             &transactions[2].as_ref().unwrap().initial_unvault,
-            &transactions[2].as_ref().unwrap().initial_cancel,
+            &[transactions[2].as_ref().unwrap().initial_cancel.clone()],
             Some(&transactions[2].as_ref().unwrap().initial_emer),
             Some(&transactions[2].as_ref().unwrap().initial_unvault_emer),
         )
@@ -752,7 +752,7 @@ mod tests {
             9, // blockheight
             9, // blocktime
             &transactions[3].as_ref().unwrap().initial_unvault,
-            &transactions[3].as_ref().unwrap().initial_cancel,
+            &[transactions[3].as_ref().unwrap().initial_cancel.clone()],
             Some(&transactions[3].as_ref().unwrap().initial_emer),
             Some(&transactions[3].as_ref().unwrap().initial_unvault_emer),
         )

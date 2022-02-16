@@ -26,7 +26,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-/// Get fresh to-be-presigned transactions for this deposit utxo
+/// Get fresh to-be-presigned transactions for this deposit utxo.
+/// The Cancel transactions are sorted by increasing feerate.
 pub fn presigned_transactions(
     revaultd: &RevaultD,
     outpoint: OutPoint,
@@ -34,7 +35,7 @@ pub fn presigned_transactions(
 ) -> Result<
     (
         UnvaultTransaction,
-        CancelTransaction,
+        [CancelTransaction; 5],
         Option<EmergencyTransaction>,
         Option<UnvaultEmergencyTransaction>,
     ),
@@ -67,7 +68,7 @@ pub fn presigned_transactions(
         )?;
         Ok((
             unvault_tx,
-            cancel_batch.into_feerate_20(),
+            cancel_batch.all_feerates(),
             Some(emer_tx),
             Some(unemer_tx),
         ))
@@ -81,7 +82,7 @@ pub fn presigned_transactions(
             derivation_index,
             &revaultd.secp_ctx,
         )?;
-        Ok((unvault_tx, cancel_batch.into_feerate_20(), None, None))
+        Ok((unvault_tx, cancel_batch.all_feerates(), None, None))
     }
 }
 

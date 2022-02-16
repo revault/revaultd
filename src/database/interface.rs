@@ -1013,7 +1013,7 @@ mod test {
                 i,
                 genesis_timestamp as u32 + i * 600,
                 &unvault_tx,
-                cancel_txs.feerate_20(),
+                &cancel_txs.all_feerates(),
                 Some(&emer_tx),
                 Some(&unemer_tx),
             )

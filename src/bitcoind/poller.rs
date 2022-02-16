@@ -833,9 +833,10 @@ fn rebroadcast_transactions(
             db_vault.status,
             VaultStatus::Canceling | VaultStatus::Canceled
         ) {
-            let cancel_txid =
-                cancel_txid(revaultd, &db_vault).expect("Must be able to derive cancel txid");
-            if let Err(e) = bitcoind.rebroadcast_wallet_tx(&cancel_txid) {
+            let cancel_txid = &db_vault
+                .final_txid
+                .expect("Must be there for canceling/canceled");
+            if let Err(e) = bitcoind.rebroadcast_wallet_tx(cancel_txid) {
                 log::debug!(
                     "Error re-broadcasting Cancel tx for vault {}: '{}'",
                     &db_vault.deposit_outpoint,

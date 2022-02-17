@@ -95,16 +95,13 @@ fn send_wt_sigs_msg(
     deposit_outpoint: OutPoint,
     derivation_index: ChildNumber,
     emer_tx: &DbTransaction,
-    cancel_tx: &DbTransaction,
+    cancel_txs: &BTreeMap<Amount, DbTransaction>,
     unemer_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
-    let cancel_sigs = [(
-        watchtower::CancelFeerate(Amount::from_sat(22)),
-        cancel_tx.psbt.signatures(),
-    )]
-    .iter()
-    .cloned()
-    .collect();
+    let cancel_sigs = cancel_txs
+        .iter()
+        .map(|(amount, tx)| (watchtower::CancelFeerate(*amount), tx.psbt.signatures()))
+        .collect();
     let signatures = watchtower::Signatures {
         emergency: emer_tx.psbt.signatures(),
         cancel: cancel_sigs,
@@ -169,7 +166,7 @@ pub fn wts_share_rev_signatures(
     deposit_outpoint: OutPoint,
     derivation_index: ChildNumber,
     emer_tx: &DbTransaction,
-    cancel_tx: &DbTransaction,
+    cancel_txs: &BTreeMap<Amount, DbTransaction>,
     unemer_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
     for (wt_host, wt_noisekey) in watchtowers {
@@ -180,7 +177,7 @@ pub fn wts_share_rev_signatures(
             deposit_outpoint,
             derivation_index,
             emer_tx,
-            cancel_tx,
+            &cancel_txs,
             unemer_tx,
         )?;
     }

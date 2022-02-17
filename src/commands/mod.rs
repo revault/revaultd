@@ -559,9 +559,26 @@ impl DaemonControl {
         let emer_tx = db_emer_transaction(&db_path, db_vault.id)
             .expect("Database must be available")
             .ok_or(CommandError::Race)?;
-        let cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
-            .expect("Database must be available")
-            .ok_or(CommandError::Race)?;
+        let (_, cancel_batch) = transaction_chain_manager(
+            db_vault.deposit_outpoint,
+            db_vault.amount,
+            &revaultd.deposit_descriptor,
+            &revaultd.unvault_descriptor,
+            &revaultd.cpfp_descriptor,
+            db_vault.derivation_index,
+            &revaultd.secp_ctx,
+        )
+        .expect("We wouldn't have put a vault with an invalid chain in DB");
+        let cancel_txs = cancel_batch
+            .feerates_map()
+            .into_iter()
+            .map(|(amount, cancel_tx)| {
+                db_cancel_transaction_by_txid(&db_path, &cancel_tx.txid())
+                    .expect("Database must be available")
+                    .ok_or(CommandError::Race)
+                    .map(|tx| (amount, tx))
+            })
+            .collect::<Result<BTreeMap<_, _>, CommandError>>()?;
         let unemer_tx = db_unvault_emer_transaction(&db_path, db_vault.id)
             .expect("Database must be available")
             .ok_or(CommandError::Race)?;
@@ -569,10 +586,12 @@ impl DaemonControl {
             .psbt
             .unwrap_emer()
             .is_finalizable(&revaultd.secp_ctx)
-            && cancel_tx
-                .psbt
-                .unwrap_cancel()
-                .is_finalizable(&revaultd.secp_ctx)
+            && cancel_txs.iter().all(|(_, cancel_tx)| {
+                cancel_tx
+                    .psbt
+                    .unwrap_cancel()
+                    .is_finalizable(&revaultd.secp_ctx)
+            })
             && unemer_tx
                 .psbt
                 .unwrap_unvault_emer()
@@ -587,7 +606,7 @@ impl DaemonControl {
                     db_vault.deposit_outpoint,
                     db_vault.derivation_index,
                     &emer_tx,
-                    &cancel_tx,
+                    &cancel_txs,
                     &unemer_tx,
                 )?;
             }

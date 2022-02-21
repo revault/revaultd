@@ -54,7 +54,7 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert vault_list[0]["amount"] == amount_sent * 10**8
     assert vault_list[0]["address"] == addr
     assert vault_list[0]["derivation_index"] == 0
-    assert vault_list[0]["blockheight"] == 0
+    assert vault_list[0]["blockheight"] is None
     assert vault_list[0]["funded_at"] is None
     assert vault_list[0]["secured_at"] is None
     assert vault_list[0]["delegated_at"] is None

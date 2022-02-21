@@ -89,8 +89,6 @@ fn sync_sigs<C: secp256k1::Verification>(
     let mut contains_our_signature = false;
     let our_stk_key = our_stk_key.map(|k| k.key);
 
-    log::debug!("Syncing {} signature", tx.type_str());
-
     for (key, sig) in signatures {
         let pubkey = BitcoinPubKey {
             compressed: true,
@@ -231,6 +229,11 @@ fn fetch_all_signatures(
             ) {
                 assert!(revaultd.is_stakeholder())
             }
+            log::debug!(
+                "Syncing {} signatures for {}",
+                &db_tx.psbt.type_str(),
+                &db_vault.deposit_outpoint
+            );
             sync_sigs(
                 &mut transport,
                 &stk_keys,

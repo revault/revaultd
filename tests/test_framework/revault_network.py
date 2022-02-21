@@ -636,10 +636,11 @@ class RevaultNetwork:
         man.wait_for_log(
             f"Succesfully broadcasted Spend tx '{spend_psbt.tx.hash}'",
         )
-        wait_for(
-            lambda: len(self.man(0).rpc.listvaults(["spending"], deposits)["vaults"])
-            == len(deposits)
-        )
+        for w in self.participants():
+            wait_for(
+                lambda: len(w.rpc.listvaults(["spending"], deposits)["vaults"])
+                == len(deposits)
+            )
 
         return deposits, spend_psbt
 
@@ -656,10 +657,11 @@ class RevaultNetwork:
         )
 
         self.bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
-        wait_for(
-            lambda: len(self.man(0).rpc.listvaults(["spent"], deposits)["vaults"])
-            == len(deposits)
-        )
+        for w in self.participants():
+            wait_for(
+                lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
+                == len(deposits)
+            )
 
         return deposits, spend_psbt.tx.hash
 

@@ -218,28 +218,32 @@ impl TryFrom<&Row<'_>> for DbVault {
                 id
             ))))
         })?;
-        let blockheight = row.get(3)?;
-        let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(4)?)
+        let deposit_blockheight = row.get(3)?;
+        let first_stage_tx_blockheight = row.get(4)?;
+        let second_stage_tx_blockheight = row.get(5)?;
+        let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(6)?)
             .map_err(|e| FromSqlError::Other(Box::new(e)))?;
         let deposit_outpoint = OutPoint {
             txid,
-            vout: row.get(5)?,
+            vout: row.get(7)?,
         };
-        let amount = Amount::from_sat(row.get::<_, i64>(6)? as u64);
-        let derivation_index = ChildNumber::from(row.get::<_, u32>(7)?);
-        let funded_at = row.get(8)?;
-        let secured_at = row.get(9)?;
-        let delegated_at = row.get(10)?;
-        let moved_at = row.get(11)?;
+        let amount = Amount::from_sat(row.get::<_, i64>(8)? as u64);
+        let derivation_index = ChildNumber::from(row.get::<_, u32>(9)?);
+        let funded_at = row.get(10)?;
+        let secured_at = row.get(11)?;
+        let delegated_at = row.get(12)?;
+        let moved_at = row.get(13)?;
         let final_txid = row
-            .get::<_, Option<Vec<u8>>>(12)?
+            .get::<_, Option<Vec<u8>>>(14)?
             .map(|raw_txid| encode::deserialize(&raw_txid).expect("We only store valid txids"));
 
         Ok(DbVault {
             id,
             wallet_id,
             status,
-            blockheight,
+            deposit_blockheight,
+            first_stage_tx_blockheight,
+            second_stage_tx_blockheight,
             deposit_outpoint,
             amount,
             derivation_index,
@@ -319,7 +323,7 @@ pub fn db_unvaulted_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let unvault_tx: Vec<u8> = row.get(13)?;
+            let unvault_tx: Vec<u8> = row.get(15)?;
             let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
                 .expect("We store it with as_psbt_serialized");
 
@@ -327,6 +331,29 @@ pub fn db_unvaulted_vaults(
         },
     )
 }
+
+/// Get the txid of the Unvault transaction of the vaults whose Unvault transaction is being spent
+/// but it was not yet marked as confirmed.
+pub fn db_txids_unvaulted_no_bh(db_path: &Path) -> Result<Vec<Txid>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT ptx.txid FROM vaults INNER JOIN presigned_transactions as ptx \
+        ON ptx.vault_id = vaults.id \
+        WHERE ptx.type = (?1) AND vaults.status IN ((?2), (?3), (?4)) AND first_stage_tx_blockheight is NULL",
+        params![
+            TransactionType::Unvault as u32,
+            VaultStatus::Spending as u32,
+            VaultStatus::Canceling as u32,
+            VaultStatus::UnvaultEmergencyVaulting as u32,
+        ],
+        |row| {
+            let txid: Vec<u8> = row.get(0)?;
+            let txid: Txid = encode::deserialize(&txid).expect("Must be valid");
+            Ok(txid)
+        },
+    )
+}
+
 /// Get the vaults that are in the process of being spent, along with the respective Unvault
 /// transaction.
 pub fn db_spending_vaults(
@@ -343,7 +370,7 @@ pub fn db_spending_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let unvault_tx: Vec<u8> = row.get(13)?;
+            let unvault_tx: Vec<u8> = row.get(15)?;
             let unvault_tx = UnvaultTransaction::from_psbt_serialized(&unvault_tx)
                 .expect("We store it with as_psbt_serialized");
 
@@ -368,7 +395,7 @@ pub fn db_canceling_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let cancel_tx: Vec<u8> = row.get(13)?;
+            let cancel_tx: Vec<u8> = row.get(15)?;
             let cancel_tx = CancelTransaction::from_psbt_serialized(&cancel_tx)
                 .expect("We store it with as_psbt_serialized");
 
@@ -393,7 +420,7 @@ pub fn db_emering_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let emer_tx: Vec<u8> = row.get(13)?;
+            let emer_tx: Vec<u8> = row.get(15)?;
             let emer_tx = EmergencyTransaction::from_psbt_serialized(&emer_tx)
                 .expect("We store it with to_psbt_serialized");
 
@@ -418,7 +445,7 @@ pub fn db_unemering_vaults(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let unemer_tx: Vec<u8> = row.get(13)?;
+            let unemer_tx: Vec<u8> = row.get(15)?;
             let unemer_tx = UnvaultEmergencyTransaction::from_psbt_serialized(&unemer_tx)
                 .expect("We store it with to_psbt_serialized");
 
@@ -624,7 +651,7 @@ pub fn db_vault_by_unvault_txid(
         params![txid.to_vec(), TransactionType::Unvault as u32],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let offset = 13;
+            let offset = 15;
 
             // FIXME: there is probably a more extensible way to implement the from()s so we don't
             // have to change all those when adding a column
@@ -667,7 +694,7 @@ pub fn db_sig_missing(
         ],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let db_tx: DbTransaction = db_tx_from_row(row, 13)?;
+            let db_tx: DbTransaction = db_tx_from_row(row, 15)?;
 
             if let Some(db_txs) = vault_map.get_mut(&db_vault) {
                 db_txs.push(db_tx);
@@ -839,7 +866,7 @@ pub fn db_vaults_from_spend(
         params![spend_txid.to_vec()],
         |row| {
             let db_vault: DbVault = row.try_into()?;
-            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(13)?).expect("We store it");
+            let txid: Txid = encode::deserialize(&row.get::<_, Vec<u8>>(15)?).expect("We store it");
             db_vaults.insert(txid, db_vault);
             Ok(())
         },

@@ -261,14 +261,14 @@ pub fn db_insert_new_unconfirmed_vault(
         let derivation_index: u32 = derivation_index.into();
         tx.execute(
             "INSERT INTO vaults ( \
-                wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
-                funded_at, secured_at, delegated_at, moved_at, final_txid \
+                wallet_id, status, deposit_blockheight, first_stage_tx_blockheight, second_stage_tx_blockheight, \
+                deposit_txid, deposit_vout, amount, derivation_index, funded_at, secured_at, delegated_at, moved_at, \
+                final_txid \
             ) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL, NULL, NULL)",
+             VALUES (?1, ?2, NULL, NULL, NULL, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL)",
             params![
                 wallet_id,
                 VaultStatus::Unconfirmed as u32,
-                0, // FIXME: it should probably be NULL instead, but no big deal
                 deposit_outpoint.txid.to_vec(),
                 deposit_outpoint.vout,
                 amount_to_i64(amount),
@@ -330,7 +330,7 @@ pub fn db_confirm_deposit(
     db_exec(db_path, |db_tx| {
         db_tx
             .execute(
-                "UPDATE vaults SET status = (?1), blockheight = (?2), funded_at = (?3) WHERE id = (?4)",
+                "UPDATE vaults SET status = (?1), deposit_blockheight = (?2), funded_at = (?3) WHERE id = (?4)",
                 params![VaultStatus::Funded as u32, blockheight, blocktime, vault_id,],
             )
             .map_err(|e| DatabaseError(format!("Updating vault to 'funded': {}", e.to_string())))?;
@@ -359,8 +359,6 @@ pub fn db_unconfirm_deposit_dbtx(
     db_tx: &rusqlite::Transaction,
     vault_id: u32,
 ) -> Result<(), DatabaseError> {
-    // FIXME: don't delete everything. This is unnecessary and confusing.
-
     // This is going to cascade and DELETE the spend_inputs.
     db_tx.execute(
         "DELETE FROM spend_transactions WHERE id = ( \
@@ -375,22 +373,25 @@ pub fn db_unconfirm_deposit_dbtx(
         params![vault_id],
     )?;
     db_tx.execute(
-        "UPDATE vaults SET status = (?1), blockheight = (?2), \
-         funded_at = NULL, secured_at = NULL, delegated_at = NULL \
-         WHERE id = (?3)",
-        params![VaultStatus::Unconfirmed as u32, 0, vault_id],
+        "UPDATE vaults SET status = (?1), deposit_blockheight = NULL, \
+         first_stage_tx_blockheight = NULL, second_stage_tx_blockheight = NULL, \
+         funded_at = NULL, secured_at = NULL, delegated_at = NULL, moved_at = NULL, \
+         final_txid = NULL \
+         WHERE id = (?2)",
+        params![VaultStatus::Unconfirmed as u32, vault_id],
     )?;
 
     Ok(())
 }
 
-/// Update the vault status and enforce that moved_at is NULL
+/// Update the vault status and enforce that moved_at is NULL; update first_stage_tx_blockheight,
+/// second_stage_tx_blockheight accordingly
 fn dbtx_downgrade(
     db_tx: &rusqlite::Transaction,
     vault_id: u32,
     status: VaultStatus,
 ) -> Result<(), DatabaseError> {
-    // Because the status is downgraded, status cannot be one of the statuses
+    // Since the status is downgraded, it cannot be one of the statuses
     // of the end of a vault lifecycle.
     assert!(!matches!(
         status,
@@ -403,6 +404,24 @@ fn dbtx_downgrade(
         "UPDATE vaults SET status = (?1), moved_at = NULL WHERE id = (?2)",
         params![status as u32, vault_id],
     )?;
+
+    if matches!(
+        status,
+        VaultStatus::EmergencyVaulting | VaultStatus::Unvaulting
+    ) {
+        db_tx.execute(
+            "UPDATE vaults SET first_stage_tx_blockheight = NULL WHERE id = (?1)",
+            params![vault_id],
+        )?;
+    } else if matches!(
+        status,
+        VaultStatus::UnvaultEmergencyVaulting | VaultStatus::Canceling | VaultStatus::Spending
+    ) {
+        db_tx.execute(
+            "UPDATE vaults SET second_stage_tx_blockheight = NULL WHERE id = (?1)",
+            params![vault_id],
+        )?;
+    }
 
     Ok(())
 }
@@ -447,6 +466,76 @@ pub fn db_unconfirm_unemer_dbtx(
     dbtx_downgrade(db_tx, vault_id, VaultStatus::UnvaultEmergencyVaulting)
 }
 
+fn db_update_first_stage_blockheight(
+    db_path: &Path,
+    vault_id: u32,
+    blockheight: u32,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET first_stage_tx_blockheight = (?1) \
+             WHERE vaults.id = (?2)",
+            params![blockheight, vault_id,],
+        )
+        .map_err(|e| {
+            DatabaseError(format!(
+                "Updating vault first_stage_tx_blockheight to '{}': {}",
+                blockheight,
+                e.to_string()
+            ))
+        })?;
+
+        Ok(())
+    })
+}
+
+/// Set the first stage tx's blockheight of this vault from its Unvault's txid.
+pub fn db_update_first_stage_blockheight_from_unvault_txid(
+    db_path: &Path,
+    unvault_txid: &Txid,
+    blockheight: u32,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET first_stage_tx_blockheight = (?1) \
+             WHERE vaults.id IN (SELECT vault_id FROM presigned_transactions WHERE txid = (?2))",
+            params![blockheight, unvault_txid.to_vec(),],
+        )
+        .map_err(|e| {
+            DatabaseError(format!(
+                "Updating vault first_stage_tx_blockheight to '{}': {}",
+                blockheight,
+                e.to_string()
+            ))
+        })?;
+
+        Ok(())
+    })
+}
+
+fn db_update_second_stage_blockheight(
+    db_path: &Path,
+    vault_id: u32,
+    blockheight: u32,
+) -> Result<(), DatabaseError> {
+    db_exec(db_path, |tx| {
+        tx.execute(
+            "UPDATE vaults SET second_stage_tx_blockheight = (?1) \
+             WHERE vaults.id = (?2)",
+            params![blockheight, vault_id,],
+        )
+        .map_err(|e| {
+            DatabaseError(format!(
+                "Updating vault second_stage_tx_blockheight to '{}': {}",
+                blockheight,
+                e.to_string()
+            ))
+        })?;
+
+        Ok(())
+    })
+}
+
 /// Update vault status from its unvault transaction ID.
 fn db_status_from_unvault_txid(
     db_path: &Path,
@@ -476,6 +565,31 @@ fn db_status_from_unvault_txid(
     })
 }
 
+/// Mark an active vault as being in 'unvaulting' state from the Unvault txid
+pub fn db_unvault_deposit(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
+}
+
+/// Mark a vault as being in the 'unvaulted' state, out of the Unvault txid
+pub fn db_confirm_unvault(
+    db_path: &Path,
+    unvault_txid: &Txid,
+    blockheight: u32,
+) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)?;
+    db_update_first_stage_blockheight_from_unvault_txid(db_path, unvault_txid, blockheight)
+}
+
+/// Downgrade a vault to the `unvaulted` state
+pub fn db_downgrade_unvaulted(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
+}
+
+/// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid
+pub fn db_emer_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
+    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
+}
+
 fn db_status_and_final_txid_from_unvault_txid(
     db_path: &Path,
     unvault_txid: &Txid,
@@ -497,16 +611,6 @@ fn db_status_and_final_txid_from_unvault_txid(
 
         Ok(())
     })
-}
-
-/// Mark an active vault as being in 'unvaulting' state from the Unvault txid
-pub fn db_unvault_deposit(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulting)
-}
-
-/// Mark a vault as being in the 'unvaulted' state, out of the Unvault txid
-pub fn db_confirm_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::Unvaulted)
 }
 
 /// Mark a vault as being in the 'canceling' state, out of the Unvault txid
@@ -535,11 +639,6 @@ pub fn db_spend_unvault(
         VaultStatus::Spending,
         spend_txid,
     )
-}
-
-/// Mark a vault as being in the 'unvault_emergency_vaulting' state, out of the Unvault txid
-pub fn db_emer_unvault(db_path: &Path, unvault_txid: &Txid) -> Result<(), DatabaseError> {
-    db_status_from_unvault_txid(db_path, unvault_txid, VaultStatus::UnvaultEmergencyVaulting)
 }
 
 /// Update vault status and moved_at timestamp with the given status and blocktime.
@@ -574,8 +673,10 @@ pub fn db_mark_spent_unvault(
     db_path: &Path,
     vault_id: u32,
     blocktime: u32,
+    blockheight: u32,
 ) -> Result<(), DatabaseError> {
-    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::Spent, blocktime)
+    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::Spent, blocktime)?;
+    db_update_second_stage_blockheight(db_path, vault_id, blockheight)
 }
 
 /// Update vault status to `canceled` and set moved_at with given blocktime.
@@ -583,8 +684,10 @@ pub fn db_mark_canceled_unvault(
     db_path: &Path,
     vault_id: u32,
     blocktime: u32,
+    blockheight: u32,
 ) -> Result<(), DatabaseError> {
-    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::Canceled, blocktime)
+    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::Canceled, blocktime)?;
+    db_update_second_stage_blockheight(db_path, vault_id, blockheight)
 }
 
 /// Update vault status to `emergencied` and set moved_at with given blocktime.
@@ -592,13 +695,15 @@ pub fn db_mark_emergencied_unvault(
     db_path: &Path,
     vault_id: u32,
     blocktime: u32,
+    blockheight: u32,
 ) -> Result<(), DatabaseError> {
     db_mark_vault_as_moved(
         db_path,
         vault_id,
         VaultStatus::UnvaultEmergencyVaulted,
         blocktime,
-    )
+    )?;
+    db_update_second_stage_blockheight(db_path, vault_id, blockheight)
 }
 
 pub fn db_mark_emergencying_vault(db_path: &Path, vault_id: u32) -> Result<(), DatabaseError> {
@@ -617,8 +722,10 @@ pub fn db_mark_emergencied_vault(
     db_path: &Path,
     vault_id: u32,
     blocktime: u32,
+    blockheight: u32,
 ) -> Result<(), DatabaseError> {
-    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::EmergencyVaulted, blocktime)
+    db_mark_vault_as_moved(db_path, vault_id, VaultStatus::EmergencyVaulted, blocktime)?;
+    db_update_first_stage_blockheight(db_path, vault_id, blockheight)
 }
 
 /// Mark that we actually signed this vault's revocation txs, and stored the signatures for it.
@@ -713,15 +820,25 @@ pub fn db_update_presigned_txs(
         for mut transaction in transactions {
             // Merge the transaction with the in-db ones, in case another thread modified
             // it under our feet.
+            // NOTE: we are looking it up by txid. This is because the id of the DbTransaction
+            // might refer now to another transaction than when it was fetched by the caller of
+            // this function. It was triggered by the reorged deposit tests like so:
+            // 1. The sigfetcher fetches presigned txs A and B (ids 1 and 2) from DB
+            // 2. The poller thread notices a reorg, removes the presigned txs from DB
+            // 3. The poller thread re-confirms vaults out of order (A is now id 2 and B id 1)
+            // 4. Here we update the the DbTx with id 1 (B) with the psbt of A
+            // This actually worked because there was no signature to merge, otherwise it would
+            // have paniced in db_txs_merge_sigs() since the sigs would have been invalid.
             let db_transaction: DbTransaction = db_tx
-                .prepare("SELECT * FROM presigned_transactions WHERE id = (?1)")?
-                .query(params![transaction.id])?
+                .prepare("SELECT * FROM presigned_transactions WHERE txid = (?1)")?
+                .query(params![transaction.psbt.txid().to_vec()])?
                 .next()?
                 // Note this can happen if another thread removed them.
                 .ok_or_else(|| {
                     DatabaseError(format!(
-                        "Transaction with id '{}' (vault id '{}') not found in db",
-                        transaction.id, db_vault.id
+                        "Transaction with txid '{}' (vault id '{}') not found in db",
+                        transaction.psbt.txid(),
+                        db_vault.id
                     ))
                 })?
                 .try_into()?;
@@ -1422,6 +1539,78 @@ mod test {
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
+    #[test]
+    fn test_db_confirm_unvault() {
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let db_path = revaultd.db_file();
+
+        setup_db(&mut revaultd).unwrap();
+
+        // Insert and confirm a deposit
+        let wallet_id = 1;
+        let outpoint = OutPoint::from_str(
+            "4d799e993665149109682555ba482b386aea03c5dbd62c059b48eb8f40f2f040:0",
+        )
+        .unwrap();
+        let amount = Amount::from_sat(123456);
+        let derivation_index = ChildNumber::from(33334);
+        let fresh_emer_tx = EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAVqQwvZ+XLjEW+P90WnqdbVWkC1riPNhF8j9Ca4dM0RiAAAAAAD9////AfhgAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK4iUAwAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQBAwSBAAAAAQVHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
+        let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQFHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4iAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
+        let fresh_unemer_tx = UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAZHNg0DZSHTBSpVaGwH2apdYBRu88ZeeB/XmrijJpvH5AAAAAAD9////AdLKAgAAAAAAIgAg8Wcu+wsgQXcO9MAiWSMtqsVSQkptpfTXJ51MFSdhJAoAAAAAAAEBK0ANAwAAAAAAIgAgtSqMFDOQ2FkdNrt/yUTzVjikth3tOm+um6yLFzLTilcBAwSBAAAAAQWrIQJF6Amv78N3ctJ3+oSlIasXN3/N8H/bu2si9Vu3QNBRuKxRh2R2qRS77fZRBsFKSf1uP2HBT3uhL1oRloisa3apFIPfFe62NUR/RApmlyj0VsJJdJ4CiKxsk1KHZ1IhA5scAvk3lvCVQmoWDTHhcd8utuA6Swf2PolVbdB7yVwnIQIXS76HRC/hWucQkpC43HriwIukm1se8QRc9nIlODCN81KvA37BALJoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
+        let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAcRWqIPG85zGye1nuRlbwWKkko4g91Vd/508Ff6vKklpAAAAAAD9////AkANAwAAAAAAIgAgsT7u0Lo8o2WEfxS1nXWtQzsdJTMJnnOC5fwg0nYPvpowdQAAAAAAACIAIAx0DegrXfBr4D0XdetrGgAT2Q3AZANYm0rJL8L/Epp/AAAAAAABASuIlAMAAAAAACIAIGaHQ5brMNbT+WCtfE/WPW8gkmMir5NXAKRsQZAs9cT2AQMEAQAAAAEFR1IhAwYSJ4FeXdf/XPw6lFHpeMFeGvh88f+rWN2VtnaW75TNIQOn5Sg6nytLwT5FT9z5KmV/LMN1pZRsqbworUMwRdRN0lKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGqIQN0Nj5YtWlqdUtE4VzrCy9fIUbgVSBiSedOJzYY9A0jLqxRh2R2qRQ2UoYTYXFkzWxHTxQLsYl/NGpeVIisa3apFChMb7eFLoSVfMHD7bU9EO0Qn2wqiKxsk1KHZ1IhA2KobMJZNs2+adObuXpg1Ny2DOg/nFo5bqGJdJZWSgKUIQL/DSNFGVoHc5rlzQ4+tEDFvETWR1/NXbg5axpIIYuAhVKvAtY0smgiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhA3Q2Pli1aWp1S0ThXOsLL18hRuBVIGJJ504nNhj0DSMurFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
+        let blockheight = 700000;
+        let blocktime = 700000;
+        db_insert_new_unconfirmed_vault(&db_path, wallet_id, &outpoint, &amount, derivation_index)
+            .unwrap();
+        db_confirm_deposit(
+            &db_path,
+            &outpoint,
+            blockheight,
+            blocktime,
+            &fresh_unvault_tx,
+            &fresh_cancel_tx,
+            Some(&fresh_emer_tx),
+            Some(&fresh_unemer_tx),
+        )
+        .unwrap();
+
+        // We can mark it as unvaulted, it'll set the block height of the first stage tx
+        let blockheight = 701000;
+        let unvault_txid = fresh_unvault_tx.txid();
+        assert!(db_vault_by_deposit(&db_path, &outpoint)
+            .unwrap()
+            .unwrap()
+            .first_stage_tx_blockheight
+            .is_none());
+        db_confirm_unvault(&db_path, &unvault_txid, blockheight).unwrap();
+        let db_vault = db_vault_by_deposit(&db_path, &outpoint).unwrap().unwrap();
+        assert_eq!(db_vault.first_stage_tx_blockheight.unwrap(), blockheight);
+
+        // Now remove the blockheight and set it back to unvaulting
+        db_exec(&db_path, |tx| db_unconfirm_unvault_dbtx(tx, db_vault.id)).unwrap();
+        assert!(db_vault_by_deposit(&db_path, &outpoint)
+            .unwrap()
+            .unwrap()
+            .first_stage_tx_blockheight
+            .is_none());
+
+        // We can mark it as spending without going through the 'unvaulted' state
+        let spend_txid =
+            Txid::from_str("8e8be4a6b3885c9429ca675ee752166e7cd88c8eb370557aea67bc70c04df454")
+                .unwrap();
+        db_spend_unvault(&db_path, &unvault_txid, &spend_txid).unwrap();
+        assert!(db_vault_by_deposit(&db_path, &outpoint)
+            .unwrap()
+            .unwrap()
+            .first_stage_tx_blockheight
+            .is_none());
+
+        let txids = db_txids_unvaulted_no_bh(&db_path).unwrap();
+        assert_eq!(txids.len(), 1);
+        assert_eq!(txids[0], unvault_txid);
+    }
+
     // There we trigger a concurrent write access to the database by inserting a deposit and
     // updating its presigned transaction in two different thread. It should be fine and one of
     // them just lock thanks to the unlock_notify feature of SQLite https://sqlite.org/unlock_notify.html
@@ -1856,6 +2045,8 @@ mod test {
         assert!(db_vault.funded_at.is_some());
         assert!(db_vault.secured_at.is_some());
         assert!(db_vault.delegated_at.is_none());
+        assert!(db_vault.first_stage_tx_blockheight.is_none());
+        assert!(db_vault.second_stage_tx_blockheight.is_none());
 
         let stored_unvault_tx = db_unvault_transaction(&db_path, db_vault.id)
             .unwrap()
@@ -1875,6 +2066,8 @@ mod test {
         assert!(db_vault.funded_at.is_some());
         assert!(db_vault.secured_at.is_some());
         assert!(db_vault.delegated_at.is_some());
+        assert!(db_vault.first_stage_tx_blockheight.is_none());
+        assert!(db_vault.second_stage_tx_blockheight.is_none());
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }

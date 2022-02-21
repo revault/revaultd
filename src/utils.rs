@@ -139,7 +139,7 @@ addr = "127.0.0.1:8332"
             let derivation_index: u32 = derivation_index.into();
             tx.execute(
             "INSERT INTO vaults ( \
-                wallet_id, status, blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
+                wallet_id, status, deposit_blockheight, deposit_txid, deposit_vout, amount, derivation_index, \
                 funded_at, moved_at, final_txid \
             ) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",

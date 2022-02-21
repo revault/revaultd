@@ -7,5 +7,5 @@ psycopg2-binary==2.9
 pynacl==1.4
 
 # For the bitcoind proxy
-Flask==1.1.*
+Flask==2.0.3
 cheroot==8.5.*

@@ -89,6 +89,7 @@ pub struct BitcoindConfig {
     /// The poll interval for bitcoind
     #[serde(
         deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration",
         default = "default_poll_interval"
     )]
     pub poll_interval_secs: Duration,
@@ -116,7 +117,10 @@ pub struct ScriptsConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WatchtowerConfig {
     pub host: SocketAddr,
-    #[serde(deserialize_with = "deserialize_noisepubkey")]
+    #[serde(
+        deserialize_with = "deserialize_noisepubkey",
+        serialize_with = "serialize_noisepubkey"
+    )]
     pub noise_key: NoisePubkey,
 }
 
@@ -124,9 +128,9 @@ pub struct WatchtowerConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StakeholderConfig {
     pub xpub: bip32::ExtendedPubKey,
-    pub watchtowers: Vec<WatchtowerConfig>,
     #[serde(serialize_with = "serialize_to_string")]
     pub emergency_address: EmergencyAddress,
+    pub watchtowers: Vec<WatchtowerConfig>,
 }
 
 // Same fields as the WatchtowerConfig struct for now, but leave them separate.
@@ -134,7 +138,10 @@ pub struct StakeholderConfig {
 pub struct CosignerConfig {
     // TODO: Tor
     pub host: SocketAddr,
-    #[serde(deserialize_with = "deserialize_noisepubkey")]
+    #[serde(
+        deserialize_with = "deserialize_noisepubkey",
+        serialize_with = "serialize_noisepubkey"
+    )]
     pub noise_key: NoisePubkey,
 }
 
@@ -149,13 +156,6 @@ pub struct ManagerConfig {
 /// Static informations we require to operate
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    /// Everything we need to know to talk to bitcoind
-    pub bitcoind_config: BitcoindConfig,
-    pub scripts_config: ScriptsConfig,
-    /// Some() if we are a stakeholder
-    pub stakeholder_config: Option<StakeholderConfig>,
-    /// Some() if we are a manager
-    pub manager_config: Option<ManagerConfig>,
     // TODO: support hidden services
     /// The host of the sync server
     pub coordinator_host: SocketAddr,
@@ -186,6 +186,13 @@ pub struct Config {
     /// After how many blocks should we consider a deposit as confirmed?
     #[serde(default = "default_minconf")]
     pub min_conf: u32,
+    /// Everything we need to know to talk to bitcoind
+    pub bitcoind_config: BitcoindConfig,
+    pub scripts_config: ScriptsConfig,
+    /// Some() if we are a manager
+    pub manager_config: Option<ManagerConfig>,
+    /// Some() if we are a stakeholder
+    pub stakeholder_config: Option<StakeholderConfig>,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -520,6 +527,48 @@ mod tests {
         "#;
         let config_res: Result<Config, toml::de::Error> = toml::from_str(toml_str);
         config_res.expect_err("Deserializing an invalid toml_str");
+    }
+
+    #[test]
+    fn serialize_toml_config() {
+        let in_str = r#"
+            coordinator_host = '127.0.0.1:1'
+            coordinator_noise_key = 'd91563973102454a7830137e92d0548bc83b4ea2799f1df04622ca1307381402'
+            coordinator_poll_seconds = 60
+            data_dir = '/home/wizardsardine/custom/folder/'
+            daemon = false
+            log_level = 'TRACE'
+            min_conf = 6
+
+            [bitcoind_config]
+            network = 'bitcoin'
+            cookie_path = '/home/user/.bitcoin/.cookie'
+            addr = '127.0.0.1:8332'
+            poll_interval_secs = 12
+
+            [scripts_config]
+            deposit_descriptor = 'wsh(multi(2,xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*,xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))#n3cj9mhy'
+            unvault_descriptor = 'wsh(andor(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)),and_v(v:multi(2,03b506a1dbe57b4bf48c95e0c7d417b87dd3b4349d290d2e7e9ba72c912652d80a,0295e7f5d12a2061f1fd2286cefec592dff656a19f55f4f01305d6aa56630880ce),older(4)),thresh(2,pkh(xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU/*),a:pkh(xpub6AaffFGfH6WXfm6pwWzmUMuECQnoLeB3agMKaLyEBZ5ZVfwtnS5VJKqXBt8o5ooCWVy2H87GsZshp7DeKE25eWLyd1Ccuh2ZubQUkgpiVux/*))))#532k8uvf'
+            cpfp_descriptor = 'wsh(thresh(1,pk(xpub6BaZSKgpaVvibu2k78QsqeDWXp92xLHZxiu1WoqLB9hKhsBf3miBUDX7PJLgSPvkj66ThVHTqdnbXpeu8crXFmDUd4HeM4s4miQS2xsv3Qb/*)))#cwycq5xu'
+
+            [manager_config]
+            xpub = 'xpub6AtVcKWPpZ9t3Aa3VvzWid1dzJFeXPfNntPbkGsYjNrp7uhXpzSL5QVMCmaHqUzbVUGENEwbBbzF9E8emTxQeP3AzbMjfzvwSDkwUrxg2G4'
+
+            [[manager_config.cosigners]]
+            host = '127.0.0.1:1'
+            noise_key = '087629614d227ff2b9ed5f2ce2eb7cd527d2d18f866b24009647251fce58de38'
+
+            [stakeholder_config]
+            xpub = 'xpub6AP3nZhB34Zoan3KCL9bAdnwNHdzMbskLudpbchwTfkHwnNDXYf1769gzozjgzDNUF7iwa5nCdhE5byrcx5PDKFCUDByeuqiHa382EKhcay'
+            emergency_address = 'bc1qwqdg6squsna38e46795at95yu9atm8azzmyvckulcc7kytlcckxswvvzej'
+
+            [[stakeholder_config.watchtowers]]
+            host = '127.0.0.1:1'
+            noise_key = '46084f8a7da40ef7ffc38efa5af8a33a742b90f920885d17c533bb2a0b680cb3'
+            "#.trim_start().replace("            ", "");
+        let cfg = toml::from_str::<Config>(&in_str).expect("Deserializing toml_str");
+        let out_str = toml::to_string_pretty(&cfg).expect("Serializing to toml");
+        assert_eq!(in_str, out_str);
     }
 
     #[test]

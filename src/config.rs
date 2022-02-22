@@ -2,12 +2,16 @@ use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration, vec::Vec
 
 use revault_net::noise::PublicKey as NoisePubkey;
 use revault_tx::{
-    bitcoin::{hashes::hex::FromHex, util::bip32, Network},
+    bitcoin::{
+        hashes::hex::{FromHex, ToHex},
+        util::bip32,
+        Network,
+    },
     miniscript::descriptor::{DescriptorPublicKey, DescriptorXKey, Wildcard},
     scripts::{CpfpDescriptor, DepositDescriptor, EmergencyAddress, UnvaultDescriptor},
 };
 
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 fn deserialize_fromstr<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
@@ -20,6 +24,13 @@ where
         .map_err(|e| de::Error::custom(format!("Error parsing descriptor '{}': '{}'", string, e)))
 }
 
+pub fn serialize_to_string<T: std::fmt::Display, S: Serializer>(
+    field: T,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&field.to_string())
+}
+
 fn deserialize_noisepubkey<'de, D>(deserializer: D) -> Result<NoisePubkey, D::Error>
 where
     D: Deserializer<'de>,
@@ -30,6 +41,11 @@ where
         .map(NoisePubkey)
 }
 
+pub fn serialize_noisepubkey<S: Serializer>(key: &NoisePubkey, s: S) -> Result<S::Ok, S::Error> {
+    let key_str = key.as_ref().to_hex();
+    s.serialize_str(&key_str)
+}
+
 fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
@@ -37,13 +53,8 @@ where
     let secs = u64::deserialize(deserializer)?;
     Ok(Duration::from_secs(secs))
 }
-
-fn deserialize_loglevel<'de, D>(deserializer: D) -> Result<log::LevelFilter, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let level_str = String::deserialize(deserializer)?;
-    log::LevelFilter::from_str(&level_str).map_err(de::Error::custom)
+pub fn serialize_duration<S: Serializer>(duration: &Duration, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(duration.as_secs())
 }
 
 fn default_loglevel() -> log::LevelFilter {
@@ -67,7 +78,7 @@ fn default_cosig_servers() -> Vec<CosignerConfig> {
 }
 
 /// Everything we need to know for talking to bitcoind serenely
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BitcoindConfig {
     /// The network we are operating on, one of "bitcoin", "testnet", "regtest"
     pub network: Network,
@@ -83,17 +94,26 @@ pub struct BitcoindConfig {
     pub poll_interval_secs: Duration,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScriptsConfig {
-    #[serde(deserialize_with = "deserialize_fromstr")]
+    #[serde(
+        deserialize_with = "deserialize_fromstr",
+        serialize_with = "serialize_to_string"
+    )]
     pub deposit_descriptor: DepositDescriptor,
-    #[serde(deserialize_with = "deserialize_fromstr")]
+    #[serde(
+        deserialize_with = "deserialize_fromstr",
+        serialize_with = "serialize_to_string"
+    )]
     pub unvault_descriptor: UnvaultDescriptor,
-    #[serde(deserialize_with = "deserialize_fromstr")]
+    #[serde(
+        deserialize_with = "deserialize_fromstr",
+        serialize_with = "serialize_to_string"
+    )]
     pub cpfp_descriptor: CpfpDescriptor,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WatchtowerConfig {
     pub host: SocketAddr,
     #[serde(deserialize_with = "deserialize_noisepubkey")]
@@ -101,15 +121,16 @@ pub struct WatchtowerConfig {
 }
 
 /// If we are a stakeholder, we need to connect to our watchtower(s)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StakeholderConfig {
     pub xpub: bip32::ExtendedPubKey,
     pub watchtowers: Vec<WatchtowerConfig>,
+    #[serde(serialize_with = "serialize_to_string")]
     pub emergency_address: EmergencyAddress,
 }
 
 // Same fields as the WatchtowerConfig struct for now, but leave them separate.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CosignerConfig {
     // TODO: Tor
     pub host: SocketAddr,
@@ -118,7 +139,7 @@ pub struct CosignerConfig {
 }
 
 /// If we are a manager, we need to connect to cosigning servers
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ManagerConfig {
     pub xpub: bip32::ExtendedPubKey,
     #[serde(default = "default_cosig_servers")]
@@ -126,7 +147,7 @@ pub struct ManagerConfig {
 }
 
 /// Static informations we require to operate
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     /// Everything we need to know to talk to bitcoind
     pub bitcoind_config: BitcoindConfig,
@@ -139,11 +160,15 @@ pub struct Config {
     /// The host of the sync server
     pub coordinator_host: SocketAddr,
     /// The Noise static public key of the sync server
-    #[serde(deserialize_with = "deserialize_noisepubkey")]
+    #[serde(
+        deserialize_with = "deserialize_noisepubkey",
+        serialize_with = "serialize_noisepubkey"
+    )]
     pub coordinator_noise_key: NoisePubkey,
     /// The poll intervals for signature fetching (default: 1min)
     #[serde(
         deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration",
         default = "default_sig_poll_interval"
     )]
     pub coordinator_poll_seconds: Duration,
@@ -153,7 +178,8 @@ pub struct Config {
     pub daemon: Option<bool>,
     /// What messages to log
     #[serde(
-        deserialize_with = "deserialize_loglevel",
+        deserialize_with = "deserialize_fromstr",
+        serialize_with = "serialize_to_string",
         default = "default_loglevel"
     )]
     pub log_level: log::LevelFilter,

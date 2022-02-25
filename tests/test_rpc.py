@@ -244,24 +244,6 @@ def test_listpresignedtransactions(revault_network):
         if res["unvault_emergency"] is not None:
             assert res["unvault_emergency"] == stk_res["unvault_emergency"]
 
-    # If the vault gets secured the extracted revocation transactions will be
-    # available
-    revault_network.secure_vault(vaultA)
-    stk_res = stks[0].rpc.listpresignedtransactions([depositA])[
-        "presigned_transactions"
-    ][0]
-    assert stk_res["unvault"]["hex"] is None, "not active yet"
-    assert stk_res["cancel"]["hex"] is not None
-    assert stk_res["emergency"]["hex"] is not None
-    assert stk_res["unvault_emergency"]["hex"] is not None
-
-    # If the vault gets activated the unvault transaction will then be available
-    revault_network.activate_vault(vaultA)
-    man_res = mans[0].rpc.listpresignedtransactions([depositA])[
-        "presigned_transactions"
-    ][0]
-    assert man_res["unvault"]["hex"] is not None
-
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listspendtxs(revault_network, bitcoind):
@@ -1012,7 +994,7 @@ def test_revault_command(revault_network, bitcoind, executor):
     # First of all, we need the unvault psbt finalized
     unvault_psbt = stks[0].rpc.listpresignedtransactions([deposit])[
         "presigned_transactions"
-    ][0]["unvault"]["psbt"]
+    ][0]["unvault"]
     unvault_tx = bitcoind.rpc.finalizepsbt(unvault_psbt)["hex"]
     bitcoind.rpc.sendrawtransaction(unvault_tx)
 
@@ -1057,9 +1039,10 @@ def test_revault_command(revault_network, bitcoind, executor):
 
     for v in [vault_a, vault_b]:
         deposit = f"{v['txid']}:{v['vout']}"
-        unvault_tx = man.rpc.listpresignedtransactions([deposit])[
+        unvault_psbt = man.rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["unvault"]["hex"]
+        ][0]["unvault"]
+        unvault_tx = bitcoind.rpc.finalizepsbt(unvault_psbt)["hex"]
         bitcoind.rpc.sendrawtransaction(unvault_tx)
 
         # On purpose, only wait for the one we want to revault with, to trigger some race conditions
@@ -1089,7 +1072,7 @@ def test_revault_command(revault_network, bitcoind, executor):
         cancel_psbt = serializations.PSBT()
         cancel_b64 = stks[0].rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["cancel"]["psbt"]
+        ][0]["cancel"]
         cancel_psbt.deserialize(cancel_b64)
 
         cancel_psbt.tx.calc_sha256()

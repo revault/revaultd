@@ -282,7 +282,7 @@ def test_sigfetcher_secured_vaults(revault_network, bitcoind):
         wait_for(
             lambda: stk.rpc.listpresignedtransactions([outpoint])[
                 "presigned_transactions"
-            ][0]["unvault"]["psbt"]
+            ][0]["unvault"]
             == unvault_psbt
         )
 
@@ -330,7 +330,7 @@ def get_unvault_txids(wallet, vaults):
         unvault_psbt = serializations.PSBT()
         unvault_b64 = wallet.rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["unvault"]["psbt"]
+        ][0]["unvault"]
         unvault_psbt.deserialize(unvault_b64)
         unvault_psbt.tx.calc_sha256()
         unvault_txids.append(unvault_psbt.tx.hash)

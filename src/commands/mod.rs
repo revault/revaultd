@@ -33,7 +33,7 @@ use crate::{
 };
 use utils::{
     deser_amount_from_sats, deser_from_str, finalized_emer_txs, gethistory, listvaults_from_db,
-    presigned_txs, ser_amount, ser_to_string, serialize_option_tx_hex, vaults_from_deposits,
+    presigned_txs, ser_amount, ser_to_string, vaults_from_deposits,
 };
 
 use revault_tx::{
@@ -1474,25 +1474,16 @@ pub struct RevocationTransactions {
     pub emergency_unvault_tx: UnvaultEmergencyTransaction,
 }
 
-/// A vault's presigned transaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VaultPresignedTransaction<T: RevaultTransaction> {
-    pub psbt: T,
-    // FIXME: is it really necessary?.. It's mostly contained in the PSBT already
-    #[serde(rename(serialize = "hex"), serialize_with = "serialize_option_tx_hex")]
-    pub transaction: Option<BitcoinTransaction>,
-}
-
 /// Information about a vault's presigned transactions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPresignedTxEntry {
     pub vault_outpoint: OutPoint,
-    pub unvault: VaultPresignedTransaction<UnvaultTransaction>,
-    pub cancel: VaultPresignedTransaction<CancelTransaction>,
+    pub unvault: UnvaultTransaction,
+    pub cancel: CancelTransaction,
     /// Always None if not stakeholder
-    pub emergency: Option<VaultPresignedTransaction<EmergencyTransaction>>,
+    pub emergency: Option<EmergencyTransaction>,
     /// Always None if not stakeholder
-    pub unvault_emergency: Option<VaultPresignedTransaction<UnvaultEmergencyTransaction>>,
+    pub unvault_emergency: Option<UnvaultEmergencyTransaction>,
 }
 
 /// Information about a vault's onchain transactions.

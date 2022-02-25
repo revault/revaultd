@@ -5,7 +5,6 @@
 use crate::{
     commands::{
         CommandError, HistoryEvent, HistoryEventKind, ListPresignedTxEntry, ListVaultsEntry,
-        VaultPresignedTransaction,
     },
     database::{
         interface::{
@@ -36,26 +35,6 @@ use std::{
 };
 
 use serde::{de, Deserialize, Deserializer, Serializer};
-
-fn serialize_tx_hex<S>(tx: &BitcoinTransaction, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let tx_hex = encode::serialize_hex(&tx);
-    s.serialize_str(&tx_hex)
-}
-
-/// Serialize an optional transaction as hex or null
-pub fn serialize_option_tx_hex<S>(tx: &Option<BitcoinTransaction>, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    if let Some(ref tx) = tx {
-        serialize_tx_hex(tx, s)
-    } else {
-        s.serialize_none()
-    }
-}
 
 /// Serialize a field as a string
 pub fn ser_to_string<T: fmt::Display, S: Serializer>(field: T, s: S) -> Result<S::Ok, S::Error> {
@@ -178,61 +157,30 @@ pub fn presigned_txs(
     for db_vault in db_vaults {
         let vault_outpoint = db_vault.deposit_outpoint;
 
-        let unvault_psbt = db_unvault_transaction(db_path, db_vault.id)
+        let unvault = db_unvault_transaction(db_path, db_vault.id)
             .expect("Database must be available")?
             .psbt
             .assert_unvault();
-        let mut finalized_unvault = unvault_psbt.clone();
-        let unvault = VaultPresignedTransaction {
-            transaction: if finalized_unvault.finalize(&revaultd.secp_ctx).is_ok() {
-                Some(finalized_unvault.into_psbt().extract_tx())
-            } else {
-                None
-            },
-            psbt: unvault_psbt,
-        };
-
-        let cancel_db_tx =
-            db_cancel_transaction(db_path, db_vault.id).expect("Database must be available")?;
-        let cancel_psbt = cancel_db_tx.psbt.assert_cancel();
-        let mut finalized_cancel = cancel_psbt.clone();
-        let cancel = VaultPresignedTransaction {
-            transaction: if finalized_cancel.finalize(&revaultd.secp_ctx).is_ok() {
-                Some(finalized_cancel.into_psbt().extract_tx())
-            } else {
-                None
-            },
-            psbt: cancel_psbt,
-        };
+        let cancel = db_cancel_transaction(db_path, db_vault.id)
+            .expect("Database must be available")?
+            .psbt
+            .assert_cancel();
 
         let mut emergency = None;
         let mut unvault_emergency = None;
         if revaultd.is_stakeholder() {
-            let emer_db_tx =
-                db_emer_transaction(db_path, db_vault.id).expect("Database must be available")?;
-            let emer_psbt = emer_db_tx.psbt.assert_emer();
-            let mut finalized_emer = emer_psbt.clone();
-            emergency = Some(VaultPresignedTransaction {
-                transaction: if finalized_emer.finalize(&revaultd.secp_ctx).is_ok() {
-                    Some(finalized_emer.into_psbt().extract_tx())
-                } else {
-                    None
-                },
-                psbt: emer_psbt,
-            });
-
-            let unemer_db_tx = db_unvault_emer_transaction(db_path, db_vault.id)
-                .expect("Database must be available")?;
-            let unemer_psbt = unemer_db_tx.psbt.assert_unvault_emer();
-            let mut finalized_unemer = unemer_psbt.clone();
-            unvault_emergency = Some(VaultPresignedTransaction {
-                transaction: if finalized_unemer.finalize(&revaultd.secp_ctx).is_ok() {
-                    Some(finalized_unemer.into_psbt().extract_tx())
-                } else {
-                    None
-                },
-                psbt: unemer_psbt,
-            });
+            emergency = Some(
+                db_emer_transaction(db_path, db_vault.id)
+                    .expect("Database must be available")?
+                    .psbt
+                    .assert_emer(),
+            );
+            unvault_emergency = Some(
+                db_unvault_emer_transaction(db_path, db_vault.id)
+                    .expect("Database must be available")?
+                    .psbt
+                    .assert_unvault_emer(),
+            );
         }
 
         tx_list.push(ListPresignedTxEntry {
@@ -1045,39 +993,25 @@ mod tests {
             vaults[1].db_vault.deposit_outpoint
         );
         assert_eq!(
-            stake_txs[0].cancel.psbt,
+            stake_txs[0].cancel,
             vaults[1].transactions.as_ref().unwrap().initial_cancel
         );
-        assert!(stake_txs[0].cancel.transaction.is_none());
         assert_eq!(
-            stake_txs[0].unvault.psbt,
+            stake_txs[0].unvault,
             vaults[1].transactions.as_ref().unwrap().initial_unvault
         );
-        assert!(stake_txs[0].unvault.transaction.is_none());
         assert_eq!(
-            stake_txs[0].emergency.as_ref().unwrap().psbt,
-            vaults[1].transactions.as_ref().unwrap().initial_emer
+            stake_txs[0].emergency.as_ref().unwrap(),
+            &vaults[1].transactions.as_ref().unwrap().initial_emer
         );
-        assert!(stake_txs[0]
-            .emergency
-            .as_ref()
-            .unwrap()
-            .transaction
-            .is_none());
         assert_eq!(
-            stake_txs[0].unvault_emergency.as_ref().unwrap().psbt,
-            vaults[1]
+            stake_txs[0].unvault_emergency.as_ref().unwrap(),
+            &vaults[1]
                 .transactions
                 .as_ref()
                 .unwrap()
                 .initial_unvault_emer
         );
-        assert!(stake_txs[0]
-            .unvault_emergency
-            .as_ref()
-            .unwrap()
-            .transaction
-            .is_none());
 
         // The manager has the same txs, but no emergency
         let man_txs = presigned_txs(&man_revaultd, vec![vaults[1].db_vault.clone()]).unwrap();
@@ -1087,15 +1021,13 @@ mod tests {
             vaults[1].db_vault.deposit_outpoint
         );
         assert_eq!(
-            man_txs[0].cancel.psbt,
+            man_txs[0].cancel,
             vaults[1].transactions.as_ref().unwrap().initial_cancel
         );
-        assert!(man_txs[0].cancel.transaction.is_none());
         assert_eq!(
-            man_txs[0].unvault.psbt,
+            man_txs[0].unvault,
             vaults[1].transactions.as_ref().unwrap().initial_unvault
         );
-        assert!(man_txs[0].unvault.transaction.is_none());
         assert!(man_txs[0].emergency.is_none());
         assert!(man_txs[0].unvault_emergency.is_none());
 
@@ -1108,8 +1040,8 @@ mod tests {
             vaults[2].db_vault.deposit_outpoint
         );
         assert_eq!(
-            stake_txs[0].cancel.psbt,
-            *vaults[2]
+            &stake_txs[0].cancel,
+            vaults[2]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1117,15 +1049,13 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(stake_txs[0].cancel.transaction.is_some());
         assert_eq!(
-            stake_txs[0].unvault.psbt,
+            stake_txs[0].unvault,
             vaults[2].transactions.as_ref().unwrap().initial_unvault
         );
-        assert!(stake_txs[0].unvault.transaction.is_none());
         assert_eq!(
-            stake_txs[0].emergency.as_ref().unwrap().psbt,
-            *vaults[2]
+            stake_txs[0].emergency.as_ref().unwrap(),
+            vaults[2]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1133,15 +1063,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(stake_txs[0]
-            .emergency
-            .as_ref()
-            .unwrap()
-            .transaction
-            .is_some());
         assert_eq!(
-            stake_txs[0].unvault_emergency.as_ref().unwrap().psbt,
-            *vaults[2]
+            stake_txs[0].unvault_emergency.as_ref().unwrap(),
+            vaults[2]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1149,12 +1073,6 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(stake_txs[0]
-            .unvault_emergency
-            .as_ref()
-            .unwrap()
-            .transaction
-            .is_some());
 
         // The manager has the same txs, but no emergency
         let man_txs = presigned_txs(&man_revaultd, vec![vaults[2].db_vault.clone()]).unwrap();
@@ -1164,8 +1082,8 @@ mod tests {
             vaults[2].db_vault.deposit_outpoint
         );
         assert_eq!(
-            man_txs[0].cancel.psbt,
-            *vaults[2]
+            &man_txs[0].cancel,
+            vaults[2]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1173,12 +1091,10 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(man_txs[0].cancel.transaction.is_some());
         assert_eq!(
-            man_txs[0].unvault.psbt,
+            man_txs[0].unvault,
             vaults[2].transactions.as_ref().unwrap().initial_unvault
         );
-        assert!(man_txs[0].unvault.transaction.is_none());
         assert!(man_txs[0].emergency.is_none());
         assert!(man_txs[0].unvault_emergency.is_none());
 
@@ -1191,8 +1107,8 @@ mod tests {
             vaults[3].db_vault.deposit_outpoint
         );
         assert_eq!(
-            stake_txs[0].cancel.psbt,
-            *vaults[3]
+            &stake_txs[0].cancel,
+            vaults[3]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1200,10 +1116,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(stake_txs[0].cancel.transaction.is_some());
         assert_eq!(
-            stake_txs[0].unvault.psbt,
-            *vaults[3]
+            &stake_txs[0].unvault,
+            vaults[3]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1211,10 +1126,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(stake_txs[0].unvault.transaction.is_some());
         assert_eq!(
-            stake_txs[0].emergency.as_ref().unwrap().psbt,
-            *vaults[3]
+            stake_txs[0].emergency.as_ref().unwrap(),
+            vaults[3]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1222,15 +1136,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(stake_txs[0]
-            .emergency
-            .as_ref()
-            .unwrap()
-            .transaction
-            .is_some());
         assert_eq!(
-            stake_txs[0].unvault_emergency.as_ref().unwrap().psbt,
-            *vaults[3]
+            stake_txs[0].unvault_emergency.as_ref().unwrap(),
+            vaults[3]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1238,12 +1146,6 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(stake_txs[0]
-            .unvault_emergency
-            .as_ref()
-            .unwrap()
-            .transaction
-            .is_some());
 
         // The manager has the same txs, but no emergency
         let man_txs = presigned_txs(&man_revaultd, vec![vaults[3].db_vault.clone()]).unwrap();
@@ -1253,8 +1155,8 @@ mod tests {
             vaults[3].db_vault.deposit_outpoint
         );
         assert_eq!(
-            man_txs[0].cancel.psbt,
-            *vaults[3]
+            &man_txs[0].cancel,
+            vaults[3]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1262,10 +1164,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(man_txs[0].cancel.transaction.is_some());
         assert_eq!(
-            man_txs[0].unvault.psbt,
-            *vaults[3]
+            &man_txs[0].unvault,
+            vaults[3]
                 .transactions
                 .as_ref()
                 .unwrap()
@@ -1273,7 +1174,6 @@ mod tests {
                 .as_ref()
                 .unwrap()
         );
-        assert!(man_txs[0].unvault.transaction.is_some());
         assert!(man_txs[0].emergency.is_none());
         assert!(man_txs[0].unvault_emergency.is_none());
 

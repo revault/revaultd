@@ -23,11 +23,12 @@ use crate::{
             db_update_spend, db_update_vault_status,
         },
         interface::{
-            db_cancel_transaction, db_cancel_transaction_by_txid, db_emer_transaction,
-            db_list_spends, db_spend_transaction, db_tip, db_unvault_emer_transaction,
-            db_unvault_transaction, db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults,
-            db_vaults_from_spend, db_vaults_min_status,
+            db_cancel_transaction_by_txid, db_emer_transaction, db_list_spends,
+            db_spend_transaction, db_tip, db_unvault_emer_transaction, db_unvault_transaction,
+            db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend,
+            db_vaults_min_status,
         },
+        schema::DbTransaction,
     },
     threadmessages::BitcoindThread,
     DaemonControl, VERSION,
@@ -66,6 +67,7 @@ pub enum CommandError {
     InvalidStatusFor(VaultStatus, OutPoint),
     // TODO: remove in favour of specific variants
     InvalidParams(String),
+    UnknownCancel(Txid),
     Communication(CommunicationError),
     Bitcoind(BitcoindError),
     Tx(revault_tx::Error),
@@ -147,6 +149,7 @@ impl fmt::Display for CommandError {
                 write!(f, "This is a manager command")
             }
             Self::Race => write!(f, "Internal error due to a race. Please try again."),
+            Self::UnknownCancel(txid) => write!(f, "Unknown Cancel transaction: '{}'", txid),
         }
     }
 }
@@ -196,8 +199,8 @@ impl CommandError {
             | CommandError::SpendSpent(_)
             | CommandError::SpendNotEnoughSig(_, _)
             | CommandError::SpendInvalidSig(_)
-            | CommandError::MissingCpfpKey => ErrorCode::INVALID_PARAMS,
-
+            | CommandError::MissingCpfpKey
+            | CommandError::UnknownCancel(_) => ErrorCode::INVALID_PARAMS,
             CommandError::StakeholderOnly | CommandError::ManagerOnly => ErrorCode::INVALID_REQUEST,
             CommandError::Race => ErrorCode::INTERNAL_ERROR,
         }
@@ -357,7 +360,7 @@ impl DaemonControl {
         .expect("We wouldn't have put a vault with an invalid chain in DB");
 
         Ok(RevocationTransactions {
-            cancel_tx: cancel_batch.into_feerate_20(),
+            cancel_txs: cancel_batch.all_feerates(),
             emergency_tx,
             emergency_unvault_tx,
         })
@@ -372,16 +375,12 @@ impl DaemonControl {
     pub fn set_revocation_txs(
         &self,
         deposit_outpoint: OutPoint,
-        cancel_tx: CancelTransaction,
-        emergency_tx: EmergencyTransaction,
-        unvault_emergency_tx: UnvaultEmergencyTransaction,
+        revocation_txs: RevocationTransactions,
     ) -> Result<(), CommandError> {
         let revaultd = self.revaultd.read().unwrap();
         stakeholder_only!(revaultd);
         let db_path = revaultd.db_file();
         let secp_ctx = &revaultd.secp_ctx;
-
-        assert!(revaultd.is_stakeholder());
 
         // They may only send revocation transactions for confirmed and not-yet-presigned
         // vaults.
@@ -396,21 +395,25 @@ impl DaemonControl {
         };
 
         // Sanity check they didn't send us garbaged PSBTs
-        let mut cancel_db_tx = db_cancel_transaction(&db_path, db_vault.id)
-            .expect("The database must be available")
-            .ok_or(CommandError::Race)?;
-        let rpc_txid = cancel_tx.tx().wtxid();
-        let db_txid = cancel_db_tx.psbt.wtxid();
-        if rpc_txid != db_txid {
-            return Err(CommandError::InvalidParams(format!(
-                "Invalid Cancel tx: db wtxid is '{}' but this PSBT's is '{}' ",
-                db_txid, rpc_txid
-            )));
+        let mut cancel_txs_sigs = Vec::with_capacity(revocation_txs.cancel_txs.len());
+        for cancel_tx in revocation_txs.cancel_txs.iter() {
+            let cancel_db_tx = db_cancel_transaction_by_txid(&db_path, &cancel_tx.txid())
+                .expect("The database must be available")
+                .ok_or_else(|| CommandError::UnknownCancel(cancel_tx.txid()))?;
+            let rpc_txid = cancel_tx.tx().wtxid();
+            let db_txid = cancel_db_tx.psbt.wtxid();
+            if rpc_txid != db_txid {
+                return Err(CommandError::InvalidParams(format!(
+                    "Invalid Cancel tx: db wtxid is '{}' but this PSBT's is '{}' ",
+                    db_txid, rpc_txid
+                )));
+            }
+            cancel_txs_sigs.push((cancel_db_tx, cancel_tx.signatures()));
         }
         let mut emer_db_tx = db_emer_transaction(&revaultd.db_file(), db_vault.id)
             .expect("The database must be available")
             .ok_or(CommandError::Race)?;
-        let rpc_txid = emergency_tx.tx().wtxid();
+        let rpc_txid = revocation_txs.emergency_tx.tx().wtxid();
         let db_txid = emer_db_tx.psbt.wtxid();
         if rpc_txid != db_txid {
             return Err(CommandError::InvalidParams(format!(
@@ -421,7 +424,7 @@ impl DaemonControl {
         let mut unvault_emer_db_tx = db_unvault_emer_transaction(&revaultd.db_file(), db_vault.id)
             .expect("The database must be available")
             .ok_or(CommandError::Race)?;
-        let rpc_txid = unvault_emergency_tx.tx().wtxid();
+        let rpc_txid = revocation_txs.emergency_unvault_tx.tx().wtxid();
         let db_txid = unvault_emer_db_tx.psbt.wtxid();
         if rpc_txid != db_txid {
             return Err(CommandError::InvalidParams(format!(
@@ -432,19 +435,20 @@ impl DaemonControl {
 
         // Alias some vars we'll reuse
         let deriv_index = db_vault.derivation_index;
-        let cancel_sigs = cancel_tx.signatures();
-        let emer_sigs = emergency_tx.signatures();
-        let unvault_emer_sigs = unvault_emergency_tx.signatures();
+        let emer_sigs = revocation_txs.emergency_tx.signatures();
+        let unvault_emer_sigs = revocation_txs.emergency_unvault_tx.signatures();
 
         // They must have included *at least* a signature for our pubkey
         let our_pubkey = revaultd
             .our_stk_xpub_at(deriv_index)
             .expect("We are a stakeholder, checked at the beginning of the call.");
-        if !cancel_sigs.contains_key(&our_pubkey) {
-            return Err(CommandError::InvalidParams(format!(
-                "No signature for ourselves ({}) in Cancel transaction",
-                our_pubkey
-            )));
+        for (_, sigs) in cancel_txs_sigs.iter() {
+            if !sigs.contains_key(&our_pubkey) {
+                return Err(CommandError::InvalidParams(format!(
+                    "No signature for ourselves ({}) in Cancel transaction",
+                    our_pubkey
+                )));
+            }
         }
         // We use the same public key across the transaction chain, that's pretty
         // neat from an usability perspective.
@@ -461,12 +465,14 @@ impl DaemonControl {
 
         // There is no reason for them to include an unnecessary signature, so be strict.
         let stk_keys = revaultd.stakeholders_xpubs_at(deriv_index);
-        for (ref key, _) in cancel_sigs.iter() {
-            if !stk_keys.contains(key) {
-                return Err(CommandError::InvalidParams(format!(
-                    "Unknown key in Cancel transaction signatures: {}",
-                    key
-                )));
+        for (_, sigs) in cancel_txs_sigs.iter() {
+            for (ref key, _) in sigs.iter() {
+                if !stk_keys.contains(key) {
+                    return Err(CommandError::InvalidParams(format!(
+                        "Unknown key in Cancel transaction signatures: {}",
+                        key
+                    )));
+                }
             }
         }
         for (ref key, _) in emer_sigs.iter() {
@@ -487,25 +493,27 @@ impl DaemonControl {
         }
 
         // Add the signatures to the DB transactions.
-        for (key, sig) in cancel_sigs {
-            if sig.is_empty() {
-                return Err(CommandError::InvalidParams(format!(
-                    "Empty signature for key '{}' in Cancel PSBT",
-                    key
-                )));
-            }
-            let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).map_err(|_| {
-                CommandError::InvalidParams(format!("Non DER signature in Cancel PSBT"))
-            })?;
-            cancel_db_tx
-                .psbt
-                .add_signature(key.key, sig, secp_ctx)
-                .map_err(|e| {
-                    CommandError::InvalidParams(format!(
-                        "Invalid signature '{}' in Cancel PSBT: '{}'",
-                        sig, e
-                    ))
+        for (ref mut cancel_db_tx, sigs) in cancel_txs_sigs.iter_mut() {
+            for (key, sig) in sigs.iter() {
+                if sig.is_empty() {
+                    return Err(CommandError::InvalidParams(format!(
+                        "Empty signature for key '{}' in Cancel PSBT",
+                        key
+                    )));
+                }
+                let sig = secp256k1::Signature::from_der(&sig[..sig.len() - 1]).map_err(|_| {
+                    CommandError::InvalidParams(format!("Non DER signature in Cancel PSBT"))
                 })?;
+                cancel_db_tx
+                    .psbt
+                    .add_signature(key.key, sig, secp_ctx)
+                    .map_err(|e| {
+                        CommandError::InvalidParams(format!(
+                            "Invalid signature '{}' in Cancel PSBT: '{}'",
+                            sig, e
+                        ))
+                    })?;
+            }
         }
         for (key, sig) in emer_sigs {
             if sig.is_empty() {
@@ -550,7 +558,11 @@ impl DaemonControl {
 
         // Then add them to the PSBTs in database. Take care to update the vault
         // status if all signatures were given via the RPC.
-        let rev_txs = vec![cancel_db_tx, emer_db_tx, unvault_emer_db_tx];
+        let rev_txs: Vec<DbTransaction> = cancel_txs_sigs
+            .into_iter()
+            .map(|(tx, _)| tx)
+            .chain([emer_db_tx, unvault_emer_db_tx].iter().cloned())
+            .collect();
         db_update_presigned_txs(&db_path, &db_vault, rev_txs.clone(), secp_ctx)
             .expect("The database must be available");
         db_mark_securing_vault(&db_path, db_vault.id).expect("The database must be available");
@@ -1503,7 +1515,7 @@ pub struct ListVaultsEntry {
 /// Revocation transactions for a given vault
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevocationTransactions {
-    pub cancel_tx: CancelTransaction,
+    pub cancel_txs: [CancelTransaction; 5],
     pub emergency_tx: EmergencyTransaction,
     // FIXME: consistent naming
     pub emergency_unvault_tx: UnvaultEmergencyTransaction,

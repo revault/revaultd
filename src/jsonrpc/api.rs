@@ -3,7 +3,7 @@
 //! `server` mod.
 
 use crate::{
-    commands::{CommandError, HistoryEventKind, ListSpendStatus},
+    commands::{CommandError, HistoryEventKind, ListSpendStatus, RevocationTransactions},
     revaultd::VaultStatus,
     DaemonControl,
 };
@@ -113,7 +113,7 @@ pub trait RpcApi {
         &self,
         meta: Self::Metadata,
         outpoint: OutPoint,
-        cancel_tx: CancelTransaction,
+        cancel_txs: [CancelTransaction; 5],
         emergency_tx: EmergencyTransaction,
         emergency_unvault_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value>;
@@ -359,15 +359,17 @@ impl RpcApi for RpcImpl {
         &self,
         meta: Self::Metadata,
         outpoint: OutPoint,
-        cancel_tx: CancelTransaction,
+        cancel_txs: [CancelTransaction; 5],
         emergency_tx: EmergencyTransaction,
         unvault_emergency_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         meta.daemon_control.set_revocation_txs(
             outpoint,
-            cancel_tx,
-            emergency_tx,
-            unvault_emergency_tx,
+            RevocationTransactions {
+                cancel_txs,
+                emergency_tx,
+                emergency_unvault_tx: unvault_emergency_tx,
+            },
         )?;
         Ok(json!({}))
     }

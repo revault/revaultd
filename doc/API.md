@@ -250,11 +250,11 @@ known and confirmed ([`funded`](#vault-statuses)) vault.
 
 #### Response
 
-| Field                  | Type   | Description                                                 |
-| ---------------------- | ------ | ----------------------------------------------------------- |
-| `cancel_tx`            | string | Base64-encoded Cancel transaction PSBT                      |
-| `emergency_tx`         | string | Base64-encoded Emergency transaction PSBT                   |
-| `emergency_unvault_tx` | string | Base64-encoded Unvault Emergency transaction PSBT           |
+| Field                  | Type         | Description                                                 |
+| ---------------------- | ------------ | ----------------------------------------------------------- |
+| `cancel_txs`           | string array | List of the base64-encoded Cancel transactions PSBTs        |
+| `emergency_tx`         | string       | Base64-encoded Emergency transaction PSBT                   |
+| `emergency_unvault_tx` | string       | Base64-encoded Unvault Emergency transaction PSBT           |
 
 
 ### `revocationtxs`
@@ -265,12 +265,12 @@ See the [flows](#stakeholder-flows) for more information.
 
 #### Request
 
-| Field                  | Type   | Description                                                 |
-| ---------------------- | ------ | ----------------------------------------------------------- |
-| `outpoint`             | string | Deposit outpoint of the vault                               |
-| `cancel_tx`            | string | Base64-encoded Cancel transaction PSBT                      |
-| `emergency_tx`         | string | Base64-encoded Emergency transaction PSBT                   |
-| `emergency_unvault_tx` | string | Base64-encoded Unvault Emergency transaction PSBT           |
+| Field                  | Type         | Description                                                 |
+| ---------------------- | ------------ | ----------------------------------------------------------- |
+| `outpoint`             | string       | Deposit outpoint of the vault                               |
+| `cancel_txs`           | string array | List of base64-encoded Cancel transactions PSBTs            |
+| `emergency_tx`         | string       | Base64-encoded Emergency transaction PSBT                   |
+| `emergency_unvault_tx` | string       | Base64-encoded Unvault Emergency transaction PSBT           |
 
 
 #### Response

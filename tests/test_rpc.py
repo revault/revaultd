@@ -492,103 +492,116 @@ def test_revocationtxs(revault_network):
     with pytest.raises(RpcError, match="This is a stakeholder command"):
         mans[0].rpc.revocationtxs(
             deposit,
-            psbts["cancel_tx"],
+            psbts["cancel_txs"],
             psbts["emergency_tx"],
             psbts["emergency_unvault_tx"],
         )
 
     # We must provide all revocation txs at once
     with pytest.raises(RpcError, match="Invalid params.*"):
-        stks[0].rpc.revocationtxs(deposit, psbts["cancel_tx"], psbts["emergency_tx"])
+        stks[0].rpc.revocationtxs(deposit, psbts["cancel_txs"], psbts["emergency_tx"])
+
+    # We must provide all cancel txs at once
+    with pytest.raises(RpcError, match="Invalid params.*"):
+        stks[0].rpc.revocationtxs(
+            deposit, psbts["cancel_txs"][:2], psbts["emergency_tx"]
+        )
 
     # We can't send it for an unknown vault
     with pytest.raises(RpcError, match="No vault at"):
         stks[0].rpc.revocationtxs(
             deposit[:-1] + "18",
-            psbts["cancel_tx"],
+            psbts["cancel_txs"],
             psbts["emergency_tx"],
             psbts["emergency_unvault_tx"],
         )
 
     # We can't give it random PSBTs, it will fail at parsing time
-    mal_cancel = psbt_add_input(psbts["cancel_tx"])
+    mal_cancels = [psbt_add_input(c) for c in psbts["cancel_txs"]]
     with pytest.raises(RpcError, match="Invalid Revault transaction"):
         stks[0].rpc.revocationtxs(
-            deposit, mal_cancel, psbts["emergency_tx"], psbts["emergency_unvault_tx"]
+            deposit, mal_cancels, psbts["emergency_tx"], psbts["emergency_unvault_tx"]
         )
     mal_emer = psbt_add_input(psbts["emergency_tx"])
     with pytest.raises(RpcError, match="Invalid Revault transaction"):
         stks[0].rpc.revocationtxs(
-            deposit, psbts["cancel_tx"], mal_emer, psbts["emergency_unvault_tx"]
+            deposit, psbts["cancel_txs"], mal_emer, psbts["emergency_unvault_tx"]
         )
     mal_unemer = psbt_add_input(psbts["emergency_unvault_tx"])
     with pytest.raises(RpcError, match="Invalid Revault transaction"):
         stks[0].rpc.revocationtxs(
-            deposit, psbts["cancel_tx"], psbts["emergency_tx"], mal_unemer
+            deposit, psbts["cancel_txs"], psbts["emergency_tx"], mal_unemer
         )
 
-    # We can't mix up PSBTS (the Cancel can even be detected at parsing time)
-    with pytest.raises(RpcError, match="Invalid field in output"):
-        stks[0].rpc.revocationtxs(
-            deposit,
-            psbts["emergency_tx"],  # here
-            psbts["emergency_tx"],
-            psbts["emergency_unvault_tx"],
-        )
+    # We can't mix up emergency PSBTS
     with pytest.raises(RpcError, match="Invalid Emergency tx: db wtxid"):
         stks[0].rpc.revocationtxs(
             deposit,
-            psbts["cancel_tx"],
-            psbts["cancel_tx"],  # here
+            psbts["cancel_txs"],
+            psbts["emergency_unvault_tx"],
             psbts["emergency_unvault_tx"],
         )
     with pytest.raises(RpcError, match="Invalid Unvault Emergency tx: db wtxid"):
         stks[0].rpc.revocationtxs(
-            deposit, psbts["cancel_tx"], psbts["emergency_tx"], psbts["emergency_tx"]
-        )  # here
+            deposit, psbts["cancel_txs"], psbts["emergency_tx"], psbts["emergency_tx"]
+        )
 
     # We must provide a signature for ourselves
     with pytest.raises(RpcError, match="No signature for ourselves.*Cancel"):
         stks[0].rpc.revocationtxs(
             deposit,
-            psbts["cancel_tx"],
+            psbts["cancel_txs"],
             psbts["emergency_tx"],
             psbts["emergency_unvault_tx"],
         )
-    cancel_psbt = stks[0].stk_keychain.sign_revocation_psbt(
-        psbts["cancel_tx"], child_index
-    )
+    cancel_psbts = [
+        stks[0].stk_keychain.sign_revocation_psbt(c, child_index)
+        for c in psbts["cancel_txs"]
+    ]
     with pytest.raises(RpcError, match="No signature for ourselves.*Emergency"):
         stks[0].rpc.revocationtxs(
-            deposit, cancel_psbt, psbts["emergency_tx"], psbts["emergency_unvault_tx"]
+            deposit, cancel_psbts, psbts["emergency_tx"], psbts["emergency_unvault_tx"]
         )
     emer_psbt = stks[0].stk_keychain.sign_revocation_psbt(
         psbts["emergency_tx"], child_index
     )
     with pytest.raises(RpcError, match="No signature for ourselves.*UnvaultEmergency"):
         stks[0].rpc.revocationtxs(
-            deposit, cancel_psbt, emer_psbt, psbts["emergency_unvault_tx"]
+            deposit, cancel_psbts, emer_psbt, psbts["emergency_unvault_tx"]
         )
     unemer_psbt = stks[0].stk_keychain.sign_revocation_psbt(
         psbts["emergency_unvault_tx"], child_index
     )
 
+    # We can't provide ANYONECANPAY signatures
+    cancel_psbts_acp = [
+        stks[0].stk_keychain.sign_revocation_psbt(c, child_index, acp=True)
+        for c in psbts["cancel_txs"]
+    ]
+    with pytest.raises(RpcError, match="Invalid signature .* in Cancel PSBT"):
+        stks[0].rpc.revocationtxs(
+            deposit,
+            cancel_psbts_acp,
+            emer_psbt,
+            unemer_psbt,
+        )
+
     # We refuse any random garbage signature
-    mal_cancel = psbt_add_invalid_sig(cancel_psbt)
+    mal_cancels = [psbt_add_invalid_sig(c) for c in cancel_psbts]
     with pytest.raises(RpcError, match="Unknown key in Cancel"):
-        stks[0].rpc.revocationtxs(deposit, mal_cancel, emer_psbt, unemer_psbt)
+        stks[0].rpc.revocationtxs(deposit, mal_cancels, emer_psbt, unemer_psbt)
     mal_emer = psbt_add_invalid_sig(emer_psbt)
     with pytest.raises(RpcError, match="Unknown key in Emergency"):
-        stks[0].rpc.revocationtxs(deposit, cancel_psbt, mal_emer, unemer_psbt)
+        stks[0].rpc.revocationtxs(deposit, cancel_psbts, mal_emer, unemer_psbt)
     mal_unemer = psbt_add_invalid_sig(unemer_psbt)
     with pytest.raises(RpcError, match="Unknown key in UnvaultEmergency"):
-        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, mal_unemer)
+        stks[0].rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, mal_unemer)
 
     # If we input valid presigned transactions, it will acknowledge that *we* already
     # signed and that we are waiting for others' signatures now.
     stks[0].rpc.revocationtxs(
         deposit,
-        cancel_psbt,
+        cancel_psbts,
         emer_psbt,
         unemer_psbt,
     )
@@ -612,18 +625,19 @@ def test_unvaulttx(revault_network):
         """
         stks[0].wait_for_deposits([deposit])
         psbts = stks[0].rpc.getrevocationtxs(deposit)
-        cancel_psbt = psbts["cancel_tx"]
+        cancel_psbts = psbts["cancel_txs"]
         emer_psbt = psbts["emergency_tx"]
         unemer_psbt = psbts["emergency_unvault_tx"]
         for stk in stks:
-            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
-                cancel_psbt, child_index
-            )
+            cancel_psbts = [
+                stk.stk_keychain.sign_revocation_psbt(c, child_index)
+                for c in cancel_psbts
+            ]
             emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt, child_index)
             unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
                 unemer_psbt, child_index
             )
-        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+        stks[0].rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, unemer_psbt)
         assert stks[0].rpc.listvaults([], [deposit])["vaults"][0]["status"] == "secured"
 
     unvault_psbt = stks[0].rpc.getunvaulttx(deposit)["unvault_tx"]

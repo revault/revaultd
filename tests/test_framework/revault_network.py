@@ -546,16 +546,17 @@ class RevaultNetwork:
         for stk in self.stks():
             stk.wait_for_deposits([deposit])
             psbts = stk.rpc.getrevocationtxs(deposit)
-            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
-                psbts["cancel_tx"], vault["derivation_index"]
-            )
+            cancel_psbts = [
+                stk.stk_keychain.sign_revocation_psbt(c, vault["derivation_index"])
+                for c in psbts["cancel_txs"]
+            ]
             emer_psbt = stk.stk_keychain.sign_revocation_psbt(
                 psbts["emergency_tx"], vault["derivation_index"]
             )
             unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
                 psbts["emergency_unvault_tx"], vault["derivation_index"]
             )
-            stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+            stk.rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, unemer_psbt)
         for w in self.participants():
             w.wait_for_secured_vaults([deposit])
 

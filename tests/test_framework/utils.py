@@ -112,8 +112,8 @@ class User(Participant):
     def get_xpub(self):
         return self.hd.get_xpub()
 
-    def sign_revocation_psbt(self, psbt_str, deriv_index):
-        """Attach an ACP signature to the PSBT with the key at {deriv_index}"""
+    def sign_revocation_psbt(self, psbt_str, deriv_index, acp=False):
+        """Attach an ALL signature to the PSBT with the key at {deriv_index}"""
         assert isinstance(psbt_str, str)
 
         psbt = serializations.PSBT()
@@ -125,9 +125,10 @@ class User(Participant):
         )
 
         script_code = psbt.inputs[0].witness_script
-        sighash = serializations.sighash_all_witness(script_code, psbt, 0, True)
+        sighash = serializations.sighash_all_witness(script_code, psbt, 0, acp)
         privkey = coincurve.PrivateKey(self.hd.get_privkey_from_path([deriv_index]))
-        sig = privkey.sign(sighash, hasher=None) + b"\x81"  # ALL | ACP
+        sighash_byte = b"\x01" if not acp else b"\x81"
+        sig = privkey.sign(sighash, hasher=None) + sighash_byte
 
         pubkey = self.hd.get_pubkey_from_path([deriv_index])
         psbt.inputs[0].partial_sigs[pubkey] = sig

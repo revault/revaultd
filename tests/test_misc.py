@@ -250,6 +250,45 @@ def test_sigfetcher_coordinator_dead(revault_network, bitcoind):
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_sigfetcher_secured_vaults(revault_network, bitcoind):
+    """
+    Test that unvault sigs are retrieved and stored for secured vault even if the
+    daemon user did not start activating it or is not a stakeholder.
+    """
+    rn = revault_network
+    rn.deploy(
+        3,
+        1,
+        csv=1,
+        with_cosigs=False,
+        with_watchtowers=False,
+    )
+    vault = rn.fund(1)
+    rn.secure_vault(vault)
+    stks = rn.stks()
+
+    outpoint = f"{vault['txid']}:{vault['vout']}"
+    unvault_psbt = stks[0].rpc.getunvaulttx(outpoint)["unvault_tx"]
+    unvault_psbt = stks[0].stk_keychain.sign_unvault_psbt(
+        unvault_psbt, vault["derivation_index"]
+    )
+    stks[0].rpc.unvaulttx(outpoint, unvault_psbt)
+
+    for stk in rn.participants():
+        stk.wait_for_logs(
+            [
+                "Syncing Unvault signature",
+            ]
+        )
+        wait_for(
+            lambda: stk.rpc.listpresignedtransactions([outpoint])[
+                "presigned_transactions"
+            ][0]["unvault"]["psbt"]
+            == unvault_psbt
+        )
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_stkman_only(revault_network, bitcoind):
     """Test a setup with only stakehodlers-managers"""
     rn = revault_network

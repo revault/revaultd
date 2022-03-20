@@ -214,22 +214,15 @@ pub fn setup_db(revaultd: &mut RevaultD) -> Result<(), DatabaseError> {
     Ok(())
 }
 
-pub fn db_update_tip_dbtx(
-    db_tx: &rusqlite::Transaction,
-    tip: &BlockchainTip,
-) -> Result<(), DatabaseError> {
-    db_tx
-        .execute(
-            "UPDATE tip SET blockheight = (?1), blockhash = (?2)",
-            params![tip.height, tip.hash.to_vec()],
-        )
-        .map_err(|e| DatabaseError(format!("Inserting new tip: {}", e.to_string())))
-        .map(|_| ())
-}
-
 /// Set the current best block hash and height
 pub fn db_update_tip(db_path: &Path, tip: &BlockchainTip) -> Result<(), DatabaseError> {
-    db_exec(db_path, |db_tx| db_update_tip_dbtx(db_tx, tip))
+    db_exec(db_path, |db_tx| {
+        db_tx.execute(
+            "UPDATE tip SET blockheight = (?1), blockhash = (?2)",
+            params![tip.height, tip.hash.to_vec()],
+        )?;
+        Ok(())
+    })
 }
 
 pub fn db_update_deposit_index(

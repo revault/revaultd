@@ -587,23 +587,6 @@ pub fn db_cancel_transaction(
     .map(|mut rows| rows.pop())
 }
 
-/// Get the Cancel transaction corresponding to this vault
-pub fn db_cancel_dbtx(
-    db_tx: &Transaction,
-    vault_id: u32,
-) -> Result<Option<CancelTransaction>, DatabaseError> {
-    db_query_tx(
-        db_tx,
-        "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
-        params![vault_id, TransactionType::Cancel as u32],
-        |row| row.try_into(),
-    )
-    .map(|mut rows| {
-        rows.pop()
-            .map(|db_tx: DbTransaction| db_tx.psbt.assert_cancel())
-    })
-}
-
 /// Get the Emergency transaction corresponding to this vault.
 ///
 /// NOTE: the transaction *might* not be here even if you polled the vault status

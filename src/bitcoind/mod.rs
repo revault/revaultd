@@ -144,6 +144,53 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
     Ok(bitcoind)
 }
 
+/// Check bitcoind version at startup
+pub fn bitcoind_version_check() -> Result< i32 , &'static str> {
+    // Set minimum supported bitcoind version here:
+    let min_supported_bitcoind = "220000";
+    // Extracts output of "bitcoin-cli getnetworkinfo" from user's cli and stores in value.
+    use std::process::Command;
+    let value = Command::new("bitcoin-cli").arg("getnetworkinfo").output();
+    let getnetworkinfo_data = value.unwrap();
+    let list_length = getnetworkinfo_data.stdout.len();
+    let mut version_ascii : Vec<u8> = Vec::new(); 
+    let mut version_flag = 0;
+    // Extracts and stores version from getnetworkinfo output and stores in bitcoin_version as a string.
+    for i in 0..list_length {
+        let colon_ascii = 58;
+        if getnetworkinfo_data.stdout[i] == colon_ascii {
+            version_flag=1;
+        }
+        let comma_ascii = 44;
+        if getnetworkinfo_data.stdout[i] == comma_ascii {
+            break;
+        }
+        if version_flag == 1 {
+           version_ascii.push(getnetworkinfo_data.stdout[i]);
+        }
+    }
+    let mut bitcoind_version = String::new();
+    let mut pos = 0;
+  
+    for i in version_ascii {
+      if pos>=2 {
+          let ival:u8 = i;
+          let str_ival = (ival-48).to_string();
+          bitcoind_version.push_str(&str_ival);
+      }
+      pos+=1; 
+    }
+  
+    let bitcoind_version_i32 = bitcoind_version.trim().parse::<i32>();
+    let min_supported_bitcoind_i32 = min_supported_bitcoind.trim().parse::<i32>();
+  
+    // We are checking if bitcoind's version is greater than or equal to the minimum supported version of revaultd
+    match (bitcoind_version_i32, min_supported_bitcoind_i32) {
+      (Ok(bitcoind_version_i32), Ok(min_supported_bitcoind_i32)) if bitcoind_version_i32 >= min_supported_bitcoind_i32 => Ok(bitcoind_version_i32),
+      _ => Err("Your bitcoind version is not compatible with revaultd! Please upgrade to the latest version of bitcoind."),
+  }
+  }
+
 fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {
     bitcoind
         .get_wallet_transaction(&txid)

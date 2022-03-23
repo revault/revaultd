@@ -20,8 +20,9 @@ path = "src/bin/cli.rs"
 required-features = ["jsonrpc_server"]
 
 [features]
-default = ["jsonrpc_server"]
+default = ["jsonrpc_server", "daemonize"]
 jsonrpc_server = ["jsonrpc-core", "jsonrpc-derive", "mio"]
+daemonize = ["daemonize-simple"]
 
 [dependencies]
 revault_tx = { git = "https://github.com/revault/revault_tx", features = ["use-serde"] }
@@ -36,7 +37,7 @@ backtrace = "0.3"
 dirs = "3.0"
 
 # It's concise, does the Right Thing, and even supports Windows !
-daemonize-simple = "0.1"
+daemonize-simple = { version = "0.1", optional = true }
 
 # To talk to bitcoind
 jsonrpc = "0.12"

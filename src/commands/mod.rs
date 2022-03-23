@@ -268,6 +268,15 @@ impl DaemonControl {
             })
             .count();
 
+        assert!(revaultd.is_stakeholder() || revaultd.is_manager());
+        let participant_type = if revaultd.is_manager() && revaultd.is_stakeholder() {
+            "stakholdermanager"
+        } else if revaultd.is_manager() {
+            "manager"
+        } else {
+            "stakeholder"
+        };
+
         GetInfoResult {
             version: VERSION.to_string(),
             network: revaultd.bitcoind_config.network,
@@ -280,6 +289,7 @@ impl DaemonControl {
                 unvault: revaultd.unvault_descriptor.clone(),
                 cpfp: revaultd.cpfp_descriptor.clone(),
             },
+            participant_type: participant_type.to_string(),
         }
     }
 
@@ -1430,6 +1440,7 @@ pub struct GetInfoResult {
     pub vaults: usize,
     pub managers_threshold: usize,
     pub descriptors: GetInfoDescriptors,
+    pub participant_type: String,
 }
 
 /// Information about a vault.

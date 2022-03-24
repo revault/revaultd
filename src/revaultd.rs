@@ -1,4 +1,4 @@
-use crate::{
+    use crate::{
     config::{config_folder_path, BitcoindConfig, Config},
     StartupError,
 };
@@ -281,6 +281,33 @@ pub enum UserRole {
     Stakeholder,
     Manager,
     ManagerStakeholder,
+}
+
+impl FromStr for UserRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "stakeholder" => Ok(Self::Stakeholder),
+            "stakeholdermanager" => Ok(Self::Manager),
+            "manager" => Ok(Self::Manager),
+            _ => Err(format!("Unknown role: {}", s)),
+        }
+    }
+}
+
+impl fmt::Display for UserRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match *self {
+                Self::Stakeholder => "stakeholder",
+                Self::Manager => "manager",
+                Self::ManagerStakeholder => "stakeholdermanager",
+            }
+        )
+    }
 }
 
 

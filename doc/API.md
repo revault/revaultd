@@ -454,15 +454,16 @@ of inflows and outflows net of any change amount (that is technically a transact
 
 ##### Event Resource
 
-| Field         | Type         | Description                                                                      |
-| ------------- | ------       | -------------------------------------------------------------------------------- |
-| `blockheight` | int          | Blockheight of the event final transaction                                       |
-| `txid`        | string       | Hex string  of the event final transaction id                                    |
-| `kind`        | string       | Type of the event. Can be `deposit`, `cancel`, `spend`                           |
-| `date`        | int          | Timestamp of the event                                                           |
-| `amount`      | int          | Absolute amount in satoshis that is entering or exiting the wallet               |
-| `fee`         | int          | Fees caused by the operation, includes CPFP outputs amount                       |
-| `vaults`      | string array | List of outpoints of vaults affected by the event excluding any change vault     |
+| Field         | Type          | Description                                                                                                             |
+| ------------- | ------------- | -----------------------------------------------------------------------------------------------------------------       |
+| `blockheight` | int           | Blockheight of the event final transaction                                                                              |
+| `txid`        | string        | Hex string  of the event final transaction id                                                                           |
+| `kind`        | string        | Type of the event. Can be `deposit`, `cancel`, `spend`                                                                  |
+| `date`        | int           | Timestamp of the event                                                                                                  |
+| `amount`      | int or `null` | Absolute amount in satoshis that is entering or exiting the wallet, `null` if the event is a `cancel` event             |
+| `miner_fee`   | int or `null` | Total of the miner fees caused by the operation, `null` if the event is a `deposit` event                               |
+| `cpfp_amount` | int or `null` | Total amount of the cpfp outputs allocated to the managers as an operational budget, `null` if no cpfp outputs exists   |
+| `vaults`      | string array  | List of outpoints of vaults affected by the event excluding any change vault                                            |
 
 
 ### `emergency`

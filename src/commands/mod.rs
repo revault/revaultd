@@ -25,14 +25,15 @@ use crate::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_list_spends, db_spend_transaction,
             db_tip, db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit,
-            db_vault_by_unvault_txid, db_vaults, db_vaults_from_spend, db_vaults_min_status,
+            db_vault_by_unvault_txid, db_vaults_from_spend, db_vaults_min_status,
         },
     },
     threadmessages::BitcoindThread,
     DaemonControl, VERSION,
 };
 use utils::{
-    deser_amount_from_sats, deser_from_str, finalized_emer_txs, gethistory, listvaults_from_db,
+    deser_amount_from_sats, deser_from_str, finalized_emer_txs,
+    get_spend_tx_change_and_cpfp_indexes, gethistory, list_onchain_txs, listvaults_from_db,
     presigned_txs, ser_amount, ser_to_string, vaults_from_deposits,
 };
 
@@ -41,7 +42,6 @@ use revault_tx::{
         consensus::encode, secp256k1, util::bip32, Address, Amount, Network, OutPoint,
         PublicKey as BitcoinPubKey, Transaction as BitcoinTransaction, TxOut, Txid,
     },
-    miniscript::DescriptorTrait,
     scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
     transactions::{
         spend_tx_from_deposits, transaction_chain, CancelTransaction, CpfpableTransaction,
@@ -810,111 +810,7 @@ impl DaemonControl {
         outpoints: &[OutPoint],
     ) -> Result<Vec<ListOnchainTxEntry>, CommandError> {
         let revaultd = self.revaultd.read().unwrap();
-        let db_path = &revaultd.db_file();
-
-        let db_vaults = if outpoints.is_empty() {
-            db_vaults(&db_path).expect("Database must be available")
-        } else {
-            // We accept any status
-            vaults_from_deposits(&db_path, &outpoints, &[])?
-        };
-
-        let mut tx_list = Vec::with_capacity(db_vaults.len());
-        for db_vault in db_vaults {
-            let vault_outpoint = db_vault.deposit_outpoint;
-
-            // If the vault exist, there must always be a deposit transaction available.
-            let deposit = self
-                .bitcoind_conn
-                .wallet_tx(db_vault.deposit_outpoint.txid)?
-                .expect("Vault exists but not deposit tx?");
-
-            // For the other transactions, it depends on the status of the vault. For the sake of
-            // simplicity bitcoind will tell us (but we could have some optimisation eventually here,
-            // eg returning None early on Funded vaults).
-            let (unvault, cancel, emergency, unvault_emergency, spend) = match db_vault.status {
-                VaultStatus::Unvaulting | VaultStatus::Unvaulted => {
-                    let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
-                        .expect("Database must be available")
-                        .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-                    (unvault, None, None, None, None)
-                }
-                VaultStatus::Spending | VaultStatus::Spent => {
-                    let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
-                        .expect("Database must be available")
-                        .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-                    let spend = if let Some(spend_txid) = db_vault.final_txid {
-                        self.bitcoind_conn.wallet_tx(spend_txid)?
-                    } else {
-                        None
-                    };
-                    (unvault, None, None, None, spend)
-                }
-                VaultStatus::Canceling | VaultStatus::Canceled => {
-                    let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
-                        .expect("Database must be available")
-                        .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-                    let cancel = if let Some(cancel_txid) = db_vault.final_txid {
-                        self.bitcoind_conn.wallet_tx(cancel_txid)?
-                    } else {
-                        None
-                    };
-                    (unvault, cancel, None, None, None)
-                }
-                VaultStatus::EmergencyVaulting | VaultStatus::EmergencyVaulted => {
-                    // Emergencies are only for stakeholders!
-                    if revaultd.is_stakeholder() {
-                        let emer_db_tx = db_emer_transaction(db_path, db_vault.id)
-                            .expect("Database must be available")
-                            .ok_or(CommandError::Race)?;
-                        let emergency = self.bitcoind_conn.wallet_tx(emer_db_tx.psbt.txid())?;
-                        (None, None, emergency, None, None)
-                    } else {
-                        (None, None, None, None, None)
-                    }
-                }
-                VaultStatus::UnvaultEmergencyVaulting | VaultStatus::UnvaultEmergencyVaulted => {
-                    let unvault_db_tx = db_unvault_transaction(db_path, db_vault.id)
-                        .expect("Database must be available")
-                        .ok_or(CommandError::Race)?;
-                    let unvault = self.bitcoind_conn.wallet_tx(unvault_db_tx.psbt.txid())?;
-
-                    // Emergencies are only for stakeholders!
-                    if revaultd.is_stakeholder() {
-                        let unemer_db_tx = db_emer_transaction(db_path, db_vault.id)
-                            .expect("Database must be available")
-                            .ok_or(CommandError::Race)?;
-                        let unvault_emergency =
-                            self.bitcoind_conn.wallet_tx(unemer_db_tx.psbt.txid())?;
-                        (unvault, None, None, unvault_emergency, None)
-                    } else {
-                        (unvault, None, None, None, None)
-                    }
-                }
-                // Other statuses do not have on chain transactions apart the deposit.
-                VaultStatus::Unconfirmed
-                | VaultStatus::Funded
-                | VaultStatus::Securing
-                | VaultStatus::Secured
-                | VaultStatus::Activating
-                | VaultStatus::Active => (None, None, None, None, None),
-            };
-
-            tx_list.push(ListOnchainTxEntry {
-                vault_outpoint,
-                deposit,
-                unvault,
-                cancel,
-                emergency,
-                unvault_emergency,
-                spend,
-            });
-        }
-
-        Ok(tx_list)
+        list_onchain_txs(&revaultd, &self.bitcoind_conn, outpoints)
     }
 
     /// Create a Spend transaction for these deposit outpoints, paying to the specified addresses
@@ -1170,35 +1066,23 @@ impl DaemonControl {
                 }
             }
 
-            let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
-                .expect("Database must be available");
+            let tx = db_spend.psbt.tx();
+            let spent_vaults =
+                db_vaults_from_spend(&db_path, &tx.txid()).expect("Database must be available");
 
             let derivation_index = spent_vaults
                 .values()
                 .map(|v| v.derivation_index)
                 .max()
                 .expect("Spent vaults should not be empty");
-            let cpfp_script_pubkey = revaultd
-                .cpfp_descriptor
-                .derive(derivation_index, &revaultd.secp_ctx)
-                .into_inner()
-                .script_pubkey();
-            let deposit_address = revaultd
-                .deposit_descriptor
-                .derive(derivation_index, &revaultd.secp_ctx)
-                .into_inner()
-                .script_pubkey();
-            let mut cpfp_index = None;
-            let mut change_index = None;
-            for (i, txout) in db_spend.psbt.tx().output.iter().enumerate() {
-                if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
-                    cpfp_index = Some(i);
-                }
 
-                if deposit_address == txout.script_pubkey {
-                    change_index = Some(i);
-                }
-            }
+            let (change_index, cpfp_index) = get_spend_tx_change_and_cpfp_indexes(
+                derivation_index,
+                &revaultd.deposit_descriptor,
+                &revaultd.cpfp_descriptor,
+                &revaultd.secp_ctx,
+                &tx,
+            );
 
             listspend_entries.push(ListSpendEntry {
                 psbt: db_spend.psbt,
@@ -1490,14 +1374,45 @@ pub struct ListPresignedTxEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListOnchainTxEntry {
     pub vault_outpoint: OutPoint,
-    pub deposit: WalletTransaction,
-    pub unvault: Option<WalletTransaction>,
-    pub cancel: Option<WalletTransaction>,
+    pub deposit: OnchainTxEntry,
+    pub unvault: Option<OnchainTxEntry>,
+    pub cancel: Option<OnchainTxEntry>,
     /// Always None if not stakeholder
-    pub emergency: Option<WalletTransaction>,
+    pub emergency: Option<OnchainTxEntry>,
     /// Always None if not stakeholder
-    pub unvault_emergency: Option<WalletTransaction>,
-    pub spend: Option<WalletTransaction>,
+    pub unvault_emergency: Option<OnchainTxEntry>,
+    pub spend: Option<OnchainTxEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnchainTxEntry {
+    pub hex: String,
+    pub received_at: u32,
+    // None if unconfirmed
+    pub blockheight: Option<u32>,
+    // None if unconfirmed
+    pub blocktime: Option<u32>,
+    // None if the tx does not have change output
+    pub change_index: Option<usize>,
+    // None if the tx does not have cpfp output
+    pub cpfp_index: Option<usize>,
+}
+
+impl OnchainTxEntry {
+    pub fn new(
+        tx: WalletTransaction,
+        change_index: Option<usize>,
+        cpfp_index: Option<usize>,
+    ) -> Self {
+        Self {
+            hex: tx.hex,
+            received_at: tx.received_time,
+            blockheight: tx.blockheight,
+            blocktime: tx.blocktime,
+            change_index,
+            cpfp_index,
+        }
+    }
 }
 
 /// Status of a Spend transaction

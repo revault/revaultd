@@ -4,13 +4,14 @@
 
 use crate::{
     commands::{
-        CommandError, HistoryEvent, HistoryEventKind, ListPresignedTxEntry, ListVaultsEntry,
+        CommandError, HistoryEvent, HistoryEventKind, ListOnchainTxEntry, ListPresignedTxEntry,
+        ListVaultsEntry, OnchainTxEntry,
     },
     database::{
         interface::{
             db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
             db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
-            db_vaults_with_txids_in_period,
+            db_vaults_with_final_txid, db_vaults_with_txids_in_period,
         },
         schema::DbVault,
         DatabaseError,
@@ -21,17 +22,18 @@ use crate::{
 
 use revault_tx::{
     bitcoin::{
-        consensus::encode, hashes::hex::FromHex, Amount, OutPoint,
-        Transaction as BitcoinTransaction, Txid,
+        consensus::encode, hashes::hex::FromHex, secp256k1, util::bip32::ChildNumber, Amount,
+        OutPoint, Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
+    scripts::{CpfpDescriptor, DepositDescriptor},
     transactions::{CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
     txins::{DepositTxIn, RevaultTxIn},
     txouts::{DepositTxOut, RevaultTxOut},
 };
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     str::FromStr,
 };
@@ -221,6 +223,203 @@ pub fn finalized_emer_txs(revaultd: &RevaultD) -> Result<Vec<BitcoinTransaction>
         .chain(unemer_iter)
         .collect::<Result<Vec<BitcoinTransaction>, revault_tx::Error>>()
         .map_err(|e| e.into())
+}
+
+/// Finds the cpfp and change output indexes of a spend transaction by deriving the scripts
+/// from descriptors and checking them against outputs scripts.
+pub fn get_spend_tx_change_and_cpfp_indexes(
+    derivation_index: ChildNumber,
+    deposit_descriptor: &DepositDescriptor,
+    cpfp_descriptor: &CpfpDescriptor,
+    secp_ctx: &secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    tx: &BitcoinTransaction,
+) -> (Option<usize>, Option<usize>) {
+    let cpfp_script_pubkey = cpfp_descriptor
+        .derive(derivation_index, &secp_ctx)
+        .into_inner()
+        .script_pubkey();
+    let deposit_address = deposit_descriptor
+        .derive(derivation_index, &secp_ctx)
+        .into_inner()
+        .script_pubkey();
+    let mut cpfp_index = None;
+    let mut change_index = None;
+    for (i, txout) in tx.output.iter().enumerate() {
+        if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
+            cpfp_index = Some(i);
+        }
+
+        if deposit_address == txout.script_pubkey {
+            change_index = Some(i);
+        }
+    }
+    (change_index, cpfp_index)
+}
+
+/// list_onchain_txs retrieves onchain transactions linked to the vaults with the given outpoints.
+pub fn list_onchain_txs<T: BitcoindThread>(
+    revaultd: &RevaultD,
+    bitcoind_conn: &T,
+    outpoints: &[OutPoint],
+) -> Result<Vec<ListOnchainTxEntry>, CommandError> {
+    let db_path = revaultd.db_file();
+
+    let db_vaults = if outpoints.is_empty() {
+        db_vaults(&db_path).expect("Database must be available")
+    } else {
+        // We accept any status
+        vaults_from_deposits(&db_path, &outpoints, &[])?
+    };
+
+    let mut tx_list = Vec::with_capacity(db_vaults.len());
+
+    // Some vaults have the same spend as their final transaction.
+    // It is better to cache it for performance.
+    let mut spend_tx_cache = BTreeMap::<Txid, OnchainTxEntry>::new();
+
+    for db_vault in db_vaults {
+        let vault_outpoint = db_vault.deposit_outpoint;
+
+        // If the vault exist, there must always be a deposit transaction available.
+        let deposit = OnchainTxEntry::new(
+            bitcoind_conn
+                .wallet_tx(db_vault.deposit_outpoint.txid)?
+                .expect("Vault exists but not deposit tx?"),
+            None,
+            None,
+        );
+
+        let unvault = if [
+            VaultStatus::Unvaulting,
+            VaultStatus::Unvaulted,
+            VaultStatus::Spending,
+            VaultStatus::Spent,
+            VaultStatus::Canceling,
+            VaultStatus::Canceled,
+            VaultStatus::UnvaultEmergencyVaulting,
+            VaultStatus::UnvaultEmergencyVaulted,
+        ]
+        .contains(&db_vault.status)
+        {
+            let unvault_db_tx = db_unvault_transaction(&db_path, db_vault.id)
+                .expect("Database must be available")
+                .ok_or(CommandError::Race)?;
+            bitcoind_conn
+                .wallet_tx(unvault_db_tx.psbt.txid())?
+                .map(|tx| {
+                    let cpfp_script_pubkey = revaultd
+                        .cpfp_descriptor
+                        .derive(db_vault.derivation_index, &revaultd.secp_ctx)
+                        .into_inner()
+                        .script_pubkey();
+                    let cpfp_index = unvault_db_tx
+                        .psbt
+                        .unwrap_unvault()
+                        .tx()
+                        .output
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, txout)| {
+                            if cpfp_script_pubkey == txout.script_pubkey {
+                                Some(i)
+                            } else {
+                                None
+                            }
+                        })
+                        .expect("Unvault tx must have a cpfp_index");
+
+                    OnchainTxEntry::new(tx, None, Some(cpfp_index))
+                })
+        } else {
+            None
+        };
+
+        let cancel = if db_vault.status == VaultStatus::Canceling
+            || db_vault.status == VaultStatus::Canceled
+        {
+            bitcoind_conn
+                .wallet_tx(db_vault.final_txid.expect("Must have a cancel txid"))?
+                .map(|tx| OnchainTxEntry::new(tx, None, None))
+        } else {
+            None
+        };
+
+        let spend =
+            if db_vault.status == VaultStatus::Spending || db_vault.status == VaultStatus::Spent {
+                let txid = db_vault.final_txid.expect("Must have a spend txid");
+                if let Some(tx) = spend_tx_cache.get(&txid) {
+                    Some(tx.clone())
+                } else {
+                    let tx = bitcoind_conn.wallet_tx(txid)?.map(|tx| {
+                        let spend: BitcoinTransaction =
+                            encode::deserialize(&Vec::from_hex(&tx.hex).unwrap()).unwrap();
+                        let spent_vaults =
+                            db_vaults_with_final_txid(&db_path, &txid).expect("Vaults must exist");
+                        let derivation_index = spent_vaults
+                            .iter()
+                            .map(|v| v.derivation_index)
+                            .max()
+                            .expect("List cannot be empty");
+                        let (change_index, cpfp_index) = get_spend_tx_change_and_cpfp_indexes(
+                            derivation_index,
+                            &revaultd.deposit_descriptor,
+                            &revaultd.cpfp_descriptor,
+                            &revaultd.secp_ctx,
+                            &spend,
+                        );
+                        OnchainTxEntry::new(tx, change_index, cpfp_index)
+                    });
+                    // Some vaults have the same spend as their final transaction.
+                    // It is better to cache it for performance.
+                    if let Some(tx) = &tx {
+                        spend_tx_cache.insert(txid, tx.clone());
+                    }
+                    tx
+                }
+            } else {
+                None
+            };
+
+        let emergency = if revaultd.is_stakeholder()
+            && (db_vault.status == VaultStatus::EmergencyVaulting
+                || db_vault.status == VaultStatus::EmergencyVaulted)
+        {
+            let emer_db_tx = db_emer_transaction(&db_path, db_vault.id)
+                .expect("Database must be available")
+                .ok_or(CommandError::Race)?;
+            bitcoind_conn
+                .wallet_tx(emer_db_tx.psbt.txid())?
+                .map(|tx| OnchainTxEntry::new(tx, None, None))
+        } else {
+            None
+        };
+
+        let unvault_emergency = if revaultd.is_stakeholder()
+            && (db_vault.status == VaultStatus::UnvaultEmergencyVaulting
+                || db_vault.status == VaultStatus::UnvaultEmergencyVaulted)
+        {
+            let emer_db_tx = db_unvault_emer_transaction(&db_path, db_vault.id)
+                .expect("Database must be available")
+                .ok_or(CommandError::Race)?;
+            bitcoind_conn
+                .wallet_tx(emer_db_tx.psbt.txid())?
+                .map(|tx| OnchainTxEntry::new(tx, None, None))
+        } else {
+            None
+        };
+
+        tx_list.push(ListOnchainTxEntry {
+            vault_outpoint,
+            deposit,
+            unvault,
+            cancel,
+            emergency,
+            unvault_emergency,
+            spend,
+        });
+    }
+
+    Ok(tx_list)
 }
 
 /// gethistory retrieves a limited list of events which occured between two given dates.
@@ -494,7 +693,7 @@ mod tests {
         database::{
             actions::{
                 db_confirm_deposit, db_confirm_unvault, db_insert_new_unconfirmed_vault,
-                db_update_presigned_txs,
+                db_mark_spent_unvault, db_update_presigned_txs,
             },
             bitcointx::RevaultTx,
             interface::{
@@ -516,6 +715,7 @@ mod tests {
             util::{amount::Amount, bip32::ChildNumber},
             PublicKey as BitcoinPubKey,
         },
+        scripts::UnvaultDescriptor,
         transactions::{
             CancelTransaction, EmergencyTransaction, RevaultTransaction,
             UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -1343,6 +1543,184 @@ mod tests {
         assert!(txs.contains(&unvault_emer3));
 
         fs::remove_dir_all(&datadir).unwrap();
+    }
+
+    #[test]
+    fn test_list_onchain_txs() {
+        let datadir = test_datadir();
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
+        setup_db(&mut revaultd).unwrap();
+        let db_file = revaultd.db_file();
+        revaultd.cpfp_descriptor = CpfpDescriptor::from_str("wsh(multi(1,tpubD6NzVbkrYhZ4XkehE7ghxNboGmT4Pd1SZ9RWLN5dG5vgRKXQgSxYtsmUgAYsqzdbK9petorBFceU36PNAfkVmrMhfNsJRSoiyWpu6NJA1BQ/*,tpubD6NzVbkrYhZ4XyJXPpnkwCpTazWgerTFgXLtVehbPyoNKVFfPgXRcoxLGupEES1tSteVGsJon85AxEzGyWVSxm8LX8bdZsz87GWt585X2wf/*))#8h972ae2").unwrap();
+        revaultd.deposit_descriptor = DepositDescriptor::from_str("wsh(multi(2,tpubD6NzVbkrYhZ4WmzFjvQrp7sDa4ECUxTi9oby8K4FZkd3XCBtEdKwUiQyYJaxiJo5y42gyDWEczrFpozEjeLxMPxjf2WtkfcbpUdfvNnozWF/*,tpubD6NzVbkrYhZ4XyJXPpnkwCpTazWgerTFgXLtVehbPyoNKVFfPgXRcoxLGupEES1tSteVGsJon85AxEzGyWVSxm8LX8bdZsz87GWt585X2wf/*))#36w5x8qy").unwrap();
+        revaultd.unvault_descriptor = UnvaultDescriptor::from_str("wsh(andor(multi(1,tpubD6NzVbkrYhZ4XcB3kRJVob8bmjMvA2zBuagidVzh7ASY5FyAEtq4nTzx9wHYu5XDQAg7vdFNiF6yX38kTCK8zjVVmFTiQR2YKAqZBTGjnoD/*,tpubD6NzVbkrYhZ4XkehE7ghxNboGmT4Pd1SZ9RWLN5dG5vgRKXQgSxYtsmUgAYsqzdbK9petorBFceU36PNAfkVmrMhfNsJRSoiyWpu6NJA1BQ/*),older(10),thresh(2,pkh(tpubD6NzVbkrYhZ4WmzFjvQrp7sDa4ECUxTi9oby8K4FZkd3XCBtEdKwUiQyYJaxiJo5y42gyDWEczrFpozEjeLxMPxjf2WtkfcbpUdfvNnozWF/*),a:pkh(tpubD6NzVbkrYhZ4XyJXPpnkwCpTazWgerTFgXLtVehbPyoNKVFfPgXRcoxLGupEES1tSteVGsJon85AxEzGyWVSxm8LX8bdZsz87GWt585X2wf/*))))#lej6yrsc").unwrap();
+
+        let deposit1_tx_hex = "02000000000102a97dfa121adf217ff633ec600d8f2d10544ad83f4081dc5edb15b267dc8780770000000000feffffffa97dfa121adf217ff633ec600d8f2d10544ad83f4081dc5edb15b267dc8780770100000000feffffff0200ab90410000000022002024c9386efc4c8adef217b2931caed1cf4891f49770526ad5703d6893b49102ce17d0f0080000000016001474afe13dccd961647c8a394d0ff32f2b1bad78d702473044022049a2319c7f317774ddeb41e2656b92fefc418234230ae20d115ef353326b01d70220269deb1f678c8dd9f179b6caab6d762b33d28316eeb325fc87857005042cf56d012103d2258b9d4e626e65dc23bcfac159bbf98d4903d04aefab54f89584ce9b06fd9f0247304402204daba18162118a244e9d4ef565faeac79b828eba62498f46e3110263f4da2a5c02205b9df53c1ce2228e5a0bdc90522c92eb8862b9109ec3626b6a23648ede11750c012102356c17877be6c3fec0118c5dac22115effccabacca9ce18fbfa7bc457a599ea69a010000";
+        let unvault1_tx_hex = "02000000000101f6d328bf7481f5d31706c42ef026703f4db6baaf3f8e1847a67aafcd78c22a060000000000fdffffff02b8239041000000002200206c1c9b72e836a6dec99014406cf88b4df54da9c57b214b99464b987b447a05723075000000000000220020362dcc982d454a66b2e8febd8740769ce23e2030dda9d7f35c08444f8775ab8f0400483045022100e7b6c5b403accb76705726c31b7c8955ef414ac6e63edea7c16107612aa72f79022017bf607b26e876b87b1ee12311b14911c04f99ca5e396e2995e5ffeaacc840c301483045022100f213ea174468a26e868e2986f50782b0bca388ddd28f7be47367448f63f32dac02204250489c6833d7a35f2cb82c6973327a528d6bb7363beb7d3cfd68f0726cd4b30147522103614f52e6ff874bed71cdadeb0ca7bedace71b40f3e8045982c8222fcf2e444fb2102becc5ebd0649c836922ce8a72b54cf9dbdc9d7de56163dcf706368b3b5ade30952ae00000000";
+
+        let deposit1_tx: BitcoinTransaction =
+            encode::deserialize(&Vec::from_hex(deposit1_tx_hex).unwrap()).unwrap();
+        let deposit1_outpoint = OutPoint::new(deposit1_tx.txid(), 0);
+        let unvault1_tx: BitcoinTransaction =
+            encode::deserialize(&Vec::from_hex(unvault1_tx_hex).unwrap()).unwrap();
+
+        let deposit2_tx_hex = "0200000000010147717eb181bfd25afb66336f4503fa8fc84c82245c60e3b50e9f56bdff25d4a00000000000feffffff02008c8647000000002200200071401c8209b9cddce78d4a7f0447ac5ae7ff1aaaf0b23c47d039b515602aede7effa020000000016001434cd89de7d114dc13038e26cc14a01707a683bfc0247304402203ca3fd9eb4d9eb7b3bc42ec735c7c14378e81e1f3f0f69b13627e18290573d7d022009123ae42eeb131d5c8c4f7f47c0aa1c5b3b59fa5999c8cd63dea6ab80609672012102356c17877be6c3fec0118c5dac22115effccabacca9ce18fbfa7bc457a599ea6ae010000";
+        let unvault2_tx_hex = "020000000001017ecdf28b7b4e4939ead4d56270da0e5c4759c9fe00373e21f3e9ccff9ec1a8b40000000000fdffffff02b804864700000000220020c8874f9efdb6d53ee465a21e72d2b86a01aadc37f043286e3b539d6365b0a4d330750000000000002200200d70a091ea22dc0db14ff09c2f5a7504f7ea73bde8cdff194f1cea7687dc288004004730440220009f709afc5434815c750b7bbce32e59346a4e16e0528ca2c1fc01f325d8df8602205f415a961cf4fe6ff80aa786e40bb79ba390afa46b029b8eba516dc7754fc31901483045022100d751a34966fb7117e2a5096f1090281449a6e88b8e8f1555f2c9876c2fd022f00220164153055db4f8777660d17c15b8a4d3537ae926153172f9cbebac6ab788731e0147522102f6df74980f0df6e6de298f00798ce53df31594709bc95014bb0f9374d106b57f2102aa12b2ebe1e812fda873df2739d78bff8760814370acb15cad2fded3012490f052ae00000000";
+
+        let deposit2_tx: BitcoinTransaction =
+            encode::deserialize(&Vec::from_hex(deposit2_tx_hex).unwrap()).unwrap();
+        let deposit2_outpoint = OutPoint::new(deposit2_tx.txid(), 0);
+        let unvault2_tx: BitcoinTransaction =
+            encode::deserialize(&Vec::from_hex(unvault2_tx_hex).unwrap()).unwrap();
+
+        let spend_tx_hex = "020000000001028b2106819c6f2cbd26af2e556befe7b1079127d3b495a224a89f7df44eee99e200000000000a000000a74d921ac547f00c4db2897f810c3d498e9bde30c86dfea232a91f7b1bea8ad600000000000a0000000360600000000000002200200d70a091ea22dc0db14ff09c2f5a7504f7ea73bde8cdff194f1cea7687dc288000562183000000001600142b739d57d75b45b45dce32c53f5d99a5b47f49217d5ef405000000002200200071401c8209b9cddce78d4a7f0447ac5ae7ff1aaaf0b23c47d039b515602aed0300483045022100c51595a7c75fd63a896fdf21ef841e20b8549268a3830fbe3736539e5748352a02207576e4a7975d4692ed11f45f014aa767c3abc56464e59484384757c29d2ad1b90183512103f9af2d4e21bc6e1e30f7974146fd728f0dcfa280521172aee1afba659a7290662103b9ad21981e42c41f38df5f8f3ddb80a597d0d3df230818203a8f50e6be443a2652ae6476a914b5e60d45ce94c86e4acace579dbab85fccf05b7288ac6b76a914f6fbf60a5629321aa8dfe9f7d7ce41447ccc670388ac6c935287675ab268030047304402205100815ad2c60fea53e5b8bebdc336393c40b372815bfb014ad5ec442df77d5a02202397189481a1597b4b5589fa9e8671b25fc04633456d0ec824ac6e0f48419f620183512102a6db8d9cdb53da7175ae9df456499c24ed569b96918f8bb560f0343833d70f092102fe8334ab977d4f6cd14ba25f1dc5153954329d4a68a050e59362884d1141b70552ae6476a914270cbdbbc948dbd56f28a6265c86b31153bacc5388ac6b76a914959beb32358ccd19fb93e9fd25542d0c8d9a2f7c88ac6c935287675ab26800000000";
+
+        let spend_tx: BitcoinTransaction =
+            encode::deserialize(&Vec::from_hex(spend_tx_hex).unwrap()).unwrap();
+
+        insert_vault_in_db(
+            &db_file,
+            1,
+            &deposit1_outpoint,
+            &Amount::from_sat(deposit1_tx.output[deposit1_outpoint.vout as usize].value),
+            1,
+            ChildNumber::from_normal_idx(0).unwrap(),
+            Some(2),
+            Some(6),
+            VaultStatus::Spent,
+            Some(&spend_tx.txid()),
+        );
+
+        // UnvaultTransaction is required in database.
+        db_confirm_deposit(
+            &db_file,
+            &deposit1_outpoint,
+            1, // blockheight
+            1, // blocktime
+            &UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAfbTKL90gfXTFwbELvAmcD9NtrqvP44YR6Z6r814wioGAAAAAAD9////ArgjkEEAAAAAIgAgbBybcug2pt7JkBRAbPiLTfVNqcV7IUuZRkuYe0R6BXIwdQAAAAAAACIAIDYtzJgtRUpmsuj+vYdAdpziPiAw3anX81wIRE+HdauPAAAAAAABASsAq5BBAAAAACIAICTJOG78TIre8heykxyu0c9IkfSXcFJq1XA9aJO0kQLOAQMEAQAAAAEFR1IhA2FPUub/h0vtcc2t6wynvtrOcbQPPoBFmCyCIvzy5ET7IQK+zF69BknINpIs6KcrVM+dvcnX3lYWPc9wY2izta3jCVKuIgYCvsxevQZJyDaSLOinK1TPnb3J195WFj3PcGNos7Wt4wkI5wT/vgAAAAAiBgNhT1Lm/4dL7XHNresMp77aznG0Dz6ARZgsgiL88uRE+wiKZPKpAAAAAAAiAgKm242c21PacXWunfRWSZwk7VablpGPi7Vg8DQ4M9cPCQh+CFEoAAAAACICAr7MXr0GScg2kizopytUz529ydfeVhY9z3BjaLO1reMJCOcE/74AAAAAIgIC/oM0q5d9T2zRS6JfHcUVOVQynUpooFDlk2KITRFBtwUImCBmZgAAAAAiAgNhT1Lm/4dL7XHNresMp77aznG0Dz6ARZgsgiL88uRE+wiKZPKpAAAAAAAiAgK+zF69BknINpIs6KcrVM+dvcnX3lYWPc9wY2izta3jCQjnBP++AAAAACICAv6DNKuXfU9s0UuiXx3FFTlUMp1KaKBQ5ZNiiE0RQbcFCJggZmYAAAAAAA==").unwrap(),
+            &CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAAadNkhrFR/AMTbKJf4EMPUmOm94wyG3+ojKpH3sb6orWAAAAAAD9////ARLlj0EAAAAAIgAgJMk4bvxMit7yF7KTHK7Rz0iR9JdwUmrVcD1ok7SRAs4AAAAAAAEBK7gjkEEAAAAAIgAgbBybcug2pt7JkBRAbPiLTfVNqcV7IUuZRkuYe0R6BXIBAwSBAAAAAQWDUSECptuNnNtT2nF1rp30VkmcJO1Wm5aRj4u1YPA0ODPXDwkhAv6DNKuXfU9s0UuiXx3FFTlUMp1KaKBQ5ZNiiE0RQbcFUq5kdqkUJwy9u8lI29VvKKYmXIazEVO6zFOIrGt2qRSVm+syNYzNGfuT6f0lVC0MjZovfIisbJNSh2dasmgiBgKm242c21PacXWunfRWSZwk7VablpGPi7Vg8DQ4M9cPCQh+CFEoAAAAACIGAr7MXr0GScg2kizopytUz529ydfeVhY9z3BjaLO1reMJCOcE/74AAAAAIgYC/oM0q5d9T2zRS6JfHcUVOVQynUpooFDlk2KITRFBtwUImCBmZgAAAAAiBgNhT1Lm/4dL7XHNresMp77aznG0Dz6ARZgsgiL88uRE+wiKZPKpAAAAAAAiAgK+zF69BknINpIs6KcrVM+dvcnX3lYWPc9wY2izta3jCQjnBP++AAAAACICA2FPUub/h0vtcc2t6wynvtrOcbQPPoBFmCyCIvzy5ET7CIpk8qkAAAAAAA==").unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let db_vault = db_vault_by_deposit(&db_file, &deposit1_outpoint)
+            .unwrap()
+            .unwrap();
+        db_mark_spent_unvault(&db_file, db_vault.id, 6, 6).unwrap();
+
+        insert_vault_in_db(
+            &db_file,
+            1,
+            &deposit2_outpoint,
+            &Amount::from_sat(deposit2_tx.output[deposit2_outpoint.vout as usize].value),
+            1,
+            ChildNumber::from_normal_idx(1).unwrap(),
+            Some(3),
+            Some(6),
+            VaultStatus::Spent,
+            Some(&spend_tx.txid()),
+        );
+
+        // UnvaultTransaction is required in database.
+        db_confirm_deposit(
+            &db_file,
+            &deposit2_outpoint,
+            1, // blockheight
+            1, // blocktime
+            &UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAX7N8ot7Tkk56tTVYnDaDlxHWcn+ADc+IfPpzP+ewai0AAAAAAD9////ArgEhkcAAAAAIgAgyIdPnv221T7kZaIectK4agGq3DfwQyhuO1OdY2WwpNMwdQAAAAAAACIAIA1woJHqItwNsU/wnC9adQT36nO96M3/GU8c6naH3CiAAAAAAAABASsAjIZHAAAAACIAIABxQByCCbnN3OeNSn8ER6xa5/8aqvCyPEfQObUVYCrtAQMEAQAAAAEFR1IhAvbfdJgPDfbm3imPAHmM5T3zFZRwm8lQFLsPk3TRBrV/IQKqErLr4egS/ahz3yc514v/h2CBQ3CssVytL97TASSQ8FKuIgYCqhKy6+HoEv2oc98nOdeL/4dggUNwrLFcrS/e0wEkkPAI5wT/vgEAAAAiBgL233SYDw325t4pjwB5jOU98xWUcJvJUBS7D5N00Qa1fwiKZPKpAQAAAAAiAgKqErLr4egS/ahz3yc514v/h2CBQ3CssVytL97TASSQ8AjnBP++AQAAACICAvbfdJgPDfbm3imPAHmM5T3zFZRwm8lQFLsPk3TRBrV/CIpk8qkBAAAAIgIDua0hmB5CxB8431+PPduApZfQ098jCBggOo9Q5r5EOiYImCBmZgEAAAAiAgP5ry1OIbxuHjD3l0FG/XKPDc+igFIRcq7hr7plmnKQZgh+CFEoAQAAAAAiAgKqErLr4egS/ahz3yc514v/h2CBQ3CssVytL97TASSQ8AjnBP++AQAAACICA7mtIZgeQsQfON9fjz3bgKWX0NPfIwgYIDqPUOa+RDomCJggZmYBAAAAAA==").unwrap(),
+            &CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAAYshBoGcbyy9Jq8uVWvv57EHkSfTtJWiJKifffRO7pniAAAAAAD9////ARLGhUcAAAAAIgAgAHFAHIIJuc3c541KfwRHrFrn/xqq8LI8R9A5tRVgKu0AAAAAAAEBK7gEhkcAAAAAIgAgyIdPnv221T7kZaIectK4agGq3DfwQyhuO1OdY2WwpNMBAwSBAAAAAQWDUSED+a8tTiG8bh4w95dBRv1yjw3PooBSEXKu4a+6ZZpykGYhA7mtIZgeQsQfON9fjz3bgKWX0NPfIwgYIDqPUOa+RDomUq5kdqkUteYNRc6UyG5Kys5Xnbq4X8zwW3KIrGt2qRT2+/YKVikyGqjf6ffXzkFEfMxnA4isbJNSh2dasmgiBgKqErLr4egS/ahz3yc514v/h2CBQ3CssVytL97TASSQ8AjnBP++AQAAACIGAvbfdJgPDfbm3imPAHmM5T3zFZRwm8lQFLsPk3TRBrV/CIpk8qkBAAAAIgYDua0hmB5CxB8431+PPduApZfQ098jCBggOo9Q5r5EOiYImCBmZgEAAAAiBgP5ry1OIbxuHjD3l0FG/XKPDc+igFIRcq7hr7plmnKQZgh+CFEoAQAAAAAiAgKqErLr4egS/ahz3yc514v/h2CBQ3CssVytL97TASSQ8AjnBP++AQAAACICAvbfdJgPDfbm3imPAHmM5T3zFZRwm8lQFLsPk3TRBrV/CIpk8qkBAAAAAA==").unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let db_vault = db_vault_by_deposit(&db_file, &deposit2_outpoint)
+            .unwrap()
+            .unwrap();
+        db_mark_spent_unvault(&db_file, db_vault.id, 6, 6).unwrap();
+
+        let mut txs = HashMap::new();
+        txs.insert(
+            deposit1_tx.txid(),
+            WalletTransaction {
+                hex: deposit1_tx_hex.to_string(),
+                received_time: 2,
+                blocktime: Some(2),
+                blockheight: Some(2),
+            },
+        );
+        txs.insert(
+            deposit2_tx.txid(),
+            WalletTransaction {
+                hex: deposit2_tx_hex.to_string(),
+                received_time: 3,
+                blocktime: Some(3),
+                blockheight: Some(3),
+            },
+        );
+        txs.insert(
+            unvault1_tx.txid(),
+            WalletTransaction {
+                hex: unvault1_tx_hex.to_string(),
+                received_time: 4,
+                blocktime: Some(4),
+                blockheight: Some(4),
+            },
+        );
+        txs.insert(
+            unvault2_tx.txid(),
+            WalletTransaction {
+                hex: unvault2_tx_hex.to_string(),
+                received_time: 4,
+                blocktime: Some(4),
+                blockheight: Some(4),
+            },
+        );
+        txs.insert(
+            spend_tx.txid(),
+            WalletTransaction {
+                hex: spend_tx_hex.to_string(),
+                received_time: 4,
+                blocktime: Some(6),
+                blockheight: Some(6),
+            },
+        );
+        let bitcoind_conn = MockBitcoindThread::new(txs);
+
+        let list = list_onchain_txs(
+            &revaultd,
+            &bitcoind_conn,
+            &[deposit1_outpoint, deposit2_outpoint],
+        )
+        .unwrap();
+        assert_eq!(list.len(), 2);
+
+        let txs = &list[0];
+        assert_eq!(txs.vault_outpoint, deposit1_outpoint);
+        assert_eq!(txs.deposit.hex, deposit1_tx_hex);
+        let unvault = txs.unvault.as_ref().unwrap();
+        assert_eq!(unvault.hex, unvault1_tx_hex);
+        assert_eq!(unvault.cpfp_index, Some(1));
+        assert_eq!(unvault.change_index, None);
+        let spend = txs.spend.as_ref().unwrap();
+        assert_eq!(spend.hex, spend_tx_hex);
+        assert_eq!(spend.cpfp_index, Some(0));
+        assert_eq!(spend.change_index, Some(2));
+
+        let txs = &list[1];
+        assert_eq!(txs.vault_outpoint, deposit2_outpoint);
+        assert_eq!(txs.deposit.hex, deposit2_tx_hex);
+        let unvault = txs.unvault.as_ref().unwrap();
+        assert_eq!(unvault.hex, unvault2_tx_hex);
+        assert_eq!(unvault.cpfp_index, Some(1));
+        assert_eq!(unvault.change_index, None);
+        let spend = txs.spend.as_ref().unwrap();
+        assert_eq!(spend.hex, spend_tx_hex);
+        assert_eq!(spend.cpfp_index, Some(0));
+        assert_eq!(spend.change_index, Some(2));
+
+        fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());
     }
 
     #[test]

@@ -894,6 +894,19 @@ pub fn db_cpfpable_unvaults(db_path: &Path) -> Result<Vec<UnvaultTransaction>, D
     )
 }
 
+/// This function returns the vaults that have the common final tx with the given txid.
+pub fn db_vaults_with_final_txid(
+    db_path: &Path,
+    txid: &Txid,
+) -> Result<Vec<DbVault>, DatabaseError> {
+    db_query(
+        db_path,
+        "SELECT * FROM vaults WHERE final_txid = (?1)",
+        params![txid.to_vec()],
+        |row| row.try_into(),
+    )
+}
+
 /// This function returns the vaults that are deposit, change deposit or spend output of
 /// a limited number of tx which occured between two dates.
 pub fn db_vaults_with_txids_in_period(

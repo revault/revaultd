@@ -415,7 +415,8 @@ pub fn rpcserver_loop(
 #[cfg(test)]
 mod tests {
     use super::{read_bytes_from_stream, rpcserver_loop, rpcserver_setup, trimmed};
-    use crate::utils::test_utils::{dummy_rpcutil, test_datadir, UserRole};
+    use crate::revaultd::UserRole;
+    use crate::utils::test_utils::{dummy_rpcutil, test_datadir};
 
     use std::{
         fs,

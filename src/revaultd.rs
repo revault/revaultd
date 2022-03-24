@@ -276,6 +276,14 @@ pub struct BlockchainTip {
     pub hash: BlockHash,
 }
 
+#[derive(Debug, Clone)]
+pub enum UserRole {
+    Stakeholder,
+    Manager,
+    ManagerStakeholder,
+}
+
+
 /// Our global state
 pub struct RevaultD {
     // Bitcoind stuff

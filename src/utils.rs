@@ -4,7 +4,7 @@ pub mod test_utils {
     use crate::{
         bitcoind::{interface::WalletTransaction, BitcoindError},
         database::interface::db_exec,
-        revaultd::{RevaultD, VaultStatus},
+        revaultd::{RevaultD, UserRole, VaultStatus},
         threadmessages::{
             BitcoindMessageOut, BitcoindSender, BitcoindThread, SigFetcherMessageOut,
         },
@@ -23,13 +23,6 @@ pub mod test_utils {
     };
 
     use rusqlite::params;
-
-    #[derive(Debug, Clone)]
-    pub enum UserRole {
-        Stakeholder,
-        Manager,
-        ManagerStakeholder,
-    }
 
     pub fn test_datadir() -> PathBuf {
         static mut COUNTER: u64 = 0;

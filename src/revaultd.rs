@@ -280,7 +280,7 @@ pub struct BlockchainTip {
 pub enum UserRole {
     Stakeholder,
     Manager,
-    ManagerStakeholder,
+    StakeholderManager,
 }
 
 impl FromStr for UserRole {
@@ -289,7 +289,7 @@ impl FromStr for UserRole {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "stakeholder" => Ok(Self::Stakeholder),
-            "stakeholdermanager" => Ok(Self::Manager),
+            "stakeholdermanager" => Ok(Self::StakeholderManager),
             "manager" => Ok(Self::Manager),
             _ => Err(format!("Unknown role: {}", s)),
         }
@@ -304,7 +304,7 @@ impl fmt::Display for UserRole {
             match *self {
                 Self::Stakeholder => "stakeholder",
                 Self::Manager => "manager",
-                Self::ManagerStakeholder => "stakeholdermanager",
+                Self::StakeholderManager => "stakeholdermanager",
             }
         )
     }

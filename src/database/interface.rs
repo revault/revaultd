@@ -968,7 +968,7 @@ mod test {
     #[test]
     fn test_db_vaults_with_txids_in_period() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_path = revaultd.db_file();
         setup_db(&mut revaultd).unwrap();
         let genesis_timestamp: u32 = 1231006505;

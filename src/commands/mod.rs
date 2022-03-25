@@ -8,7 +8,7 @@ mod utils;
 pub use crate::{
     bitcoind::{interface::WalletTransaction, BitcoindError},
     communication::ServerStatus,
-    revaultd::{BlockchainTip, VaultStatus, UserRole},
+    revaultd::{BlockchainTip, UserRole, VaultStatus},
 };
 use crate::{
     communication::{
@@ -270,9 +270,9 @@ impl DaemonControl {
 
         assert!(revaultd.is_stakeholder() || revaultd.is_manager());
         let participant_type = if revaultd.is_manager() && revaultd.is_stakeholder() {
-            UserRole::ManagerStakeholder
+            UserRole::StakeholderManager
         } else if revaultd.is_manager() {
-            UserRole::ManagerStakeholder
+            UserRole::Manager
         } else {
             UserRole::Stakeholder
         };

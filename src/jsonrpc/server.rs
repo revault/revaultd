@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn simple_write_recv() {
         let datadir = test_datadir();
-        let rpcutils = dummy_rpcutil(datadir.clone(), UserRole::ManagerStakeholder);
+        let rpcutils = dummy_rpcutil(datadir.clone(), UserRole::StakeholderManager);
         let revaultd_datadir = rpcutils.revaultd.read().unwrap().data_dir.clone();
         let mut rpc_socket_path = revaultd_datadir.clone();
         rpc_socket_path.push("revaultd_rpc");

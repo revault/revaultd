@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn test_listvaults_from_db() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         setup_db(&mut revaultd).unwrap();
         let vaults = create_vaults(&revaultd);
 
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn test_vaults_from_deposits() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_file = revaultd.db_file();
         setup_db(&mut revaultd).unwrap();
         let vaults = create_vaults(&revaultd);
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn test_gethistory() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         setup_db(&mut revaultd).unwrap();
         let db_file = revaultd.db_file();
 

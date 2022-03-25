@@ -69,7 +69,7 @@ addr = "127.0.0.1:8332"
         match role {
             UserRole::Stakeholder => config += stake_config,
             UserRole::Manager => config += man_config,
-            UserRole::ManagerStakeholder => {
+            UserRole::StakeholderManager => {
                 config += stake_config;
                 config += man_config;
             }

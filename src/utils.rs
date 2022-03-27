@@ -4,7 +4,7 @@ pub mod test_utils {
     use crate::{
         bitcoind::{interface::WalletTransaction, BitcoindError},
         database::interface::db_exec,
-        revaultd::{RevaultD, VaultStatus, UserRole},
+        revaultd::{RevaultD, UserRole, VaultStatus},
         threadmessages::{
             BitcoindMessageOut, BitcoindSender, BitcoindThread, SigFetcherMessageOut,
         },

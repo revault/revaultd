@@ -1,4 +1,4 @@
-    use crate::{
+use crate::{
     config::{config_folder_path, BitcoindConfig, Config},
     StartupError,
 };
@@ -309,7 +309,6 @@ impl fmt::Display for UserRole {
         )
     }
 }
-
 
 /// Our global state
 pub struct RevaultD {

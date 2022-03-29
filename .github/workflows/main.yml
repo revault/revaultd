@@ -15,7 +15,7 @@ jobs:
       - name: rustfmt
         run: cargo fmt -- --check
       - name: black (Python linter)
-        run: pip install --version black==22.1.0 && black --check tests/
+        run: pip install --version black==22.3.0 && black --check tests/
 
   unit_tests:
     needs: linter

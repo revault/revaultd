@@ -280,7 +280,7 @@ pub struct BlockchainTip {
 pub enum UserRole {
     Stakeholder,
     Manager,
-    ManagerStakeholder,
+    StakeholderManager,
 }
 
 /// Our global state

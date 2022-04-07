@@ -283,6 +283,33 @@ pub enum UserRole {
     StakeholderManager,
 }
 
+impl FromStr for UserRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "stakeholder" => Ok(Self::Stakeholder),
+            "stakeholdermanager" => Ok(Self::StakeholderManager),
+            "manager" => Ok(Self::Manager),
+            _ => Err(format!("Unknown role: {}", s)),
+        }
+    }
+}
+
+impl fmt::Display for UserRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match *self {
+                Self::Stakeholder => "stakeholder",
+                Self::Manager => "manager",
+                Self::StakeholderManager => "stakeholdermanager",
+            }
+        )
+    }
+}
+
 /// Our global state
 pub struct RevaultD {
     // Bitcoind stuff

@@ -391,13 +391,14 @@ pub fn check_spend_transaction_size(revaultd: &RevaultD, spend_tx: SpendTransact
 
 #[cfg(test)]
 mod tests {
+    use crate::revaultd::UserRole;
     use crate::{
         communication::*,
         database::{
             bitcointx::{RevaultTx, TransactionType},
             schema::DbTransaction,
         },
-        utils::test_utils::{dummy_revaultd, test_datadir, UserRole},
+        utils::test_utils::{dummy_revaultd, test_datadir},
     };
     use revault_net::{
         message, sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair,

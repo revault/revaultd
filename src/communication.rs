@@ -391,13 +391,14 @@ pub fn check_spend_transaction_size(revaultd: &RevaultD, spend_tx: SpendTransact
 
 #[cfg(test)]
 mod tests {
+    use crate::revaultd::UserRole;
     use crate::{
         communication::*,
         database::{
             bitcointx::{RevaultTx, TransactionType},
             schema::DbTransaction,
         },
-        utils::test_utils::{dummy_revaultd, test_datadir, UserRole},
+        utils::test_utils::{dummy_revaultd, test_datadir},
     };
     use revault_net::{
         message, sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair,
@@ -1205,7 +1206,7 @@ mod tests {
     #[test]
     fn test_check_spend_transaction_size() {
         let datadir = test_datadir();
-        let revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         // 3 inputs, 4 outputs, 3 stakeholders and 3 manager psbt. No problem.
         let tx = SpendTransaction::from_psbt_str("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").unwrap();
         assert!(check_spend_transaction_size(&revaultd, tx));

@@ -27,6 +27,7 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["vaults"] == 0
     # revaultd_manager always deploys with N = 2, M = 3, threshold = M
     assert res["managers_threshold"] == 3
+    assert res["participant_type"] == "manager"
     # test descriptors: RPC call & which Revaultd's were configured
     assert res["descriptors"]["cpfp"] == revaultd_manager.cpfp_desc
     assert res["descriptors"]["deposit"] == revaultd_manager.deposit_desc

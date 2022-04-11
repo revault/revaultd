@@ -62,7 +62,7 @@ Display general information about the current daemon state.
 | `vaults`             | integer | Current number of vaults (unconfirmed are included)                                          |
 | `managers_threshold` | integer | Number of managers needed for spending the `unvault_tx`                                      |
 | `descriptors`        | object  | Three `string` entries: `deposit`, `unvault` and `cpfp` for the three Miniscript descriptors |
-
+| `participant_type`   | string  | Answer can be `stakeholder`, `manager`, `stakeholdermanager`                                 |
 
 ### `getdepositaddress`
 

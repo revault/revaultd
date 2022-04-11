@@ -8,7 +8,7 @@ mod utils;
 pub use crate::{
     bitcoind::{interface::WalletTransaction, BitcoindError},
     communication::ServerStatus,
-    revaultd::{BlockchainTip, VaultStatus},
+    revaultd::{BlockchainTip, UserRole, VaultStatus},
 };
 use crate::{
     communication::{
@@ -268,6 +268,15 @@ impl DaemonControl {
             })
             .count();
 
+        assert!(revaultd.is_stakeholder() || revaultd.is_manager());
+        let participant_type = if revaultd.is_manager() && revaultd.is_stakeholder() {
+            UserRole::StakeholderManager
+        } else if revaultd.is_manager() {
+            UserRole::Manager
+        } else {
+            UserRole::Stakeholder
+        };
+
         GetInfoResult {
             version: VERSION.to_string(),
             network: revaultd.bitcoind_config.network,
@@ -280,6 +289,7 @@ impl DaemonControl {
                 unvault: revaultd.unvault_descriptor.clone(),
                 cpfp: revaultd.cpfp_descriptor.clone(),
             },
+            participant_type,
         }
     }
 
@@ -1430,6 +1440,8 @@ pub struct GetInfoResult {
     pub vaults: usize,
     pub managers_threshold: usize,
     pub descriptors: GetInfoDescriptors,
+    #[serde(serialize_with = "ser_to_string", deserialize_with = "deser_from_str")]
+    pub participant_type: UserRole,
 }
 
 /// Information about a vault.

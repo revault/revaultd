@@ -1008,7 +1008,8 @@ pub fn db_mark_rebroadcastable_spend(
 mod test {
     use super::*;
     use crate::database::schema::DbSpendTransaction;
-    use crate::utils::test_utils::{dummy_revaultd, test_datadir, UserRole};
+    use crate::revaultd::UserRole;
+    use crate::utils::test_utils::{dummy_revaultd, test_datadir};
     use revault_tx::{
         bitcoin::{
             Network, OutPoint, PrivateKey as BitcoinPrivKey, PublicKey as BitcoinPubKey,
@@ -1100,7 +1101,7 @@ mod test {
     #[test]
     fn test_db_creation() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
 
         create_db(&mut revaultd).unwrap();
         // There must be a wallet entry now, and there is only one so its id must
@@ -1129,7 +1130,7 @@ mod test {
     #[test]
     fn test_db_fetch_deposits() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_path = revaultd.db_file();
 
         setup_db(&mut revaultd).unwrap();
@@ -1235,7 +1236,7 @@ mod test {
     #[test]
     fn test_db_store_presigned_txs() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_path = revaultd.db_file();
         let secp_ctx = secp256k1::Secp256k1::new();
 
@@ -1535,7 +1536,7 @@ mod test {
     #[test]
     fn test_db_confirm_unvault() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_path = revaultd.db_file();
 
         setup_db(&mut revaultd).unwrap();
@@ -1610,7 +1611,7 @@ mod test {
     #[test]
     fn test_db_concurrent_write() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_path = revaultd.db_file();
         let secp_ctx = secp256k1::Secp256k1::new();
 
@@ -1688,7 +1689,7 @@ mod test {
     #[test]
     fn test_db_spend_storage() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_path = revaultd.db_file();
         let fresh_cancel_tx = CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAARoHs0elD2sCfWV4+b7PH3aRA+BkRVNf3m/P+Epjx2fNAAAAAAD9////AdLKAgAAAAAAIgAgB6abzQJ4vo5CO9XW3r3JnNumTwlpQbZm9FVICsLHPYQAAAAAAAEBK0ANAwAAAAAAIgAglEs6phQpv+twnAQSdjDvAEic65OtUIijeePBzAAqr50BAwSBAAAAAQWrIQO4lrAuffeRLuEEuwp2hAMZIPmqaHMTUySM3OwdA2hIW6xRh2R2qRTflccImFIy5NdTqwPuPZFB7g1pvYisa3apFOQxXoLeQv/aDFfav/l6YnYRKt+1iKxsk1KHZ1IhA32Q1DEqQ/kUP2MvQYFW46RCexZ5aYk17Arhp01th+37IQNrXQtfIXQdrv+RyyHLilJsb4ujlUMddG9X2jYkeXiWoFKvA3nxALJoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQFHUiED35umh5GhiToV6GS7lTokWfq/Rvy+rRI9XMQuf+foOoEhA9GtXpHhUvxcj9DJWbaRvz59CNsMwH2NEvmRa8gc2WRkUq4iAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
         let fresh_unvault_tx = UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAfF2iPeJqz13zFlW6eLAM+uDu5IhUqcQxtMWQx7z5Y8lAAAAAAD9////AkANAwAAAAAAIgAgKb0SdnuqeHAJpRuZTbk3r81qbXpuHrMEmxT9Kph47HQwdQAAAAAAACIAIIMbpoIz4DI+aB1p/EJLyqjyDdDeZ7gG8kPhRIDiWaY8AAAAAAABASuIlAMAAAAAACIAIA9CgZ1cg/hn3iy3buDZvU5zUnQ9NzutToR/r42YZyu3AQMEAQAAAAEFR1IhA9P6hV8yf6HkNofzleom06eqkUxZayWHJnOMNlMtqvD3IQJo5Mj6Wf3ktrwEB3IQXFmgApibojplpNykg0hA8XV6SFKuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGqIQMfu47eLiYeHN6Y3C1Vk0ckgmWifMy5IUhaPHbNELV93axRh2R2qRTtiGxBD5KrMQQU6UGx2zsKMMf6nIisa3apFCDKte9IuDeF0D4GA/JRUNX4xgt+iKxsk1KHZ1IhAzTPPnjrvzPFmi+raNR6sY8WTt1KNusVwp82uWebzWDwIQKl21mZX7WAQhRvdhhwqUAuQfIemg9zkTCCyMQ+Q8CVFVKvAqUBsmgiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAABASUhAx+7jt4uJh4c3pjcLVWTRySCZaJ8zLkhSFo8ds0QtX3drFGHIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
@@ -1956,7 +1957,7 @@ mod test {
     #[test]
     fn test_db_update_vault_status() {
         let datadir = test_datadir();
-        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::ManagerStakeholder);
+        let mut revaultd = dummy_revaultd(datadir.clone(), UserRole::StakeholderManager);
         let db_path = revaultd.db_file();
 
         setup_db(&mut revaultd).unwrap();

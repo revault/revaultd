@@ -209,7 +209,8 @@ def get_participants(n_stk, n_man, n_stkman=0, with_cosigs=True):
     )
 
 
-def get_descriptors(stks_xpubs, cosigs_keys, mans_xpubs, mans_thresh, cpfp_xpubs, csv):
+def build_mscompiler():
+    """Build mscompiler tool."""
     # tests/test_framework/../../contrib/tools/mscompiler/target/debug/mscompiler
     mscompiler_dir = os.path.abspath(
         os.path.join(
@@ -228,8 +229,14 @@ def get_descriptors(stks_xpubs, cosigs_keys, mans_xpubs, mans_thresh, cpfp_xpubs
         raise e
     finally:
         os.chdir(cwd)
+    return os.path.join(mscompiler_dir, "target", "debug", "mscompiler")
 
-    mscompiler_bin = os.path.join(mscompiler_dir, "target", "debug", "mscompiler")
+
+def get_descriptors(stks_xpubs, cosigs_keys, mans_xpubs, mans_thresh, cpfp_xpubs, csv):
+    mscompiler_bin = (
+        os.getenv("MSCOMPILER") if "MSCOMPILER" in os.environ else build_mscompiler()
+    )
+
     cmd = [
         mscompiler_bin,
         f"{json.dumps(stks_xpubs)}",

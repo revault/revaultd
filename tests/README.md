@@ -76,6 +76,53 @@ To run the server-requiring tests, pass the postgres credentials to the framewor
 POSTGRES_USER="test" POSTGRES_PASS="test" TEST_DEBUG=1 pytest -vvv -n8 --timeout=1800
 ```
 
+#### Using the containerized testing environment
+
+Ensure that all git submodules are included in the repository:
+
+```bash
+git submodule update --init --recursive
+```
+
+Build the container image using podman (docker can also build the container):
+
+```bash
+podman build -t revault_blackbox_tests -f ./tests/Containerfile .
+```
+
+Start a podman pod to simplify inter-container communication:
+
+```bash
+podman pod create --name=revault_test_pod
+```
+
+Start postgres within the pod:
+
+```bash
+podman run --pod=revault_test_pod --rm -d --name postgres-coordinatord -e POSTGRES_PASSWORD=revault -e POSTGRES_USER=revault -e POSTGRES_DB=coordinator_db postgres:alpine
+```
+
+Run the test environment container within the pod:
+
+```bash
+podman run --pod=revault_test_pod -it revault_blackbox_tests /bin/bash
+```
+
+Activate the Python environment:
+
+```bash
+. venv/bin/activate
+```
+
+Run the tests:
+
+```bash
+pytest tests/ -vvv -n4 --ignore tests/servers/
+```
+
+```bash
+POSTGRES_USER=revault POSTGRES_PASS=revault pytest -vvv -n8 --timeout=1800
+```
 
 ### Tips and tricks
 #### Logging

@@ -538,6 +538,7 @@ def test_batched_cpfp_transaction(revault_network, bitcoind):
     wait_for(lambda: len(man.rpc.listvaults(["spent"])["vaults"]) == len(vaults))
 
 
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_rbfed_cpfp_transaction(revault_network, bitcoind):
     """We don't have explicit RBF logic, but since we signal for it we should
     be able to replace a previous CPFP with a higher-fee, higher-feerate one.

@@ -182,6 +182,7 @@ def test_getrevocationtxs(revault_network, bitcoind):
         assert txs == n.rpc.getrevocationtxs(deposit)
 
 
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_getunvaulttx(revault_network):
     revault_network.deploy(3, 1)
     mans = revault_network.mans()
@@ -607,6 +608,7 @@ def test_revocationtxs(revault_network):
     assert len(stks[0].rpc.listvaults(["securing"], [deposit])["vaults"]) == 1
 
 
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_unvaulttx(revault_network):
     """Sanity checks for the unvaulttx command"""
     revault_network.deploy(3, 1)

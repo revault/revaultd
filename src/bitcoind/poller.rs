@@ -1342,13 +1342,11 @@ fn handle_new_deposit(
             })?;
         db_update_deposit_index(&revaultd.read().unwrap().db_file(), new_index)?;
         revaultd.write().unwrap().current_unused_index = new_index;
-        let next_addr = bitcoind
-            .addr_descriptor(&revaultd.read().unwrap().last_deposit_address().to_string())?;
+        let next_addr = revaultd.read().unwrap().last_deposit_desc()?;
         bitcoind.import_fresh_deposit_descriptor(next_addr)?;
-        let next_addr = bitcoind
-            .addr_descriptor(&revaultd.read().unwrap().last_unvault_address().to_string())?;
-        bitcoind.import_fresh_unvault_descriptor(next_addr)?;
 
+        let next_addr = revaultd.read().unwrap().last_unvault_desc()?;
+        bitcoind.import_fresh_unvault_descriptor(next_addr)?;
         log::debug!(
             "Incremented deposit derivation index from {}",
             current_first_index
@@ -1728,7 +1726,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         bitcoind.createwallet_startup(bitcoind_wallet_path, true)?;
         log::info!("Importing descriptors to bitcoind watchonly wallet.");
 
-        // Now, import descriptors.
+        // Now, import deposit address descriptors.
         // In theory, we could just import the vault (deposit) descriptor expressed using xpubs, give a
         // range to bitcoind as the gap limit, and be fine.
         // Unfortunately we cannot just import descriptors as is, since bitcoind does not support
@@ -1737,23 +1735,16 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         // currently supported by bitcoind) if there are more than 15 stakeholders.
         // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
         // the derivation index mess ourselves :'(
-        let addresses: Vec<_> = revaultd
-            .all_deposit_addresses()
-            .into_iter()
-            .map(|a| bitcoind.addr_descriptor(&a))
-            .collect::<Result<Vec<_>, _>>()?;
+        let addresses: Vec<_> = revaultd.all_deposit_descriptors();
         log::trace!("Importing deposit descriptors '{:?}'", &addresses);
         bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
 
+        // Now, import the unvault address descriptors.
         // As a consequence, we don't have enough information to opportunistically import a
         // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
         // deposit and unvault descriptors..
         // FIXME: maybe we actually have, with the derivation_index_map ?
-        let addresses: Vec<_> = revaultd
-            .all_unvault_addresses()
-            .into_iter()
-            .map(|a| bitcoind.addr_descriptor(&a))
-            .collect::<Result<Vec<_>, _>>()?;
+        let addresses: Vec<_> = revaultd.all_unvault_descriptors();
         log::trace!("Importing unvault descriptors '{:?}'", &addresses);
         bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
     }

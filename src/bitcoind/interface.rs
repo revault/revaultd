@@ -373,22 +373,6 @@ impl BitcoinD {
         }
     }
 
-    /// Constructs an `addr()` descriptor out of an address
-    pub fn addr_descriptor(&self, address: &str) -> Result<String, BitcoindError> {
-        let desc_wo_checksum = format!("addr({})", address);
-
-        Ok(self
-            .make_watchonly_request(
-                "getdescriptorinfo",
-                &params!(Json::String(desc_wo_checksum)),
-            )?
-            .get("descriptor")
-            .expect("No 'descriptor' in 'getdescriptorinfo'")
-            .as_str()
-            .expect("'descriptor' in 'getdescriptorinfo' isn't a string anymore")
-            .to_string())
-    }
-
     fn bulk_import_descriptors(
         &self,
         client: &Client,

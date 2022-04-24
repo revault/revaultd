@@ -8,6 +8,7 @@ use std::{
     convert::TryFrom,
     fmt, fs,
     io::{self, Read, Write},
+    iter::FromIterator,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
@@ -418,6 +419,93 @@ impl fmt::Display for DatadirError {
 
 impl std::error::Error for DatadirError {}
 
+#[derive(Debug)]
+pub enum ChecksumError {
+    Checksum(String),
+}
+
+impl fmt::Display for ChecksumError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Checksum(e) => {
+                write!(f, "Error computing checksum: {}", e)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChecksumError {}
+
+const INPUT_CHARSET: &str =  "0123456789()[],'/*abcdefgh@:$%{}IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~ijklmnopqrstuvwxyzABCDEFGH`#\"\\ ";
+const CHECKSUM_CHARSET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+fn poly_mod(mut c: u64, val: u64) -> u64 {
+    let c0 = c >> 35;
+
+    c = ((c & 0x7ffffffff) << 5) ^ val;
+    if c0 & 1 > 0 {
+        c ^= 0xf5dee51989
+    };
+    if c0 & 2 > 0 {
+        c ^= 0xa9fdca3312
+    };
+    if c0 & 4 > 0 {
+        c ^= 0x1bab10e32d
+    };
+    if c0 & 8 > 0 {
+        c ^= 0x3706b1677a
+    };
+    if c0 & 16 > 0 {
+        c ^= 0x644d626ffd
+    };
+
+    c
+}
+
+/// Compute the checksum of a descriptor
+/// Note that this function does not check if the
+/// descriptor string is syntactically correct or not.
+/// This only computes the checksum
+pub fn desc_checksum(desc: &str) -> Result<String, ChecksumError> {
+    let mut c = 1;
+    let mut cls = 0;
+    let mut clscount = 0;
+
+    for ch in desc.chars() {
+        let pos = INPUT_CHARSET
+            .find(ch)
+            .ok_or(ChecksumError::Checksum(format!(
+                "Invalid character in checksum: '{}'",
+                ch
+            )))? as u64;
+        c = poly_mod(c, pos & 31);
+        cls = cls * 3 + (pos >> 5);
+        clscount += 1;
+        if clscount == 3 {
+            c = poly_mod(c, cls);
+            cls = 0;
+            clscount = 0;
+        }
+    }
+    if clscount > 0 {
+        c = poly_mod(c, cls);
+    }
+    (0..8).for_each(|_| c = poly_mod(c, 0));
+    c ^= 1;
+
+    let mut chars = Vec::with_capacity(8);
+    for j in 0..8 {
+        chars.push(
+            CHECKSUM_CHARSET
+                .chars()
+                .nth(((c >> (5 * (7 - j))) & 31) as usize)
+                .unwrap(),
+        );
+    }
+
+    Ok(String::from_iter(chars))
+}
+
 impl RevaultD {
     /// Creates our global state by consuming the static configuration
     pub fn from_config(config: Config) -> Result<RevaultD, StartupError> {
@@ -551,12 +639,26 @@ impl RevaultD {
         NoisePubKey(curve25519::scalarmult_base(&scalar).0)
     }
 
+    /// vault (deposit) address descriptor with checksum in canonical form (e.g.
+    /// 'addr(ADDRESS)#CHECKSUM') for importing with bitcoind
+    pub fn vault_desc(&self, child_number: ChildNumber) -> Result<String, ChecksumError> {
+        let addr_desc = format!("addr({})", self.vault_address(child_number));
+        Ok(format!("{}#{}", addr_desc, desc_checksum(&addr_desc)?))
+    }
+
     pub fn vault_address(&self, child_number: ChildNumber) -> Address {
         self.deposit_descriptor
             .derive(child_number, &self.secp_ctx)
             .inner()
             .address(self.bitcoind_config.network)
             .expect("deposit_descriptor is a wsh")
+    }
+
+    /// unvault address descriptor with checksum in canonical form (e.g.
+    /// 'addr(ADDRESS)#CHECKSUM') for importing with bitcoind
+    pub fn unvault_desc(&self, child_number: ChildNumber) -> Result<String, ChecksumError> {
+        let addr_desc = format!("addr({})", self.unvault_address(child_number));
+        Ok(format!("{}#{}", addr_desc, desc_checksum(&addr_desc)?))
     }
 
     pub fn unvault_address(&self, child_number: ChildNumber) -> Address {
@@ -635,10 +737,22 @@ impl RevaultD {
         self.vault_address(self.current_unused_index)
     }
 
+    pub fn last_deposit_desc(&self) -> Result<String, ChecksumError> {
+        let raw_index: u32 = self.current_unused_index.into();
+        // FIXME: this should fail instead of creating a hardened index
+        self.vault_desc(ChildNumber::from(raw_index + self.gap_limit()))
+    }
+
     pub fn last_deposit_address(&self) -> Address {
         let raw_index: u32 = self.current_unused_index.into();
         // FIXME: this should fail instead of creating a hardened index
         self.vault_address(ChildNumber::from(raw_index + self.gap_limit()))
+    }
+
+    pub fn last_unvault_desc(&self) -> Result<String, ChecksumError> {
+        let raw_index: u32 = self.current_unused_index.into();
+        // FIXME: this should fail instead of creating a hardened index
+        self.unvault_desc(ChildNumber::from(raw_index + self.gap_limit()))
     }
 
     pub fn last_unvault_address(&self) -> Address {
@@ -647,26 +761,25 @@ impl RevaultD {
         self.unvault_address(ChildNumber::from(raw_index + self.gap_limit()))
     }
 
-    /// All deposit addresses as strings up to the gap limit (100)
-    pub fn all_deposit_addresses(&mut self) -> Vec<String> {
+    /// All deposit address descriptors as strings up to the gap limit (100)
+    pub fn all_deposit_descriptors(&mut self) -> Vec<String> {
         self.derivation_index_map
-            .keys()
-            .map(|s| {
-                Address::from_script(s, self.bitcoind_config.network)
-                    .expect("Created from P2WSH address")
-                    .to_string()
+            .values()
+            .map(|child_num| {
+                self.vault_desc(ChildNumber::from(*child_num))
+                    .expect("Failed checksum computation")
             })
             .collect()
     }
 
-    /// All unvault addresses as strings up to the gap limit (100)
-    pub fn all_unvault_addresses(&mut self) -> Vec<String> {
+    /// All unvault address descriptors as strings up to the gap limit (100)
+    pub fn all_unvault_descriptors(&mut self) -> Vec<String> {
         let raw_index: u32 = self.current_unused_index.into();
         (0..raw_index + self.gap_limit())
             .map(|raw_index| {
                 // FIXME: this should fail instead of creating a hardened index
-                self.unvault_address(ChildNumber::from(raw_index))
-                    .to_string()
+                self.unvault_desc(ChildNumber::from(raw_index))
+                    .expect("Failed to comput checksum")
             })
             .collect()
     }

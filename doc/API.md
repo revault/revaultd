@@ -410,6 +410,7 @@ You'll have to manually fetch the vaults statuses if you want to know, for examp
 | `psbt`              | string        | Base64-encoded Spend transaction PSBT                                |
 | `change_index`      | integer       | Index of the change output, might be null                            |
 | `cpfp_index`        | integer       | Index of the CPFP outputs                                            |
+| `status`            | string        | [Spend status](#spend_status)                                        |
 
 `change_index` and `cpfp_index` indicate the index of the change (if any) and CPFP outputs in the outputs array as created by `getspendtransaction`. This does not aim to tag all the outputs paying to either a CPFP or a Deposit descriptor, as that would be impossible to guarantee. If two outputs pay to the change, the index of the last one will be returned. If two outputs pay to the CPFP address, the index of the first one will be returned.
 

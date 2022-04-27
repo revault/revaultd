@@ -1155,16 +1155,14 @@ impl DaemonControl {
         let spend_tx_map = db_list_spends(&db_path).expect("Database must be available");
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
         for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
+            let status = match db_spend.broadcasted {
+                Some(true) => ListSpendStatus::Broadcasted,
+                Some(false) => ListSpendStatus::Pending,
+                None => ListSpendStatus::NonFinal,
+            };
+
             // Filter by status
             if let Some(s) = &statuses {
-                let status = if let Some(true) = db_spend.broadcasted {
-                    ListSpendStatus::Broadcasted
-                } else if let Some(false) = db_spend.broadcasted {
-                    ListSpendStatus::Pending
-                } else {
-                    ListSpendStatus::NonFinal
-                };
-
                 if !s.contains(&status) {
                     continue;
                 }
@@ -1205,6 +1203,7 @@ impl DaemonControl {
                 deposit_outpoints,
                 cpfp_index: cpfp_index.expect("We always create a CPFP output"),
                 change_index,
+                status,
             });
         }
 
@@ -1516,6 +1515,7 @@ pub struct ListSpendEntry {
     pub psbt: SpendTransaction,
     pub cpfp_index: usize,
     pub change_index: Option<usize>,
+    pub status: ListSpendStatus,
 }
 
 /// Information about the configured servers.

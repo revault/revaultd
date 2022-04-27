@@ -23,6 +23,11 @@ use jsonrpc::{
     simple_http,
 };
 
+/// Number of retries the client is allowed to do in case of timeout or i/o error
+/// while communicating with the bitcoin daemon.
+/// A retry happens every 1 second, this makes us give up after one minute.
+const BITCOIND_RETRY_LIMIT: usize = 60;
+
 /// An error happened in the bitcoind-manager thread
 #[derive(Debug)]
 pub enum BitcoindError {
@@ -128,9 +133,7 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
             .cpfp_wallet_file()
             .expect("Wallet id is set at startup in setup_db()"),
     )
-    .map_err(|e| {
-        BitcoindError::Custom(format!("Could not connect to bitcoind: {}", e.to_string()))
-    })?;
+    .map_err(|e| BitcoindError::Custom(format!("Could not connect to bitcoind: {}", e)))?;
 
     while let Err(e) = bitcoind_sanity_checks(&bitcoind, &revaultd.bitcoind_config) {
         if e.is_warming_up() {
@@ -141,7 +144,7 @@ pub fn start_bitcoind(revaultd: &mut RevaultD) -> Result<BitcoinD, BitcoindError
         }
     }
 
-    Ok(bitcoind)
+    Ok(bitcoind.with_retry_limit(BITCOIND_RETRY_LIMIT))
 }
 
 fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransaction> {

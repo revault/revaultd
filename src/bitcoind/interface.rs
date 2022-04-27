@@ -5,13 +5,7 @@ use revault_tx::bitcoin::{
     Address, Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
 };
 
-use std::{
-    any::Any,
-    collections::HashMap,
-    fs,
-    str::FromStr,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, fs, str::FromStr, time::Duration};
 
 use jsonrpc::{
     arg,
@@ -34,6 +28,9 @@ pub struct BitcoinD {
     node_client: Client,
     watchonly_client: Client,
     cpfp_client: Client,
+
+    /// How many times the client will try again to send a request to bitcoind upon failure
+    retries: usize,
 }
 
 macro_rules! params {
@@ -89,64 +86,51 @@ impl BitcoinD {
             node_client,
             watchonly_client,
             cpfp_client,
+            retries: 0,
         })
     }
 
-    // Reasonably try to be robust to possible spurious communication error.
-    fn handle_error(&self, e: jsonrpc::Error, start: Instant) -> Result<(), BitcoindError> {
-        let now = Instant::now();
+    /// Set the retry limit (number of times we'll retry a request to bitcoind upon specific failures).
+    pub fn with_retry_limit(mut self, retry_limit: usize) -> Self {
+        self.retries = retry_limit;
+        self
+    }
 
-        match e {
-            jsonrpc::Error::Transport(ref err) => {
-                log::error!("Transport error when talking to bitcoind: '{}'", err);
-
-                // This is *always* a simple_http::Error. Rule out the error that can
-                // not occur after startup (ie if we encounter them it must be startup
-                // and we better be failing quickly).
-                let any_err = err as &dyn Any;
-                if let Some(http_err) = any_err.downcast_ref::<HttpError>() {
-                    match http_err {
-                        HttpError::InvalidUrl { .. } => return Err(BitcoindError::Server(e)),
-                        // FIXME: allow it to be unreachable for a handful of seconds,
-                        // but not at startup!
-                        HttpError::SocketError(_) => return Err(BitcoindError::Server(e)),
-                        HttpError::HttpParseError => {
-                            // Weird. Try again once, just in case.
-                            if now.duration_since(start) > Duration::from_secs(1) {
-                                return Err(BitcoindError::Server(e));
+    /// Wrapper to retry a request sent to bitcoind upon IO failure
+    /// according to the configured number of retries.
+    fn retry<T, R: Fn() -> Result<T, BitcoindError>>(
+        &self,
+        request: R,
+    ) -> Result<T, BitcoindError> {
+        let mut error: Option<BitcoindError> = None;
+        for i in 0..self.retries + 1 {
+            match request() {
+                Ok(res) => return Ok(res),
+                Err(e) => {
+                    if e.is_warming_up() {
+                        error = Some(e)
+                    } else if let BitcoindError::Server(jsonrpc::Error::Transport(ref err)) = e {
+                        match err.downcast_ref::<HttpError>() {
+                            Some(HttpError::Timeout)
+                            | Some(HttpError::SocketError(_))
+                            | Some(HttpError::HttpErrorCode(503)) => {
+                                std::thread::sleep(Duration::from_secs(1));
+                                log::debug!("Retrying RPC request to bitcoind: attempt #{}", i);
+                                error = Some(e);
                             }
-                            std::thread::sleep(Duration::from_secs(1));
+                            _ => return Err(e),
                         }
-                        _ => {}
+                    } else {
+                        return Err(e);
                     }
                 }
-
-                // This one *may* happen. For a number of reasons, the obvious one may
-                // be the RPC work queue being exceeded. In this case, and since we'll
-                // usually fail if we err try again for a reasonable amount of time.
-                if now.duration_since(start) > Duration::from_secs(45) {
-                    return Err(BitcoindError::Server(e));
-                }
-                std::thread::sleep(Duration::from_secs(1));
-                log::debug!("Retrying RPC request to bitcoind.");
             }
-            jsonrpc::Error::Json(ref err) => {
-                // Weird. A JSON serialization error? Just try again but
-                // fail fast anyways as it should not happen.
-                log::error!(
-                    "JSON serialization error when talking to bitcoind: '{}'",
-                    err
-                );
-                if now.duration_since(start) > Duration::from_secs(1) {
-                    return Err(BitcoindError::Server(e));
-                }
-                std::thread::sleep(Duration::from_millis(500));
-                log::debug!("Retrying RPC request to bitcoind.");
-            }
-            _ => return Err(BitcoindError::Server(e)),
-        };
+        }
 
-        Ok(())
+        Err(BitcoindError::Custom(format!(
+            "Retry limit reached: {:?}",
+            error
+        )))
     }
 
     fn make_request<'a, 'b>(
@@ -155,27 +139,19 @@ impl BitcoinD {
         method: &'a str,
         params: &'b [Box<serde_json::value::RawValue>],
     ) -> Result<Json, BitcoindError> {
-        let req = client.build_request(method, params);
-        log::trace!("Sending to bitcoind: {:#?}", req);
-
-        // Trying to be robust on bitcoind's spurious failures. We try to support bitcoind failing
-        // under our feet for a few dozens of seconds, while not delaying an early failure (for
-        // example, if we got the RPC listening address or path to the cookie wrong).
-        let start = Instant::now();
-        loop {
-            match client.send_request(req.clone()) {
+        self.retry(|| {
+            let req = client.build_request(method, params);
+            log::trace!("Sending to bitcoind: {:#?}", req);
+            match client.send_request(req) {
                 Ok(resp) => {
                     let res = resp.result().map_err(BitcoindError::Server)?;
                     log::trace!("Got from bitcoind: {:#?}", res);
 
                     return Ok(res);
                 }
-                Err(e) => {
-                    // Decide wether we should error, or not yet
-                    self.handle_error(e, start)?;
-                }
+                Err(e) => Err(BitcoindError::Server(e)),
             }
-        }
+        })
     }
 
     fn make_requests(
@@ -183,13 +159,8 @@ impl BitcoinD {
         client: &Client,
         reqs: &[jsonrpc::Request],
     ) -> Result<Vec<Json>, BitcoindError> {
-        log::trace!("Sending to bitcoind: {:#?}", reqs);
-
-        // Trying to be robust on bitcoind's spurious failures. We try to support bitcoind failing
-        // under our feet for a few dozens of seconds, while not delaying an early failure (for
-        // example, if we got the RPC listening address or path to the cookie wrong).
-        let start = Instant::now();
-        loop {
+        self.retry(|| {
+            log::trace!("Sending to bitcoind: {:#?}", reqs);
             match client.send_batch(reqs) {
                 Ok(resp) => {
                     let res = resp
@@ -208,12 +179,9 @@ impl BitcoinD {
 
                     return Ok(res);
                 }
-                Err(e) => {
-                    // Decide wether we should error, or not yet
-                    self.handle_error(e, start)?;
-                }
+                Err(e) => Err(BitcoindError::Server(e)),
             }
-        }
+        })
     }
 
     fn make_node_request(

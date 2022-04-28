@@ -1144,6 +1144,8 @@ impl DaemonControl {
     ///
     /// ## Errors
     /// - If called for a non-manager
+    ///  TODO: this command can greatly be improved by changing the status in database for an
+    ///  integer, updating it when polling bitcoind and filtering it at the SQL level.
     pub fn list_spend_txs(
         &self,
         statuses: Option<&[ListSpendStatus]>,
@@ -1155,10 +1157,28 @@ impl DaemonControl {
         let spend_tx_map = db_list_spends(&db_path).expect("Database must be available");
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
         for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
-            let status = match db_spend.broadcasted {
+            let mut status = match db_spend.broadcasted {
                 Some(true) => ListSpendStatus::Broadcasted,
                 Some(false) => ListSpendStatus::Pending,
                 None => ListSpendStatus::NonFinal,
+            };
+
+            let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
+                .expect("Database must be available");
+
+            if let Some((_, vault)) = spent_vaults
+                .iter()
+                .find(|(_, v)| v.status == VaultStatus::Spent || v.status == VaultStatus::Canceled)
+            {
+                // If one the vault was canceled or one of spent by another transaction
+                // then the spend tx cannot be used anymore.
+                if vault.status == VaultStatus::Canceled
+                    || vault.final_txid != Some(db_spend.psbt.txid())
+                {
+                    status = ListSpendStatus::Deprecated;
+                } else {
+                    status = ListSpendStatus::Confirmed;
+                }
             };
 
             // Filter by status
@@ -1167,9 +1187,6 @@ impl DaemonControl {
                     continue;
                 }
             }
-
-            let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
-                .expect("Database must be available");
 
             let deposit_amount = Amount::from_sat(
                 spent_vaults
@@ -1514,6 +1531,10 @@ pub enum ListSpendStatus {
     NonFinal,
     Pending,
     Broadcasted,
+    /// The spend tx was confirmed in the blockchain.
+    Confirmed,
+    /// The spend tx cannot be used anymore, one of its input was spent by another transaction
+    Deprecated,
 }
 
 /// Information about a Spend transaction

@@ -318,16 +318,16 @@ def test_listspendtxs(revault_network, bitcoind):
 
     rn.bitcoind.generate_block(1, wait_for_mempool=[spend_psbt.tx.hash])
 
-    # Transaction is spent, the status is "broadcasted"
-    spend_txs = man.rpc.listspendtxs(["broadcasted"])["spend_txs"]
-    assert len(spend_txs) == 1
-    assert spend_txs[0]["change_index"] is None
-    assert spend_txs[0]["cpfp_index"] is not None
+    # Transaction is spent, the status is "confirmed"
     for w in rn.participants():
         wait_for(
             lambda: len(w.rpc.listvaults(["spent"], deposits)["vaults"])
             == len(deposits)
         )
+    spend_txs = man.rpc.listspendtxs(["confirmed"])["spend_txs"]
+    assert len(spend_txs) == 1
+    assert spend_txs[0]["change_index"] is None
+    assert spend_txs[0]["cpfp_index"] is not None
 
     vaults = rn.fundmany([3, 4, 5])
     for v in vaults:
@@ -335,20 +335,25 @@ def test_listspendtxs(revault_network, bitcoind):
         rn.activate_vault(v)
     rn.unvault_vaults_anyhow(vaults)
     rn.cancel_vault(vaults[0])
-    # Transaction is canceled, the status is still "pending" as we never
-    # broadcasted it
+    # Transaction is canceled, the status is still "pending" as
+    # the vaults can not be spent anymore
     # (Keep in mind that in the utilities under tests/revault_network.py
     # we usually use the last manager for broadcasting the transactions)
-    assert len(rn.man(1).rpc.listspendtxs(["pending"])["spend_txs"]) == 1
+    deprecated_txs = rn.man(1).rpc.listspendtxs(["deprecated"])["spend_txs"]
+    assert len(deprecated_txs) == 1
+    assert deprecated_txs[0]["status"] == "deprecated"
 
     v = rn.fund(6)
     rn.secure_vault(v)
     rn.activate_vault(v)
     rn.spend_vaults_anyhow_unconfirmed([v])
-    assert len(rn.man(1).rpc.listspendtxs(["broadcasted"])["spend_txs"]) == 2
+    assert len(rn.man(1).rpc.listspendtxs(["broadcasted"])["spend_txs"]) == 1
     rn.cancel_vault(v)
-    # Status of the spend is still broadcasted, even if the transaction is canceled
-    assert len(rn.man(1).rpc.listspendtxs(["broadcasted"])["spend_txs"]) == 2
+    # Status of the spend is deprecated because one of its vault is canceled
+    deprecated_txs = rn.man(1).rpc.listspendtxs(["deprecated"])["spend_txs"]
+    assert len(deprecated_txs) == 2
+    assert deprecated_txs[0]["status"] == "deprecated"
+    assert deprecated_txs[1]["status"] == "deprecated"
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

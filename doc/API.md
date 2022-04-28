@@ -407,6 +407,7 @@ You'll have to manually fetch the vaults statuses if you want to know, for examp
 | Field               | Type          | Description                                                          |
 | ------------------- | ------------- | -------------------------------------------------------------------- |
 | `deposit_outpoints` | string array  | Array of the deposit outpoints of the vaults this transaction spends |
+| `deposit_amount`    | integer       | Total amount in satoshis of the vaults this transaction spends      |
 | `psbt`              | string        | Base64-encoded Spend transaction PSBT                                |
 | `change_index`      | integer       | Index of the change output, might be null                            |
 | `cpfp_index`        | integer       | Index of the CPFP outputs                                            |

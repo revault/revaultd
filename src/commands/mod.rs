@@ -1171,6 +1171,13 @@ impl DaemonControl {
             let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
                 .expect("Database must be available");
 
+            let deposit_amount = Amount::from_sat(
+                spent_vaults
+                    .iter()
+                    .map(|(_, v)| v.amount.as_sat())
+                    .sum::<u64>(),
+            );
+
             let derivation_index = spent_vaults
                 .values()
                 .map(|v| v.derivation_index)
@@ -1201,6 +1208,7 @@ impl DaemonControl {
             listspend_entries.push(ListSpendEntry {
                 psbt: db_spend.psbt,
                 deposit_outpoints,
+                deposit_amount,
                 cpfp_index: cpfp_index.expect("We always create a CPFP output"),
                 change_index,
                 status,
@@ -1512,6 +1520,11 @@ pub enum ListSpendStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListSpendEntry {
     pub deposit_outpoints: Vec<OutPoint>,
+    #[serde(
+        serialize_with = "ser_amount",
+        deserialize_with = "deser_amount_from_sats"
+    )]
+    pub deposit_amount: Amount,
     pub psbt: SpendTransaction,
     pub cpfp_index: usize,
     pub change_index: Option<usize>,

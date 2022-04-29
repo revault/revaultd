@@ -121,19 +121,18 @@ def test_raw_broadcast_cancel(revault_network, bitcoind):
         revault_network.secure_vault(vault)
         revault_network.activate_vault(vault)
 
-        unvault_tx = stks[0].rpc.listpresignedtransactions([deposit])[
-            "presigned_transactions"
-        ][0]["unvault"]["hex"]
+        unvault_tx = revault_network.signed_unvault_psbt(
+            deposit, vault["derivation_index"]
+        )
         txid = bitcoind.rpc.sendrawtransaction(unvault_tx)
         bitcoind.generate_block(1, wait_for_mempool=txid)
 
         for w in stks + mans:
             wait_for(lambda: len(w.rpc.listvaults(["unvaulted"], [deposit])) == 1)
 
-        cancel_tx = stks[0].rpc.listpresignedtransactions([deposit])[
-            "presigned_transactions"
-        ][0]["cancel"]["hex"]
-        logging.debug(f"{cancel_tx}")
+        cancel_tx = revault_network.signed_cancel_psbt(
+            deposit, vault["derivation_index"]
+        )
         txid = bitcoind.rpc.sendrawtransaction(cancel_tx)
         bitcoind.generate_block(1, wait_for_mempool=txid)
 

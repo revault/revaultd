@@ -29,9 +29,9 @@ def test_getinfo(revaultd_manager, bitcoind):
     assert res["managers_threshold"] == 3
     assert res["participant_type"] == "manager"
     # test descriptors: RPC call & which Revaultd's were configured
-    assert res["descriptors"]["cpfp"] == revaultd_manager.cpfp_desc
-    assert res["descriptors"]["deposit"] == revaultd_manager.deposit_desc
-    assert res["descriptors"]["unvault"] == revaultd_manager.unvault_desc
+    assert res["descriptors"]["cpfp"] == str(revaultd_manager.cpfp_desc)
+    assert res["descriptors"]["deposit"] == str(revaultd_manager.deposit_desc)
+    assert res["descriptors"]["unvault"] == str(revaultd_manager.unvault_desc)
 
     wait_for(lambda: revaultd_manager.rpc.call("getinfo")["blockheight"] > 0)
     height = revaultd_manager.rpc.call("getinfo")["blockheight"]

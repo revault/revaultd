@@ -401,9 +401,9 @@ class CTxOut(object):
 
 
 class CScriptWitness(object):
-    def __init__(self):
+    def __init__(self, stack=[]):
         # stack is a vector of strings
-        self.stack = []
+        self.stack = stack
 
     def __repr__(self):
         return "CScriptWitness(%s)" % (
@@ -417,8 +417,8 @@ class CScriptWitness(object):
 
 
 class CTxInWitness(object):
-    def __init__(self):
-        self.scriptWitness = CScriptWitness()
+    def __init__(self, script=CScriptWitness()):
+        self.scriptWitness = script
 
     def deserialize(self, f):
         self.scriptWitness.stack = deser_string_vector(f)

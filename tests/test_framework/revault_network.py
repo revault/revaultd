@@ -14,6 +14,7 @@ from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd, StkMan
 from test_framework.utils import (
     get_descriptors,
     get_participants,
+    finalize_input,
     wait_for,
     TIMEOUT,
     WT_PLUGINS_DIR,
@@ -117,7 +118,7 @@ class RevaultNetwork:
         stks_xpubs = [stk.get_xpub() for stk in stks_keychains]
         cosigs_keys = [cosig.get_static_key().hex() for cosig in cosigs_keychains]
         mans_xpubs = [man.get_xpub() for man in mans_keychains]
-        (deposit_desc, unvault_desc, cpfp_desc) = get_descriptors(
+        (self.deposit_desc, self.unvault_desc, self.cpfp_desc) = get_descriptors(
             stks_xpubs, cosigs_keys, mans_xpubs, managers_threshold, cpfp_xpubs, csv
         )
         # Generate a dummy 2of2 to be used as our Emergency address
@@ -253,9 +254,9 @@ class RevaultNetwork:
                 wt_listen_port = reserve()
                 miradord = Miradord(
                     datadir,
-                    deposit_desc,
-                    unvault_desc,
-                    cpfp_desc,
+                    str(self.deposit_desc),
+                    str(self.unvault_desc),
+                    str(self.cpfp_desc),
                     self.emergency_address,
                     wt_listen_port,
                     stkonly_wt_noiseprivs[i],
@@ -286,9 +287,9 @@ class RevaultNetwork:
 
             revaultd = StakeholderRevaultd(
                 datadir,
-                deposit_desc,
-                unvault_desc,
-                cpfp_desc,
+                str(self.deposit_desc),
+                str(self.unvault_desc),
+                str(self.cpfp_desc),
                 stkonly_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
@@ -322,9 +323,9 @@ class RevaultNetwork:
                 wt_listen_port = reserve()
                 miradord = Miradord(
                     datadir,
-                    deposit_desc,
-                    unvault_desc,
-                    cpfp_desc,
+                    str(self.deposit_desc),
+                    str(self.unvault_desc),
+                    str(self.cpfp_desc),
                     self.emergency_address,
                     wt_listen_port,
                     stkman_wt_noiseprivs[i],
@@ -359,9 +360,9 @@ class RevaultNetwork:
 
             revaultd = StkManRevaultd(
                 datadir,
-                deposit_desc,
-                unvault_desc,
-                cpfp_desc,
+                str(self.deposit_desc),
+                str(self.unvault_desc),
+                str(self.cpfp_desc),
                 stkman_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
@@ -397,9 +398,9 @@ class RevaultNetwork:
             man_config = {"keychain": man, "cosigners": cosigners_info}
             daemon = ManagerRevaultd(
                 datadir,
-                deposit_desc,
-                unvault_desc,
-                cpfp_desc,
+                str(self.deposit_desc),
+                str(self.unvault_desc),
+                str(self.cpfp_desc),
                 man_noiseprivs[i],
                 coordinator_noisepub.hex(),
                 self.coordinator_port,
@@ -434,6 +435,36 @@ class RevaultNetwork:
         """Get the {n}th stakeholder (including the stakeholder-managers first)"""
         stks = self.stkman_wallets + self.stk_wallets
         return stks[n]
+
+    def signed_unvault_psbt(self, deposit, derivation_index):
+        """Get the fully-signed Unvault transaction for this deposit.
+
+        This will raise if we don't have all the signatures.
+        """
+        psbt_str = self.stks()[0].rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["unvault"]
+        psbt = serializations.PSBT()
+        psbt.deserialize(psbt_str)
+
+        finalize_input(self.deposit_desc, psbt.inputs[0], derivation_index)
+        psbt.tx.wit.vtxinwit.append(psbt.inputs[0].final_script_witness)
+        return psbt.tx.serialize_with_witness().hex()
+
+    def signed_cancel_psbt(self, deposit, derivation_index):
+        """Get the fully-signed Cancel transaction for this deposit.
+
+        This will raise if we don't have all the signatures.
+        """
+        psbt_str = self.stks()[0].rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["cancel"]
+        psbt = serializations.PSBT()
+        psbt.deserialize(psbt_str)
+
+        finalize_input(self.unvault_desc, psbt.inputs[0], derivation_index)
+        psbt.tx.wit.vtxinwit.append(psbt.inputs[0].final_script_witness)
+        return psbt.tx.serialize_with_witness().hex()
 
     def get_vault(self, address):
         """Get a vault entry by outpoint or by address"""

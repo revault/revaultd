@@ -15,6 +15,8 @@ import subprocess
 import threading
 import time
 
+from bip380.descriptors import Descriptor
+from bip380.miniscript import SatisfactionMaterial
 from test_framework import serializations
 from typing import Optional
 
@@ -247,9 +249,28 @@ def get_descriptors(stks_xpubs, cosigs_keys, mans_xpubs, mans_thresh, cpfp_xpubs
 
     descs = json.loads(descs_json)
     return (
-        descs["deposit_descriptor"],
-        descs["unvault_descriptor"],
-        descs["cpfp_descriptor"],
+        Descriptor.from_str(descs["deposit_descriptor"]),
+        Descriptor.from_str(descs["unvault_descriptor"]),
+        Descriptor.from_str(descs["cpfp_descriptor"]),
+    )
+
+
+def finalize_input(descriptor, psbtin, derivation_index, max_sequence=2**32):
+    """Produce a valid witness for this PSBT input, given its descriptor.
+
+    The PSBT must have all signatures, it will raise otherwise.
+    """
+    desc = Descriptor.from_str(str(descriptor))
+    desc.derive(derivation_index)
+
+    sat_material = SatisfactionMaterial(
+        signatures=psbtin.partial_sigs, max_sequence=max_sequence
+    )
+    stack = desc.satisfy(sat_material)
+
+    assert stack is not None
+    psbtin.final_script_witness = serializations.CTxInWitness(
+        serializations.CScriptWitness(stack)
     )
 
 

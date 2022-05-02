@@ -1526,7 +1526,7 @@ pub struct RevocationTransactions {
 pub struct ListPresignedTxEntry {
     pub vault_outpoint: OutPoint,
     pub unvault: UnvaultTransaction,
-    pub cancel: CancelTransaction,
+    pub cancel: [CancelTransaction; 5],
     /// Always None if not stakeholder
     pub emergency: Option<EmergencyTransaction>,
     /// Always None if not stakeholder

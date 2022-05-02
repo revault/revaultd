@@ -1087,13 +1087,13 @@ def test_revault_command(revault_network, bitcoind, executor):
         == len(stks[0].rpc.listvaults(["funded"])["vaults"])
     )
 
-    # And the deposit txid is the Cancel txid
+    # And the deposit txid is the lowest-feerate Cancel's txid
     for v in stks[0].rpc.listvaults(["canceled"])["vaults"]:
         deposit = f"{v['txid']}:{v['vout']}"
         cancel_psbt = serializations.PSBT()
         cancel_b64 = stks[0].rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["cancel"]
+        ][0]["cancel"][0]
         cancel_psbt.deserialize(cancel_b64)
 
         cancel_psbt.tx.calc_sha256()

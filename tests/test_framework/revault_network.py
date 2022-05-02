@@ -454,11 +454,12 @@ class RevaultNetwork:
     def signed_cancel_psbt(self, deposit, derivation_index):
         """Get the fully-signed Cancel transaction for this deposit.
 
+        This picks the lowest feerate version.
         This will raise if we don't have all the signatures.
         """
         psbt_str = self.stks()[0].rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["cancel"]
+        ][0]["cancel"][0]
         psbt = serializations.PSBT()
         psbt.deserialize(psbt_str)
 

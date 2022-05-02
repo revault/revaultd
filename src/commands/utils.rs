@@ -8,9 +8,9 @@ use crate::{
     },
     database::{
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_signed_emer_txs, db_signed_unemer_txs,
-            db_unvault_emer_transaction, db_unvault_transaction, db_vault_by_deposit, db_vaults,
-            db_vaults_with_txids_in_period,
+            db_cancel_transaction_by_txid, db_emer_transaction, db_signed_emer_txs,
+            db_signed_unemer_txs, db_unvault_emer_transaction, db_unvault_transaction,
+            db_vault_by_deposit, db_vaults, db_vaults_with_txids_in_period,
         },
         schema::DbVault,
         DatabaseError,
@@ -25,7 +25,9 @@ use revault_tx::{
         Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
-    transactions::{CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
+    transactions::{
+        transaction_chain_manager, CpfpableTransaction, RevaultTransaction, UnvaultTransaction,
+    },
     txins::{DepositTxIn, RevaultTxIn},
     txouts::{DepositTxOut, RevaultTxOut},
 };
@@ -163,10 +165,23 @@ pub fn presigned_txs(
             .expect("Database must be available")?
             .psbt
             .assert_unvault();
-        let cancel = db_cancel_transaction(db_path, db_vault.id)
-            .expect("Database must be available")?
-            .psbt
-            .assert_cancel();
+        let (_, cancel_batch) = transaction_chain_manager(
+            db_vault.deposit_outpoint,
+            db_vault.amount,
+            &revaultd.deposit_descriptor,
+            &revaultd.unvault_descriptor,
+            &revaultd.cpfp_descriptor,
+            db_vault.derivation_index,
+            &revaultd.secp_ctx,
+        )
+        .expect("We wouldn't have put a vault with an invalid chain in DB");
+        let mut cancel = cancel_batch.all_feerates();
+        for cancel_tx in cancel.iter_mut() {
+            *cancel_tx = db_cancel_transaction_by_txid(db_path, &cancel_tx.txid())
+                .expect("Database must always be available")?
+                .psbt
+                .assert_cancel();
+        }
 
         let mut emergency = None;
         let mut unvault_emergency = None;

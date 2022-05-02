@@ -188,13 +188,13 @@ vault's state).
 
 #### Presigned txs
 
-| Field               | Type     | Description                                                                                    |
-| ------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `vault_outpoint`    | string   | The vault deposit transaction outpoint.                                                        |
-| `unvault`           | string   | The Unvaulting transaction PSBT (base64 encoded)                                               |
-| `cancel`            | string   | The Cancel transaction PSBT (base64 encoded)                                                   |
-| `emergency`         | string   | The Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder         |
-| `unvault_emergency` | string   | The Unvault Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder |
+| Field               | Type           | Description                                                                                    |
+| ------------------- | --------       | ---------------------------------------------------------------------------------------------- |
+| `vault_outpoint`    | string         | The vault deposit transaction outpoint.                                                        |
+| `unvault`           | string         | The Unvaulting transaction PSBT (base64 encoded)                                               |
+| `cancel`            | string array   | List of base64-encoded Cancel transactions PSBT                                                |
+| `emergency`         | string         | The Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder         |
+| `unvault_emergency` | string         | The Unvault Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder |
 
 
 ### `listonchaintransactions`

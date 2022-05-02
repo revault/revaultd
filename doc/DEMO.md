@@ -20,7 +20,7 @@ Every manager will need:
 
 Also, there must be **one** `coordinatord`
 
-### Bitcoin Core version >= 0.21.0
+### Bitcoin Core version >= 22.0
 See https://bitcoin.org/en/download
 
 `revaultd` **won't work** with previous versions! Check your version with `bitcoind --version`

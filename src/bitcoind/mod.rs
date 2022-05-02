@@ -29,7 +29,7 @@ use jsonrpc::{
 const BITCOIND_RETRY_LIMIT: usize = 60;
 
 /// The minimum bitcoind version that can be used with revaultd.
-const MIN_BITCOIND_VERSION: u64 = 210000;
+const MIN_BITCOIND_VERSION: u64 = 220000;
 
 /// An error happened in the bitcoind-manager thread
 #[derive(Debug)]

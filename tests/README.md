@@ -91,6 +91,40 @@ POSTGRES_USER=test POSTGRES_PASS=test pytest -vvv --log-cli-level=DEBUG -k test_
 
 Note that we log each daemon log, and we start them with `log_level = "trace"`.
 
+#### Profiling
+
+It can be very useful to profile a test or the test framework itself. To do so you can use the great
+[`pytest-profiling`](https://github.com/man-group/pytest-plugins/tree/master/pytest-profiling)
+plugin for pytest.
+```
+pip install pytest-profile
+```
+
+Run a test with `--profile` for it to create a `prof/` folder in the current working directory:
+```
+# For instance, of course adapt env vars to your own setup
+cargo build --release && TEST_PROFILING=1 TEST_DIR=/mnt/tmp BITCOIND_PATH=$PWD/../tmp/bitcoind-22.0 REVAULTD_PATH=$PWD/target/release/revaultd POSTGRES_PASS=revault POSTGRES_USER=revault pytest -vvv --ignore tests/servers/ -k test_revault_network_securing --profile
+```
+
+The `--profile-svg` option is pretty handy for a quick summary:
+```
+# For instance, of course adapt env vars to your own setup
+cargo build --release && TEST_PROFILING=1 TEST_DIR=/mnt/tmp BITCOIND_PATH=$PWD/../tmp/bitcoind-22.0 REVAULTD_PATH=$PWD/target/release/revaultd POSTGRES_PASS=revault POSTGRES_USER=revault pytest -vvv --ignore tests/servers/ -k test_revault_network_securing --profile --profile-svg
+```
+
+[`snakeviz`](https://github.com/jiffyclub/snakeviz) is another way of visualizing the profile
+information:
+```
+pip install snakeviz
+# For instance
+snakeviz prof/test_large_spends.prof
+```
+
+A test module is present containing small tests to profile the test framework at
+`tests/test_profiling.py`.
+
+For more about profiling in Python generally, see [the
+doc](https://docs.python.org/3/library/profile.html).
 
 ### Test lints
 

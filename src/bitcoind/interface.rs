@@ -215,6 +215,10 @@ impl BitcoinD {
         self.make_request(&self.cpfp_client, method, params)
     }
 
+    pub fn getnetworkinfo(&self) -> Result<Json, BitcoindError> {
+        self.make_node_request("getnetworkinfo", &[])
+    }
+
     pub fn getblockchaininfo(&self) -> Result<Json, BitcoindError> {
         self.make_node_request("getblockchaininfo", &[])
     }

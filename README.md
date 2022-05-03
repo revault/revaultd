@@ -22,7 +22,7 @@ but pre-sign constrained spending authorizations) logic, "managers" (participant
 authorizations to make payments) logic, and "stakeholders-managers" (participants wearing both hats) logic
 are part of this daemon.
 
-`revaultd` will connect to `bitcoind` via its RPC interface (version `0.21` minimum), the
+`revaultd` will connect to `bitcoind` via its RPC interface (version `22.0` minimum), the
 [Coordinator](https://github.com/revault/coordinatord) and __*optionally*__ some [Cosigning Servers](https://github.com/revault/cosignerd)
 if ran by a manager *in a deployment with Cosigning Servers*.
 

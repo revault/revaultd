@@ -28,6 +28,9 @@ use jsonrpc::{
 /// A retry happens every 1 second, this makes us give up after one minute.
 const BITCOIND_RETRY_LIMIT: usize = 60;
 
+/// The minimum bitcoind version that can be used with revaultd.
+const MIN_BITCOIND_VERSION: u64 = 220000;
+
 /// An error happened in the bitcoind-manager thread
 #[derive(Debug)]
 pub enum BitcoindError {
@@ -113,13 +116,34 @@ fn check_bitcoind_network(
     Ok(())
 }
 
+fn check_bitcoind_version(bitcoind: &BitcoinD) -> Result<(), BitcoindError> {
+    let network_info = bitcoind.getnetworkinfo()?;
+    let bitcoind_version = network_info
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| {
+            BitcoindError::Custom("No valid 'version' in getnetworkinfo response?".to_owned())
+        })?;
+
+    if bitcoind_version < MIN_BITCOIND_VERSION {
+        return Err(BitcoindError::Custom(format!(
+            "Revaultd needs bitcoind v{} or greater to operate but v{} was found",
+            MIN_BITCOIND_VERSION, bitcoind_version
+        )));
+    }
+
+    Ok(())
+}
+
 /// Some sanity checks to be done at startup to make sure our bitcoind isn't going to fail under
 /// our feet for a legitimate reason.
 fn bitcoind_sanity_checks(
     bitcoind: &BitcoinD,
     bitcoind_config: &BitcoindConfig,
 ) -> Result<(), BitcoindError> {
-    check_bitcoind_network(bitcoind, &bitcoind_config.network)
+    check_bitcoind_version(bitcoind)?;
+    check_bitcoind_network(bitcoind, &bitcoind_config.network)?;
+    Ok(())
 }
 
 /// Connects to and sanity checks bitcoind.

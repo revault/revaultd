@@ -502,8 +502,8 @@ mod tests {
             },
             bitcointx::RevaultTx,
             interface::{
-                db_cancel_transaction, db_emer_transaction, db_exec, db_unvault_emer_transaction,
-                db_unvault_transaction, db_vault_by_deposit,
+                db_emer_transaction, db_exec, db_unvault_emer_transaction, db_unvault_transaction,
+                db_vault_by_deposit,
             },
             schema::{DbTransaction, DbVault},
         },
@@ -692,9 +692,12 @@ mod tests {
             .map(|o| db_vault_by_deposit(&db_file, &o).unwrap().unwrap())
             .collect();
 
-        let tx_db = db_cancel_transaction(&db_file, vaults[2].id)
-            .unwrap()
-            .unwrap();
+        let tx_db = db_cancel_transaction_by_txid(
+            &db_file,
+            &transactions[2].as_ref().unwrap().initial_cancel.txid(),
+        )
+        .unwrap()
+        .unwrap();
         update_presigned_tx(
             &db_file,
             &vaults[2],
@@ -773,9 +776,12 @@ mod tests {
         )
         .unwrap();
 
-        let tx_db = db_cancel_transaction(&db_file, vaults[3].id)
-            .unwrap()
-            .unwrap();
+        let tx_db = db_cancel_transaction_by_txid(
+            &db_file,
+            &transactions[3].as_ref().unwrap().initial_cancel.txid(),
+        )
+        .unwrap()
+        .unwrap();
         update_presigned_tx(
             &db_file,
             &vaults[3],

@@ -1283,7 +1283,7 @@ mod test {
         assert!(db_signed_unemer_txs(&db_path).unwrap().is_empty());
 
         // Sanity check we can add sigs to them now
-        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
+        let stored_cancel_tx = db_cancel_transaction_by_txid(&db_path, &fresh_cancel_tx.txid())
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1301,7 +1301,7 @@ mod test {
             &cancel_tx.psbt().inputs[0].partial_sigs,
             &revaultd.secp_ctx,
         );
-        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
+        let stored_cancel_tx = db_cancel_transaction_by_txid(&db_path, &fresh_cancel_tx.txid())
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1402,15 +1402,11 @@ mod test {
         );
         assert_eq!(
             cancel_tx,
-            db_cancel_transaction(&db_path, db_vault.id)
+            db_cancel_transaction_by_txid(&db_path, &fresh_cancel_tx.txid())
                 .unwrap()
                 .unwrap()
                 .psbt
                 .assert_cancel()
-        );
-        assert_eq!(
-            db_cancel_transaction(&db_path, db_vault.id).unwrap(),
-            db_cancel_transaction_by_txid(&db_path, &cancel_tx.txid()).unwrap()
         );
         assert_eq!(
             unemer_tx,
@@ -1447,9 +1443,11 @@ mod test {
         assert!(db_emer_transaction(&db_path, db_vault.id)
             .unwrap()
             .is_none());
-        assert!(db_cancel_transaction(&db_path, db_vault.id)
-            .unwrap()
-            .is_none());
+        assert!(
+            db_cancel_transaction_by_txid(&db_path, &fresh_cancel_tx.txid())
+                .unwrap()
+                .is_none()
+        );
         assert!(db_unvault_emer_transaction(&db_path, db_vault.id)
             .unwrap()
             .is_none());
@@ -1640,7 +1638,7 @@ mod test {
         )
         .unwrap();
 
-        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
+        let stored_cancel_tx = db_cancel_transaction_by_txid(&db_path, &fresh_cancel_tx.txid())
             .unwrap()
             .unwrap();
         let mut cancel_tx = fresh_cancel_tx.clone();
@@ -1983,13 +1981,13 @@ mod test {
             9,
             9,
             &fresh_unvault_tx,
-            &[fresh_cancel_tx],
+            &[fresh_cancel_tx.clone()],
             Some(&fresh_emergency_tx),
             Some(&fresh_unvaultemergency_tx),
         )
         .unwrap();
 
-        let stored_cancel_tx = db_cancel_transaction(&db_path, db_vault.id)
+        let stored_cancel_tx = db_cancel_transaction_by_txid(&db_path, &fresh_cancel_tx.txid())
             .unwrap()
             .unwrap();
         update_presigned_tx(

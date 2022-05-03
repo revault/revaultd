@@ -558,7 +558,6 @@ pub fn db_unvault_from_deposit(
     Ok(db_unvault.map(|db_tx| db_tx.psbt.assert_unvault()))
 }
 
-// NOTE: don't forget you can't assume the Vec isn't empty because threads!
 /// Get a Cancel transaction by its transaction id.
 pub fn db_cancel_transaction_by_txid(
     db_path: &Path,
@@ -568,23 +567,6 @@ pub fn db_cancel_transaction_by_txid(
         db_path,
         "SELECT * FROM presigned_transactions WHERE txid = (?1) AND type = (?2)",
         params![txid.to_vec(), TransactionType::Cancel as u32],
-        |row| row.try_into(),
-    )
-    .map(|mut rows| rows.pop())
-}
-
-/// Get the Cancel transaction corresponding to this vault
-///
-/// NOTE: the transaction *might* not be here even if you polled the vault status
-/// beforehand, because it is a new database transaction.
-pub fn db_cancel_transaction(
-    db_path: &Path,
-    vault_id: u32,
-) -> Result<Option<DbTransaction>, DatabaseError> {
-    db_query(
-        db_path,
-        "SELECT * FROM presigned_transactions WHERE vault_id = (?1) AND type = (?2)",
-        params![vault_id, TransactionType::Cancel as u32],
         |row| row.try_into(),
     )
     .map(|mut rows| rows.pop())

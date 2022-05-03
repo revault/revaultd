@@ -115,11 +115,9 @@ def bitcoind(directory):
 
     bitcoind.rpc.createwallet(bitcoind.rpc.wallet_name, False, False, "", False, True)
 
+    bitcoind.rpc.generatetoaddress(101, bitcoind.rpc.getnewaddress())
     while bitcoind.rpc.getbalance() < 50:
-        bitcoind.rpc.generatetoaddress(1, bitcoind.rpc.getnewaddress())
-
-    while bitcoind.rpc.getblockcount() <= 1:
-        time.sleep(0.1)
+        time.sleep(0.01)
 
     yield bitcoind
 

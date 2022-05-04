@@ -669,7 +669,7 @@ impl BitcoinD {
         // FIXME: batch those calls to gettxout
         for (outpoint, utxo) in unvault_utxos {
             if let Some(conf) = self.get_unspent_outpoint_confirmations(&outpoint)? {
-                if conf > 0 {
+                if conf > 0 && !utxo.is_confirmed {
                     new_conf.insert(*outpoint, utxo.clone());
                 }
             } else {

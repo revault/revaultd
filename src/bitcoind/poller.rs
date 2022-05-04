@@ -1122,7 +1122,6 @@ enum UnvaultSpender {
 fn unvault_spender(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
-    previous_tip: &BlockchainTip,
     unvault_outpoint: &OutPoint,
 ) -> Result<Option<UnvaultSpender>, BitcoindError> {
     let db_path = revaultd.read().unwrap().db_file();
@@ -1150,7 +1149,7 @@ fn unvault_spender(
     }
 
     // Finally, fetch the spending transaction
-    if let Some(spender_txid) = bitcoind.get_spender_txid(unvault_outpoint, &previous_tip.hash)? {
+    if let Some(spender_txid) = bitcoind.get_spender_txid(unvault_outpoint)? {
         // FIXME: be smarter, all the information are in the previous call, no need for a
         // second one.
 
@@ -1179,10 +1178,9 @@ fn handle_spent_unvault(
     db_path: &Path,
     bitcoind: &BitcoinD,
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
-    previous_tip: &BlockchainTip,
     unvault_outpoint: &OutPoint,
 ) -> Result<(), BitcoindError> {
-    match unvault_spender(revaultd, bitcoind, previous_tip, unvault_outpoint)? {
+    match unvault_spender(revaultd, bitcoind, unvault_outpoint)? {
         Some(UnvaultSpender::Cancel(txid)) => {
             db_cancel_unvault(db_path, &unvault_outpoint.txid, &txid)?;
             unvaults_cache
@@ -1606,14 +1604,7 @@ fn update_utxos(
             }
         }
 
-        handle_spent_unvault(
-            revaultd,
-            &db_path,
-            bitcoind,
-            unvaults_cache,
-            previous_tip,
-            &outpoint,
-        )?;
+        handle_spent_unvault(revaultd, &db_path, bitcoind, unvaults_cache, &outpoint)?;
     }
 
     Ok(())

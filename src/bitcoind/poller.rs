@@ -1054,7 +1054,7 @@ fn update_tip(
     unvaults_cache: &mut HashMap<OutPoint, UtxoInfo>,
 ) -> Result<BlockchainTip, BitcoindError> {
     let db_path = revaultd.read().unwrap().db_file();
-    let current_tip = db_tip(&db_path)?;
+    let current_tip = db_tip(&db_path).expect("Database must be accessible");
     let tip = bitcoind.get_tip()?;
 
     // Nothing changed, shortcut.
@@ -1093,7 +1093,8 @@ fn update_tip(
         )
         .expect("Error while rewinding state");
         Ok(())
-    })?;
+    })
+    .expect("Database must be accessible");
     // And save the ancestor's next block, so we'll rescan starting from there.
     let ancestor_next = BlockchainTip {
         hash: bitcoind.getblockhash(common_ancestor.height + 1)?,
@@ -1874,28 +1875,37 @@ pub fn poller_main(
     bitcoind: Arc<RwLock<BitcoinD>>,
     sync_progress: Arc<RwLock<f64>>,
     shutdown: Arc<AtomicBool>,
-) -> Result<(), BitcoindError> {
+) {
     let mut last_poll = None;
     let mut sync_waittime = None;
     // We use a cache for maintaining our deposits' state up-to-date by polling `listsinceblock`
-    let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())?;
+    let mut deposits_cache = populate_deposit_cache(&revaultd.read().unwrap())
+        .expect("Error while populating deposit cache");
     // Same for the unvaults
-    let mut unvaults_cache = populate_unvaults_cache(&revaultd.read().unwrap())?;
+    let mut unvaults_cache = populate_unvaults_cache(&revaultd.read().unwrap())
+        .expect("Error while populating unvault cache");
     // When bitcoind is synced, we poll each 30s. On regtest we speed it up for testing.
     let poll_interval = revaultd.read().unwrap().bitcoind_config.poll_interval_secs;
 
+    // Note that polling bitcoind is inherently racy. For instance if you get the height of the
+    // current tip with `getblockcount`, you can't assume `getblockhash` on this height will not
+    // fail as the tip might have been reorg'ed out.
+    // Instead of having error handling code all around this module, we propagate the errors and
+    // retry here.
     while !shutdown.load(Ordering::Relaxed) {
         let now = Instant::now();
 
         if (*sync_progress.read().unwrap() as u32) < 1 {
-            update_sync_status(
+            if let Err(e) = update_sync_status(
                 &revaultd,
                 &bitcoind,
                 &sync_progress,
                 now,
                 &mut last_poll,
                 &mut sync_waittime,
-            )?;
+            ) {
+                log::error!("Error updating sync status: '{}'", e);
+            }
             continue;
         }
 
@@ -1906,21 +1916,28 @@ pub fn poller_main(
             }
         }
 
-        last_poll = Some(now);
-        let previous_tip = update_tip(
+        let previous_tip = match update_tip(
             &mut revaultd,
             &bitcoind.read().unwrap(),
             &mut deposits_cache,
             &mut unvaults_cache,
-        )?;
-        update_utxos(
+        ) {
+            Ok(tip) => tip,
+            Err(e) => {
+                log::error!("Error while updating tip: '{}'", e);
+                continue;
+            }
+        };
+        if let Err(e) = update_utxos(
             &mut revaultd,
             &bitcoind.read().unwrap(),
             &mut deposits_cache,
             &mut unvaults_cache,
             &previous_tip,
-        )?;
+        ) {
+            log::error!("Error while updating utxos: '{}'", e);
+            continue;
+        }
+        last_poll = Some(now);
     }
-
-    Ok(())
 }

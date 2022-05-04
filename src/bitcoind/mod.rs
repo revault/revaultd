@@ -70,6 +70,8 @@ impl std::fmt::Display for BitcoindError {
 
 impl std::error::Error for BitcoindError {}
 
+// FIXME: remove this (and probably the 'Custom' variant too. If we fail to access the DB we should
+// panic.
 impl From<DatabaseError> for BitcoindError {
     fn from(e: DatabaseError) -> Self {
         Self::Custom(format!("Database error in bitcoind thread: {}", e))
@@ -216,8 +218,7 @@ pub fn bitcoind_main_loop(
                 shutdown.store(true, Ordering::Relaxed);
                 poller_thread
                     .join()
-                    .expect("Joining bitcoind poller thread")
-                    .expect("Failed to join bitcoind poller thread");
+                    .expect("Joining bitcoind poller thread");
                 return Ok(());
             }
             BitcoindMessageOut::SyncProgress(resp_tx) => {

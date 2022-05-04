@@ -1182,7 +1182,9 @@ def test_gethistory(revault_network, bitcoind, executor):
     revault_network.cancel_vault(canceled_vault)
     canceled_outpoint = f"{canceled_vault['txid']}:{canceled_vault['vout']}"
 
-    t2 = int(time.time())
+    vaults = mans[0].rpc.listvaults(["canceled"])["vaults"]
+    assert len(vaults) == 1
+    t2 = vaults[0]["moved_at"] + 1
 
     events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t2, 20)[
         "events"
@@ -1220,6 +1222,9 @@ def test_gethistory(revault_network, bitcoind, executor):
     events = mans[0].rpc.gethistory(["spend"], t1, t2, 20)["events"]
     assert len(events) == 0
 
+    # More block to have a clean separation in terms of blocktime
+    bitcoind.generate_block(12)
+
     spent_vault_1 = revault_network.fund(0.05)
     revault_network.secure_vault(spent_vault_1)
     revault_network.activate_vault(spent_vault_1)
@@ -1235,7 +1240,9 @@ def test_gethistory(revault_network, bitcoind, executor):
     spend_txs = revault_network.man(0).rpc.listspendtxs()["spend_txs"]
     assert len(spend_txs) == 2
 
-    t3 = int(time.time())
+    vaults = mans[0].rpc.listvaults(["spent"])["vaults"]
+    assert len(vaults) == 2
+    t3 = vaults[0]["moved_at"] + 1
 
     events = mans[0].rpc.gethistory(["spend", "deposit", "cancel"], t1, t2, 20)[
         "events"

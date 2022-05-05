@@ -1097,8 +1097,8 @@ fn update_tip(
     .expect("Database must be accessible");
     // And save the ancestor's next block, so we'll rescan starting from there.
     let ancestor_next = BlockchainTip {
-        hash: bitcoind.getblockhash(common_ancestor.height + 1)?,
-        height: common_ancestor.height + 1,
+        hash: bitcoind.getblockhash(common_ancestor.height)?,
+        height: common_ancestor.height,
     };
     db_update_tip(&db_path, &ancestor_next).expect("Updating tip after reorg");
     // Rebroadcast the transactions of the vaults whose state was reverted.

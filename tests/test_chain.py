@@ -522,9 +522,6 @@ def test_reorged_spend(revault_network, bitcoind):
     # Spend the vaults, record the spend time
     revault_network.activate_fresh_vaults(vaults)
     deposits, _ = revault_network.spend_vaults_anyhow(vaults)
-    initial_moved_at = revault_network.stk(0).rpc.listvaults(["spent"])["vaults"][0][
-        "moved_at"
-    ]
 
     # Initial sanity checks..
     for w in revault_network.participants():
@@ -562,8 +559,6 @@ def test_reorged_spend(revault_network, bitcoind):
                 assert vault[field] is not None, field
             for field in timestamps_from_status("spent", present=False):
                 assert vault[field] is None, field
-            # It's in a new block, it shouldn't have the same timestamp!
-            assert vault["moved_at"] != initial_moved_at
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")

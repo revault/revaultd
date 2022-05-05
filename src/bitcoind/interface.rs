@@ -660,7 +660,7 @@ impl BitcoinD {
         &self,
         unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
     ) -> Result<UnvaultsState, BitcoindError> {
-        let (mut new_conf, mut new_spent) = (HashMap::new(), HashMap::new());
+        let (mut new_conf, mut new_spent) = (Vec::new(), Vec::new());
 
         // NOTE: if rescanning, and an Unvault was created, confirmed and then spent while we were
         // not actively watching, it will be marked as 'spent' immediately. It is necessary to keep
@@ -669,11 +669,11 @@ impl BitcoinD {
         // FIXME: batch those calls to gettxout
         for (outpoint, utxo) in unvault_utxos {
             if let Some(conf) = self.get_unspent_outpoint_confirmations(&outpoint)? {
-                if conf > 0 {
-                    new_conf.insert(*outpoint, utxo.clone());
+                if conf > 0 && !utxo.is_confirmed {
+                    new_conf.push(*outpoint);
                 }
             } else {
-                new_spent.insert(*outpoint, utxo.clone());
+                new_spent.push(*outpoint);
             }
         }
 
@@ -787,11 +787,21 @@ impl BitcoinD {
     pub fn get_spender_txid(
         &self,
         spent_outpoint: &OutPoint,
-        block_hash: &BlockHash,
     ) -> Result<Option<Txid>, BitcoindError> {
+        // FIXME: The Unvault blockhash might be pretty deep and result in large responses to
+        // `listsinceblock`.
+        let req = self.make_watchonly_request(
+            "gettransaction",
+            &params!(Json::String(spent_outpoint.txid.to_string().into())),
+        )?;
+        let spent_tx_hash = match req.get("blockhash").and_then(|h| h.as_str()) {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+
         let lsb_res = self.make_watchonly_request(
             "listsinceblock",
-            &params!(Json::String(block_hash.to_string())),
+            &params!(Json::String(spent_tx_hash.to_string())),
         )?;
         let transactions = lsb_res
             .get("transactions")
@@ -799,7 +809,7 @@ impl BitcoinD {
             .flatten()
             .expect(&format!(
             "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
-            block_hash
+            spent_tx_hash
         ));
 
         for transaction in transactions {
@@ -816,7 +826,7 @@ impl BitcoinD {
                 .flatten()
                 .expect(&format!(
                     "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
-                    block_hash
+                    spent_tx_hash
                 ));
 
             let gettx_res = self.make_watchonly_request(
@@ -834,7 +844,7 @@ impl BitcoinD {
                 .flatten()
                 .expect(&format!(
                     "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
-                    block_hash
+                    spent_tx_hash
                 ));
 
             for input in vin {
@@ -846,12 +856,12 @@ impl BitcoinD {
                     .expect(
                         &format!(
                             "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
-                            block_hash
+                            spent_tx_hash
                     ));
                 let vout = input.get("vout").map(|v| v.as_u64()).flatten().expect(
                     &format!(
                         "API break: Invalid or no vout in 'vin' entry in 'gettransaction' (blockhash: {})",
-                        block_hash
+                        spent_tx_hash
                     ))
                 as u32;
                 let input_outpoint = OutPoint { txid, vout };
@@ -1017,9 +1027,9 @@ pub struct DepositsState {
 /// Onchain state of the Unvault UTxOs
 pub struct UnvaultsState {
     /// The set of newly confirmed unvault utxos
-    pub new_conf: HashMap<OutPoint, UtxoInfo>,
+    pub new_conf: Vec<OutPoint>,
     /// The set of newly spent unvault utxos
-    pub new_spent: HashMap<OutPoint, UtxoInfo>,
+    pub new_spent: Vec<OutPoint>,
 }
 
 pub struct SyncInfo {

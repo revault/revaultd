@@ -48,8 +48,8 @@ use revault_tx::{
         EmergencyTransaction, RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
     },
-    txins::DepositTxIn,
-    txouts::{DepositTxOut, SpendTxOut},
+    txins::{DepositTxIn, RevaultTxIn},
+    txouts::{DepositTxOut, RevaultTxOut, SpendTxOut},
 };
 
 use std::{collections::BTreeMap, fmt};
@@ -1188,11 +1188,40 @@ impl DaemonControl {
                 }
             }
 
-            let deposit_amount = Amount::from_sat(
-                spent_vaults
-                    .iter()
-                    .map(|(_, v)| v.amount.as_sat())
-                    .sum::<u64>(),
+            let (deposit_amount, mut cpfp_amount) = spent_vaults.iter().fold(
+                (Amount::from_sat(0), Amount::from_sat(0)),
+                |(deposit_total, cpfp_total), (_, vault)| {
+                    let unvault = UnvaultTransaction::new(
+                        DepositTxIn::new(
+                            vault.deposit_outpoint,
+                            DepositTxOut::new(
+                                vault.amount,
+                                &revaultd
+                                    .deposit_descriptor
+                                    .derive(vault.derivation_index, &revaultd.secp_ctx),
+                            ),
+                        ),
+                        &revaultd
+                            .unvault_descriptor
+                            .derive(vault.derivation_index, &revaultd.secp_ctx),
+                        &revaultd
+                            .cpfp_descriptor
+                            .derive(vault.derivation_index, &revaultd.secp_ctx),
+                        revaultd.lock_time,
+                    )
+                    .expect("Spent vault must have a correct unvault transaction");
+
+                    let cpfp_amount = Amount::from_sat(
+                        unvault
+                            .cpfp_txin(&revaultd.cpfp_descriptor, &revaultd.secp_ctx)
+                            .expect("Unvault tx has always a cpfp output")
+                            .txout()
+                            .txout()
+                            .value,
+                    );
+
+                    (deposit_total + vault.amount, cpfp_total + cpfp_amount)
+                },
             );
 
             let derivation_index = spent_vaults
@@ -1215,6 +1244,7 @@ impl DaemonControl {
             for (i, txout) in db_spend.psbt.tx().output.iter().enumerate() {
                 if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
                     cpfp_index = Some(i);
+                    cpfp_amount += Amount::from_sat(txout.value);
                 }
 
                 if deposit_address == txout.script_pubkey {
@@ -1226,6 +1256,7 @@ impl DaemonControl {
                 psbt: db_spend.psbt,
                 deposit_outpoints,
                 deposit_amount,
+                cpfp_amount,
                 cpfp_index: cpfp_index.expect("We always create a CPFP output"),
                 change_index,
                 status,
@@ -1546,6 +1577,12 @@ pub struct ListSpendEntry {
         deserialize_with = "deser_amount_from_sats"
     )]
     pub deposit_amount: Amount,
+    /// Total of amount of the cpfp outputs of the unvault transactions and the spend transaction.
+    #[serde(
+        serialize_with = "ser_amount",
+        deserialize_with = "deser_amount_from_sats"
+    )]
+    pub cpfp_amount: Amount,
     pub psbt: SpendTransaction,
     pub cpfp_index: usize,
     pub change_index: Option<usize>,

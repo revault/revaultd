@@ -88,23 +88,26 @@ def test_spendtx_management(revault_network, bitcoind):
     spend_tx_b = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"]
     man.rpc.updatespendtx(spend_tx_b)
     man.wait_for_log("Storing new Spend transaction")
-    assert len(man.rpc.listspendtxs()["spend_txs"]) == 2
+    spend_txs = man.rpc.listspendtxs()["spend_txs"]
+    assert len(spend_txs) == 2
     assert {
         "deposit_outpoints": [deposit],
         "deposit_amount": vault["amount"],
+        "cpfp_amount": 48224,
         "psbt": spend_tx,
         "change_index": None,
         "cpfp_index": 0,
         "status": "non_final",
-    } in man.rpc.listspendtxs()["spend_txs"]
+    } in spend_txs
     assert {
         "deposit_outpoints": [deposit, deposit_b],
         "deposit_amount": vault["amount"] + vault_b["amount"],
+        "cpfp_amount": 95808,
         "psbt": spend_tx_b,
         "change_index": 3,
         "cpfp_index": 0,
         "status": "non_final",
-    } in man.rpc.listspendtxs()["spend_txs"]
+    } in spend_txs
 
     # Now we could try to broadcast it..
     # But we couldn't broadcast a random txid
@@ -207,17 +210,19 @@ def test_spendtx_management(revault_network, bitcoind):
     spend_tx = txs[0]
     assert spend_tx["deposit_outpoints"] == [deposit, deposit_b]
     assert spend_tx["deposit_amount"] == vault["amount"] + vault_b["amount"]
+    assert spend_tx["cpfp_amount"] == 95808
     assert spend_tx["change_index"] == 3
     assert spend_tx["cpfp_index"] == 0
     assert spend_tx["status"] == "confirmed"
 
-    # The rogue spend is deprecated
+    # The conflicting spend is deprecated
     rogue_spend_tx = txs[1]
     assert rogue_spend_tx["deposit_outpoints"] == [deposit, deposit_b, deposit_c]
     assert (
         rogue_spend_tx["deposit_amount"]
         == vault["amount"] + vault_b["amount"] + vault_c["amount"]
     )
+    assert spend_tx["cpfp_amount"] == 95808
     assert rogue_spend_tx["change_index"] == 3
     assert rogue_spend_tx["cpfp_index"] == 0
     assert rogue_spend_tx["status"] == "deprecated"

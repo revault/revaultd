@@ -1576,7 +1576,7 @@ fn update_utxos(
         new_spent: spent_unvaults,
     } = bitcoind.sync_unvaults(unvaults_cache)?;
 
-    for (outpoint, _) in conf_unvaults {
+    for outpoint in conf_unvaults {
         if let Some(bh) = bitcoind.get_wallet_transaction(&outpoint.txid)?.blockheight {
             db_confirm_unvault(&db_path, &outpoint.txid, bh)?;
             unvaults_cache
@@ -1592,9 +1592,9 @@ fn update_utxos(
         }
     }
 
-    for (outpoint, txo) in spent_unvaults {
+    for outpoint in spent_unvaults {
         // If the unvault was still marked as unconfirmed, check whether it confirmed first.
-        if !txo.is_confirmed {
+        if !unvaults_cache[&outpoint].is_confirmed {
             if let Some(bh) = bitcoind.get_wallet_transaction(&outpoint.txid)?.blockheight {
                 db_confirm_unvault(&db_path, &outpoint.txid, bh)?;
                 unvaults_cache

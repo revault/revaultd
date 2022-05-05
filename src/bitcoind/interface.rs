@@ -660,7 +660,7 @@ impl BitcoinD {
         &self,
         unvault_utxos: &HashMap<OutPoint, UtxoInfo>,
     ) -> Result<UnvaultsState, BitcoindError> {
-        let (mut new_conf, mut new_spent) = (HashMap::new(), HashMap::new());
+        let (mut new_conf, mut new_spent) = (Vec::new(), Vec::new());
 
         // NOTE: if rescanning, and an Unvault was created, confirmed and then spent while we were
         // not actively watching, it will be marked as 'spent' immediately. It is necessary to keep
@@ -670,10 +670,10 @@ impl BitcoinD {
         for (outpoint, utxo) in unvault_utxos {
             if let Some(conf) = self.get_unspent_outpoint_confirmations(&outpoint)? {
                 if conf > 0 && !utxo.is_confirmed {
-                    new_conf.insert(*outpoint, utxo.clone());
+                    new_conf.push(*outpoint);
                 }
             } else {
-                new_spent.insert(*outpoint, utxo.clone());
+                new_spent.push(*outpoint);
             }
         }
 
@@ -1027,9 +1027,9 @@ pub struct DepositsState {
 /// Onchain state of the Unvault UTxOs
 pub struct UnvaultsState {
     /// The set of newly confirmed unvault utxos
-    pub new_conf: HashMap<OutPoint, UtxoInfo>,
+    pub new_conf: Vec<OutPoint>,
     /// The set of newly spent unvault utxos
-    pub new_spent: HashMap<OutPoint, UtxoInfo>,
+    pub new_spent: Vec<OutPoint>,
 }
 
 pub struct SyncInfo {

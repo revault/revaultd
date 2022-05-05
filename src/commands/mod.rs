@@ -1554,7 +1554,8 @@ pub struct HistoryEvent {
     pub date: u32,
     pub blockheight: u32,
     pub amount: Option<u64>,
-    pub fee: Option<u64>,
+    pub cpfp_amount: Option<u64>,
+    pub miner_fee: Option<u64>,
     pub txid: Txid,
     pub vaults: Vec<OutPoint>,
 }

@@ -25,7 +25,9 @@ use revault_tx::{
         Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
-    transactions::RevaultTransaction,
+    transactions::{CpfpableTransaction, RevaultTransaction, UnvaultTransaction},
+    txins::{DepositTxIn, RevaultTxIn},
+    txouts::{DepositTxOut, RevaultTxOut},
 };
 
 use std::{
@@ -270,7 +272,8 @@ pub fn gethistory<T: BitcoindThread>(
                 date: vault.funded_at.expect("Vault is funded"),
                 blockheight: vault.deposit_blockheight.expect("Vault is funded"),
                 amount: Some(vault.amount.as_sat()),
-                fee: None,
+                cpfp_amount: None,
+                miner_fee: None,
                 txid: vault.deposit_outpoint.txid,
                 vaults: vec![vault.deposit_outpoint],
             });
@@ -304,16 +307,44 @@ pub fn gethistory<T: BitcoindThread>(
                 // the change_amount is equal to 0.
                 .map_or(0, |vault| vault.amount.as_sat());
 
+            let unvault = UnvaultTransaction::new(
+                DepositTxIn::new(
+                    vault.deposit_outpoint,
+                    DepositTxOut::new(
+                        vault.amount,
+                        &revaultd
+                            .deposit_descriptor
+                            .derive(vault.derivation_index, &revaultd.secp_ctx),
+                    ),
+                ),
+                &revaultd
+                    .unvault_descriptor
+                    .derive(vault.derivation_index, &revaultd.secp_ctx),
+                &revaultd
+                    .cpfp_descriptor
+                    .derive(vault.derivation_index, &revaultd.secp_ctx),
+                revaultd.lock_time,
+            )
+            .expect("Spent vault must have a correct unvault transaction");
+
+            let cpfp_amount = unvault
+                .cpfp_txin(&revaultd.cpfp_descriptor, &revaultd.secp_ctx)
+                .expect("Unvault tx has always a cpfp output")
+                .txout()
+                .txout()
+                .value;
+
             events.push(HistoryEvent {
                 kind: HistoryEventKind::Cancel,
                 date: vault.moved_at.expect("Tx should be confirmed"),
                 blockheight: cancel_height,
                 amount: None,
-                fee: Some(
+                cpfp_amount: Some(cpfp_amount),
+                miner_fee: Some(
                     vault
                         .amount
                         .as_sat()
-                        .checked_sub(change_amount)
+                        .checked_sub(change_amount + cpfp_amount)
                         .expect("Moved funds include funds going back"),
                 ),
                 txid,
@@ -380,14 +411,42 @@ pub fn gethistory<T: BitcoindThread>(
 
             let mut recipients_amount: u64 = 0;
             let mut change_amount: u64 = 0;
+            let mut cpfp_amount: u64 = 0;
             for txout in tx.output {
                 if cpfp_script_pubkey == txout.script_pubkey {
-                    // this cpfp output is ignored and its amount is part of the fees
+                    cpfp_amount += txout.value;
                 } else if deposit_address == txout.script_pubkey {
                     change_amount += txout.value;
                 } else {
                     recipients_amount += txout.value
                 }
+            }
+
+            for vault in &spent_vaults {
+                cpfp_amount += UnvaultTransaction::new(
+                    DepositTxIn::new(
+                        vault.deposit_outpoint,
+                        DepositTxOut::new(
+                            vault.amount,
+                            &revaultd
+                                .deposit_descriptor
+                                .derive(vault.derivation_index, &revaultd.secp_ctx),
+                        ),
+                    ),
+                    &revaultd
+                        .unvault_descriptor
+                        .derive(vault.derivation_index, &revaultd.secp_ctx),
+                    &revaultd
+                        .cpfp_descriptor
+                        .derive(vault.derivation_index, &revaultd.secp_ctx),
+                    revaultd.lock_time,
+                )
+                .expect("Spent vault must have a correct unvault transaction")
+                .cpfp_txin(&revaultd.cpfp_descriptor, &revaultd.secp_ctx)
+                .expect("Unvault tx has always a cpfp output")
+                .txout()
+                .txout()
+                .value;
             }
 
             // fees is the total of the deposits minus the total of the spend outputs.
@@ -396,7 +455,7 @@ pub fn gethistory<T: BitcoindThread>(
                 .iter()
                 .map(|vlt| vlt.amount.as_sat())
                 .sum::<u64>()
-                .checked_sub(recipients_amount + change_amount)
+                .checked_sub(recipients_amount + change_amount + cpfp_amount)
                 .expect("Funds moving include funds going back");
 
             events.push(HistoryEvent {
@@ -404,7 +463,8 @@ pub fn gethistory<T: BitcoindThread>(
                 blockheight: spend_height,
                 kind: HistoryEventKind::Spend,
                 amount: Some(recipients_amount),
-                fee: Some(fees),
+                cpfp_amount: Some(cpfp_amount),
+                miner_fee: Some(fees),
                 txid,
                 vaults: spent_vaults
                     .iter()
@@ -1408,26 +1468,32 @@ mod tests {
             events[0].amount.unwrap(),
             spend_tx.output[0].value + spend_tx.output[1].value
         );
+        assert!(events[0].cpfp_amount.is_some());
         assert_eq!(
-            events[0].fee.unwrap(),
-            200_000_000_000 - spend_tx.output[0].value - spend_tx.output[1].value,
+            events[0].miner_fee.unwrap(),
+            200_000_000_000
+                - spend_tx.output[0].value
+                - spend_tx.output[1].value
+                - events[0].cpfp_amount.unwrap(),
         );
         assert_eq!(events[0].vaults, vec![deposit2_outpoint]);
 
         assert_eq!(events[1].txid, deposit2_outpoint.txid);
         assert_eq!(events[1].kind, HistoryEventKind::Deposit);
         assert_eq!(events[1].date, 3);
-        assert_eq!(events[1].fee, None);
+        assert_eq!(events[1].miner_fee, None);
         assert_eq!(events[1].amount, Some(200_000_000_000));
+        assert_eq!(events[1].cpfp_amount, None);
         assert_eq!(events[1].vaults, vec![deposit2_outpoint]);
 
         assert_eq!(events[2].txid, cancel_tx.txid());
         assert_eq!(events[2].kind, HistoryEventKind::Cancel);
         assert!(events[2].amount.is_none());
+        assert!(events[0].cpfp_amount.is_some());
         assert_eq!(events[2].date, 2);
         assert_eq!(
-            events[2].fee.unwrap(),
-            Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value
+            events[2].miner_fee.unwrap(),
+            Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value - events[0].cpfp_amount.unwrap()
         );
         assert_eq!(events[3].txid, deposit1_outpoint.txid);
         assert_eq!(events[3].kind, HistoryEventKind::Deposit);
@@ -1452,17 +1518,19 @@ mod tests {
         assert_eq!(events[0].txid, cancel_tx.txid());
         assert_eq!(events[0].kind, HistoryEventKind::Cancel);
         assert!(events[0].amount.is_none());
+        assert!(events[0].cpfp_amount.is_some());
         assert_eq!(
-            events[0].fee.unwrap(),
-            Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value
+            events[0].miner_fee.unwrap(),
+            Amount::ONE_BTC.as_sat() - cancel_tx.output[0].value - events[0].cpfp_amount.unwrap()
         );
         assert_eq!(events[0].vaults, vec![deposit1_outpoint]);
 
         assert_eq!(events[1].date, 1);
         assert_eq!(events[1].txid, deposit1_outpoint.txid);
         assert_eq!(events[1].kind, HistoryEventKind::Deposit);
-        assert_eq!(events[1].fee, None);
+        assert_eq!(events[1].miner_fee, None);
         assert_eq!(events[1].amount, Some(Amount::ONE_BTC.as_sat()));
+        assert_eq!(events[1].cpfp_amount, None);
         assert_eq!(events[1].vaults, vec![deposit1_outpoint]);
 
         fs::remove_dir_all(&datadir).unwrap_or_else(|_| ());

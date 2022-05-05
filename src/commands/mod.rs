@@ -1360,7 +1360,8 @@ impl DaemonControl {
         Ok(())
     }
 
-    /// Broadcast the Cancel transaction for an unvaulted vault.
+    /// Broadcast a Cancel transaction for an unvaulted vault. Currently picks the lower feerate
+    /// one.
     ///
     /// ## Errors
     /// - If the outpoint doesn't refer to an existing, unvaulted (or unvaulting) vault
@@ -1370,7 +1371,7 @@ impl DaemonControl {
         let db_path = revaultd.db_file();
 
         // Checking that the vault is secured, otherwise we don't have the cancel
-        // transaction
+        // transactions
         let vault = db_vault_by_deposit(&db_path, &deposit_outpoint)
             .expect("Database must be accessible")
             .ok_or_else(|| CommandError::UnknownOutpoint(deposit_outpoint))?;

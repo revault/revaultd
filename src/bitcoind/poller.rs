@@ -1113,7 +1113,7 @@ fn update_tip(
 // Which kind of transaction may spend the Unvault transaction.
 #[derive(Debug)]
 enum UnvaultSpender {
-    // The Cancel, spending via the stakeholders path to a new deposit
+    // A Cancel, spending via the stakeholders path to a new deposit
     Cancel(Txid),
     // The Spend, any transaction spending via the managers path
     Spend(Txid),
@@ -1160,12 +1160,12 @@ fn unvault_spender(
         // FIXME: be smarter, all the information are in the previous call, no need for a
         // second one.
 
-        // Let's double-check that we didn't fetch the cancel, nor the unemer
-        // In theory (read edge cases), the Cancel and UnEmer could have not been
+        // Let's double-check that we didn't fetch a cancel, nor the unemer
+        // In theory (read edge cases), a Cancel and UnEmer could have not been
         // current at the last bitcoind poll but could be now.
         // Be sure to not wrongly mark a Cancel or UnEmer as a Spend!
         if cancel_txids.contains(&spender_txid) || Some(spender_txid) == unemer_txid {
-            // Alright, the spender is the cancel or the unemer,
+            // Alright, the spender is a cancel or the unemer,
             // but we just checked and they weren't current. We'll return None
             // so the checker will call this function again.
             return Ok(None);

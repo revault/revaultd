@@ -49,7 +49,7 @@ pub fn presigned_transactions(
         })?;
 
     // Reconstruct the deposit UTXO and derive all pre-signed transactions out of it
-    // if we are a stakeholder, and only the Unvault and the Cancel if we are a manager.
+    // if we are a stakeholder, and only the Unvault and the Cancels if we are a manager.
     if revaultd.is_stakeholder() {
         let emer_address = revaultd
             .emergency_address

@@ -977,7 +977,7 @@ def test_getspendtx(revault_network, bitcoind):
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_revault_command(revault_network, bitcoind, executor):
     """
-    Here we manually broadcast the unvualt_tx, followed by the cancel_tx
+    Here we manually broadcast the unvualt_tx, followed by a cancel_tx
     """
     revault_network.deploy(3, 1)
     man = revault_network.man(0)
@@ -1026,7 +1026,7 @@ def test_revault_command(revault_network, bitcoind, executor):
             == "unvaulting"
         )
 
-    # Nah it's not, just broadcast the cancel
+    # Nah it's not, just broadcast a cancel
     man.rpc.revault(deposit)
 
     # Not confirmed yet...

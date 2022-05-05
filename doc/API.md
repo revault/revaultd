@@ -121,8 +121,8 @@ Retrieve the status of the servers, such as the coordinator, the cosigners, the 
 | 5     | `active`             | Everyone signed and shared the Unvault transaction signature for this vault                                  |
 | 6     | `unvaulting`         | The vault has its unvault tx broadcasted                                                                     |
 | 7     | `unvaulted`          | The vault has its unvault tx confirmed                                                                       |
-| 8     | `cancelling`         | The vault has its cancel tx broadcasted, funds are sent to an other vault                                    |
-| 9     | `cancelled`          | The vault has its cancel tx confirmed, funds are in an other vault                                           |
+| 8     | `cancelling`         | The vault has one cancel tx broadcasted, funds are sent to an other vault                                    |
+| 9     | `cancelled`          | The vault has one cancel tx confirmed, funds are in an other vault                                           |
 | 4 / 8 | `emergency_vaulting` | The vault has its emergency tx broadcasted, funds are sent to the Deep Emergency Vault                       |
 | 5 / 9 | `emergency_vaulted`  | The vault has its emergency tx confirmed, funds are in the Deep Emergency Vault                              |
 | 8     | `spendable`          | The vault has its unvault tx timelock expired and can be spent                                               |

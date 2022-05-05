@@ -97,7 +97,7 @@ pub trait RpcApi {
         index: Option<bip32::ChildNumber>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
-    /// Get the cancel and both emergency transactions for a vault identified by its deposit
+    /// Get the cancels and both emergency transactions for a vault identified by its deposit
     /// outpoint.
     #[rpc(meta, name = "getrevocationtxs")]
     fn getrevocationtxs(

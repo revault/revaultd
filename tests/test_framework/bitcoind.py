@@ -127,6 +127,12 @@ class BitcoinD(TailableProc):
         for txid in txids:
             self.rpc.prioritisetransaction(txid, None, fee_delta)
 
+    def generate_empty_blocks(self, n):
+        """Generate {n} empty blocks"""
+        addr = self.rpc.getnewaddress()
+        for _ in range(n):
+            self.rpc.generateblock(addr, [])
+
     def simple_reorg(self, height, shift=0):
         """
         Reorganize chain by creating a fork at height={height} and:
@@ -162,11 +168,11 @@ class BitcoinD(TailableProc):
         memp = self.rpc.getrawmempool()
 
         if shift < 0:
-            self.generate_blocks_censor(1 + final_len - height, memp)
+            self.generate_empty_blocks(1 + final_len - height)
         elif shift == 0:
             self.generate_block(1 + final_len - height, memp)
         else:
-            self.generate_blocks_censor(shift, memp)
+            self.generate_empty_blocks(shift)
             self.generate_block(1 + final_len - (height + shift), memp)
         self.wait_for_log(r"UpdateTip: new best=.* height={}".format(final_len))
 

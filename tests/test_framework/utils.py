@@ -21,6 +21,7 @@ from test_framework import serializations
 from typing import Optional
 
 
+TEST_PROFILING = bool(int(os.getenv("TEST_PROFILING", "0")))
 TIMEOUT = int(os.getenv("TIMEOUT", 60))
 TEST_DEBUG = os.getenv("TEST_DEBUG", "0") == "1"
 EXECUTOR_WORKERS = int(os.getenv("EXECUTOR_WORKERS", 20))

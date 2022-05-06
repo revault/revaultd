@@ -115,11 +115,9 @@ def bitcoind(directory):
 
     bitcoind.rpc.createwallet(bitcoind.rpc.wallet_name, False, False, "", False, True)
 
+    bitcoind.rpc.generatetoaddress(101, bitcoind.rpc.getnewaddress())
     while bitcoind.rpc.getbalance() < 50:
-        bitcoind.rpc.generatetoaddress(1, bitcoind.rpc.getnewaddress())
-
-    while bitcoind.rpc.getblockcount() <= 1:
-        time.sleep(0.1)
+        time.sleep(0.01)
 
     yield bitcoind
 
@@ -131,11 +129,6 @@ def revaultd_stakeholder(bitcoind, directory):
     datadir = os.path.join(directory, "revaultd")
     os.makedirs(datadir, exist_ok=True)
     (stks, cosigs, mans, _, _, _) = get_participants(2, 3)
-    cpfp_xprivs = [
-        bytes.fromhex(
-            "0435839400000000000000000060499f801b896d83179a4374aeb7822aaeaceaa0db1f85ee3e904c4defbd9689004b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e",
-        )
-    ]
     cpfp_xpubs = [
         "tpubD6NzVbkrYhZ4XJDrzRvuxHEyQaPd1mwwdDofEJwekX18tAdsqeKfxss79AJzg1431FybXg5rfpTrJF4iAhyR7RubberdzEQXiRmXGADH2eA"
     ]

@@ -82,8 +82,6 @@ class BitcoinD(TailableProc):
         logging.info("BitcoinD started")
 
     def stop(self):
-        for p in self.proxies:
-            p.stop()
         self.rpc.stop()
         return TailableProc.stop(self)
 

@@ -234,6 +234,7 @@ fn fetch_all_signatures(
                 &db_tx.psbt.type_str(),
                 &db_vault.deposit_outpoint
             );
+            let before_sync = time::Instant::now();
             sync_sigs(
                 &mut transport,
                 &stk_keys,
@@ -241,6 +242,11 @@ fn fetch_all_signatures(
                 &mut db_tx.psbt,
                 &revaultd.secp_ctx,
             )?;
+            log::debug!(
+                "Syncing sigs for vault at '{}' took {} seconds",
+                db_vault.deposit_outpoint,
+                time::Instant::now().duration_since(before_sync).as_secs(),
+            );
         }
 
         // NOTE: In theory, the deposit could have been reorged out and the presigned
@@ -291,6 +297,9 @@ pub fn signature_fetcher_loop(
         let elapsed = last_poll.elapsed();
         // If enough time has elapsed, poll the sigs
         if elapsed >= poll_interval {
+            log::debug!("Starting to poll for new signatures.");
+            let before_polling = time::Instant::now();
+
             // This will ignore emergency transactions if we are manager-only
             let vaults_txs = db_sig_missing(&revaultd.read().unwrap().db_file())?;
             fetch_all_signatures(&revaultd.read().unwrap(), vaults_txs).unwrap_or_else(|e| {
@@ -298,6 +307,10 @@ pub fn signature_fetcher_loop(
             });
 
             last_poll = time::Instant::now();
+            log::debug!(
+                "Polling signatures took {} seconds.",
+                last_poll.duration_since(before_polling).as_secs()
+            );
         }
 
         // Avoid clogging the CPU by sleeping for a while

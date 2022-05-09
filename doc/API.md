@@ -228,12 +228,14 @@ network (hence they may be unconfirmed). Will error if any of the vaults is unkn
 
 #### Wallet tx
 
-| Field         | Type          | Description                                                                   |
-| ------------- | ------------- | ----------------------------------------------------------------------------  |
-| `blockheight` | int or `null` | Height of the block containing the transaction, `null` if unconfirmed         |
-| `blocktime`   | int or `null` | Timestamp of the block containing the transaction, `null` if unconfirmed      |
-| `hex`         | string        | Hexadecimal of the network-serialized transaction                             |
-| `received_at` | int           | Transaction reception date as the number of seconds since UNIX epoch          |
+| Field          | Type          | Description                                                                  |
+| -------------- | ------------- | ---------------------------------------------------------------------------- |
+| `blockheight`  | int or `null` | Height of the block containing the transaction, `null` if unconfirmed        |
+| `blocktime`    | int or `null` | Timestamp of the block containing the transaction, `null` if unconfirmed     |
+| `change_index` | int or `null` | Index of the change output, `null` if not present                            |
+| `cpfp_index`   | int or `null` | Index of the cpfp output, `null` if not present                              |
+| `hex`          | string        | Hexadecimal of the network-serialized transaction                            |
+| `received_at`  | int           | Transaction reception date as the number of seconds since UNIX epoch         |
 
 
 ### `getrevocationtxs`

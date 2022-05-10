@@ -39,18 +39,7 @@ variables: `POSTGRES_USER`, `POSTGRES_PASS` and optionally `POSTGRES_HOST` (if n
 `localhost`). The framework will take care of creating a database for each process
 launched, and to drop it at teardown time.  
 
-#### Without the servers
-
-You can write and run tests that don't need the servers. By default, if no `POSTGRES_*`
-environment variables are passed, the framework will skip the tests that depends on
-servers:
-
-```
-# Adapt `-n`, `-v`, `timeout` and other environment variables to your needs
-pytest tests/ -vvv -n4 --ignore tests/servers/
-```
-
-#### With the servers
+#### Compiling the servers
 
 For spinning up the servers, the framework will need access to the binaries. Therefore you
 must `init` the submodules (if you did not `clone` with `--recursive`) and compile the
@@ -59,21 +48,41 @@ servers code:
 # From the root of the repository
 git submodule update --init --recursive
 cd tests/servers
-cd coordinatord && cargo build && cd ..
 cd cosignerd && cargo build && cd ..
 cd miradord && cargo build && cd ..
 ```
 
-When you need a new version of the servers, you can update the submodules:
+When you need a new version of the servers, you can update the submodules. You can use a
+script from `contrib/` that updates the servers and recompiles them:
 ```
 # From the root of the repository
-cd tests/servers
-git submodule update --remote --recursive
+./contrib/recompile_tests_servers.sh
 ```
 
-To run the server-requiring tests, pass the postgres credentials to the framework:
+#### Using the real Coordinator
+
+By default, the functional tests will use a dummy in-RAM coordinator (see
+[`test_framework/coordinatord.py`](test_framework/coordinatord.py).
+
+The tests can be ran using `coordinatord`, and some require its use.
+
+In order to use it you'll first need to compile it:
 ```
-POSTGRES_USER="test" POSTGRES_PASS="test" TEST_DEBUG=1 pytest -vvv -n8 --timeout=1800
+# From the root of the repository
+git submodule update --init --recursive
+cd tests/servers/coordinatord && cargo build
+cd ../../../
+```
+
+And then you'll need to set a Postgre backend up. The easiest way to do so is by using Docker:
+```
+docker run --rm -d -p 5432:5432 --name postgres-coordinatord -e POSTGRES_PASSWORD=revaultd_tests -e POSTGRES_USER=revaultd_tests -e POSTGRES_DB=coordinator_db postgres:alpine
+```
+
+To run the tests with, pass the postgres credentials to the framework:
+```
+# From the root of the repository
+POSTGRES_USER=revaultd_tests POSTGRES_PASS=revaultd_tests pytest -vvv --ignore tests/servers -n 10
 ```
 
 
@@ -89,7 +98,7 @@ You can override the config at runtime with the `--log-cli-level` option:
 POSTGRES_USER=test POSTGRES_PASS=test pytest -vvv --log-cli-level=DEBUG -k test_getrevocationtxs
 ```
 
-Note that we log each daemon log, and we start them with `log_level = "trace"`.
+Note that we log each daemon log if `VERBOSE=1`, and we start them with `log_level = "debug"`.
 
 #### Profiling
 

@@ -48,7 +48,7 @@ task:
     folder: tests/servers/cosignerd
     fingerprint_script: git rev-parse HEAD:tests/servers/cosignerd
   servers_build_script: |
-    for server in "coordinatord" "miradord" "cosignerd"; do
+    for server in "miradord" "cosignerd"; do
       if [ ! -f tests/servers/$server/Cargo.lock ]; then
         git submodule update --init --recursive --remote ./tests/servers/$server
         cd ./tests/servers/$server
@@ -57,7 +57,7 @@ task:
       fi
     done
 
-  deps_script: apt update && apt install -y postgresql python3 python3-pip
+  deps_script: apt update && apt install -y python3 python3-pip
 
   pip_cache:
     folder: ~/.cache/pip
@@ -71,11 +71,6 @@ task:
     curl https://bitcoincore.org/bin/bitcoin-core-$BITCOIND_VERSION/bitcoin-$BITCOIND_VERSION-x86_64-linux-gnu.tar.gz -o $ARCHIVE_NAME
     tar -xzf $ARCHIVE_NAME
     export BITCOIND_PATH=$BITCOIND_DIR_NAME/bin/bitcoind
-
-    # Setup the postgres instance for the servers
-    pg_ctlcluster 13 main start
-    su -c "psql -c \"CREATE ROLE test CREATEDB LOGIN PASSWORD 'test'\"" - postgres
-    export POSTGRES_USER=test POSTGRES_PASS=test
 
     # Run the functional tests
     REVAULTD_PATH=$PWD/target/release/revaultd pytest $TEST_GROUP -vvv -n 2

@@ -159,7 +159,8 @@ class Revaultd(TailableProc):
     def cleanup(self):
         try:
             self.stop()
-        except Exception:
+        except Exception as e:
+            logging.error(f"{self.prefix}: Error when cleaning up: '{e}'")
             self.proc.kill()
 
 

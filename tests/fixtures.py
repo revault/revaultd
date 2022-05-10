@@ -224,12 +224,6 @@ def revaultd_manager(bitcoind, directory):
 
 @pytest.fixture
 def revault_network(directory, bitcoind, executor):
-    if not POSTGRES_IS_SETUP:
-        raise ValueError(
-            "Please set the POSTGRES_USER, POSTGRES_PASS and "
-            "POSTGRES_HOST environment variables."
-        )
-
     factory = RevaultNetwork(
         directory, bitcoind, executor, POSTGRES_USER, POSTGRES_PASS, POSTGRES_HOST
     )

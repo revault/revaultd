@@ -7,7 +7,7 @@ from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
 from test_framework import serializations
 from test_framework.bitcoind import BitcoindRpcProxy
-from test_framework.coordinatord import Coordinatord
+from test_framework.coordinatord import Coordinatord, DummyCoordinator
 from test_framework.cosignerd import Cosignerd
 from test_framework.miradord import Miradord
 from test_framework.revaultd import ManagerRevaultd, StakeholderRevaultd, StkManRevaultd
@@ -18,6 +18,7 @@ from test_framework.utils import (
     wait_for,
     TIMEOUT,
     WT_PLUGINS_DIR,
+    POSTGRES_IS_SETUP,
 )
 
 
@@ -201,24 +202,38 @@ class RevaultNetwork:
             f"{stkonly_wt_noisepubs + stkman_wt_noisepubs}\n"
         )
 
-        # Spin up the "Sync Server"
-        coord_datadir = os.path.join(self.root_dir, "coordinatord")
-        os.makedirs(coord_datadir, exist_ok=True)
-        coordinatord = Coordinatord(
-            coord_datadir,
-            coordinator_noisepriv,
-            man_noisepubs + stkman_noisepubs,
-            stkonly_noisepubs + stkman_noisepubs,
-            stkonly_wt_noisepubs + stkman_wt_noisepubs,
-            self.coordinator_port,
-            bitcoind_rpcport,
-            bitcoind_cookie,
-            self.postgres_user,
-            self.postgres_pass,
-            self.postgres_host,
-        )
-        coordinatord.start()
-        self.daemons.append(coordinatord)
+        # Use coordinatord if they pointed us to a Postgre backend, otherwise use the dummy
+        # coordinator.
+        if POSTGRES_IS_SETUP:
+            coord_datadir = os.path.join(self.root_dir, "coordinatord")
+            os.makedirs(coord_datadir, exist_ok=True)
+            coordinatord = Coordinatord(
+                coord_datadir,
+                coordinator_noisepriv,
+                man_noisepubs + stkman_noisepubs,
+                stkonly_noisepubs + stkman_noisepubs,
+                stkonly_wt_noisepubs + stkman_wt_noisepubs,
+                self.coordinator_port,
+                bitcoind_rpcport,
+                bitcoind_cookie,
+                self.postgres_user,
+                self.postgres_pass,
+                self.postgres_host,
+            )
+            coordinatord.start()
+            self.daemons.append(coordinatord)
+        else:
+            coordinator = DummyCoordinator(
+                self.coordinator_port,
+                coordinator_noisepriv,
+                man_noisepubs
+                + stkonly_noisepubs
+                + stkman_noisepubs
+                + stkonly_wt_noisepubs
+                + stkman_wt_noisepubs,
+            )
+            coordinator.start()
+            self.daemons.append(coordinator)
 
         cosigners_info = []
         for (i, noisepub) in enumerate(stkonly_cosig_noisepubs):

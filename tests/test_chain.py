@@ -5,12 +5,10 @@ handling of reorgs, etc..
 """
 
 import logging
-import pytest
 
 from fixtures import *
 from test_framework import serializations
 from test_framework.utils import (
-    POSTGRES_IS_SETUP,
     wait_for,
 )
 
@@ -248,7 +246,6 @@ def reorg_deposit(revault_network, bitcoind, deposit, stop_wallets, target_statu
     # TODO: try with tx malleation
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_deposit_status_1(revault_network, bitcoind):
     # NOTE: bitcoind would discard updating the mempool if the reorg is >10 blocks long.
     revault_network.deploy(4, 2, csv=12, with_watchtowers=False)
@@ -287,7 +284,6 @@ def test_reorged_deposit_status_1(revault_network, bitcoind):
     # TODO: same with 'emergency'
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_deposit_status_2(revault_network, bitcoind):
     # NOTE: bitcoind would discard updating the mempool if the reorg is >10 blocks long.
     revault_network.deploy(4, 2, csv=3, with_watchtowers=False)
@@ -319,7 +315,6 @@ def test_reorged_deposit_status_2(revault_network, bitcoind):
     # TODO: same with 'unvault_emergency'
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_unvault(revault_network, bitcoind):
     """Test various scenarii with reorgs around the Unvault transaction of a vault."""
     CSV = 12
@@ -513,7 +508,6 @@ def test_reorged_unvault(revault_network, bitcoind):
                 assert vault[field] is None, field
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_spend(revault_network, bitcoind):
     CSV = 12
     revault_network.deploy(4, 2, csv=CSV, with_watchtowers=False)
@@ -561,7 +555,6 @@ def test_reorged_spend(revault_network, bitcoind):
                 assert vault[field] is None, field
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_reorged_cancel(revault_network, bitcoind):
     revault_network.deploy(4, 2, csv=12, with_watchtowers=False)
     stks = revault_network.stks()
@@ -655,7 +648,6 @@ def test_reorged_cancel(revault_network, bitcoind):
             assert vault[field] is None, field
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_retrieve_vault_status(revault_network, bitcoind):
     """Test we keep track of coins that moved without us actively noticing it."""
     CSV = 3

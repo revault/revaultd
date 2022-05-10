@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 
-from cheroot.wsgi import PathInfoDispatcher, Server
+from cheroot.wsgi import Server
 from decimal import Decimal
 from ephemeral_port_reserve import reserve
 from flask import Flask, request, Response

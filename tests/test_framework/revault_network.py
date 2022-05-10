@@ -799,7 +799,8 @@ class RevaultNetwork:
             j.result(TIMEOUT)
 
     def cleanup(self):
-        for n in self.daemons:
-            n.cleanup()
+        jobs = [self.executor.submit(w.cleanup) for w in self.daemons]
+        for j in jobs:
+            j.result(TIMEOUT)
         if self.bitcoind_proxy is not None:
             self.bitcoind_proxy.stop()

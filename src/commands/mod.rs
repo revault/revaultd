@@ -48,8 +48,8 @@ use revault_tx::{
         EmergencyTransaction, RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction,
         UnvaultTransaction,
     },
-    txins::DepositTxIn,
-    txouts::{DepositTxOut, SpendTxOut},
+    txins::{DepositTxIn, RevaultTxIn},
+    txouts::{DepositTxOut, RevaultTxOut, SpendTxOut},
 };
 
 use std::{collections::BTreeMap, fmt};
@@ -1144,6 +1144,8 @@ impl DaemonControl {
     ///
     /// ## Errors
     /// - If called for a non-manager
+    ///  TODO: this command can greatly be improved by changing the status in database for an
+    ///  integer, updating it when polling bitcoind and filtering it at the SQL level.
     pub fn list_spend_txs(
         &self,
         statuses: Option<&[ListSpendStatus]>,
@@ -1155,23 +1157,72 @@ impl DaemonControl {
         let spend_tx_map = db_list_spends(&db_path).expect("Database must be available");
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
         for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
+            let mut status = match db_spend.broadcasted {
+                Some(true) => ListSpendStatus::Broadcasted,
+                Some(false) => ListSpendStatus::Pending,
+                None => ListSpendStatus::NonFinal,
+            };
+
+            let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
+                .expect("Database must be available");
+
+            if let Some((_, vault)) = spent_vaults
+                .iter()
+                .find(|(_, v)| v.status == VaultStatus::Spent || v.status == VaultStatus::Canceled)
+            {
+                // If one the vault was canceled or one of spent by another transaction
+                // then the spend tx cannot be used anymore.
+                if vault.status == VaultStatus::Canceled
+                    || vault.final_txid != Some(db_spend.psbt.txid())
+                {
+                    status = ListSpendStatus::Deprecated;
+                } else {
+                    status = ListSpendStatus::Confirmed;
+                }
+            };
+
             // Filter by status
             if let Some(s) = &statuses {
-                let status = if let Some(true) = db_spend.broadcasted {
-                    ListSpendStatus::Broadcasted
-                } else if let Some(false) = db_spend.broadcasted {
-                    ListSpendStatus::Pending
-                } else {
-                    ListSpendStatus::NonFinal
-                };
-
                 if !s.contains(&status) {
                     continue;
                 }
             }
 
-            let spent_vaults = db_vaults_from_spend(&db_path, &db_spend.psbt.txid())
-                .expect("Database must be available");
+            let (deposit_amount, mut cpfp_amount) = spent_vaults.iter().fold(
+                (Amount::from_sat(0), Amount::from_sat(0)),
+                |(deposit_total, cpfp_total), (_, vault)| {
+                    let unvault = UnvaultTransaction::new(
+                        DepositTxIn::new(
+                            vault.deposit_outpoint,
+                            DepositTxOut::new(
+                                vault.amount,
+                                &revaultd
+                                    .deposit_descriptor
+                                    .derive(vault.derivation_index, &revaultd.secp_ctx),
+                            ),
+                        ),
+                        &revaultd
+                            .unvault_descriptor
+                            .derive(vault.derivation_index, &revaultd.secp_ctx),
+                        &revaultd
+                            .cpfp_descriptor
+                            .derive(vault.derivation_index, &revaultd.secp_ctx),
+                        revaultd.lock_time,
+                    )
+                    .expect("Spent vault must have a correct unvault transaction");
+
+                    let cpfp_amount = Amount::from_sat(
+                        unvault
+                            .cpfp_txin(&revaultd.cpfp_descriptor, &revaultd.secp_ctx)
+                            .expect("Unvault tx has always a cpfp output")
+                            .txout()
+                            .txout()
+                            .value,
+                    );
+
+                    (deposit_total + vault.amount, cpfp_total + cpfp_amount)
+                },
+            );
 
             let derivation_index = spent_vaults
                 .values()
@@ -1193,6 +1244,7 @@ impl DaemonControl {
             for (i, txout) in db_spend.psbt.tx().output.iter().enumerate() {
                 if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
                     cpfp_index = Some(i);
+                    cpfp_amount += Amount::from_sat(txout.value);
                 }
 
                 if deposit_address == txout.script_pubkey {
@@ -1203,8 +1255,11 @@ impl DaemonControl {
             listspend_entries.push(ListSpendEntry {
                 psbt: db_spend.psbt,
                 deposit_outpoints,
+                deposit_amount,
+                cpfp_amount,
                 cpfp_index: cpfp_index.expect("We always create a CPFP output"),
                 change_index,
+                status,
             });
         }
 
@@ -1507,15 +1562,31 @@ pub enum ListSpendStatus {
     NonFinal,
     Pending,
     Broadcasted,
+    /// The spend tx was confirmed in the blockchain.
+    Confirmed,
+    /// The spend tx cannot be used anymore, one of its input was spent by another transaction
+    Deprecated,
 }
 
 /// Information about a Spend transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListSpendEntry {
     pub deposit_outpoints: Vec<OutPoint>,
+    #[serde(
+        serialize_with = "ser_amount",
+        deserialize_with = "deser_amount_from_sats"
+    )]
+    pub deposit_amount: Amount,
+    /// Total of amount of the cpfp outputs of the unvault transactions and the spend transaction.
+    #[serde(
+        serialize_with = "ser_amount",
+        deserialize_with = "deser_amount_from_sats"
+    )]
+    pub cpfp_amount: Amount,
     pub psbt: SpendTransaction,
     pub cpfp_index: usize,
     pub change_index: Option<usize>,
+    pub status: ListSpendStatus,
 }
 
 /// Information about the configured servers.

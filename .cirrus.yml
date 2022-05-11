@@ -2,6 +2,7 @@ task:
   name: 'Functional tests'
   container:
     image: rust:latest
+  timeout_in: 90m  # https://cirrus-ci.org/faq/#instance-timed-out
 
   env:
     EXECUTOR_WORKERS: 1

@@ -6,7 +6,7 @@ task:
 
   env:
     EXECUTOR_WORKERS: 1
-    VERBOSE: 1
+    VERBOSE: 0
     LOG_LEVEL: debug
     TIMEOUT: 300
     BITCOIND_VERSION: 22.0

@@ -535,17 +535,18 @@ def test_large_spends(revault_network, bitcoind, executor):
     # Get some more funds
     bitcoind.generate_block(1)
 
-    vaults = []
     deposits = []
     deriv_indexes = []
     total_amount = 0
-    for i in range(10):
-        amount = random.randint(5, 5000) / 100
-        vaults.append(revault_network.fund(amount))
-        deposits.append(f"{vaults[i]['txid']}:{vaults[i]['vout']}")
-        deriv_indexes.append(vaults[i]["derivation_index"])
-        total_amount += vaults[i]["amount"]
-    revault_network.activate_fresh_vaults(vaults)
+    for _ in range(5):
+        new_vaults = []
+        for i in range(2):
+            amount = random.randint(5, 5000) / 100
+            new_vaults.append(revault_network.fund(amount))
+            deposits.append(f"{new_vaults[i]['txid']}:{new_vaults[i]['vout']}")
+            deriv_indexes.append(new_vaults[i]["derivation_index"])
+            total_amount += new_vaults[i]["amount"]
+        revault_network.activate_fresh_vaults(new_vaults)
 
     feerate = 1
     n_outputs = random.randint(1, 3)
@@ -614,14 +615,14 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     man = revault_network.man(0)
 
     vaults = []
-    deposits = []
-    deriv_indexes = []
-    amounts = [(i + 1) / 100 for i in range(20)]
-    total_amount = sum(amounts) * COIN
-    vaults = revault_network.fundmany(amounts)
+    for _ in range(5):
+        amounts = [(i + 1) / 100 for i in range(4)]
+        new_vaults = revault_network.fundmany(amounts)
+        revault_network.activate_fresh_vaults(new_vaults)
+        vaults += new_vaults
+    total_amount = sum(v["amount"] for v in vaults)
     deposits = [f"{v['txid']}:{v['vout']}" for v in vaults]
     deriv_indexes = [v["derivation_index"] for v in vaults]
-    revault_network.activate_fresh_vaults(vaults)
 
     feerate = 1
     n_outputs = 588

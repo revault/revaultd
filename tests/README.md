@@ -19,6 +19,8 @@ python3 -m venv venv
 # Get the deps
 pip install -r tests/requirements.txt
 ```
+Additionaly you need to have `bitcoind` installed on your computer, please
+refer to [bitcoincore](https://bitcoincore.org/en/download/) for installation.
 
 ### Test modes
 
@@ -57,18 +59,13 @@ must `init` the submodules (if you did not `clone` with `--recursive`) and compi
 servers code:
 ```
 # From the root of the repository
-git submodule update --init --recursive
-cd tests/servers
-cd coordinatord && cargo build && cd ..
-cd cosignerd && cargo build && cd ..
-cd miradord && cargo build && cd ..
+./contrib/recompile_tests_servers.sh
 ```
+To fetch the new version of the servers, you can reuse the same script.
 
-When you need a new version of the servers, you can update the submodules:
+First, setup the docker image required for running server-requiring tests:
 ```
-# From the root of the repository
-cd tests/servers
-git submodule update --remote --recursive
+docker run --rm -d -p 5432:5432 --name postgres-coordinatord -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test -e POSTGRES_DB=coordinator_db postgres:alpine
 ```
 
 To run the server-requiring tests, pass the postgres credentials to the framework:
@@ -76,6 +73,10 @@ To run the server-requiring tests, pass the postgres credentials to the framewor
 POSTGRES_USER="test" POSTGRES_PASS="test" TEST_DEBUG=1 pytest -vvv -n8 --timeout=1800
 ```
 
+It is plausible that your functional tests encounter timeout error, you can 
+increase it by setting the environment variable to a higher value (for instance
+`TIMEOUT=120`). Running in single-threaded mode (by not specifying the `-n` 
+parameter) might also help.
 
 ### Tips and tricks
 #### Logging

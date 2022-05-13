@@ -5,7 +5,7 @@ task:
   timeout_in: 90m  # https://cirrus-ci.org/faq/#instance-timed-out
 
   env:
-    EXECUTOR_WORKERS: 1
+    EXECUTOR_WORKERS: 3
     VERBOSE: 0
     LOG_LEVEL: debug
     TIMEOUT: 300

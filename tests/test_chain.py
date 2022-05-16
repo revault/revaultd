@@ -676,7 +676,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     revault_network.activate_vault(vault)
     deposits = [f"{vault['txid']}:{vault['vout']}"]
     destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
-    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]["psbt"]
     for m in [man] + mans:
         spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
         mans[0].rpc.updatespendtx(spend_tx)
@@ -719,7 +719,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     revault_network.activate_vault(vault)
     deposits = [f"{vault['txid']}:{vault['vout']}"]
     destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
-    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]["psbt"]
     for m in [man] + mans:
         spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
         mans[0].rpc.updatespendtx(spend_tx)
@@ -759,7 +759,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     revault_network.activate_vault(vault)
     deposits = [f"{vault['txid']}:{vault['vout']}"]
     destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
-    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]["psbt"]
     for m in [man] + mans:
         spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
         mans[0].rpc.updatespendtx(spend_tx)
@@ -800,7 +800,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     revault_network.activate_vault(vault)
     deposits = [f"{vault['txid']}:{vault['vout']}"]
     destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
-    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]["psbt"]
     for m in [man] + mans:
         spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
         mans[0].rpc.updatespendtx(spend_tx)
@@ -842,7 +842,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     revault_network.activate_vault(vault)
     deposits = [f"{vault['txid']}:{vault['vout']}"]
     destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
-    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]["psbt"]
     for m in [man] + mans:
         spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
         mans[0].rpc.updatespendtx(spend_tx)
@@ -876,7 +876,7 @@ def test_retrieve_vault_status(revault_network, bitcoind):
     revault_network.activate_vault(vault)
     deposits = [f"{vault['txid']}:{vault['vout']}"]
     destinations = {bitcoind.rpc.getnewaddress(): vault["amount"] // 2}
-    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]
+    spend_tx = mans[0].rpc.getspendtx(deposits, destinations, 1)["spend_tx"]["psbt"]
     for m in [man] + mans:
         spend_tx = m.man_keychain.sign_spend_psbt(spend_tx, [vault["derivation_index"]])
         mans[0].rpc.updatespendtx(spend_tx)

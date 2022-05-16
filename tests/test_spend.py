@@ -35,7 +35,9 @@ def test_spendtx_management(revault_network, bitcoind):
     revault_network.secure_vault(vault)
     revault_network.activate_vault(vault)
 
-    spend_tx = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"]
+    spend_tx = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"][
+        "psbt"
+    ]
 
     # If we are not a manager, it'll fail
     with pytest.raises(RpcError, match="This is a manager command"):
@@ -85,7 +87,9 @@ def test_spendtx_management(revault_network, bitcoind):
     }
     revault_network.secure_vault(vault_b)
     revault_network.activate_vault(vault_b)
-    spend_tx_b = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"]
+    spend_tx_b = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"][
+        "psbt"
+    ]
     man.rpc.updatespendtx(spend_tx_b)
     man.wait_for_log("Storing new Spend transaction")
     spend_txs = man.rpc.listspendtxs()["spend_txs"]
@@ -100,6 +104,14 @@ def test_spendtx_management(revault_network, bitcoind):
         "status": "non_final",
     } in spend_txs
     assert {
+        "deposit_outpoints": [deposit_b, deposit],
+        "deposit_amount": vault["amount"] + vault_b["amount"],
+        "cpfp_amount": 95808,
+        "psbt": spend_tx_b,
+        "change_index": 3,
+        "cpfp_index": 0,
+        "status": "non_final",
+    } in spend_txs or {
         "deposit_outpoints": [deposit, deposit_b],
         "deposit_amount": vault["amount"] + vault_b["amount"],
         "cpfp_amount": 95808,
@@ -146,7 +158,7 @@ def test_spendtx_management(revault_network, bitcoind):
     revault_network.activate_vault(vault_c)
     rogue_spend_tx = man.rpc.getspendtx(rogue_spent_vaults, destination, feerate)[
         "spend_tx"
-    ]
+    ]["psbt"]
     deriv_indexes = deriv_indexes + [vault_c["derivation_index"]]
     for man in revault_network.mans():
         rogue_spend_tx = man.man_keychain.sign_spend_psbt(rogue_spend_tx, deriv_indexes)
@@ -208,7 +220,8 @@ def test_spendtx_management(revault_network, bitcoind):
 
     # The spend is confirmed
     spend_tx = txs[0]
-    assert spend_tx["deposit_outpoints"] == [deposit, deposit_b]
+    assert deposit in spend_tx["deposit_outpoints"]
+    assert deposit_b in spend_tx["deposit_outpoints"]
     assert spend_tx["deposit_amount"] == vault["amount"] + vault_b["amount"]
     assert spend_tx["cpfp_amount"] == 95808
     assert spend_tx["change_index"] == 3
@@ -217,7 +230,9 @@ def test_spendtx_management(revault_network, bitcoind):
 
     # The conflicting spend is deprecated
     rogue_spend_tx = txs[1]
-    assert rogue_spend_tx["deposit_outpoints"] == [deposit, deposit_b, deposit_c]
+    assert deposit in rogue_spend_tx["deposit_outpoints"]
+    assert deposit_b in rogue_spend_tx["deposit_outpoints"]
+    assert deposit_c in rogue_spend_tx["deposit_outpoints"]
     assert (
         rogue_spend_tx["deposit_amount"]
         == vault["amount"] + vault_b["amount"] + vault_c["amount"]
@@ -258,14 +273,14 @@ def test_spends_concurrent(revault_network, bitcoind):
 
     # Spending to a P2WSH (effectively a change but hey), with a change output
     destinations = {man.rpc.getdepositaddress()["address"]: sum(amounts_a) // 2}
-    spend_tx_a = man.rpc.getspendtx(deposits_a, destinations, 1)["spend_tx"]
+    spend_tx_a = man.rpc.getspendtx(deposits_a, destinations, 1)["spend_tx"]["psbt"]
     for man in revault_network.mans():
         spend_tx_a = man.man_keychain.sign_spend_psbt(spend_tx_a, indexes_a)
     man.rpc.updatespendtx(spend_tx_a)
 
     # Spending to a P2WPKH, with a change output
     destinations = {bitcoind.rpc.getnewaddress(): sum(amounts_b) // 2}
-    spend_tx_b = man.rpc.getspendtx(deposits_b, destinations, 1)["spend_tx"]
+    spend_tx_b = man.rpc.getspendtx(deposits_b, destinations, 1)["spend_tx"]["psbt"]
     for man in revault_network.mans():
         spend_tx_b = man.man_keychain.sign_spend_psbt(spend_tx_b, indexes_b)
     man.rpc.updatespendtx(spend_tx_b)
@@ -356,7 +371,7 @@ def test_spends_conflicting(revault_network, bitcoind):
     feerate = 5_000
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits_a), 1)
     destinations = {bitcoind.rpc.getnewaddress(): sum(amounts_a) - fees}
-    spend_tx_a = man.rpc.getspendtx(deposits_a, destinations, 1)["spend_tx"]
+    spend_tx_a = man.rpc.getspendtx(deposits_a, destinations, 1)["spend_tx"]["psbt"]
     for man in revault_network.mans():
         spend_tx_a = man.man_keychain.sign_spend_psbt(spend_tx_a, indexes_a)
     man.rpc.updatespendtx(spend_tx_a)
@@ -364,7 +379,7 @@ def test_spends_conflicting(revault_network, bitcoind):
     feerate = 10_000
     fees = revault_network.compute_spendtx_fees(feerate, len(deposits_b), 1, True)
     destinations = {bitcoind.rpc.getnewaddress(): (sum(amounts_b) - fees) // 2}
-    spend_tx_b = man.rpc.getspendtx(deposits_b, destinations, 1)["spend_tx"]
+    spend_tx_b = man.rpc.getspendtx(deposits_b, destinations, 1)["spend_tx"]["psbt"]
     for man in revault_network.mans():
         spend_tx_b = man.man_keychain.sign_spend_psbt(spend_tx_b, indexes_b)
     man.rpc.updatespendtx(spend_tx_b)
@@ -449,7 +464,7 @@ def test_spend_threshold(revault_network, bitcoind, executor):
         bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
         for _ in range(n_outputs)
     }
-    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]["psbt"]
 
     # Trying to broadcast when managers_threshold - 1 managers signed
     for man in revault_network.mans()[: managers_threshold - 1]:
@@ -555,7 +570,7 @@ def test_large_spends(revault_network, bitcoind, executor):
         bitcoind.rpc.getnewaddress(): (total_amount - fees) // n_outputs
         for _ in range(n_outputs)
     }
-    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]["psbt"]
 
     for man in revault_network.mans():
         spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
@@ -647,7 +662,7 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
     output_value = int((total_amount - fees) // n_outputs)
     for addr in destinations:
         destinations[addr] = output_value
-    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]["psbt"]
     for man in revault_network.mans():
         spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
         man.rpc.updatespendtx(spend_tx)

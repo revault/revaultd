@@ -4,7 +4,8 @@
 
 use crate::{
     commands::{
-        CommandError, HistoryEvent, HistoryEventKind, ListPresignedTxEntry, ListVaultsEntry,
+        CommandError, HistoryEvent, HistoryEventKind, ListPresignedTxEntry, ListSpendEntry,
+        ListSpendStatus, ListVaultsEntry,
     },
     database::{
         interface::{
@@ -21,18 +22,20 @@ use crate::{
 
 use revault_tx::{
     bitcoin::{
-        consensus::encode, hashes::hex::FromHex, Amount, OutPoint,
+        consensus::encode, hashes::hex::FromHex, util::bip32, Amount, OutPoint,
         Transaction as BitcoinTransaction, Txid,
     },
     miniscript::DescriptorTrait,
     transactions::{
-        transaction_chain_manager, CpfpableTransaction, RevaultTransaction, UnvaultTransaction,
+        transaction_chain_manager, CpfpableTransaction, RevaultTransaction, SpendTransaction,
+        UnvaultTransaction,
     },
     txins::{DepositTxIn, RevaultTxIn},
     txouts::{DepositTxOut, RevaultTxOut},
 };
 
 use std::{
+    cmp,
     collections::{HashMap, HashSet},
     fmt,
     str::FromStr,
@@ -488,6 +491,82 @@ pub fn gethistory<T: BitcoindThread>(
     // at the end. (A limit was applied in the sql query only on the number of txids in the given period)
     events.truncate(limit as usize);
     Ok(events)
+}
+
+/// Get the ListSpendEntry for a given Spend transaction.
+/// This relies on brittle assumptions about how we construct the Spend. Those might not hold if
+/// used on a Spend PSBT we did not create.
+pub fn spend_entry<'a>(
+    revaultd: &RevaultD,
+    psbt: SpendTransaction,
+    spent_vaults: impl IntoIterator<Item = &'a DbVault>,
+    status: ListSpendStatus,
+) -> ListSpendEntry {
+    // The derivation index for the change is assumed to be reusing the largest one of the inputs.
+    let (deposit_amount, mut cpfp_amount, deposit_outpoints, derivation_index) =
+        spent_vaults.into_iter().fold(
+            (
+                Amount::from_sat(0),
+                Amount::from_sat(0),
+                Vec::new(),
+                bip32::ChildNumber::from(0),
+            ),
+            |(deposit_total, cpfp_total, mut deposit_outpoints, derivation_index), vault| {
+                deposit_outpoints.push(vault.deposit_outpoint);
+
+                let unvault = unvault_tx(&revaultd, &vault)
+                    .expect("Spent vault must have a correct unvault transaction");
+                let cpfp_amount = Amount::from_sat(
+                    unvault
+                        .cpfp_txin(&revaultd.cpfp_descriptor, &revaultd.secp_ctx)
+                        .expect("Unvault tx has always a cpfp output")
+                        .txout()
+                        .txout()
+                        .value,
+                );
+
+                (
+                    deposit_total + vault.amount,
+                    cpfp_total + cpfp_amount,
+                    deposit_outpoints,
+                    cmp::max(derivation_index, vault.derivation_index),
+                )
+            },
+        );
+
+    let cpfp_script_pubkey = revaultd
+        .cpfp_descriptor
+        .derive(derivation_index, &revaultd.secp_ctx)
+        .into_inner()
+        .script_pubkey();
+    let deposit_address = revaultd
+        .deposit_descriptor
+        .derive(derivation_index, &revaultd.secp_ctx)
+        .into_inner()
+        .script_pubkey();
+    let mut cpfp_index = None;
+    let mut change_index = None;
+    for (i, txout) in psbt.tx().output.iter().enumerate() {
+        if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
+            cpfp_index = Some(i);
+            cpfp_amount += Amount::from_sat(txout.value);
+        }
+
+        if deposit_address == txout.script_pubkey {
+            change_index = Some(i);
+        }
+    }
+
+    ListSpendEntry {
+        psbt,
+        deposit_outpoints,
+        deposit_amount,
+        cpfp_amount,
+        // FIXME: this won't hold post optional-CPFP
+        cpfp_index: cpfp_index.expect("We always have a CPFP index"),
+        change_index,
+        status,
+    }
 }
 
 #[cfg(test)]

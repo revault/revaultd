@@ -35,7 +35,7 @@ use crate::{
 };
 use utils::{
     deser_amount_from_sats, deser_from_str, finalized_emer_txs, gethistory, listvaults_from_db,
-    presigned_txs, ser_amount, ser_to_string, unvault_tx, vaults_from_deposits,
+    presigned_txs, ser_amount, ser_to_string, spend_entry, unvault_tx, vaults_from_deposits,
 };
 
 use revault_tx::{
@@ -43,15 +43,13 @@ use revault_tx::{
         consensus::encode, secp256k1, util::bip32, Address, Amount, Network, OutPoint,
         PublicKey as BitcoinPubKey, Transaction as BitcoinTransaction, TxOut, Txid,
     },
-    miniscript::DescriptorTrait,
     scripts::{CpfpDescriptor, DepositDescriptor, UnvaultDescriptor},
     transactions::{
         spend_tx_from_deposits, transaction_chain, transaction_chain_manager, CancelTransaction,
         CpfpableTransaction, EmergencyTransaction, RevaultPresignedTransaction, RevaultTransaction,
         SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
     },
-    txins::RevaultTxIn,
-    txouts::{DepositTxOut, RevaultTxOut, SpendTxOut},
+    txouts::{DepositTxOut, SpendTxOut},
 };
 
 use std::{collections::BTreeMap, fmt};
@@ -924,7 +922,7 @@ impl DaemonControl {
         outpoints: &[OutPoint],
         destinations: &BTreeMap<Address, u64>,
         feerate_vb: u64,
-    ) -> Result<SpendTransaction, CommandError> {
+    ) -> Result<ListSpendEntry, CommandError> {
         let revaultd = self.revaultd.read().unwrap();
         manager_only!(revaultd);
         let db_file = &revaultd.db_file();
@@ -932,6 +930,8 @@ impl DaemonControl {
         // FIXME: have a feerate type to avoid that
         assert!(feerate_vb > 0, "Spend feerate can't be null.");
 
+        // TODO: remove the txins vec, just use the spent_vaults one.
+        let mut spent_vaults = Vec::with_capacity(outpoints.len());
         // Reconstruct the DepositTxin s from the outpoints and the vaults informations
         let mut txins = Vec::with_capacity(outpoints.len());
         // If we need a change output, use the highest derivation index of the vaults
@@ -947,6 +947,7 @@ impl DaemonControl {
                     change_index = vault.derivation_index;
                 }
                 txins.push((*outpoint, vault.amount, vault.derivation_index));
+                spent_vaults.push(vault);
             } else {
                 return Err(CommandError::InvalidStatus(
                     vault.status,
@@ -1071,7 +1072,12 @@ impl DaemonControl {
         };
         log::debug!("Final Spend transaction: '{:?}'", tx_res);
 
-        Ok(tx_res)
+        Ok(spend_entry(
+            &revaultd,
+            tx_res,
+            spent_vaults.iter(),
+            ListSpendStatus::NonFinal,
+        ))
     }
 
     /// Store a new or update an existing Spend transaction in database.
@@ -1150,7 +1156,7 @@ impl DaemonControl {
 
         let spend_tx_map = db_list_spends(&db_path).expect("Database must be available");
         let mut listspend_entries = Vec::with_capacity(spend_tx_map.len());
-        for (_, (db_spend, deposit_outpoints)) in spend_tx_map {
+        for (_, (db_spend, _)) in spend_tx_map {
             let mut status = match db_spend.broadcasted {
                 Some(true) => ListSpendStatus::Broadcasted,
                 Some(false) => ListSpendStatus::Pending,
@@ -1182,62 +1188,12 @@ impl DaemonControl {
                 }
             }
 
-            let (deposit_amount, mut cpfp_amount) = spent_vaults.iter().fold(
-                (Amount::from_sat(0), Amount::from_sat(0)),
-                |(deposit_total, cpfp_total), (_, vault)| {
-                    let unvault = unvault_tx(&revaultd, vault)
-                        .expect("Spent vault must have a correct unvault transaction");
-
-                    let cpfp_amount = Amount::from_sat(
-                        unvault
-                            .cpfp_txin(&revaultd.cpfp_descriptor, &revaultd.secp_ctx)
-                            .expect("Unvault tx has always a cpfp output")
-                            .txout()
-                            .txout()
-                            .value,
-                    );
-
-                    (deposit_total + vault.amount, cpfp_total + cpfp_amount)
-                },
-            );
-
-            let derivation_index = spent_vaults
-                .values()
-                .map(|v| v.derivation_index)
-                .max()
-                .expect("Spent vaults should not be empty");
-            let cpfp_script_pubkey = revaultd
-                .cpfp_descriptor
-                .derive(derivation_index, &revaultd.secp_ctx)
-                .into_inner()
-                .script_pubkey();
-            let deposit_address = revaultd
-                .deposit_descriptor
-                .derive(derivation_index, &revaultd.secp_ctx)
-                .into_inner()
-                .script_pubkey();
-            let mut cpfp_index = None;
-            let mut change_index = None;
-            for (i, txout) in db_spend.psbt.tx().output.iter().enumerate() {
-                if cpfp_index.is_none() && cpfp_script_pubkey == txout.script_pubkey {
-                    cpfp_index = Some(i);
-                    cpfp_amount += Amount::from_sat(txout.value);
-                }
-
-                if deposit_address == txout.script_pubkey {
-                    change_index = Some(i);
-                }
-            }
-
-            listspend_entries.push(ListSpendEntry {
-                psbt: db_spend.psbt,
-                deposit_outpoints,
-                deposit_amount,
-                cpfp_amount,
-                cpfp_index: cpfp_index.expect("We always create a CPFP output"),
-                change_index,
+            listspend_entries.push(spend_entry(
+                &revaultd,
+                db_spend.psbt,
+                spent_vaults.values(),
                 status,
-            });
+            ));
         }
 
         Ok(listspend_entries)

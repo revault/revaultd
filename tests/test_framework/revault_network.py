@@ -608,7 +608,9 @@ class RevaultNetwork:
             deriv_indexes.append(v["derivation_index"])
         man.wait_for_active_vaults(deposits)
 
-        spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+        spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"][
+            "psbt"
+        ]
         for man in self.mans():
             spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
             man.rpc.updatespendtx(spend_tx)
@@ -654,7 +656,9 @@ class RevaultNetwork:
         for man in self.mans():
             man.wait_for_active_vaults(deposits)
 
-        spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+        spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"][
+            "psbt"
+        ]
         for man in self.mans():
             spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
             man.rpc.updatespendtx(spend_tx)

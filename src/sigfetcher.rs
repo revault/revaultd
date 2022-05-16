@@ -7,7 +7,8 @@ use crate::{
         actions::{db_update_presigned_txs, db_update_vault_status},
         bitcointx::RevaultTx,
         interface::{
-            db_cancel_transaction, db_emer_transaction, db_sig_missing, db_unvault_emer_transaction,
+            db_cancel_transaction_by_txid, db_emer_transaction, db_sig_missing,
+            db_unvault_emer_transaction,
         },
         schema::{DbTransaction, DbVault},
         DatabaseError,
@@ -18,7 +19,7 @@ use crate::{
 use revault_net::transport::KKTransport;
 use revault_tx::{
     bitcoin::{secp256k1, PublicKey as BitcoinPubKey},
-    transactions::RevaultTransaction,
+    transactions::{transaction_chain_manager, RevaultTransaction},
 };
 
 use std::{
@@ -156,7 +157,7 @@ fn maybe_wt_share_signatures(
         None => return Ok(()),
     };
 
-    // They should always be there, apart from a very edgy race condition.
+    // The revocation txs should always be there, apart from a very edgy race condition.
     let emer_tx = db_emer_transaction(db_path, db_vault.id)?
         .ok_or(SignatureFetcherError::MissingTransaction)?;
     if !emer_tx
@@ -166,15 +167,32 @@ fn maybe_wt_share_signatures(
     {
         return Ok(());
     }
-    let cancel_tx = db_cancel_transaction(db_path, db_vault.id)?
-        .ok_or(SignatureFetcherError::MissingTransaction)?;
-    if !cancel_tx
-        .psbt
-        .unwrap_cancel()
-        .is_finalizable(&revaultd.secp_ctx)
-    {
-        return Ok(());
+
+    let (_, cancel_batch) = transaction_chain_manager(
+        db_vault.deposit_outpoint,
+        db_vault.amount,
+        &revaultd.deposit_descriptor,
+        &revaultd.unvault_descriptor,
+        &revaultd.cpfp_descriptor,
+        db_vault.derivation_index,
+        &revaultd.secp_ctx,
+    )
+    .expect("We wouldn't have put a vault with an invalid chain in DB");
+    let mut cancel_txs = BTreeMap::new();
+    for (amount, cancel_tx) in cancel_batch.feerates_map() {
+        let cancel_tx = db_cancel_transaction_by_txid(db_path, &cancel_tx.txid())
+            .expect("Database must always be available")
+            .ok_or(SignatureFetcherError::MissingTransaction)?;
+        if !cancel_tx
+            .psbt
+            .unwrap_cancel()
+            .is_finalizable(&revaultd.secp_ctx)
+        {
+            return Ok(());
+        }
+        cancel_txs.insert(amount, cancel_tx);
     }
+
     let unemer_tx = db_unvault_emer_transaction(db_path, db_vault.id)?
         .ok_or(SignatureFetcherError::MissingTransaction)?;
     if !unemer_tx
@@ -195,7 +213,7 @@ fn maybe_wt_share_signatures(
         db_vault.deposit_outpoint,
         db_vault.derivation_index,
         &emer_tx,
-        &cancel_tx,
+        &cancel_txs,
         &unemer_tx,
     )?;
 

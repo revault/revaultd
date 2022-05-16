@@ -121,8 +121,8 @@ Retrieve the status of the servers, such as the coordinator, the cosigners, the 
 | 5     | `active`             | Everyone signed and shared the Unvault transaction signature for this vault                                  |
 | 6     | `unvaulting`         | The vault has its unvault tx broadcasted                                                                     |
 | 7     | `unvaulted`          | The vault has its unvault tx confirmed                                                                       |
-| 8     | `cancelling`         | The vault has its cancel tx broadcasted, funds are sent to an other vault                                    |
-| 9     | `cancelled`          | The vault has its cancel tx confirmed, funds are in an other vault                                           |
+| 8     | `cancelling`         | The vault has one cancel tx broadcasted, funds are sent to an other vault                                    |
+| 9     | `cancelled`          | The vault has one cancel tx confirmed, funds are in an other vault                                           |
 | 4 / 8 | `emergency_vaulting` | The vault has its emergency tx broadcasted, funds are sent to the Deep Emergency Vault                       |
 | 5 / 9 | `emergency_vaulted`  | The vault has its emergency tx confirmed, funds are in the Deep Emergency Vault                              |
 | 8     | `spendable`          | The vault has its unvault tx timelock expired and can be spent                                               |
@@ -188,13 +188,13 @@ vault's state).
 
 #### Presigned txs
 
-| Field               | Type     | Description                                                                                    |
-| ------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `vault_outpoint`    | string   | The vault deposit transaction outpoint.                                                        |
-| `unvault`           | string   | The Unvaulting transaction PSBT (base64 encoded)                                               |
-| `cancel`            | string   | The Cancel transaction PSBT (base64 encoded)                                                   |
-| `emergency`         | string   | The Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder         |
-| `unvault_emergency` | string   | The Unvault Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder |
+| Field               | Type           | Description                                                                                    |
+| ------------------- | --------       | ---------------------------------------------------------------------------------------------- |
+| `vault_outpoint`    | string         | The vault deposit transaction outpoint.                                                        |
+| `unvault`           | string         | The Unvaulting transaction PSBT (base64 encoded)                                               |
+| `cancel`            | string array   | List of base64-encoded Cancel transactions PSBT                                                |
+| `emergency`         | string         | The Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder         |
+| `unvault_emergency` | string         | The Unvault Emergency transaction PSBT (base64 encoded), or `null` if we are not a stakeholder |
 
 
 ### `listonchaintransactions`
@@ -250,11 +250,11 @@ known and confirmed ([`funded`](#vault-statuses)) vault.
 
 #### Response
 
-| Field                  | Type   | Description                                                 |
-| ---------------------- | ------ | ----------------------------------------------------------- |
-| `cancel_tx`            | string | Base64-encoded Cancel transaction PSBT                      |
-| `emergency_tx`         | string | Base64-encoded Emergency transaction PSBT                   |
-| `emergency_unvault_tx` | string | Base64-encoded Unvault Emergency transaction PSBT           |
+| Field                  | Type         | Description                                                 |
+| ---------------------- | ------------ | ----------------------------------------------------------- |
+| `cancel_txs`           | string array | List of the base64-encoded Cancel transactions PSBTs        |
+| `emergency_tx`         | string       | Base64-encoded Emergency transaction PSBT                   |
+| `emergency_unvault_tx` | string       | Base64-encoded Unvault Emergency transaction PSBT           |
 
 
 ### `revocationtxs`
@@ -265,12 +265,12 @@ See the [flows](#stakeholder-flows) for more information.
 
 #### Request
 
-| Field                  | Type   | Description                                                 |
-| ---------------------- | ------ | ----------------------------------------------------------- |
-| `outpoint`             | string | Deposit outpoint of the vault                               |
-| `cancel_tx`            | string | Base64-encoded Cancel transaction PSBT                      |
-| `emergency_tx`         | string | Base64-encoded Emergency transaction PSBT                   |
-| `emergency_unvault_tx` | string | Base64-encoded Unvault Emergency transaction PSBT           |
+| Field                  | Type         | Description                                                 |
+| ---------------------- | ------------ | ----------------------------------------------------------- |
+| `outpoint`             | string       | Deposit outpoint of the vault                               |
+| `cancel_txs`           | string array | List of base64-encoded Cancel transactions PSBTs            |
+| `emergency_tx`         | string       | Base64-encoded Emergency transaction PSBT                   |
+| `emergency_unvault_tx` | string       | Base64-encoded Unvault Emergency transaction PSBT           |
 
 
 #### Response

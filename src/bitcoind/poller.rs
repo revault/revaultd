@@ -3,7 +3,7 @@ use crate::{
     bitcoind::{
         interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},
         utils::{
-            cancel_txid, emer_txid, populate_deposit_cache, populate_unvaults_cache,
+            cancel_txids, emer_txid, populate_deposit_cache, populate_unvaults_cache,
             presigned_transactions, unemer_txid, unvault_txid, unvault_txin_from_deposit,
             vault_deposit_utxo,
         },
@@ -21,10 +21,10 @@ use crate::{
             db_update_first_stage_blockheight_from_unvault_txid, db_update_tip,
         },
         interface::{
-            db_broadcastable_spend_transactions, db_canceling_vaults, db_cpfpable_spends,
-            db_cpfpable_unvaults, db_emering_vaults, db_exec, db_spending_vaults, db_tip,
-            db_txids_unvaulted_no_bh, db_unemering_vaults, db_unvault_dbtx, db_unvault_transaction,
-            db_vault_by_deposit, db_vault_by_unvault_txid, db_vaults_dbtx, db_wallet,
+            db_broadcastable_spend_transactions, db_cpfpable_spends, db_cpfpable_unvaults,
+            db_emering_vaults, db_exec, db_spending_vaults, db_tip, db_txids_unvaulted_no_bh,
+            db_unemering_vaults, db_unvault_dbtx, db_unvault_transaction, db_vault_by_deposit,
+            db_vault_by_unvault_txid, db_vaults_by_status, db_vaults_dbtx, db_wallet,
         },
         schema::DbVault,
     },
@@ -264,9 +264,11 @@ fn mark_confirmed_cancels(
 ) -> Result<(), BitcoindError> {
     let db_path = revaultd.read().unwrap().db_file();
 
-    for (db_vault, cancel_tx) in db_canceling_vaults(&db_path)? {
-        let cancel_txid = cancel_tx.txid();
-        match maybe_confirm_cancel(&db_path, bitcoind, &db_vault, &cancel_txid) {
+    for db_vault in db_vaults_by_status(&db_path, VaultStatus::Canceling)? {
+        let cancel_txid = &db_vault
+            .final_txid
+            .expect("Must be there in Canceling state");
+        match maybe_confirm_cancel(&db_path, bitcoind, &db_vault, cancel_txid) {
             Ok(false) => {}
             Ok(true) => continue,
             Err(e) => {
@@ -278,7 +280,7 @@ fn mark_confirmed_cancels(
             }
         };
 
-        if !bitcoind.is_in_mempool(&cancel_tx.txid())? {
+        if !bitcoind.is_in_mempool(cancel_txid)? {
             // At least, is this transaction still in mempool?
             // If it was evicted, downgrade it to `unvaulted`, the polling loop will
             // take care of checking its new state immediately.
@@ -438,11 +440,10 @@ impl ToBeCpfped {
     }
 
     pub fn fees(&self) -> Amount {
-        // TODO(revault_tx): fees() should return an Amount!
-        Amount::from_sat(match self {
+        match self {
             Self::Spend(s) => s.fees(),
             Self::Unvault(u) => u.fees(),
-        })
+        }
     }
 }
 
@@ -832,9 +833,10 @@ fn rebroadcast_transactions(
             db_vault.status,
             VaultStatus::Canceling | VaultStatus::Canceled
         ) {
-            let cancel_txid =
-                cancel_txid(revaultd, &db_vault).expect("Must be able to derive cancel txid");
-            if let Err(e) = bitcoind.rebroadcast_wallet_tx(&cancel_txid) {
+            let cancel_txid = &db_vault
+                .final_txid
+                .expect("Must be there for canceling/canceled");
+            if let Err(e) = bitcoind.rebroadcast_wallet_tx(cancel_txid) {
                 log::debug!(
                     "Error re-broadcasting Cancel tx for vault {}: '{}'",
                     &db_vault.deposit_outpoint,
@@ -1111,7 +1113,7 @@ fn update_tip(
 // Which kind of transaction may spend the Unvault transaction.
 #[derive(Debug)]
 enum UnvaultSpender {
-    // The Cancel, spending via the stakeholders path to a new deposit
+    // A Cancel, spending via the stakeholders path to a new deposit
     Cancel(Txid),
     // The Spend, any transaction spending via the managers path
     Spend(Txid),
@@ -1135,13 +1137,17 @@ fn unvault_spender(
             ))
         })?;
 
-    // First, check if it was spent by a Cancel, it's cheaper.
-    let cancel_txid = cancel_txid(revaultd, &vault)?;
-    if bitcoind.is_current(&cancel_txid)? {
-        return Ok(Some(UnvaultSpender::Cancel(cancel_txid)));
+    // First, check if it was spent by a Cancel, it's cheaper than the Spend and more likely than
+    // the UnvaultEmergency.
+    let cancel_txids = cancel_txids(revaultd, &vault)?;
+    for txid in cancel_txids.iter() {
+        if bitcoind.is_current(&txid)? {
+            return Ok(Some(UnvaultSpender::Cancel(*txid)));
+        }
     }
 
-    // Second, check if it was spent by an UnvaultEmergency if we are able to, it's as cheap.
+    // Second, check if it was spent by an UnvaultEmergency if we are able to, it's cheaper than
+    // the Spend.
     let unemer_txid = unemer_txid(revaultd, &vault)?;
     if let Some(unemer_txid) = unemer_txid {
         if bitcoind.is_current(&unemer_txid)? {
@@ -1154,12 +1160,12 @@ fn unvault_spender(
         // FIXME: be smarter, all the information are in the previous call, no need for a
         // second one.
 
-        // Let's double-check that we didn't fetch the cancel, nor the unemer
-        // In theory (read edge cases), the Cancel and UnEmer could have not been
+        // Let's double-check that we didn't fetch a cancel, nor the unemer
+        // In theory (read edge cases), a Cancel and UnEmer could have not been
         // current at the last bitcoind poll but could be now.
         // Be sure to not wrongly mark a Cancel or UnEmer as a Spend!
-        if spender_txid == cancel_txid || Some(spender_txid) == unemer_txid {
-            // Alright, the spender is the cancel or the unemer,
+        if cancel_txids.contains(&spender_txid) || Some(spender_txid) == unemer_txid {
+            // Alright, the spender is a cancel or the unemer,
             // but we just checked and they weren't current. We'll return None
             // so the checker will call this function again.
             return Ok(None);
@@ -1285,7 +1291,8 @@ fn handle_new_deposit(
     outpoint: OutPoint,
     utxo: UtxoInfo,
 ) -> Result<(), BitcoindError> {
-    if utxo.txo.value <= revault_tx::transactions::DUST_LIMIT {
+    // TODO: don't ignore those with the deposit split
+    if utxo.txo.value <= revault_tx::transactions::DEPOSIT_MIN_SATS {
         log::info!(
             "Received a deposit that we considered being dust. Ignoring it. \
                  Outpoint: '{}', amount: '{}'",
@@ -1383,7 +1390,7 @@ fn handle_confirmed_deposit(
 
     let txo_value = utxo.txo.value;
     // emer_tx and unemer_tx are None for managers
-    let (unvault_tx, cancel_tx, emer_tx, unemer_tx) =
+    let (unvault_tx, cancel_batch, emer_tx, unemer_tx) =
         match presigned_transactions(&revaultd.read().unwrap(), outpoint, utxo) {
             Ok(txs) => txs,
             Err(e) => {
@@ -1403,7 +1410,7 @@ fn handle_confirmed_deposit(
         blockheight,
         blocktime,
         &unvault_tx,
-        &cancel_tx,
+        &cancel_batch,
         emer_tx.as_ref(),
         unemer_tx.as_ref(),
     )?;

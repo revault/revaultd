@@ -2,9 +2,8 @@ use crate::{
     bitcoind::{interface::UtxoInfo, BitcoindError},
     database::{
         interface::{
-            db_cancel_transaction, db_deposits, db_emer_transaction, db_unvault_emer_transaction,
-            db_unvault_from_deposit, db_unvault_transaction, db_unvaulted_vaults,
-            db_vault_by_deposit,
+            db_deposits, db_emer_transaction, db_unvault_emer_transaction, db_unvault_from_deposit,
+            db_unvault_transaction, db_unvaulted_vaults, db_vault_by_deposit,
         },
         schema::DbVault,
     },
@@ -26,7 +25,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-/// Get fresh to-be-presigned transactions for this deposit utxo
+/// Get fresh to-be-presigned transactions for this deposit utxo.
+/// The Cancel transactions are sorted by increasing feerate.
 pub fn presigned_transactions(
     revaultd: &RevaultD,
     outpoint: OutPoint,
@@ -34,7 +34,7 @@ pub fn presigned_transactions(
 ) -> Result<
     (
         UnvaultTransaction,
-        CancelTransaction,
+        [CancelTransaction; 5],
         Option<EmergencyTransaction>,
         Option<UnvaultEmergencyTransaction>,
     ),
@@ -49,13 +49,13 @@ pub fn presigned_transactions(
         })?;
 
     // Reconstruct the deposit UTXO and derive all pre-signed transactions out of it
-    // if we are a stakeholder, and only the Unvault and the Cancel if we are a manager.
+    // if we are a stakeholder, and only the Unvault and the Cancels if we are a manager.
     if revaultd.is_stakeholder() {
         let emer_address = revaultd
             .emergency_address
             .clone()
             .expect("We are a stakeholder");
-        let (unvault_tx, cancel_tx, emer_tx, unemer_tx) = transaction_chain(
+        let (unvault_tx, cancel_batch, emer_tx, unemer_tx) = transaction_chain(
             outpoint,
             Amount::from_sat(utxo.txo.value),
             &revaultd.deposit_descriptor,
@@ -63,22 +63,25 @@ pub fn presigned_transactions(
             &revaultd.cpfp_descriptor,
             derivation_index,
             emer_address,
-            revaultd.lock_time,
             &revaultd.secp_ctx,
         )?;
-        Ok((unvault_tx, cancel_tx, Some(emer_tx), Some(unemer_tx)))
+        Ok((
+            unvault_tx,
+            cancel_batch.all_feerates(),
+            Some(emer_tx),
+            Some(unemer_tx),
+        ))
     } else {
-        let (unvault_tx, cancel_tx) = transaction_chain_manager(
+        let (unvault_tx, cancel_batch) = transaction_chain_manager(
             outpoint,
             Amount::from_sat(utxo.txo.value),
             &revaultd.deposit_descriptor,
             &revaultd.unvault_descriptor,
             &revaultd.cpfp_descriptor,
             derivation_index,
-            revaultd.lock_time,
             &revaultd.secp_ctx,
         )?;
-        Ok((unvault_tx, cancel_tx, None, None))
+        Ok((unvault_tx, cancel_batch.all_feerates(), None, None))
     }
 }
 
@@ -164,13 +167,8 @@ pub fn unvault_txin_from_deposit(
         let deposit_txin = DepositTxIn::new(*deposit_outpoint, deposit_txo);
 
         let cpfp_descriptor = revaultd.derived_cpfp_descriptor(db_vault.derivation_index);
-        UnvaultTransaction::new(
-            deposit_txin,
-            &unvault_descriptor,
-            &cpfp_descriptor,
-            revaultd.lock_time,
-        )
-        .map_err(|e| BitcoindError::Custom(format!("Error deriving Unvault tx: '{}'", e)))?
+        UnvaultTransaction::new(deposit_txin, &unvault_descriptor, &cpfp_descriptor)
+            .map_err(|e| BitcoindError::Custom(format!("Error deriving Unvault tx: '{}'", e)))?
     };
 
     Ok(unvault_tx.revault_unvault_txin(&unvault_descriptor))
@@ -190,7 +188,6 @@ pub fn unvault_txid(revaultd: &RevaultD, db_vault: &DbVault) -> Result<Txid, Bit
             &revaultd.unvault_descriptor,
             &revaultd.cpfp_descriptor,
             db_vault.derivation_index,
-            revaultd.lock_time,
             &revaultd.secp_ctx,
         )?;
         unvault_tx
@@ -199,34 +196,28 @@ pub fn unvault_txid(revaultd: &RevaultD, db_vault: &DbVault) -> Result<Txid, Bit
     Ok(unvault_tx.txid())
 }
 
-/// Get the Cancel txid of a give vault, trying first to fetch the transaction from the DB and
-/// falling back to generating it.
-/// Assumes the given deposit outpoint actually corresponds to an existing vaults, will panic
-/// otherwise.
-pub fn cancel_txid(
+/// Get the Cancel txids of a give vault.
+pub fn cancel_txids(
     revaultd: &Arc<RwLock<RevaultD>>,
     db_vault: &DbVault,
-) -> Result<Txid, BitcoindError> {
+) -> Result<Vec<Txid>, BitcoindError> {
     let revaultd = revaultd.read().unwrap();
-    let db_path = revaultd.db_file();
 
-    let cancel_tx = if let Some(cancel_db_tx) = db_cancel_transaction(&db_path, db_vault.id)? {
-        cancel_db_tx.psbt.assert_cancel()
-    } else {
-        let (_, cancel_tx) = transaction_chain_manager(
-            db_vault.deposit_outpoint,
-            db_vault.amount,
-            &revaultd.deposit_descriptor,
-            &revaultd.unvault_descriptor,
-            &revaultd.cpfp_descriptor,
-            db_vault.derivation_index,
-            revaultd.lock_time,
-            &revaultd.secp_ctx,
-        )?;
-        cancel_tx
-    };
+    let (_, cancel_batch) = transaction_chain_manager(
+        db_vault.deposit_outpoint,
+        db_vault.amount,
+        &revaultd.deposit_descriptor,
+        &revaultd.unvault_descriptor,
+        &revaultd.cpfp_descriptor,
+        db_vault.derivation_index,
+        &revaultd.secp_ctx,
+    )?;
 
-    Ok(cancel_tx.txid())
+    Ok(cancel_batch
+        .all_feerates()
+        .iter()
+        .map(|cancel_tx| cancel_tx.txid())
+        .collect())
 }
 
 /// Get the Unvault Emergency transaction id, if we are at all able to (ie if we are a stakeholder).
@@ -253,7 +244,6 @@ pub fn unemer_txid(
                         .emergency_address
                         .clone()
                         .expect("Just checked we were a stakeholder"),
-                    revaultd.lock_time,
                     &revaultd.secp_ctx,
                 )?;
                 unemer_tx
@@ -288,7 +278,6 @@ pub fn emer_txid(
                     .emergency_address
                     .clone()
                     .expect("Just checked we were a stakeholder"),
-                revaultd.lock_time,
                 &revaultd.secp_ctx,
             )?;
             emer_tx

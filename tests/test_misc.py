@@ -63,18 +63,21 @@ def test_revocation_sig_sharing(revault_network):
     # it to the sync server.
     stks[0].wait_for_deposits([deposit])
     psbts = stks[0].rpc.getrevocationtxs(deposit)
-    cancel_psbt = psbts["cancel_tx"]
+    cancel_psbts = psbts["cancel_txs"]
     emer_psbt = psbts["emergency_tx"]
     unemer_psbt = psbts["emergency_unvault_tx"]
     for stk in stks:
-        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(cancel_psbt, child_index)
+        cancel_psbts = [
+            stk.stk_keychain.sign_revocation_psbt(psbt, child_index)
+            for psbt in cancel_psbts
+        ]
         emer_psbt = stk.stk_keychain.sign_revocation_psbt(emer_psbt, child_index)
         unemer_psbt = stk.stk_keychain.sign_revocation_psbt(unemer_psbt, child_index)
-    stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+    stks[0].rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, unemer_psbt)
     assert stks[0].rpc.listvaults()["vaults"][0]["status"] == "secured"
     # Note that we can't pass it twice
     with pytest.raises(RpcError, match="Invalid vault status"):
-        stks[0].rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+        stks[0].rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, unemer_psbt)
     # They must all have fetched the signatures, even the managers!
     for stk in stks + mans:
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
@@ -87,16 +90,17 @@ def test_revocation_sig_sharing(revault_network):
     for stk in stks:
         stk.wait_for_deposits([deposit])
         psbts = stk.rpc.getrevocationtxs(deposit)
-        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
-            psbts["cancel_tx"], child_index
-        )
+        cancel_psbts = [
+            stk.stk_keychain.sign_revocation_psbt(psbt, child_index)
+            for psbt in psbts["cancel_txs"]
+        ]
         emer_psbt = stk.stk_keychain.sign_revocation_psbt(
             psbts["emergency_tx"], child_index
         )
         unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
             psbts["emergency_unvault_tx"], child_index
         )
-        stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+        stk.rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, unemer_psbt)
     for stk in stks + mans:
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
 
@@ -214,9 +218,10 @@ def test_sigfetcher_coordinator_dead(revault_network, bitcoind):
     for stk in rn.stks():
         stk.wait_for_deposits([deposit])
         psbts = stk.rpc.getrevocationtxs(deposit)
-        cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
-            psbts["cancel_tx"], vault["derivation_index"]
-        )
+        cancel_psbts = [
+            stk.stk_keychain.sign_revocation_psbt(psbt, vault["derivation_index"])
+            for psbt in psbts["cancel_txs"]
+        ]
         emer_psbt = stk.stk_keychain.sign_revocation_psbt(
             psbts["emergency_tx"], vault["derivation_index"]
         )
@@ -226,7 +231,7 @@ def test_sigfetcher_coordinator_dead(revault_network, bitcoind):
 
         # Revaultd complains because the coordinator is dead
         with pytest.raises(RpcError, match="Connection refused"):
-            stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+            stk.rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, unemer_psbt)
 
         # The sigfetcher tries to fetch the signatures, but fails
         stk.wait_for_log("Error while fetching signatures")

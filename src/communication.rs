@@ -10,7 +10,8 @@ use revault_net::{
 };
 use revault_tx::{
     bitcoin::{
-        consensus::encode, hashes::hex::ToHex, secp256k1, util::bip32::ChildNumber, OutPoint, Txid,
+        consensus::encode, hashes::hex::ToHex, secp256k1, util::bip32::ChildNumber, Amount,
+        OutPoint, Txid,
     },
     miniscript::DescriptorTrait,
     transactions::{RevaultTransaction, SpendTransaction},
@@ -94,12 +95,16 @@ fn send_wt_sigs_msg(
     deposit_outpoint: OutPoint,
     derivation_index: ChildNumber,
     emer_tx: &DbTransaction,
-    cancel_tx: &DbTransaction,
+    cancel_txs: &BTreeMap<Amount, DbTransaction>,
     unemer_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
+    let cancel_sigs = cancel_txs
+        .iter()
+        .map(|(amount, tx)| (watchtower::CancelFeerate(*amount), tx.psbt.signatures()))
+        .collect();
     let signatures = watchtower::Signatures {
         emergency: emer_tx.psbt.signatures(),
-        cancel: cancel_tx.psbt.signatures(),
+        cancel: cancel_sigs,
         unvault_emergency: unemer_tx.psbt.signatures(),
     };
     let sig_msg = watchtower::Sigs {
@@ -161,7 +166,7 @@ pub fn wts_share_rev_signatures(
     deposit_outpoint: OutPoint,
     derivation_index: ChildNumber,
     emer_tx: &DbTransaction,
-    cancel_tx: &DbTransaction,
+    cancel_txs: &BTreeMap<Amount, DbTransaction>,
     unemer_tx: &DbTransaction,
 ) -> Result<(), CommunicationError> {
     for (wt_host, wt_noisekey) in watchtowers {
@@ -172,7 +177,7 @@ pub fn wts_share_rev_signatures(
             deposit_outpoint,
             derivation_index,
             emer_tx,
-            cancel_tx,
+            &cancel_txs,
             unemer_tx,
         )?;
     }
@@ -408,11 +413,11 @@ mod tests {
         bitcoin::{
             blockdata::transaction::OutPoint, hash_types::Txid, hashes::hex::FromHex,
             network::constants::Network, secp256k1, PrivateKey as BitcoinPrivKey,
-            PublicKey as BitcoinPubKey, SigHashType,
+            PublicKey as BitcoinPubKey,
         },
         transactions::{
-            CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
-            UnvaultEmergencyTransaction, UnvaultTransaction,
+            CancelTransaction, EmergencyTransaction, RevaultPresignedTransaction,
+            RevaultTransaction, SpendTransaction, UnvaultEmergencyTransaction, UnvaultTransaction,
         },
     };
     use std::{collections::BTreeMap, fs, net::TcpListener, str::FromStr, thread};
@@ -460,8 +465,9 @@ mod tests {
             );
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -506,8 +512,9 @@ mod tests {
             send_coord_sig_msg(&mut cli_transport, txid.clone(), sigs.clone()).unwrap();
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -534,17 +541,10 @@ mod tests {
         let (private_key, public_key) =
             create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let mut cancel =
-                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let signature_hash = secp256k1::Message::from_slice(
-            &cancel
-                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
-                .unwrap(),
-        )
-        .unwrap();
+                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwQBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
+        let signature_hash = secp256k1::Message::from_slice(&cancel.sig_hash().unwrap()).unwrap();
         let signature = ctx.sign(&signature_hash, &private_key.key);
-        cancel
-            .add_cancel_sig(public_key.key, signature, &ctx)
-            .unwrap();
+        cancel.add_sig(public_key.key, signature, &ctx).unwrap();
         let other_cancel = cancel.clone();
         let db_tx = DbTransaction {
             id: 0,
@@ -569,8 +569,9 @@ mod tests {
             );
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -596,39 +597,24 @@ mod tests {
         let ctx = secp256k1::Secp256k1::new();
         let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let mut cancel =
-                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwSBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
-        let signature_hash = secp256k1::Message::from_slice(
-            &cancel
-                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
-                .unwrap(),
-        )
-        .unwrap();
+                CancelTransaction::from_psbt_str("cHNidP8BAF4CAAAAASDOvhSZlTSEcEoUq/CT7Cg3ILtc6sqt5qJKvAMq+LbIAAAAAAD9////AXYfpDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYAAAAAAAEBK7hhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnABAwQBAAAAAQWpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCIGAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgICEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAA").unwrap();
+        let signature_hash = secp256k1::Message::from_slice(&cancel.sig_hash().unwrap()).unwrap();
         let signature_cancel = ctx.sign(&signature_hash, &privkey.key);
         cancel
-            .add_cancel_sig(public_key.key, signature_cancel, &ctx)
+            .add_sig(public_key.key, signature_cancel, &ctx)
             .unwrap();
         let mut emer =
-                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwSBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
-        let signature_hash = secp256k1::Message::from_slice(
-            &emer
-                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
-                .unwrap(),
-        )
-        .unwrap();
+                EmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////AXC1pDUAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBKwDppDUAAAAAIgAg9AncsIZc8g7mJdfT9infAeWlqjtxBs93ireDGnQn/DYBAwQBAAAAAQVHUiEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqAhAwpwtbMAHFv/1gFB75slFbe/eibxLYs0wZQpKnkr49D7Uq4iBgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAAiAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
+        let signature_hash = secp256k1::Message::from_slice(&emer.sig_hash().unwrap()).unwrap();
         let signature_emer = ctx.sign(&signature_hash, &privkey.key);
-        emer.add_emer_sig(public_key.key, signature_emer, &ctx)
-            .unwrap();
+        emer.add_sig(public_key.key, signature_emer, &ctx).unwrap();
         let mut unvault_emer =
-                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwSBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
-        let signature_hash = secp256k1::Message::from_slice(
-            &unvault_emer
-                .signature_hash(0, SigHashType::AllPlusAnyoneCanPay)
-                .unwrap(),
-        )
-        .unwrap();
+                UnvaultEmergencyTransaction::from_psbt_str("cHNidP8BAF4CAAAAAbmw9RR44LLNO5aKs0SOdUDW4aJgM9indHt2KSEVkRNBAAAAAAD9////AaQvhEcAAAAAIgAgy7Co1PHzwoce0hHQR5RHMS72lSZudTF3bYrNgqLbkDYAAAAAAAEBK9BxhEcAAAAAIgAgMJBZ5AwbSGM9P3Q44qxIeXv5J4UXLnhwdfblfBLn2voBAwQBAAAAAQWoIQL5vFDdmMV/P4SpzIWhDMbHKHMGlMwntZxaWtwUXd9KvKxRh2R2qRTtnZLjf14tI1q08+ZyoIEpuuMqWYisa3apFJKFWLx/I+YKyIXcNmwC0yw69uN9iKxsk1KHZ1IhAw9kuSKu4v1ZfxBLxss7Zw8cosbEmxBxoabAEFddlP5aIQKr5HWxmew9YvpXb67hajNP24b/sm3Odb7Ouq7fMorD/lKvU7JoIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAA==").unwrap();
+        let signature_hash =
+            secp256k1::Message::from_slice(&unvault_emer.sig_hash().unwrap()).unwrap();
         let signature_unemer = ctx.sign(&signature_hash, &privkey.key);
         unvault_emer
-            .add_emer_sig(public_key.key, signature_unemer, &ctx)
+            .add_sig(public_key.key, signature_unemer, &ctx)
             .unwrap();
         let other_cancel = cancel.clone();
         let other_emer = emer.clone();
@@ -671,8 +657,9 @@ mod tests {
             .unwrap();
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -731,12 +718,10 @@ mod tests {
                 UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////ArhhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnAwdQAAAAAAACIAILKCCA/RbV3QMPMrwwQmk4Ark4w1WyElM27WtBgftq6ZAAAAAAABASsA6aQ1AAAAACIAIPQJ3LCGXPIO5iXX0/Yp3wHlpao7cQbPd4q3gxp0J/w2AQMEAQAAAAEFR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBJSEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqCsUYciAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
         let ctx = secp256k1::Secp256k1::new();
         let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature_hash =
-            secp256k1::Message::from_slice(&unvault.signature_hash(0, SigHashType::All).unwrap())
-                .unwrap();
+        let signature_hash = secp256k1::Message::from_slice(&unvault.sig_hash().unwrap()).unwrap();
         let signature = ctx.sign(&signature_hash, &privkey.key);
         unvault
-            .add_signature(0, public_key.key, signature.clone(), &ctx)
+            .add_sig(public_key.key, signature.clone(), &ctx)
             .unwrap();
         let other_unvault = unvault.clone();
         let db_unvault = DbTransaction {
@@ -757,8 +742,9 @@ mod tests {
             share_unvault_signatures(addr, &client_privkey, &server_pubkey, &db_unvault).unwrap();
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -785,12 +771,10 @@ mod tests {
                 UnvaultTransaction::from_psbt_str("cHNidP8BAIkCAAAAAajRZE5yVgzG9McmOyy/WdcYdrGrK15bB5N/Hg8zhKOkAQAAAAD9////ArhhpDUAAAAAIgAgFZlOQkpDkFSsLUfyeMGVAOT3T88jZM7L/XlVZoJ2jnAwdQAAAAAAACIAILKCCA/RbV3QMPMrwwQmk4Ark4w1WyElM27WtBgftq6ZAAAAAAABASsA6aQ1AAAAACIAIPQJ3LCGXPIO5iXX0/Yp3wHlpao7cQbPd4q3gxp0J/w2AQMEAQAAAAEFR1IhA47+JRqdt+oloFosla9hWUYVf5YQKDbuq4KO13JS45KgIQMKcLWzABxb/9YBQe+bJRW3v3om8S2LNMGUKSp5K+PQ+1KuIgYCEnb0lxeNI9466wDX+tqlq23zYNacTlLVLLLxtcVobG0INaO2mQoAAAAAAQGpIQMVlEoh50lasMhcdwnrmnCp2ROlGY5CrH+HtxQmfZDZ06xRh2R2qRS/INUX1CaP7Pbn5GmtGYu2wgqjnIisa3apFO/kceq8yo9w69g4VVtlFAf739qTiKxsk1KHZ1IhAnddfXi3N38A+aEQ74sUdeuV7sg+2L3ijTjMHMEAfq3cIQLWP96FqjfC5qKQkC2WhYbbLJx1FbNSAjsnMfwDnK0jD1KvARKyaCICAhJ29JcXjSPeOusA1/rapatt82DWnE5S1Syy8bXFaGxtCDWjtpkKAAAAAAEBJSEDjv4lGp236iWgWiyVr2FZRhV/lhAoNu6rgo7XclLjkqCsUYciAgISdvSXF40j3jrrANf62qWrbfNg1pxOUtUssvG1xWhsbQg1o7aZCgAAAAA=").unwrap();
         let ctx = secp256k1::Secp256k1::new();
         let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
-        let signature_hash =
-            secp256k1::Message::from_slice(&unvault.signature_hash(0, SigHashType::All).unwrap())
-                .unwrap();
+        let signature_hash = secp256k1::Message::from_slice(&unvault.sig_hash().unwrap()).unwrap();
         let signature = ctx.sign(&signature_hash, &privkey.key);
         unvault
-            .add_signature(0, public_key.key, signature.clone(), &ctx)
+            .add_sig(public_key.key, signature.clone(), &ctx)
             .unwrap();
         let other_unvault = unvault.clone();
         let db_unvault = DbTransaction {
@@ -816,8 +800,9 @@ mod tests {
             );
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -844,8 +829,7 @@ mod tests {
         let ctx = secp256k1::Secp256k1::new();
         let (privkey, public_key) = create_keys(&ctx, &[1; secp256k1::constants::SECRET_KEY_SIZE]);
         let signature_hash =
-            secp256k1::Message::from_slice(&spend.signature_hash(0, SigHashType::All).unwrap())
-                .unwrap();
+            secp256k1::Message::from_slice(&spend.signature_hash(0).unwrap()).unwrap();
         let signature = ctx.sign(&signature_hash, &privkey.key);
         let mut other_spend = spend.clone();
 
@@ -864,8 +848,9 @@ mod tests {
             assert_eq!(spend.psbt().inputs.get(0).unwrap().partial_sigs.len(), 1);
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -913,8 +898,9 @@ mod tests {
             );
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -964,8 +950,9 @@ mod tests {
             );
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -1014,7 +1001,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let server_thread = thread::spawn(move || {
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            let (connection, _) = listener.accept().unwrap();
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
         });
 
@@ -1075,8 +1063,9 @@ mod tests {
             .contains(&CommunicationError::SpendTxStorage.to_string()));
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -1139,8 +1128,9 @@ mod tests {
                 .unwrap();
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport
@@ -1185,8 +1175,9 @@ mod tests {
             assert_eq!(signatures, sigs);
         });
 
+        let (connection, _) = listener.accept().unwrap();
         let mut server_transport =
-            KKTransport::accept(&listener, &server_privkey, &[client_pubkey])
+            KKTransport::accept(connection, &server_privkey, &[client_pubkey])
                 .expect("Server channel binding and accepting");
 
         server_transport

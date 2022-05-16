@@ -3,8 +3,8 @@
 use revault_tx::{
     bitcoin::{secp256k1, Txid, Wtxid},
     transactions::{
-        CancelTransaction, EmergencyTransaction, RevaultTransaction, UnvaultEmergencyTransaction,
-        UnvaultTransaction,
+        CancelTransaction, EmergencyTransaction, RevaultPresignedTransaction, RevaultTransaction,
+        UnvaultEmergencyTransaction, UnvaultTransaction,
     },
 };
 
@@ -89,9 +89,9 @@ impl RevaultTx {
     {
         match self {
             RevaultTx::Unvault(ref mut tx) => tx.add_sig(pubkey, sig, secp),
-            RevaultTx::Cancel(ref mut tx) => tx.add_cancel_sig(pubkey, sig, secp),
-            RevaultTx::Emergency(ref mut tx) => tx.add_emer_sig(pubkey, sig, secp),
-            RevaultTx::UnvaultEmergency(ref mut tx) => tx.add_emer_sig(pubkey, sig, secp),
+            RevaultTx::Cancel(ref mut tx) => tx.add_sig(pubkey, sig, secp),
+            RevaultTx::Emergency(ref mut tx) => tx.add_sig(pubkey, sig, secp),
+            RevaultTx::UnvaultEmergency(ref mut tx) => tx.add_sig(pubkey, sig, secp),
         }
     }
 

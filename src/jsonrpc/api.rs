@@ -3,7 +3,7 @@
 //! `server` mod.
 
 use crate::{
-    commands::{CommandError, HistoryEventKind, ListSpendStatus},
+    commands::{CommandError, HistoryEventKind, ListSpendStatus, RevocationTransactions},
     revaultd::VaultStatus,
     DaemonControl,
 };
@@ -97,7 +97,7 @@ pub trait RpcApi {
         index: Option<bip32::ChildNumber>,
     ) -> jsonrpc_core::Result<serde_json::Value>;
 
-    /// Get the cancel and both emergency transactions for a vault identified by its deposit
+    /// Get the cancels and both emergency transactions for a vault identified by its deposit
     /// outpoint.
     #[rpc(meta, name = "getrevocationtxs")]
     fn getrevocationtxs(
@@ -113,7 +113,7 @@ pub trait RpcApi {
         &self,
         meta: Self::Metadata,
         outpoint: OutPoint,
-        cancel_tx: CancelTransaction,
+        cancel_txs: [CancelTransaction; 5],
         emergency_tx: EmergencyTransaction,
         emergency_unvault_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value>;
@@ -359,15 +359,17 @@ impl RpcApi for RpcImpl {
         &self,
         meta: Self::Metadata,
         outpoint: OutPoint,
-        cancel_tx: CancelTransaction,
+        cancel_txs: [CancelTransaction; 5],
         emergency_tx: EmergencyTransaction,
         unvault_emergency_tx: UnvaultEmergencyTransaction,
     ) -> jsonrpc_core::Result<serde_json::Value> {
         meta.daemon_control.set_revocation_txs(
             outpoint,
-            cancel_tx,
-            emergency_tx,
-            unvault_emergency_tx,
+            RevocationTransactions {
+                cancel_txs,
+                emergency_tx,
+                emergency_unvault_tx: unvault_emergency_tx,
+            },
         )?;
         Ok(json!({}))
     }
@@ -481,7 +483,7 @@ impl RpcApi for RpcImpl {
         meta: Self::Metadata,
         deposit_outpoint: OutPoint,
     ) -> jsonrpc_core::Result<serde_json::Value> {
-        meta.daemon_control.revault(&deposit_outpoint)?;
+        meta.daemon_control.revault(deposit_outpoint)?;
         Ok(json!({}))
     }
 

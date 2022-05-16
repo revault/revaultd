@@ -454,11 +454,12 @@ class RevaultNetwork:
     def signed_cancel_psbt(self, deposit, derivation_index):
         """Get the fully-signed Cancel transaction for this deposit.
 
+        This picks the lowest feerate version.
         This will raise if we don't have all the signatures.
         """
         psbt_str = self.stks()[0].rpc.listpresignedtransactions([deposit])[
             "presigned_transactions"
-        ][0]["cancel"]
+        ][0]["cancel"][0]
         psbt = serializations.PSBT()
         psbt.deserialize(psbt_str)
 
@@ -546,16 +547,17 @@ class RevaultNetwork:
         for stk in self.stks():
             stk.wait_for_deposits([deposit])
             psbts = stk.rpc.getrevocationtxs(deposit)
-            cancel_psbt = stk.stk_keychain.sign_revocation_psbt(
-                psbts["cancel_tx"], vault["derivation_index"]
-            )
+            cancel_psbts = [
+                stk.stk_keychain.sign_revocation_psbt(c, vault["derivation_index"])
+                for c in psbts["cancel_txs"]
+            ]
             emer_psbt = stk.stk_keychain.sign_revocation_psbt(
                 psbts["emergency_tx"], vault["derivation_index"]
             )
             unemer_psbt = stk.stk_keychain.sign_revocation_psbt(
                 psbts["emergency_unvault_tx"], vault["derivation_index"]
             )
-            stk.rpc.revocationtxs(deposit, cancel_psbt, emer_psbt, unemer_psbt)
+            stk.rpc.revocationtxs(deposit, cancel_psbts, emer_psbt, unemer_psbt)
         for w in self.participants():
             w.wait_for_secured_vaults([deposit])
 

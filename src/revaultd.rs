@@ -56,9 +56,9 @@ pub enum VaultStatus {
     Unvaulting,
     /// The unvault transaction is confirmed
     Unvaulted,
-    /// The cancel transaction has been broadcast
+    /// A cancel transaction has been broadcast
     Canceling,
-    /// The cancel transaction is confirmed
+    /// A cancel transaction is confirmed
     Canceled,
     /// The first emergency transactions has been broadcast
     EmergencyVaulting,

@@ -139,14 +139,14 @@ fn send_wt_sigs_msg(
 // `sigs` MUST contain valid signatures (including the attached sighash type)
 pub fn send_coord_sig_msg(
     transport: &mut KKTransport,
-    id: Txid,
+    txid: Txid,
     sigs: BTreeMap<secp256k1::PublicKey, secp256k1::Signature>,
 ) -> Result<(), CommunicationError> {
     for (pubkey, signature) in sigs {
         let sig_msg = coordinator::Sig {
             pubkey,
             signature,
-            id,
+            txid,
         };
         log::debug!("Sending sig '{:?}' to sync server", sig_msg,);
         let sig_result: coordinator::SigResult = transport.send_req(&sig_msg.into())?;
@@ -302,7 +302,7 @@ pub fn get_presigs(
     transport: &mut KKTransport,
     txid: Txid,
 ) -> Result<BTreeMap<secp256k1::PublicKey, secp256k1::Signature>, CommunicationError> {
-    let getsigs_msg = GetSigs { id: txid };
+    let getsigs_msg = GetSigs { txid };
 
     log::debug!("Sending to sync server: '{:?}'", getsigs_msg,);
     let resp: Sigs = transport.send_req(&getsigs_msg.into())?;
@@ -477,7 +477,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
-                        id: txid
+                        txid: txid
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -524,7 +524,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
-                        id: txid
+                        txid: txid
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -581,7 +581,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
-                        id: other_cancel.txid(),
+                        txid: other_cancel.txid(),
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -669,7 +669,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature: signature_cancel,
-                        id: other_cancel.txid(),
+                        txid: other_cancel.txid(),
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -685,7 +685,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature: signature_emer,
-                        id: other_emer.txid(),
+                        txid: other_emer.txid(),
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -701,7 +701,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature: signature_unemer,
-                        id: other_unvault_emer.txid(),
+                        txid: other_unvault_emer.txid(),
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -754,7 +754,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
-                        id: other_unvault.txid(),
+                        txid: other_unvault.txid(),
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -812,7 +812,7 @@ mod tests {
                     &message::RequestParams::CoordSig(coordinator::Sig {
                         pubkey: public_key.key,
                         signature,
-                        id: other_unvault.txid(),
+                        txid: other_unvault.txid(),
                     }),
                 );
                 Some(message::ResponseResult::Sig(
@@ -1184,7 +1184,7 @@ mod tests {
             .read_req(|params| {
                 assert_eq!(
                     &params,
-                    &message::RequestParams::GetSigs(GetSigs { id: same_txid })
+                    &message::RequestParams::GetSigs(GetSigs { txid: same_txid })
                 );
                 Some(message::ResponseResult::Sigs(message::coordinator::Sigs {
                     signatures: other_sigs,

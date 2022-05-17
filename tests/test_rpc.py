@@ -265,7 +265,7 @@ def test_listspendtxs(revault_network, bitcoind):
         deposits.append(f"{v['txid']}:{v['vout']}")
         deriv_indexes.append(v["derivation_index"])
     man.wait_for_active_vaults(deposits)
-    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]["psbt"]
 
     for man in rn.mans():
         spend_tx = man.man_keychain.sign_spend_psbt(spend_tx, deriv_indexes)
@@ -879,16 +879,27 @@ def test_getspendtx(revault_network, bitcoind):
 
     # The amount was not enough to afford a change output, everything went to
     # fees.
+    spend_tx = man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"]
+    assert spend_tx["deposit_outpoints"] == [deposit]
+    assert spend_tx["deposit_amount"] == amount * 100_000_000
+    assert spend_tx["cpfp_amount"] == 44336
+    assert spend_tx["change_index"] is None
+    assert spend_tx["cpfp_index"] == 0
+    assert spend_tx["status"] == "non_final"
     psbt = serializations.PSBT()
-    psbt.deserialize(man.rpc.getspendtx(spent_vaults, destination, feerate)["spend_tx"])
+    psbt.deserialize(spend_tx["psbt"])
     assert len(psbt.inputs) == 1 and len(psbt.outputs) == 2
 
     # But if we decrease it enough, it'll create a change output
     destinations = {addr: vault["amount"] - fees - 1_000_000}
+    spend_tx = man.rpc.getspendtx(spent_vaults, destinations, feerate)["spend_tx"]
+    assert spend_tx["deposit_outpoints"] == [deposit]
+    assert spend_tx["deposit_amount"] == amount * 100_000_000
+    assert spend_tx["cpfp_amount"] == 47088
+    assert spend_tx["change_index"] is not None
+    assert spend_tx["status"] == "non_final"
     psbt = serializations.PSBT()
-    psbt.deserialize(
-        man.rpc.getspendtx(spent_vaults, destinations, feerate)["spend_tx"]
-    )
+    psbt.deserialize(spend_tx["psbt"])
     assert len(psbt.inputs) == 1 and len(psbt.outputs) == 3
 
     # Asking for an impossible feerate will error
@@ -929,7 +940,7 @@ def test_getspendtx(revault_network, bitcoind):
         destinations = {addr: sent_amount}
         psbt = serializations.PSBT()
         psbt.deserialize(
-            man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+            man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]["psbt"]
         )
         assert (
             len(psbt.inputs) == len(deposits) and len(psbt.outputs) == 2
@@ -943,7 +954,7 @@ def test_getspendtx(revault_network, bitcoind):
         destinations[bitcoind.rpc.getnewaddress()] = vault["amount"] // 20
         psbt = serializations.PSBT()
         psbt.deserialize(
-            man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+            man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]["psbt"]
         )
         assert (
             len(psbt.inputs) == len(deposits)
@@ -954,11 +965,19 @@ def test_getspendtx(revault_network, bitcoind):
     # And we can do both
     deposits = []
     destinations = {}
+    total_amount = 0
     for vault in man.rpc.listvaults(["active"])["vaults"]:
+        total_amount += vault["amount"]
         deposits.append(f"{vault['txid']}:{vault['vout']}")
         destinations[bitcoind.rpc.getnewaddress()] = vault["amount"] // 2
+
+    spend_tx = man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"]
+    assert spend_tx["deposit_outpoints"] == deposits
+    assert spend_tx["deposit_amount"] == total_amount
+    assert spend_tx["change_index"] is not None
+    assert spend_tx["status"] == "non_final"
     psbt = serializations.PSBT()
-    psbt.deserialize(man.rpc.getspendtx(deposits, destinations, feerate)["spend_tx"])
+    psbt.deserialize(spend_tx["psbt"])
     assert (
         len(psbt.inputs) == len(deposits)
         # destinations + CPFP + change

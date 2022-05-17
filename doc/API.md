@@ -341,9 +341,9 @@ feerate.
 
 #### Response
 
-| Field      | Type   | Description                                     |
-| ---------- | ------ | ----------------------------------------------- |
-| `spend_tx` | string | Base64-encoded Spend transaction PSBT           |
+| Field      | Type                                                        | Description                    |
+| ---------- | ----------------------------------------------------------- | ------------------------------ |
+| `spend_tx` | [Spend transaction resources](#spend_transaction_resources) | Spend transaction informations |
 
 
 ### `updatespendtx`
@@ -401,7 +401,7 @@ Please note that this status refers only to the Spend transaction, with regardin
 
 | Field          | Type   | Description                                                          |
 | -------------- | ------ | -------------------------------------------------------------------- |
-| `spend_txs`    | array  | Array of [Spend transaction resources](#spend_transaction_reources)  |
+| `spend_txs`    | array  | Array of [Spend transaction resources](#spend_transaction_resources) |
 
 ##### Spend transaction resources
 

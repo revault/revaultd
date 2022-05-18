@@ -78,6 +78,7 @@ pub enum CommandError {
     /// (Got, Expected)
     SpendNotEnoughSig(usize, usize),
     SpendInvalidSig(Vec<u8>),
+    SpendSignaturesUpdate(revault_tx::error::InputSatisfactionError),
     MissingCpfpKey,
     ManagerOnly,
     StakeholderOnly,
@@ -148,6 +149,9 @@ impl fmt::Display for CommandError {
             }
             Self::Race => write!(f, "Internal error due to a race. Please try again."),
             Self::UnknownCancel(txid) => write!(f, "Unknown Cancel transaction: '{}'", txid),
+            Self::SpendSignaturesUpdate(error) => {
+                write!(f, "Error in updating the signature '{}'", error)
+            }
         }
     }
 }
@@ -190,6 +194,7 @@ impl CommandError {
             CommandError::Bitcoind(_) => ErrorCode::BITCOIND_ERROR,
             CommandError::Tx(_) => ErrorCode::INTERNAL_ERROR,
             CommandError::SpendFeerateTooLow(_, _) => ErrorCode::INVALID_PARAMS,
+            CommandError::SpendSignaturesUpdate(_) => ErrorCode::INVALID_PARAMS,
             // TODO: some of these probably need specific error codes
             CommandError::SpendTooLarge
             | CommandError::SpendUnknownUnVault(_)
@@ -1110,15 +1115,32 @@ impl DaemonControl {
 
             db_unvaults.push(db_unvault);
         }
+        let mut old_tx =
+            db_spend_transaction(&db_path, &spend_txid).expect("Database must be available");
 
-        // The user has the ability to set priority to the transaction in
-        // setspendtx, here we always set it to false.
-        if db_spend_transaction(&db_path, &spend_txid)
-            .expect("Database must be available")
-            .is_some()
-        {
+        if let Some(unwrapped_tx) = old_tx.as_mut() {
+            // Merging the signatures of `old_tx` into `spend_tx` and saving it.
+
+            let psbt_ins = spend_tx.into_psbt().inputs;
+
+            for (i, input) in psbt_ins.into_iter().enumerate() {
+                for (pubkey, raw_sig) in input.partial_sigs {
+                    let sig = secp256k1::Signature::from_der(&raw_sig[..raw_sig.len() - 1])
+                        .map_err(|_| CommandError::SpendInvalidSig(raw_sig.clone()))?;
+
+                    // i remains in bound since the transaction is taken based on txid.
+                    unwrapped_tx
+                        .psbt
+                        .add_signature(i, pubkey.key, sig, &revaultd.secp_ctx)
+                        .map_err(|e| CommandError::SpendSignaturesUpdate(e))?;
+                }
+            }
+
             log::debug!("Updating Spend transaction '{}'", spend_txid);
-            db_update_spend(&db_path, &spend_tx, false).expect("Database must be available");
+            // The user has the ability to set priority to the transaction in
+            // setspendtx, here we always set it to false.
+            db_update_spend(&db_path, &unwrapped_tx.psbt, false)
+                .expect("Database must be available");
         } else {
             log::debug!("Storing new Spend transaction '{}'", spend_txid);
             db_insert_spend(&db_path, &db_unvaults, &spend_tx).expect("Database must be available");

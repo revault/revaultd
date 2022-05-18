@@ -18,6 +18,61 @@ from test_framework.utils import (
 
 
 @pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_update_spend_tx(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        n_stakeholders=2, n_managers=3, managers_threshold=3, csv=CSV
+    )
+    managers = [revault_network.man(i) for i in range(3)]
+    amount = 0.24
+    vault = revault_network.fund(amount)
+    deposit = f"{vault['txid']}:{vault['vout']}"
+    derivation_indices = [vault["derivation_index"]]
+
+    addr = bitcoind.rpc.getnewaddress()
+    spent_vaults = [deposit]
+    feerate = 2
+    fees = revault_network.compute_spendtx_fees(feerate, len(spent_vaults), 1)
+    destination = {addr: vault["amount"] - fees}
+
+    revault_network.secure_vault(vault)
+    revault_network.activate_vault(vault)
+
+    spend_tx = managers[0].rpc.getspendtx(spent_vaults, destination, feerate)[
+        "spend_tx"
+    ]["psbt"]
+    spend_tx_a = spend_tx
+    spend_tx_b = spend_tx
+
+    # Transaction with only the first signature
+    spend_tx_a = managers[0].man_keychain.sign_spend_psbt(
+        spend_tx_a, derivation_indices
+    )
+
+    # Transaction with other 2 signatures.
+    for man in managers[1:]:
+        spend_tx_b = man.man_keychain.sign_spend_psbt(spend_tx_b, derivation_indices)
+
+    # Storing the transaction with first signature.
+    managers[0].rpc.updatespendtx(spend_tx_a)
+    managers[0].wait_for_log("Storing new Spend transaction")
+
+    # Updating the transaction with the last 2 signatures.
+    managers[0].rpc.updatespendtx(spend_tx_b)
+    managers[0].wait_for_log("Updating Spend transaction")
+
+    spend_txs = managers[0].rpc.listspendtxs()["spend_txs"]
+    assert len(spend_txs) == 1
+
+    serialized_psbt = spend_txs[0]["psbt"]
+    psbt = serializations.PSBT()
+    psbt.deserialize(serialized_psbt)
+
+    # Must have 3 signatures if they are merged.
+    assert len(psbt.inputs[0].partial_sigs) == 3
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spendtx_management(revault_network, bitcoind):
     CSV = 12
     revault_network.deploy(2, 1, n_stkmanagers=1, csv=CSV)

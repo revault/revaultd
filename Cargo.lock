@@ -437,8 +437,9 @@ dependencies = [
 
 [[package]]
 name = "revault_net"
-version = "0.2.1"
-source = "git+https://github.com/revault/revault_net#50fabbb53d75ee3dc9d50e7133a35228bb34dfb6"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21cf3a2aec4c7afc9900d88eed6ef84272fcd78f2f36c69a46146cdb233d57f6"
 dependencies = [
  "bitcoin",
  "log",
@@ -451,8 +452,9 @@ dependencies = [
 
 [[package]]
 name = "revault_tx"
-version = "0.4.1"
-source = "git+https://github.com/revault/revault_tx#23f18b66a0f165a0091e1be8feffe363f37cea97"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "285230bfc2d0e7975ac997667505954ac39115d481c7482055d631497a1983c4"
 dependencies = [
  "base64",
  "bitcoinconsensus",
@@ -462,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "revaultd"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "backtrace",
  "base64",

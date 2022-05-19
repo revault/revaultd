@@ -1,6 +1,6 @@
 [package]
 name = "revaultd"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Antoine Poinsot <darosior@protonmail.com>"]
 edition = "2018"
 repository = "https://github.com/revault/revaultd"
@@ -24,8 +24,8 @@ default = ["jsonrpc_server"]
 jsonrpc_server = ["jsonrpc-core", "jsonrpc-derive", "mio"]
 
 [dependencies]
-revault_tx = { git = "https://github.com/revault/revault_tx", features = ["use-serde"] }
-revault_net = { git = "https://github.com/revault/revault_net" }
+revault_tx = { version = "0.5", features = ["use-serde"] }
+revault_net = "0.3"
 
 # In order to have a backtrace on panic, because the 
 # stdlib does not have a programmatic interface yet 

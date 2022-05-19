@@ -1,0 +1,88 @@
+# Build bitcoind.
+# Copied (MIT License) from: https://github.com/kylemanna/docker-bitcoind/blob/5b51b7a168ae6d209b6b8afc91e3cc54ea5dab22/Dockerfile
+
+# Smallest base image, latests stable image
+# Alpine would be nice, but it's linked again musl and breaks the bitcoin core download binary
+#FROM alpine:latest
+FROM ubuntu:latest as builder_bitcoind
+
+# Testing: gosu
+#RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/testing/" >> /etc/apk/repositories \
+#    && apk add --update --no-cache gnupg gosu gcompat libgcc
+RUN apt update \
+    && apt install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    gnupg \
+    && apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+ARG VERSION=22.0
+ARG ARCH=x86_64
+ARG BITCOIN_CORE_SIGNATURE=71A3B16735405025D447E8F274810B012346C9A6
+
+# Don't use base image's bitcoin package for a few reasons:
+# 1. Would need to use ppa/latest repo for the latest release.
+# 2. Some package generates /etc/bitcoin.conf on install and that's dangerous to bake in with Docker Hub.
+# 3. Verifying pkg signature from main website should inspire confidence and reduce chance of surprises.
+# Instead fetch, verify, and extract to Docker image
+RUN cd /tmp \
+    && gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys ${BITCOIN_CORE_SIGNATURE} \
+    && wget https://bitcoincore.org/bin/bitcoin-core-${VERSION}/SHA256SUMS.asc \
+    https://bitcoincore.org/bin/bitcoin-core-${VERSION}/SHA256SUMS \
+    https://bitcoincore.org/bin/bitcoin-core-${VERSION}/bitcoin-${VERSION}-${ARCH}-linux-gnu.tar.gz \
+    && gpg --verify --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS 2>/dev/null | grep "^\[GNUPG:\] VALIDSIG.*${BITCOIN_CORE_SIGNATURE}\$" \
+    && sha256sum --ignore-missing --check SHA256SUMS \
+    && tar -xzvf bitcoin-${VERSION}-${ARCH}-linux-gnu.tar.gz -C /opt \
+    && ln -sv bitcoin-${VERSION} /opt/bitcoin \
+    && /opt/bitcoin/bin/test_bitcoin --show_progress \
+    && rm -v /opt/bitcoin/bin/test_bitcoin /opt/bitcoin/bin/bitcoin-qt
+
+# Build revaultd and associated tools.
+FROM docker.io/rust:1.58-buster as builder_revaultd
+WORKDIR /revaultd
+COPY . .
+RUN cargo install --path . \
+    && (cd contrib/tools/mscompiler && cargo install --path .) \
+    && (cd tests/servers/coordinatord && cargo install --path .) \
+    && (cd tests/servers/cosignerd && cargo install --path .) \
+    && (cd tests/servers/miradord && cargo install --path .)
+
+# Setup and run blackbox tests.
+FROM ubuntu:latest
+COPY --from=builder_revaultd /usr/local/cargo/bin/revaultd /usr/local/bin/revaultd
+COPY --from=builder_revaultd /usr/local/cargo/bin/mscompiler /usr/local/bin/mscompiler
+COPY --from=builder_revaultd /usr/local/cargo/bin/coordinatord /usr/local/bin/coordinatord
+COPY --from=builder_revaultd /usr/local/cargo/bin/cosignerd /usr/local/bin/cosignerd
+COPY --from=builder_revaultd /usr/local/cargo/bin/miradord /usr/local/bin/miradord
+
+# Setup bitcoind.
+ARG GROUP_ID=1000
+ARG USER_ID=1000
+RUN groupadd -g ${GROUP_ID} bitcoin \
+    && useradd -u ${USER_ID} -g bitcoin -d /bitcoin bitcoin
+COPY --from=builder_bitcoind /opt/ /opt/
+RUN ln -sv /opt/bitcoin/bin/* /usr/local/bin
+RUN apt update \
+    && apt install -y --no-install-recommends gosu
+
+# Setup revaultd integration tests.
+WORKDIR /test-revaultd
+COPY ./tests ./tests
+RUN apt update \
+    && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
+        python3 python3-venv \
+        postgresql python3-psycopg2 libpq-dev \
+        build-essential libssl-dev libffi-dev python-dev
+RUN python3 -m venv venv \
+    && . venv/bin/activate \
+    && pip install -r tests/requirements.txt
+
+# Cleanup.
+RUN apt clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+ENV REVAULTD_PATH=revaultd
+ENV MSCOMPILER=mscompiler
+ENV MIRADORD_PATH=miradord
+ENV COORDINATORD_PATH=coordinatord
+ENV COSIGNERD_PATH=cosignerd

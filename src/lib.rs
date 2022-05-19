@@ -33,8 +33,6 @@ use std::{
     thread,
 };
 
-use daemonize_simple::Daemonize;
-
 // A panic in any thread should stop the main thread, and print the panic.
 fn setup_panic_hook() {
     panic::set_hook(Box::new(move |panic_info| {
@@ -196,17 +194,19 @@ impl DaemonHandle {
 
         // NOTE: it's safe to daemonize now, as we don't carry any open DB connection
         // https://www.sqlite.org/howtocorrupt.html#_carrying_an_open_database_connection_across_a_fork_
+
+        #[cfg(feature = "daemonize")]
         if revaultd.daemon {
             log::info!("Daemonizing");
             let log_file = revaultd.log_file();
-            let daemon = Daemonize {
+            let daemon = daemonize_simple::Daemonize {
                 // TODO: Make this configurable for inits
                 pid_file: Some(revaultd.pid_file()),
                 stdout_file: Some(log_file.clone()),
                 stderr_file: Some(log_file),
                 chdir: Some(revaultd.data_dir.clone()),
                 append: true,
-                ..Daemonize::default()
+                ..daemonize_simple::Daemonize::default()
             };
             daemon.doit().unwrap_or_else(|e| {
                 // The panic hook will log::error

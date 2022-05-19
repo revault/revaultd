@@ -121,7 +121,6 @@ def test_listvaults(revaultd_manager, bitcoind):
     assert len(vault_list) == 0
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_getdepositaddress(revault_network, bitcoind):
     rn = revault_network
     rn.deploy(4, 2)
@@ -147,7 +146,6 @@ def test_getdepositaddress(revault_network, bitcoind):
         assert addr2 == w.rpc.call("getdepositaddress")["address"]
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_getrevocationtxs(revault_network, bitcoind):
     rn = revault_network
     rn.deploy(4, 2)
@@ -182,7 +180,6 @@ def test_getrevocationtxs(revault_network, bitcoind):
         assert txs == n.rpc.getrevocationtxs(deposit)
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_getunvaulttx(revault_network):
     revault_network.deploy(3, 1)
     mans = revault_network.mans()
@@ -206,7 +203,6 @@ def test_getunvaulttx(revault_network):
         assert tx["unvault_tx"] == stk.rpc.getunvaulttx(outpoint)["unvault_tx"]
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listpresignedtransactions(revault_network):
     revault_network.deploy(2, 1)
     vaultA = revault_network.fund(0.2222221)
@@ -246,7 +242,6 @@ def test_listpresignedtransactions(revault_network):
             assert res["unvault_emergency"] == stk_res["unvault_emergency"]
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listspendtxs(revault_network, bitcoind):
     rn = revault_network
     rn.deploy(n_stakeholders=2, n_managers=2, n_stkmanagers=0, csv=5)
@@ -357,7 +352,6 @@ def test_listspendtxs(revault_network, bitcoind):
     assert deprecated_txs[1]["status"] == "deprecated"
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listspendtxs_check_indexes(revault_network, bitcoind):
     # Spending with the change output
     rn = revault_network
@@ -373,7 +367,6 @@ def test_listspendtxs_check_indexes(revault_network, bitcoind):
     assert spend_txs[0]["cpfp_index"] is not None
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_listonchaintransactions(revault_network):
     """Just a small sanity check of the API"""
     rn = revault_network
@@ -475,7 +468,6 @@ def psbt_add_invalid_sig(psbt_str):
     return psbt.serialize()
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_revocationtxs(revault_network):
     """Sanity checks for the revocationtxs command"""
     revault_network.deploy(6, 2)
@@ -608,7 +600,6 @@ def test_revocationtxs(revault_network):
     assert len(stks[0].rpc.listvaults(["securing"], [deposit])["vaults"]) == 1
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_unvaulttx(revault_network):
     """Sanity checks for the unvaulttx command"""
     revault_network.deploy(3, 1)
@@ -715,7 +706,6 @@ def test_unvaulttx(revault_network):
         )
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_emergency(revault_network, bitcoind):
     """This tests the 'emergency' RPC command"""
     rn = revault_network
@@ -851,7 +841,6 @@ def test_emergency(revault_network, bitcoind):
     ) + len(unvaulted_vaults)
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_getspendtx(revault_network, bitcoind):
     revault_network.deploy(2, 1)
     man = revault_network.man(0)
@@ -993,7 +982,6 @@ def test_getspendtx(revault_network, bitcoind):
         man.rpc.getspendtx(deposits, destinations, feerate)
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_revault_command(revault_network, bitcoind, executor):
     """
     Here we manually broadcast the unvualt_tx, followed by a cancel_tx
@@ -1182,15 +1170,11 @@ def test_getserverstatus(revault_network, bitcoind):
             assert not watchtower["reachable"]
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_setspendtx_cpfp_not_enabled(revault_network, bitcoind):
     CSV = 12
     revault_network.deploy(2, 1, n_stkmanagers=1, csv=CSV, with_cpfp=False)
-    man = revault_network.mans()[1]
-    stks = revault_network.stks()
     amount = 0.24
     vault = revault_network.fund(amount)
-    deposit = f"{vault['txid']}:{vault['vout']}"
 
     revault_network.secure_vault(vault)
     revault_network.activate_vault(vault)
@@ -1201,7 +1185,6 @@ def test_setspendtx_cpfp_not_enabled(revault_network, bitcoind):
         revault_network.broadcast_unvaults_anyhow([vault], priority=True)
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_gethistory(revault_network, bitcoind, executor):
     """
     Retrieve the event History and check the presence of some triggered events.

@@ -1,4 +1,3 @@
-import logging
 import pytest
 import os
 
@@ -37,7 +36,6 @@ def test_largewallets(revaultd_stakeholder, bitcoind):
     revaultd_stakeholder.rpc.listpresignedtransactions()
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_huge_deposit(revault_network, bitcoind):
     revault_network.deploy(2, 1)
     stk = revault_network.stk(0)
@@ -49,7 +47,6 @@ def test_huge_deposit(revault_network, bitcoind):
     assert stk.rpc.listvaults([], [deposit])["vaults"][0]["amount"] == amount * COIN
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_revocation_sig_sharing(revault_network):
     revault_network.deploy(4, 2, n_stkmanagers=1)
     stks = revault_network.stks()
@@ -105,7 +102,6 @@ def test_revocation_sig_sharing(revault_network):
         wait_for(lambda: len(stk.rpc.listvaults(["secured"], [deposit])["vaults"]) > 0)
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_raw_broadcast_cancel(revault_network, bitcoind):
     """
     Test broadcasting a dozen of pair of Unvault and Cancel for vaults with
@@ -144,7 +140,6 @@ def test_raw_broadcast_cancel(revault_network, bitcoind):
             wait_for(lambda: len(w.rpc.listvaults(["canceled"], [deposit])) == 1)
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_sigfetcher(revault_network, bitcoind, executor):
     rn = revault_network
     rn.deploy(7, 3, n_stkmanagers=2)
@@ -253,7 +248,6 @@ def test_sigfetcher_coordinator_dead(revault_network, bitcoind):
         stk.wait_for_secured_vaults([deposit])
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_sigfetcher_secured_vaults(revault_network, bitcoind):
     """
     Test that unvault sigs are retrieved and stored for secured vault even if the
@@ -292,7 +286,6 @@ def test_sigfetcher_secured_vaults(revault_network, bitcoind):
         )
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_stkman_only(revault_network, bitcoind):
     """Test a setup with only stakehodlers-managers"""
     rn = revault_network
@@ -314,7 +307,6 @@ def test_stkman_only(revault_network, bitcoind):
     rn.cancel_vault(vaults[0])
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_no_cosig_server(revault_network):
     """Test a setup with no cosig"""
     rn = revault_network
@@ -342,7 +334,6 @@ def get_unvault_txids(wallet, vaults):
     return unvault_txids
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_cpfp_transaction(revault_network, bitcoind):
     CSV = 12
     revault_network.deploy(
@@ -432,7 +423,6 @@ def test_cpfp_transaction(revault_network, bitcoind):
     man.wait_for_logs(["Checking if transactions need CPFP...", "Nothing to CPFP"])
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_batched_cpfp_transaction(revault_network, bitcoind):
     rn = revault_network
     CSV = 6
@@ -543,7 +533,6 @@ def test_batched_cpfp_transaction(revault_network, bitcoind):
     wait_for(lambda: len(man.rpc.listvaults(["spent"])["vaults"]) == len(vaults))
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_rbfed_cpfp_transaction(revault_network, bitcoind):
     """We don't have explicit RBF logic, but since we signal for it we should
     be able to replace a previous CPFP with a higher-fee, higher-feerate one.

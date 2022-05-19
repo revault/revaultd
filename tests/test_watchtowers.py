@@ -1,16 +1,13 @@
 import os
-import pytest
 
 from fixtures import *
 from test_framework.utils import (
     wait_for,
-    POSTGRES_IS_SETUP,
     WT_PLUGINS_DIR,
     COIN,
 )
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_wt_share_revocation_txs(revault_network, bitcoind):
     """Sanity check that we share the revocation signatures with the watchtower."""
     rn = revault_network
@@ -27,7 +24,6 @@ def test_wt_share_revocation_txs(revault_network, bitcoind):
         )
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_wt_policy(directory, revault_network, bitcoind):
     """Test we "can't" breach the policies defined by the watchtowers"""
     rn = revault_network

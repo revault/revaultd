@@ -11,13 +11,11 @@ from fixtures import *
 from test_framework import serializations
 from test_framework.utils import (
     COIN,
-    POSTGRES_IS_SETUP,
     RpcError,
     wait_for,
 )
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spendtx_management(revault_network, bitcoind):
     CSV = 12
     revault_network.deploy(2, 1, n_stkmanagers=1, csv=CSV)
@@ -243,7 +241,6 @@ def test_spendtx_management(revault_network, bitcoind):
     assert rogue_spend_tx["status"] == "deprecated"
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spends_concurrent(revault_network, bitcoind):
     """
     Here we test the creation and succesful broadcast of both Spend transaction
@@ -338,7 +335,6 @@ def test_spends_concurrent(revault_network, bitcoind):
         )
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spends_conflicting(revault_network, bitcoind):
     """
     Here we test two spends which spends 2 vaults each, with one shared and all vaults
@@ -435,7 +431,6 @@ def test_spends_conflicting(revault_network, bitcoind):
         assert vault["moved_at"] is not None
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_spend_threshold(revault_network, bitcoind, executor):
     CSV = 20
     managers_threshold = 2
@@ -541,7 +536,6 @@ def test_spend_threshold(revault_network, bitcoind, executor):
             assert vault["moved_at"] is not None
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_large_spends(revault_network, bitcoind, executor):
     CSV = 2016  # 2 weeks :tm:
     revault_network.deploy(17, 8, csv=CSV)
@@ -623,7 +617,6 @@ def test_large_spends(revault_network, bitcoind, executor):
 
 # Tests that getspendtx returns an error when trying to build a spend too big
 # (it wouldn't be possible to announce it to the coordinator when fully signed)
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_not_announceable_spend(revault_network, bitcoind, executor):
     CSV = 4
     revault_network.deploy(5, 7, csv=CSV)
@@ -700,7 +693,6 @@ def test_not_announceable_spend(revault_network, bitcoind, executor):
         assert vault["moved_at"] is not None
 
 
-@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
 def test_revaulted_spend(revault_network, bitcoind, executor):
     """
     Revault an ongoing Spend transaction carried out by the managers, under misc

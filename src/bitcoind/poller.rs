@@ -408,7 +408,7 @@ fn mark_confirmed_emers(
     Ok(())
 }
 
-enum ToBeCpfped {
+pub enum ToBeCpfped {
     Spend(SpendTransaction),
     Unvault(UnvaultTransaction),
 }
@@ -450,7 +450,7 @@ impl ToBeCpfped {
 // CPFP a bunch of transactions, bumping their feerate by at least `target_feerate`.
 // `target_feerate` is expressed in sat/kWU.
 // All the transactions' feerate MUST be below `target_feerate`.
-fn cpfp_package(
+pub fn cpfp_package(
     revaultd: &Arc<RwLock<RevaultD>>,
     bitcoind: &BitcoinD,
     to_be_cpfped: Vec<ToBeCpfped>,
@@ -541,7 +541,11 @@ fn cpfp_package(
 }
 
 // `target_feerate` is in sats/kWU
-fn should_cpfp(bitcoind: &BitcoinD, tx: &impl CpfpableTransaction, target_feerate: u64) -> bool {
+pub fn should_cpfp(
+    bitcoind: &BitcoinD,
+    tx: &impl CpfpableTransaction,
+    target_feerate: u64,
+) -> bool {
     bitcoind
         .get_wallet_transaction(&tx.txid())
         // In the unlikely (actually, shouldn't happen but hey) case where

@@ -178,5 +178,8 @@ addr = "127.0.0.1:8332"
         fn sync_progress(&self) -> f64 {
             1.0
         }
+        fn cpfp_tx(&self, _txid: Vec<Txid>, _feerate: f64) -> Result<(), BitcoindError> {
+            Ok(())
+        }
     }
 }

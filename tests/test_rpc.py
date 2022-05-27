@@ -1348,3 +1348,317 @@ def test_gethistory(revault_network, bitcoind, executor):
             )
             == 5
         )
+
+
+COIN = 10**8
+
+
+def get_unvault_txids(wallet, vaults):
+    unvault_txids = []
+    for vault in vaults:
+        deposit = f"{vault['txid']}:{vault['vout']}"
+        unvault_psbt = serializations.PSBT()
+        unvault_b64 = wallet.rpc.listpresignedtransactions([deposit])[
+            "presigned_transactions"
+        ][0]["unvault"]
+        unvault_psbt.deserialize(unvault_b64)
+        unvault_psbt.tx.calc_sha256()
+        unvault_txids.append(unvault_psbt.tx.hash)
+    return unvault_txids
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_manual_cpfp_batch_unvault(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    vaults = revault_network.fundmany([1, 2, 3])
+
+    # Broadcast the unvaults and get their txids
+    revault_network.activate_fresh_vaults(vaults)
+    revault_network.broadcast_unvaults_anyhow(vaults, priority=True)
+
+    unvault_txids = get_unvault_txids(man, vaults)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == len(vaults),
+        )
+
+    # If the feerate isn't significantly lower than the estimate, we won't feebump.
+    # Note the Unvault txs have a fixed 24sat/vb feerate.
+    entry = bitcoind.rpc.getmempoolentry(unvault_txids[0])
+    assert int(entry["fees"]["base"] * COIN / entry["vsize"]) == 24
+    revault_network.bitcoind_proxy.mocks["estimatesmartfee"] = {
+        "feerate": 26 * 1_000 / COIN
+    }
+    bitcoind.generate_blocks_censor(1, unvault_txids)
+    man.wait_for_logs(["Checking if transactions need CPFP...", "Nothing to CPFP"])
+
+    # The feerate is still kept the same and we will trigger CPFP manually using
+    # rpc call. This should behave in the same way as an automatic CPFP trigger
+    man.rpc.cpfp(unvault_txids, 50)
+    man.wait_for_log("CPFPed transactions")
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == len(unvault_txids) + 1)
+    for unvault_txid in unvault_txids:
+        entry = bitcoind.rpc.getmempoolentry(unvault_txid)
+        assert entry["descendantcount"] == 2
+        package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+        assert package_feerate >= 50
+
+
+def test_manual_cpfp_single_unvault(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    vaults = revault_network.fundmany([1, 2, 3])
+
+    # Broadcast the unvaults and get their txids
+    revault_network.activate_fresh_vaults(vaults)
+    revault_network.broadcast_unvaults_anyhow(vaults, priority=True)
+
+    unvault_txids = get_unvault_txids(man, vaults)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == len(vaults),
+        )
+
+    # If the feerate isn't significantly lower than the estimate, we won't feebump.
+    # Note the Unvault txs have a fixed 24sat/vb feerate.
+    entry = bitcoind.rpc.getmempoolentry(unvault_txids[0])
+    assert int(entry["fees"]["base"] * COIN / entry["vsize"]) == 24
+    revault_network.bitcoind_proxy.mocks["estimatesmartfee"] = {
+        "feerate": 26 * 1_000 / COIN
+    }
+    bitcoind.generate_blocks_censor(1, unvault_txids)
+    man.wait_for_logs(["Checking if transactions need CPFP...", "Nothing to CPFP"])
+
+    # The feerate is still kept the same and we will trigger CPFP manually using
+    # rpc call. This should behave in the same way as an automatic CPFP trigger
+    man.rpc.cpfp([unvault_txids[0]], 50)
+    man.wait_for_log("CPFPed transactions")
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == len(unvault_txids) + 1)
+
+    entry = bitcoind.rpc.getmempoolentry(unvault_txids[0])
+    assert entry["descendantcount"] == 2
+    package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+    assert package_feerate >= 50
+
+
+## Spend transactions
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_manual_cpfp_single_spend(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    vaults = revault_network.fundmany([1])
+
+    # Broadcast the unvaults and get their txids
+    revault_network.activate_fresh_vaults(vaults)
+    spend_psbt = revault_network.broadcast_unvaults_anyhow(vaults, priority=True)
+
+    unvault_txids = get_unvault_txids(man, vaults)
+    spend_txid = spend_psbt.tx.hash
+
+    # Confirming the unvaults
+    bitcoind.generate_block(1, wait_for_mempool=unvault_txids)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"])["vaults"]) == len(vaults),
+        )
+
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_txid}'")
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == len(vaults),
+        )
+
+    # Manual CPFP trigger for spend_txid.
+    man.rpc.cpfp([spend_txid], 50)
+    man.wait_for_log(
+        f"CPFPed transactions with ids '{{{spend_txid}}}'",
+    )
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == 2)
+    entry = bitcoind.rpc.getmempoolentry(spend_txid)
+    assert entry["descendantcount"] == 2
+    package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+    assert package_feerate >= 50
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_manual_cpfp_batch_spend(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.00005}},  # 5 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    vaults = revault_network.fundmany([1, 2])
+
+    # Broadcast the unvaults and get their txids
+    revault_network.activate_fresh_vaults(vaults)
+    spend_psbts = [
+        revault_network.broadcast_unvaults_anyhow([vault], priority=True)
+        for vault in vaults
+    ]
+
+    unvault_txids = get_unvault_txids(man, vaults)
+    spend_txids = [spend_psbt.tx.hash for spend_psbt in spend_psbts]
+
+    # Confirming the unvaults
+    bitcoind.generate_block(1, wait_for_mempool=unvault_txids)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"])["vaults"]) == len(vaults),
+        )
+
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(f"Succesfully broadcasted Spend tx")
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == len(vaults),
+        )
+
+    for spend_txid in spend_txids:
+        entry = bitcoind.rpc.getmempoolentry(spend_txid)
+        assert entry["descendantcount"] == 1
+        package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+        assert package_feerate < 50
+
+    # Manual CPFP trigger for spend_txid.
+    man.rpc.cpfp(spend_txids, 50)
+    # Not mentioning the ids since the order might not be same.
+    man.wait_for_log(
+        f"CPFPed transactions with ids",
+    )
+
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == 3)
+    for spend_txid in spend_txids:
+        entry = bitcoind.rpc.getmempoolentry(spend_txid)
+        assert entry["descendantcount"] == 2
+        package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+        assert package_feerate >= 50
+
+
+## Sanity checks
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_manual_cpfp_invalid_txid(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    # removed one character 4
+    txid = "808cd1c4cd6d0d3abbfd5c47bb4869dbc25ffcb1dcd5effdef31396c17a68cf"
+    with pytest.raises(RpcError) as err:
+        man.rpc.cpfp([txid], 50)
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_manual_cpfp_unknown_txid(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+
+    txid = "4808cd1c4cd6d0d3abbfd5c47bb4869dbc25ffcb1dcd5effdef31396c17a68cf"
+    # unknown transaction should throw an error.
+    with pytest.raises(RpcError) as err:
+        man.rpc.cpfp([txid], 50)
+
+
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_manual_cpfp_already_mined(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.00001}},  # 1 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    vaults = revault_network.fundmany([1])
+
+    # Broadcast the unvaults and get their txids
+    revault_network.activate_fresh_vaults(vaults)
+    spend_psbt = revault_network.broadcast_unvaults_anyhow(vaults, priority=True)
+
+    unvault_txids = get_unvault_txids(man, vaults)
+    spend_txid = spend_psbt.tx.hash
+
+    # Confirming the unvaults
+    bitcoind.generate_block(1, wait_for_mempool=unvault_txids)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"])["vaults"]) == len(vaults),
+        )
+
+    bitcoind.generate_block(CSV - 1)
+    man.wait_for_log(f"Succesfully broadcasted Spend tx '{spend_txid}'")
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == len(vaults),
+        )
+
+    # Mining the spend and unvault transactions
+    bitcoind.generate_block(6)
+
+    # Manual CPFP trigger for already mined spend_txid.
+    man.rpc.cpfp([spend_txid], 50)
+    man.wait_for_log(
+        f"Nothing to CPFP in the given list.",
+    )
+
+
+def test_manual_cpfp_lower_feerate(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    vaults = revault_network.fundmany([1, 2, 3])
+
+    # Broadcast the unvaults and get their txids
+    revault_network.activate_fresh_vaults(vaults)
+    revault_network.broadcast_unvaults_anyhow(vaults, priority=True)
+
+    unvault_txids = get_unvault_txids(man, vaults)
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == len(vaults),
+        )
+
+    # If the feerate isn't significantly lower than the estimate, we won't feebump.
+    # Note the Unvault txs have a fixed 24sat/vb feerate.
+    man.rpc.cpfp([unvault_txids[0]], 20)
+    man.wait_for_log("Nothing to CPFP in the given list.")

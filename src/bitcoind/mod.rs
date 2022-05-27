@@ -3,9 +3,16 @@ pub mod poller;
 pub mod utils;
 
 use crate::config::BitcoindConfig;
-use crate::{database::DatabaseError, revaultd::RevaultD, threadmessages::BitcoindMessageOut};
+use crate::{
+    database::{
+        interface::{db_spend_transaction, db_vault_by_unvault_txid},
+        DatabaseError,
+    },
+    revaultd::RevaultD,
+    threadmessages::BitcoindMessageOut,
+};
 use interface::{BitcoinD, WalletTransaction};
-use poller::poller_main;
+use poller::{cpfp_package, poller_main, should_cpfp, ToBeCpfped};
 use revault_tx::bitcoin::{Network, Txid};
 
 use std::{
@@ -187,6 +194,60 @@ fn wallet_transaction(bitcoind: &BitcoinD, txid: Txid) -> Option<WalletTransacti
         .ok()
 }
 
+fn cpfp(
+    revaultd: Arc<RwLock<RevaultD>>,
+    bitcoind: Arc<RwLock<BitcoinD>>,
+    txids: Vec<Txid>,
+    feerate: f64,
+) -> Result<(), BitcoindError> {
+    let db_path = revaultd.read().unwrap().db_file();
+    assert!(revaultd.read().unwrap().is_manager());
+
+    let mut cpfp_txs = Vec::with_capacity(txids.len());
+    let mut counter = 0;
+    //
+    // sats/vbyte -> sats/WU
+    let sats_wu = feerate / 4.0;
+    // sats/WU -> msats/WU
+    let msats_wu = (sats_wu * 1000.0) as u64;
+
+    // sats/WU -> sats/kWU
+    let sats_kwu = (sats_wu * 1000.0) as u64;
+
+    for txid in txids.iter() {
+        let spend_tx = db_spend_transaction(&db_path, &txid).expect("Database must be available");
+
+        if let Some(unwrap_spend_tx) = spend_tx {
+            // If the transaction is of type SpendTransaction
+            let psbt = unwrap_spend_tx.psbt;
+            if should_cpfp(&bitcoind.read().unwrap(), &psbt, sats_kwu) {
+                cpfp_txs.push(ToBeCpfped::Spend(psbt));
+                counter += 1;
+            }
+        } else {
+            let unvault_pair =
+                db_vault_by_unvault_txid(&db_path, &txid).expect("Database must be available");
+            let unvault_tx = match unvault_pair {
+                Some((_vault, tx)) => tx,
+                None => return Err(BitcoindError::Custom("Unknown Txid.".to_string())),
+            };
+            // The transaction type is asserted to be UnvaultTransaction
+            let psbt = unvault_tx.psbt.assert_unvault();
+            if should_cpfp(&bitcoind.read().unwrap(), &psbt, sats_kwu) {
+                cpfp_txs.push(ToBeCpfped::Unvault(psbt));
+                counter += 1;
+            }
+        }
+    }
+
+    if counter != 0 {
+        cpfp_package(&revaultd, &bitcoind.read().unwrap(), cpfp_txs, msats_wu)
+    } else {
+        log::info!("Nothing to CPFP in the given list.");
+        Ok(())
+    }
+}
+
 /// The bitcoind event loop.
 /// Listens for bitcoind requests (wallet / chain) and poll bitcoind every 30 seconds,
 /// updating our state accordingly.
@@ -208,7 +269,8 @@ pub fn bitcoind_main_loop(
         let _bitcoind = bitcoind.clone();
         let _sync_progress = sync_progress.clone();
         let _shutdown = shutdown.clone();
-        move || poller_main(revaultd, _bitcoind, _sync_progress, _shutdown)
+        let _revaultd = revaultd.clone();
+        move || poller_main(_revaultd, _bitcoind, _sync_progress, _shutdown)
     });
 
     for msg in rx {
@@ -251,6 +313,16 @@ pub fn bitcoind_main_loop(
                             e
                         ))
                     })?;
+            }
+            BitcoindMessageOut::CPFPTransaction(txids, feerate, resp_tx) => {
+                log::trace!("Received 'cpfptransaction' from main thread");
+
+                resp_tx
+                    .send(cpfp(revaultd, bitcoind, txids, feerate))
+                    .map_err(|e| {
+                        BitcoindError::Custom(format!("Sending transaction for CPFP: {}", e))
+                    })?;
+                return Ok(());
             }
         }
     }

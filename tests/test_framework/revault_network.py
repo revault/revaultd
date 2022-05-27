@@ -3,6 +3,7 @@ import logging
 import os
 import random
 
+from bip380.descriptors import Descriptor
 from ephemeral_port_reserve import reserve
 from nacl.public import PrivateKey as Curve25519Private
 from test_framework import serializations
@@ -540,6 +541,13 @@ class RevaultNetwork:
         assert len(created_vaults) == len(amounts)
 
         return created_vaults
+
+    def fund_cpfp(self, amount):
+        """Send a coin worth this value to the CPFP descriptor"""
+        der_desc = Descriptor.from_str(str(self.cpfp_desc))
+        der_desc.derive(0)
+        decoded = self.bitcoind.rpc.decodescript(der_desc.script_pubkey.hex())
+        self.bitcoind.rpc.sendtoaddress(decoded["address"], amount)
 
     def secure_vault(self, vault):
         """Make all stakeholders share signatures for all revocation txs"""

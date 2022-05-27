@@ -349,7 +349,7 @@ feerate.
 ### `updatespendtx`
 
 The `updatespendtx` RPC Command stores or update the stored Spend transaction with the
-given one.
+given one. The signatures from both the old & the new transactions will be merged.
 
 #### Request
 

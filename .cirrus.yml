@@ -9,7 +9,7 @@ task:
     VERBOSE: 0
     LOG_LEVEL: debug
     TIMEOUT: 300
-    BITCOIND_VERSION: 22.0
+    BITCOIND_VERSION: 23.0
     BITCOIND_DIR_NAME: "bitcoin-$BITCOIND_VERSION"
   matrix:
     - name: 'Misc functional tests'

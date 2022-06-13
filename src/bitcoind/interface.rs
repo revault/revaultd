@@ -726,7 +726,11 @@ impl BitcoinD {
     pub fn sign_psbt(&self, psbt: &Psbt) -> Result<(bool, Psbt), BitcoindError> {
         let res = self.make_cpfp_request(
             "walletprocesspsbt",
-            &params!(Json::String(base64::encode(&encode::serialize(psbt)))),
+            &params!(
+                Json::String(base64::encode(&encode::serialize(psbt))),
+                Json::Bool(true),
+                Json::String("ALL".to_string()),
+            ),
         )?;
         let complete = res
             .get("complete")

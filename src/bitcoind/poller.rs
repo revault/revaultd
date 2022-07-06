@@ -1286,7 +1286,6 @@ fn handle_spent_unvault(
 fn handle_new_deposit(
     revaultd: &mut Arc<RwLock<RevaultD>>,
     db_path: &Path,
-    bitcoind: &BitcoinD,
     deposits_cache: &mut HashMap<OutPoint, UtxoInfo>,
     outpoint: OutPoint,
     utxo: UtxoInfo,
@@ -1302,6 +1301,7 @@ fn handle_new_deposit(
         return Ok(());
     }
 
+    // FIXME: get rid of this mapping, use bitcoind instead.
     let derivation_index = *revaultd
         .read()
         .unwrap()
@@ -1333,8 +1333,6 @@ fn handle_new_deposit(
     );
     deposits_cache.insert(outpoint, utxo);
 
-    // Mind the gap! https://www.youtube.com/watch?v=UOPyGKDQuRk
-    // FIXME: of course, that's rudimentary
     let current_first_index = revaultd.read().unwrap().current_unused_index;
     if derivation_index >= current_first_index {
         let new_index = revaultd
@@ -1342,18 +1340,10 @@ fn handle_new_deposit(
             .unwrap()
             .current_unused_index
             .increment()
-            .map_err(|e| {
-                // FIXME: we should probably go back to 0 at this point.
-                BitcoindError::Custom(format!("Deriving next index: {}", e))
-            })?;
+            // FIXME: we should probably go back to 0 at this point.
+            .expect("Incrementing derivation index");
         db_update_deposit_index(&revaultd.read().unwrap().db_file(), new_index)?;
         revaultd.write().unwrap().current_unused_index = new_index;
-        let next_addr = bitcoind
-            .addr_descriptor(&revaultd.read().unwrap().last_deposit_address().to_string())?;
-        bitcoind.import_fresh_deposit_descriptor(next_addr)?;
-        let next_addr = bitcoind
-            .addr_descriptor(&revaultd.read().unwrap().last_unvault_address().to_string())?;
-        bitcoind.import_fresh_unvault_descriptor(next_addr)?;
 
         log::debug!(
             "Incremented deposit derivation index from {}",
@@ -1555,10 +1545,11 @@ fn update_utxos(
         deposits_cache,
         previous_tip,
         revaultd.read().unwrap().min_conf,
+        revaultd.read().unwrap().deposit_descriptor.to_string(),
     )?;
 
     for (outpoint, utxo) in new_deposits {
-        handle_new_deposit(revaultd, &db_path, bitcoind, deposits_cache, outpoint, utxo)?;
+        handle_new_deposit(revaultd, &db_path, deposits_cache, outpoint, utxo)?;
     }
 
     for (outpoint, utxo) in conf_deposits {
@@ -1711,6 +1702,11 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
             BitcoindError::Custom(format!("Computing time since epoch: {}", e.to_string()))
         })?;
     let fresh_wallet = (curr_timestamp - wallet.timestamp as u64) < 30;
+    let rescan_timestamp = if fresh_wallet {
+        None
+    } else {
+        Some(wallet.timestamp)
+    };
 
     // TODO: sanity check descriptors are imported when migrating to 0.22
 
@@ -1727,34 +1723,13 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
         bitcoind.createwallet_startup(bitcoind_wallet_path, true)?;
         log::info!("Importing descriptors to bitcoind watchonly wallet.");
 
-        // Now, import descriptors.
-        // In theory, we could just import the vault (deposit) descriptor expressed using xpubs, give a
-        // range to bitcoind as the gap limit, and be fine.
-        // Unfortunately we cannot just import descriptors as is, since bitcoind does not support
-        // Miniscript ones yet. Worse, we actually need to derive them to pass them to bitcoind since
-        // the vault one (which we are interested about) won't be expressed with a `multi()` statement (
-        // currently supported by bitcoind) if there are more than 15 stakeholders.
-        // Therefore, we derive [max index] `addr()` descriptors to import into bitcoind, and handle
-        // the derivation index mess ourselves :'(
-        let addresses: Vec<_> = revaultd
-            .all_deposit_addresses()
-            .into_iter()
-            .map(|a| bitcoind.addr_descriptor(&a))
-            .collect::<Result<Vec<_>, _>>()?;
-        log::trace!("Importing deposit descriptors '{:?}'", &addresses);
-        bitcoind.startup_import_deposit_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
-
-        // As a consequence, we don't have enough information to opportunistically import a
-        // descriptor at the reception of a deposit anymore. Thus we need to blindly import *both*
-        // deposit and unvault descriptors..
-        // FIXME: maybe we actually have, with the derivation_index_map ?
-        let addresses: Vec<_> = revaultd
-            .all_unvault_addresses()
-            .into_iter()
-            .map(|a| bitcoind.addr_descriptor(&a))
-            .collect::<Result<Vec<_>, _>>()?;
-        log::trace!("Importing unvault descriptors '{:?}'", &addresses);
-        bitcoind.startup_import_unvault_descriptors(addresses, wallet.timestamp, fresh_wallet)?;
+        bitcoind.startup_import_descriptors(
+            [
+                revaultd.deposit_descriptor.to_string(),
+                revaultd.unvault_descriptor.to_string(),
+            ],
+            rescan_timestamp,
+        )?;
     }
 
     if let Some(cpfp_key) = revaultd.cpfp_key {
@@ -1794,7 +1769,7 @@ fn maybe_create_wallet(revaultd: &mut RevaultD, bitcoind: &BitcoinD) -> Result<(
                 .inner()
                 .to_string_with_secret(&keymap);
 
-            bitcoind.startup_import_cpfp_descriptor(cpfp_desc, wallet.timestamp, fresh_wallet)?;
+            bitcoind.import_cpfp_descriptor(cpfp_desc, rescan_timestamp)?;
         }
     } else {
         log::info!("Not creating the CPFP wallet, as we don't have a CPFP key");

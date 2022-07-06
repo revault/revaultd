@@ -401,13 +401,21 @@ impl BitcoinD {
             "importdescriptors",
             &params!(Json::Array(all_descriptors)),
         )?;
-        if res.get(0).map(|x| x.get("success")) == Some(Some(&Json::Bool(true))) {
+        let all_succeeded = res
+            .as_array()
+            .map(|results| {
+                results
+                    .iter()
+                    .all(|res| res.get("success") == Some(&Json::Bool(true)))
+            })
+            .unwrap_or(false);
+        if all_succeeded {
             return Ok(());
         }
 
         Err(BitcoindError::Custom(format!(
             "Error returned from 'importdescriptor': {:?}",
-            res.get(0).map(|r| r.get("error"))
+            res
         )))
     }
 

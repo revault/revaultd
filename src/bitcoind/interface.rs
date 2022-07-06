@@ -5,7 +5,12 @@ use revault_tx::bitcoin::{
     Address, Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
 };
 
-use std::{collections::HashMap, fs, str::FromStr, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    str::FromStr,
+    time::Duration,
+};
 
 use jsonrpc::{
     arg,
@@ -835,6 +840,11 @@ impl BitcoinD {
             block_hash
         ));
 
+        // Get the spent txid to ignore the entries about this transaction
+        let spent_txid = spent_outpoint.txid.to_string();
+        // We use a cache to avoid needless iterations, since listsinceblock returns an entry
+        // per transaction output, not per transaction.
+        let mut visited_txs = HashSet::new();
         for transaction in transactions {
             if transaction.get("category").map(|c| c.as_str()).flatten() != Some("send") {
                 continue;
@@ -851,6 +861,12 @@ impl BitcoinD {
                     "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
                     block_hash
                 ));
+
+            if visited_txs.contains(&spending_txid) || &spent_txid == spending_txid {
+                continue;
+            } else {
+                visited_txs.insert(spending_txid);
+            }
 
             let gettx_res = self.make_watchonly_request(
                 "gettransaction",

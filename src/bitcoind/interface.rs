@@ -798,14 +798,25 @@ impl BitcoinD {
             "gettransaction",
             &params!(Json::String(spent_outpoint.txid.to_string().into())),
         )?;
-        let spent_tx_hash = match req.get("blockhash").and_then(|h| h.as_str()) {
+        let spent_tx_height = match req.get("blockheight").and_then(|h| h.as_i64()) {
             Some(h) => h,
             None => return Ok(None),
+        };
+        let block_hash = if let Ok(res) = self.make_watchonly_request(
+            "getblockhash",
+            &params!(Json::Number((spent_tx_height - 1).into())),
+        ) {
+            res.as_str()
+                .expect("'getblockhash' result isn't a string")
+                .to_string()
+        } else {
+            // Possibly a race.
+            return Ok(None);
         };
 
         let lsb_res = self.make_watchonly_request(
             "listsinceblock",
-            &params!(Json::String(spent_tx_hash.to_string())),
+            &params!(Json::String(block_hash.to_string())),
         )?;
         let transactions = lsb_res
             .get("transactions")
@@ -813,7 +824,7 @@ impl BitcoinD {
             .flatten()
             .expect(&format!(
             "API break: no or invalid 'transactions' in 'listsinceblock' result (blockhash: {})",
-            spent_tx_hash
+            block_hash
         ));
 
         for transaction in transactions {
@@ -830,7 +841,7 @@ impl BitcoinD {
                 .flatten()
                 .expect(&format!(
                     "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
-                    spent_tx_hash
+                    block_hash
                 ));
 
             let gettx_res = self.make_watchonly_request(
@@ -848,7 +859,7 @@ impl BitcoinD {
                 .flatten()
                 .expect(&format!(
                     "API break: getting '.decoded.vin' from 'gettransaction' (blockhash: {})",
-                    spent_tx_hash
+                    block_hash
                 ));
 
             for input in vin {
@@ -860,12 +871,12 @@ impl BitcoinD {
                     .expect(
                         &format!(
                             "API break: Invalid or no txid in 'vin' entry in 'gettransaction' (blockhash: {})",
-                            spent_tx_hash
+                            block_hash
                     ));
                 let vout = input.get("vout").map(|v| v.as_u64()).flatten().expect(
                     &format!(
                         "API break: Invalid or no vout in 'vin' entry in 'gettransaction' (blockhash: {})",
-                        spent_tx_hash
+                        block_hash
                     ))
                 as u32;
                 let input_outpoint = OutPoint { txid, vout };

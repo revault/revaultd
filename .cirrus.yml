@@ -78,6 +78,15 @@ task:
     export POSTGRES_USER=test POSTGRES_PASS=test
 
     # Run the functional tests
-    REVAULTD_PATH=$PWD/target/release/revaultd pytest $TEST_GROUP -vvv -n 2
+    mkdir test_dir
+    TEST_DIR=$PWD/test_dir REVAULTD_PATH=$PWD/target/release/revaultd pytest $TEST_GROUP -vvv -n 2
+
+  on_failure:
+    debug_script:
+      - tar -czf test_dir.tar.gz test_dir
+      - tail -n100 ./test_dir/revaultd-tests-*/test_*/revaultd-*/log
+      - tail -n100 ./test_dir/revaultd-tests-*/test_*/coordinatord/log
+    report_artifacts:
+      path: ./test_dir.tar.gz
 
   before_cache_script: rm -rf $CARGO_HOME/registry/index

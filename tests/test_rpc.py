@@ -1662,3 +1662,79 @@ def test_manual_cpfp_lower_feerate(revault_network, bitcoind):
     # Note the Unvault txs have a fixed 24sat/vb feerate.
     man.rpc.cpfp([unvault_txids[0]], 20)
     man.wait_for_log("Nothing to CPFP in the given list.")
+
+
+## Mixed tests
+@pytest.mark.skipif(not POSTGRES_IS_SETUP, reason="Needs Postgres for servers db")
+def test_manual_cpfp_batch_spend_unvault(revault_network, bitcoind):
+    CSV = 12
+    revault_network.deploy(
+        2,
+        1,
+        csv=CSV,
+        bitcoind_rpc_mocks={"estimatesmartfee": {"feerate": 0.0005}},  # 50 sats/vbyte
+    )
+    man = revault_network.mans()[0]
+    vaults = revault_network.fundmany([1, 2, 3])
+    res_vault = vaults[2]
+    vaults  = vaults[:2]
+
+    # Activating all the vaults
+    revault_network.activate_fresh_vaults(vaults)
+    
+    # Broadcast the unvaults and get their txids, not to broadcast the res.
+    spend_psbts = [
+        revault_network.broadcast_unvaults_anyhow([vault], priority=True)
+        for vault in vaults]
+    
+    revault_network.activate_fresh_vaults([res_vault])
+    revault_network.broadcast_unvaults_anyhow([res_vault], priority=True)
+    res_vault_txid = get_unvault_txids(man, [res_vault])[0]
+
+    unvault_txids = get_unvault_txids(man, vaults)
+    spend_txids = [spend_psbt.tx.hash for spend_psbt in spend_psbts]
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulting"])["vaults"]) == len(vaults + [res_vault]),
+        )
+
+    # The Transaction is present in the mempool.
+    entry = bitcoind.rpc.getmempoolentry(res_vault_txid)
+    # Confirming the unvaults
+    bitcoind.generate_block(1, wait_for_mempool=unvault_txids + [res_vault_txid])
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["unvaulted"])["vaults"]) == len(vaults + [res_vault]),
+        )
+
+    # The transaction goes away from the mempool.
+    entry = bitcoind.rpc.getmempoolentry(res_vault_txid)
+    bitcoind.generate_blocks_censor(1, [res_vault_txid])
+    man.wait_for_log(f"Succesfully broadcasted Spend tx")
+
+    for w in revault_network.participants():
+        wait_for(
+            lambda: len(w.rpc.listvaults(["spending"])["vaults"]) == len(vaults),
+        )
+
+    for spend_txid in spend_txids:
+        entry = bitcoind.rpc.getmempoolentry(spend_txid)
+        assert entry["descendantcount"] == 1
+        package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+        assert package_feerate < 50
+
+    # Manual CPFP trigger for spend_txid.
+    man.rpc.cpfp(spend_txids, 50)
+    # Not mentioning the ids since the order might not be same.
+    man.wait_for_log(
+        f"CPFPed transactions with ids",
+    )
+
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == 3)
+    for spend_txid in spend_txids:
+        entry = bitcoind.rpc.getmempoolentry(spend_txid)
+        assert entry["descendantcount"] == 2
+        package_feerate = entry["fees"]["descendant"] * COIN / entry["descendantsize"]
+        assert package_feerate >= 50
+

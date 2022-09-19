@@ -20,7 +20,7 @@ task:
         TEST_GROUP: tests/test_rpc.py
     - name: 'Chain functional tests'
       env:
-        TEST_GROUP: tests/test_rpc.py
+        TEST_GROUP: tests/test_chain.py
     - name: 'Spend functional tests'
       env:
         TEST_GROUP: tests/test_spend.py

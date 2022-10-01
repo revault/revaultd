@@ -606,6 +606,41 @@ pub fn db_unvault_emer_transaction(
     .map(|mut rows| rows.pop())
 }
 
+/// Get the Unvault transaction out of an Unvault txid
+pub fn db_unvault_transaction_by_txid(
+    db_path: &Path,
+    txid: &Txid,
+) -> Result<Option<DbTransaction>, DatabaseError> {
+    Ok(db_query(
+        db_path,
+        "SELECT vaults.*, ptx.id, ptx.psbt, ptx.fullysigned FROM presigned_transactions as ptx \
+         INNER JOIN vaults ON vaults.id = ptx.vault_id \
+         WHERE ptx.txid = (?1) and type = (?2)",
+        params![txid.to_vec(), TransactionType::Unvault as u32],
+        |row| {
+            let db_vault: DbVault = row.try_into()?;
+            let offset = 15;
+
+            // FIXME: there is probably a more extensible way to implement the from()s so we don't
+            // have to change all those when adding a column
+            let id: u32 = row.get(offset)?;
+            let psbt: Vec<u8> = row.get(offset + 1)?;
+            let psbt = UnvaultTransaction::from_psbt_serialized(&psbt).expect("We store it");
+            let is_fully_signed = row.get(offset + 2)?;
+            let db_tx = DbTransaction {
+                id,
+                vault_id: db_vault.id,
+                tx_type: TransactionType::Unvault,
+                psbt: RevaultTx::Unvault(psbt),
+                is_fully_signed,
+            };
+
+            Ok(db_tx)
+        },
+    )?
+    .pop())
+}
+
 /// Get a vault and its Unvault transaction out of an Unvault txid
 pub fn db_vault_by_unvault_txid(
     db_path: &Path,

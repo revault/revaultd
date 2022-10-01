@@ -3,7 +3,7 @@ use crate::{
     bitcoind::{
         interface::{BitcoinD, DepositsState, SyncInfo, UnvaultsState, UtxoInfo},
         utils::{
-            cancel_txids, emer_txid, populate_deposit_cache, populate_unvaults_cache,
+            cancel_txids, cpfp_package, emer_txid, populate_deposit_cache, populate_unvaults_cache,
             presigned_transactions, unemer_txid, unvault_txid, unvault_txin_from_deposit,
             vault_deposit_utxo,
         },
@@ -31,20 +31,16 @@ use crate::{
     revaultd::{BlockchainTip, RevaultD, VaultStatus},
 };
 use revault_tx::{
-    bitcoin::{consensus::encode, secp256k1, Amount, OutPoint, Txid},
-    error::TransactionCreationError,
+    bitcoin::{secp256k1, Amount, OutPoint, Txid},
     miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, KeyMap, Wildcard},
     scripts::CpfpDescriptor,
-    transactions::{
-        CpfpTransaction, CpfpableTransaction, RevaultTransaction, SpendTransaction,
-        UnvaultTransaction,
-    },
+    transactions::{CpfpableTransaction, RevaultTransaction, SpendTransaction, UnvaultTransaction},
     txins::{CpfpTxIn, RevaultTxIn},
-    txouts::{CpfpTxOut, RevaultTxOut},
+    txouts::RevaultTxOut,
 };
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -408,7 +404,7 @@ fn mark_confirmed_emers(
     Ok(())
 }
 
-enum ToBeCpfped {
+pub enum ToBeCpfped {
     Spend(SpendTransaction),
     Unvault(UnvaultTransaction),
 }
@@ -447,101 +443,12 @@ impl ToBeCpfped {
     }
 }
 
-// CPFP a bunch of transactions, bumping their feerate by at least `target_feerate`.
-// `target_feerate` is expressed in sat/kWU.
-// All the transactions' feerate MUST be below `target_feerate`.
-fn cpfp_package(
-    revaultd: &Arc<RwLock<RevaultD>>,
+/// `target_feerate` is in sats/kWU
+pub fn should_cpfp(
     bitcoind: &BitcoinD,
-    to_be_cpfped: Vec<ToBeCpfped>,
+    tx: &impl CpfpableTransaction,
     target_feerate: u64,
-) -> Result<(), BitcoindError> {
-    let revaultd = revaultd.read().unwrap();
-    let cpfp_descriptor = &revaultd.cpfp_descriptor;
-
-    // First of all, compute all the information we need from the to-be-cpfped transactions.
-    let mut txids = HashSet::with_capacity(to_be_cpfped.len());
-    let mut package_weight = 0;
-    let mut package_fees = Amount::from_sat(0);
-    let mut txins = Vec::with_capacity(to_be_cpfped.len());
-    for tx in to_be_cpfped.iter() {
-        txids.insert(tx.txid());
-        package_weight += tx.max_weight();
-        package_fees += tx.fees();
-        assert!(((package_fees.as_sat() * 1000 / package_weight) as u64) < target_feerate);
-        match tx.cpfp_txin(cpfp_descriptor, &revaultd.secp_ctx) {
-            Some(txin) => txins.push(txin),
-            None => {
-                log::error!("No CPFP txin for tx '{}'", tx.txid());
-                return Ok(());
-            }
-        }
-    }
-    let tx_feerate = (package_fees.as_sat() * 1_000 / package_weight) as u64; // to sats/kWU
-    assert!(tx_feerate < target_feerate);
-    let added_feerate = target_feerate - tx_feerate;
-
-    // Then construct the child PSBT
-    let confirmed_cpfp_utxos: Vec<_> = bitcoind
-        .list_unspent_cpfp()?
-        .into_iter()
-        .filter_map(|l| {
-            // Not considering our own outputs nor UTXOs still in mempool
-            if txids.contains(&l.outpoint.txid) || l.confirmations < 1 {
-                None
-            } else {
-                let txout = CpfpTxOut::new(
-                    Amount::from_sat(l.txo.value),
-                    &revaultd.derived_cpfp_descriptor(l.derivation_index.expect("Must be here")),
-                );
-                Some(CpfpTxIn::new(l.outpoint, txout))
-            }
-        })
-        .collect();
-    let psbt = match CpfpTransaction::from_txins(
-        txins,
-        package_weight,
-        package_fees,
-        added_feerate,
-        confirmed_cpfp_utxos,
-    ) {
-        Ok(tx) => tx,
-        Err(TransactionCreationError::InsufficientFunds) => {
-            // Well, we're poor.
-            log::error!(
-                "We wanted to feebump transactions '{:?}', but we don't have enough funds!",
-                txids
-            );
-            return Ok(());
-        }
-        Err(e) => {
-            log::error!("Error while creating CPFP transaction: '{}'", e);
-            return Ok(());
-        }
-    };
-
-    // Finally, sign and (try to) broadcast the CPFP transaction
-    let (complete, psbt_signed) = bitcoind.sign_psbt(psbt.psbt())?;
-    if !complete {
-        log::error!(
-            "Bitcoind returned a non-finalized CPFP PSBT: {}",
-            base64::encode(encode::serialize(&psbt_signed))
-        );
-        return Ok(());
-    }
-
-    let final_tx = psbt_signed.extract_tx();
-    if let Err(e) = bitcoind.broadcast_transaction(&final_tx) {
-        log::error!("Error broadcasting '{:?}' CPFP tx: {}", txids, e);
-    } else {
-        log::info!("CPFPed transactions with ids '{:?}'", txids);
-    }
-
-    Ok(())
-}
-
-// `target_feerate` is in sats/kWU
-fn should_cpfp(bitcoind: &BitcoinD, tx: &impl CpfpableTransaction, target_feerate: u64) -> bool {
+) -> bool {
     bitcoind
         .get_wallet_transaction(&tx.txid())
         // In the unlikely (actually, shouldn't happen but hey) case where
@@ -599,7 +506,14 @@ fn maybe_cpfp_txs(
     // TODO: std transaction max size check and split
     // TODO: smarter RBF (especially opportunistically with the fee delta)
     if !to_cpfp.is_empty() {
-        cpfp_package(revaultd, bitcoind, to_cpfp, current_feerate)?;
+        match cpfp_package(revaultd, bitcoind, to_cpfp, current_feerate) {
+            Err(e) => {
+                log::error!("Error broadcasting CPFP: {}", e);
+            }
+            Ok(txids) => {
+                log::info!("CPFPed transactions with ids '{:?}'", txids);
+            }
+        }
     } else {
         log::debug!("Nothing to CPFP");
     }

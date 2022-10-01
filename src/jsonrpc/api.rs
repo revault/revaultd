@@ -214,6 +214,15 @@ pub trait RpcApi {
         end: u32,
         limit: u64,
     ) -> jsonrpc_core::Result<serde_json::Value>;
+
+    // Manually cpfp the given transaction id.
+    #[rpc(meta, name = "cpfp")]
+    fn cpfp(
+        &self,
+        meta: Self::Metadata,
+        txids: Vec<Txid>,
+        feerate: f64,
+    ) -> jsonrpc_core::Result<serde_json::Value>;
 }
 
 macro_rules! parse_vault_status {
@@ -300,6 +309,10 @@ impl RpcApi for RpcImpl {
             ],
             "emergency": [
 
+            ],
+            "cpfp": [
+                "txids",
+                "feerate",
             ],
         }))
     }
@@ -512,5 +525,17 @@ impl RpcApi for RpcImpl {
         Ok(json!({
             "events": events,
         }))
+    }
+
+    // manual CPFP command
+    // feerate will be in sat/vbyte
+    fn cpfp(
+        &self,
+        meta: Self::Metadata,
+        txids: Vec<Txid>,
+        feerate: f64,
+    ) -> jsonrpc_core::Result<serde_json::Value> {
+        meta.daemon_control.manual_cpfp(&txids, feerate)?;
+        Ok(json!({}))
     }
 }

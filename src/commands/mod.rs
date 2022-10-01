@@ -1443,6 +1443,23 @@ impl DaemonControl {
         let revaultd = self.revaultd.read().unwrap();
         gethistory(&revaultd, &self.bitcoind_conn, start, end, limit, kind)
     }
+
+    /// Manually trigger a CPFP for the given transaction ID.
+    ///
+    /// ## Errors
+    /// - we don't have access to a CPFP private key
+    /// - the caller is not a manager
+    pub fn manual_cpfp(&self, txids: &Vec<Txid>, feerate: f64) -> Result<(), CommandError> {
+        let revaultd = self.revaultd.read().unwrap();
+
+        if revaultd.cpfp_key.is_none() {
+            return Err(CommandError::MissingCpfpKey);
+        }
+        manager_only!(revaultd);
+
+        self.bitcoind_conn.cpfp_tx(txids.to_vec(), feerate)?;
+        Ok(())
+    }
 }
 
 /// Descriptors the daemon was configured with

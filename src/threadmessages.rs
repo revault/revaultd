@@ -41,6 +41,7 @@ pub enum BitcoindMessageOut {
         Vec<BitcoinTransaction>,
         SyncSender<Result<(), BitcoindError>>,
     ),
+    CPFPTransaction(Vec<Txid>, f64, SyncSender<Result<(), BitcoindError>>),
 }
 
 /// Interface to communicate with bitcoind client thread.
@@ -49,6 +50,7 @@ pub trait BitcoindThread {
     fn broadcast(&self, transactions: Vec<BitcoinTransaction>) -> Result<(), BitcoindError>;
     fn shutdown(&self);
     fn sync_progress(&self) -> f64;
+    fn cpfp_tx(&self, txids: Vec<Txid>, feerate: f64) -> Result<(), BitcoindError>;
 }
 
 /// Interface to the bitcoind thread using synchronous MPSCs
@@ -97,6 +99,18 @@ impl<'a> BitcoindThread for BitcoindSender {
             .expect("Sending to bitcoind thread");
 
         bitrep_rx.recv().expect("Receiving from bitcoind thread")
+    }
+
+    fn cpfp_tx(&self, txids: Vec<Txid>, feerate: f64) -> Result<(), BitcoindError> {
+        let (bitrep_tx, bitrep_rx) = sync_channel(0);
+        self.0
+            .send(BitcoindMessageOut::CPFPTransaction(
+                txids, feerate, bitrep_tx,
+            ))
+            .expect("Sending to bitcoind thread");
+        bitrep_rx.recv().expect("Receiving from bitcoind thread")?;
+
+        Ok(())
     }
 }
 

@@ -26,6 +26,7 @@ Note that all addresses are bech32-encoded *version 0* native Segwit `scriptPubK
 | [`setspendtx`](#setspendtx)                                 | Announce and broadcast this Spend transaction        |
 | [`gethistory`](#gethistory)                                 | Retrieve history of funds                            |
 | [`emergency`](#emergency)                                   | Broadcast all Emergency signed transactions          |
+| [`cpfp`](#cpfp)                                             | Manually trigger the cpfp for transactions.          |
 
 
 
@@ -477,6 +478,20 @@ of inflows and outflows net of any change amount (that is technically a transact
 
 | Field          | Type   | Description                                    |
 | -------------- | ------ | ---------------------------------------------- |
+
+#### Response
+
+None; the `result` field will be set to the empty object `{}`. Any value should be
+disregarded for forward compatibility.
+
+### `cpfp`
+
+#### Request
+
+| Field          | Type   | Description                                    |
+| -------------- | ------ | ---------------------------------------------- |
+| `txids`        | array  | Array of Txids that must be CPFPed             | 
+| `feerate`      |float   | The new target feerate.                        |
 
 #### Response
 

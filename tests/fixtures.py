@@ -33,9 +33,10 @@ __attempts = {}
 
 @pytest.fixture(scope="session")
 def test_base_dir():
-    d = os.getenv("TEST_DIR", "/tmp")
+    temp = tempfile.gettempdir()
+    d = os.getenv("TEST_DIR", temp)
 
-    directory = tempfile.mkdtemp(prefix="revaultd-tests-", dir=d)
+    directory = tempfile.mkdtemp(prefix="revaultd-", dir=d)
     print("Running tests in {}".format(directory))
 
     yield directory

@@ -9,6 +9,7 @@ import itertools
 import json
 import logging
 import os
+import platform
 import re
 import socket
 import subprocess
@@ -41,7 +42,9 @@ DEFAULT_MIRADORD_PATH = os.path.join(
     "..",
     "servers",
     "miradord",
-    "target/debug/miradord",
+    "target",
+    "debug",
+    "miradord",
 )
 MIRADORD_PATH = os.getenv("MIRADORD_PATH", DEFAULT_MIRADORD_PATH)
 DEFAULT_COORD_PATH = os.path.join(
@@ -49,7 +52,9 @@ DEFAULT_COORD_PATH = os.path.join(
     "..",
     "servers",
     "coordinatord",
-    "target/debug/coordinatord",
+    "target",
+    "debug",
+    "coordinatord",
 )
 COORDINATORD_PATH = os.getenv("COORDINATORD_PATH", DEFAULT_COORD_PATH)
 DEFAULT_COSIG_PATH = os.path.join(
@@ -344,10 +349,11 @@ class UnixSocket(object):
 
 
 class UnixDomainSocketRpc(object):
-    def __init__(self, socket_path, logger=logging):
+    def __init__(self, socket_path, config_file, logger=logging):
         self.socket_path = socket_path
         self.logger = logger
         self.next_id = 0
+        self.config_file = config_file
 
     def _writeobj(self, sock, obj):
         s = json.dumps(obj, ensure_ascii=False)
@@ -394,26 +400,42 @@ class UnixDomainSocketRpc(object):
     def call(self, method, payload=[]):
         self.logger.debug("Calling %s with payload %r", method, payload)
 
-        # FIXME: we open a new socket for every readobj call...
-        sock = UnixSocket(self.socket_path)
-        msg = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 0,
-                "method": method,
-                "params": payload,
-            }
-        )
-        sock.sock.send(msg.encode())
-        this_id = self.next_id
-        resp = self._readobj(sock)
-
-        self.logger.debug("Received response for %s call: %r", method, resp)
-        if "id" in resp and resp["id"] != this_id:
-            raise ValueError(
-                "Malformed response, id is not {}: {}.".format(this_id, resp)
+        if platform.system() == "Windows":
+            bin = os.path.join(
+                os.path.dirname(__file__), "..", "..", "target", "debug", "revault-cli"
             )
-        sock.close()
+            cmd_line = [bin, "--conf", self.config_file, method, *payload]
+            resp = subprocess.check_output(
+                cmd_line,
+                shell=True,
+                universal_newlines=True,
+                text=True,
+                encoding="utf-8",
+            )
+            resp = json.loads(resp)
+            self.logger.debug(f"Received response for {method} call: {resp}")
+
+        else:
+            # FIXME: we open a new socket for every readobj call...
+            sock = UnixSocket(self.socket_path)
+            msg = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "method": method,
+                    "params": payload,
+                }
+            )
+            sock.sock.send(msg.encode())
+            this_id = self.next_id
+            resp = self._readobj(sock)
+
+            self.logger.debug("Received response for %s call: %r", method, resp)
+            if "id" in resp and resp["id"] != this_id:
+                raise ValueError(
+                    "Malformed response, id is not {}: {}.".format(this_id, resp)
+                )
+            sock.close()
 
         if not isinstance(resp, dict):
             raise ValueError(

@@ -5,7 +5,12 @@ use revault_tx::bitcoin::{
     Address, Amount, BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
 };
 
-use std::{collections::HashMap, fs, str::FromStr, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    str::FromStr,
+    time::Duration,
+};
 
 use jsonrpc::{
     arg,
@@ -18,11 +23,6 @@ use serde_json::Value as Json;
 
 // If bitcoind takes more than 3 minutes to answer one of our queries, fail.
 const RPC_SOCKET_TIMEOUT: u64 = 180;
-
-// Labels used to tag utxos in the watchonly wallet
-const DEPOSIT_UTXOS_LABEL: &str = "revault-deposit";
-const UNVAULT_UTXOS_LABEL: &str = "revault-unvault";
-const CPFP_UTXOS_LABEL: &str = "revault-cpfp";
 
 pub struct BitcoinD {
     node_client: Client,
@@ -345,32 +345,14 @@ impl BitcoinD {
         }
     }
 
-    /// Constructs an `addr()` descriptor out of an address
-    pub fn addr_descriptor(&self, address: &str) -> Result<String, BitcoindError> {
-        let desc_wo_checksum = format!("addr({})", address);
-
-        Ok(self
-            .make_watchonly_request(
-                "getdescriptorinfo",
-                &params!(Json::String(desc_wo_checksum)),
-            )?
-            .get("descriptor")
-            .expect("No 'descriptor' in 'getdescriptorinfo'")
-            .as_str()
-            .expect("'descriptor' in 'getdescriptorinfo' isn't a string anymore")
-            .to_string())
-    }
-
-    fn bulk_import_descriptors(
+    fn import_descriptors(
         &self,
         client: &Client,
         descriptors: Vec<String>,
-        timestamp: u32,
-        label: String,
-        fresh_wallet: bool,
+        timestamp: Option<u32>,
         active: bool,
     ) -> Result<(), BitcoindError> {
-        if !fresh_wallet {
+        if timestamp.is_some() {
             log::debug!("Not a fresh wallet, rescan *may* take some time.");
         }
 
@@ -383,13 +365,11 @@ impl BitcoinD {
                 // will rescan the last few blocks for each of them.
                 desc_map.insert(
                     "timestamp".to_string(),
-                    if fresh_wallet {
-                        Json::String("now".to_string())
-                    } else {
-                        Json::Number(serde_json::Number::from(timestamp))
-                    },
+                    timestamp
+                        .map(serde_json::Number::from)
+                        .map(Json::Number)
+                        .unwrap_or_else(|| Json::String("now".to_string())),
                 );
-                desc_map.insert("label".to_string(), Json::String(label.clone()));
                 desc_map.insert("active".to_string(), Json::Bool(active));
 
                 Json::Object(desc_map)
@@ -401,94 +381,44 @@ impl BitcoinD {
             "importdescriptors",
             &params!(Json::Array(all_descriptors)),
         )?;
-        if res.get(0).map(|x| x.get("success")) == Some(Some(&Json::Bool(true))) {
+        let all_succeeded = res
+            .as_array()
+            .map(|results| {
+                results
+                    .iter()
+                    .all(|res| res.get("success") == Some(&Json::Bool(true)))
+            })
+            .unwrap_or(false);
+        if all_succeeded {
             return Ok(());
         }
 
         Err(BitcoindError::Custom(format!(
             "Error returned from 'importdescriptor': {:?}",
-            res.get(0).map(|r| r.get("error"))
-        )))
-    }
-
-    pub fn startup_import_deposit_descriptors(
-        &self,
-        descriptors: Vec<String>,
-        timestamp: u32,
-        fresh_wallet: bool,
-    ) -> Result<(), BitcoindError> {
-        self.bulk_import_descriptors(
-            &self.watchonly_client,
-            descriptors,
-            timestamp,
-            DEPOSIT_UTXOS_LABEL.to_string(),
-            fresh_wallet,
-            false,
-        )
-    }
-
-    pub fn startup_import_unvault_descriptors(
-        &self,
-        descriptors: Vec<String>,
-        timestamp: u32,
-        fresh_wallet: bool,
-    ) -> Result<(), BitcoindError> {
-        self.bulk_import_descriptors(
-            &self.watchonly_client,
-            descriptors,
-            timestamp,
-            UNVAULT_UTXOS_LABEL.to_string(),
-            fresh_wallet,
-            false,
-        )
-    }
-
-    pub fn startup_import_cpfp_descriptor(
-        &self,
-        descriptor: String,
-        timestamp: u32,
-        fresh_wallet: bool,
-    ) -> Result<(), BitcoindError> {
-        self.bulk_import_descriptors(
-            &self.cpfp_client,
-            vec![descriptor],
-            timestamp,
-            CPFP_UTXOS_LABEL.to_string(),
-            fresh_wallet,
-            true,
-        )
-    }
-
-    fn import_fresh_descriptor(
-        &self,
-        descriptor: String,
-        label: String,
-    ) -> Result<(), BitcoindError> {
-        let mut desc_map = serde_json::Map::with_capacity(3);
-        desc_map.insert("desc".to_string(), Json::String(descriptor));
-        desc_map.insert("timestamp".to_string(), Json::String("now".to_string()));
-        desc_map.insert("label".to_string(), Json::String(label));
-
-        let res = self.make_watchonly_request(
-            "importdescriptors",
-            &params!(Json::Array(vec![Json::Object(desc_map,)])),
-        )?;
-        if res.get(0).map(|x| x.get("success")).flatten() == Some(&Json::Bool(true)) {
-            return Ok(());
-        }
-
-        Err(BitcoindError::Custom(format!(
-            "In import_fresh descriptor, no success returned from 'importdescriptor': {:?}",
             res
         )))
     }
 
-    pub fn import_fresh_deposit_descriptor(&self, descriptor: String) -> Result<(), BitcoindError> {
-        self.import_fresh_descriptor(descriptor, DEPOSIT_UTXOS_LABEL.to_string())
+    /// Import the deposit and Unvault descriptors, when at startup.
+    pub fn startup_import_descriptors(
+        &self,
+        descriptors: [String; 2],
+        timestamp: Option<u32>,
+    ) -> Result<(), BitcoindError> {
+        self.import_descriptors(
+            &self.watchonly_client,
+            descriptors.to_vec(),
+            timestamp,
+            false,
+        )
     }
 
-    pub fn import_fresh_unvault_descriptor(&self, descriptor: String) -> Result<(), BitcoindError> {
-        self.import_fresh_descriptor(descriptor, UNVAULT_UTXOS_LABEL.to_string())
+    pub fn import_cpfp_descriptor(
+        &self,
+        descriptor: String,
+        timestamp: Option<u32>,
+    ) -> Result<(), BitcoindError> {
+        self.import_descriptors(&self.cpfp_client, vec![descriptor], timestamp, true)
     }
 
     pub fn list_unspent_cpfp(&self) -> Result<Vec<ListUnspentEntry>, BitcoindError> {
@@ -546,7 +476,7 @@ impl BitcoinD {
     fn list_since_block(
         &self,
         tip: &BlockchainTip,
-        label: Option<&'static str>,
+        descriptor: Option<String>,
     ) -> Result<Vec<ListSinceBlockTransaction>, BitcoindError> {
         let req = if tip.height == 0 {
             self.make_request(&self.watchonly_client, "listsinceblock", &params!())?
@@ -554,7 +484,13 @@ impl BitcoinD {
             self.make_request(
                 &self.watchonly_client,
                 "listsinceblock",
-                &params!(Json::String(tip.hash.to_string())),
+                &params!(
+                    Json::String(tip.hash.to_string()),
+                    Json::Number(1.into()),
+                    Json::Bool(true),
+                    Json::Bool(true),
+                    Json::Bool(true)
+                ),
             )?
         };
         Ok(req
@@ -565,20 +501,26 @@ impl BitcoinD {
             .iter()
             .filter_map(|t| {
                 let t = ListSinceBlockTransaction::from(t);
-                if label.or_else(|| t.label.as_deref()) == t.label.as_deref() {
-                    Some(t)
-                } else {
-                    None
+                match descriptor {
+                    None => Some(t),
+                    Some(ref desc) => {
+                        if t.wallet_descs.contains(desc) {
+                            Some(t)
+                        } else {
+                            None
+                        }
+                    }
                 }
             })
             .collect())
     }
 
-    pub fn list_deposits_since_block(
+    fn list_deposits_since_block(
         &self,
         tip: &BlockchainTip,
+        deposit_desc: String,
     ) -> Result<Vec<ListSinceBlockTransaction>, BitcoindError> {
-        self.list_since_block(tip, Some(DEPOSIT_UTXOS_LABEL))
+        self.list_since_block(tip, Some(deposit_desc))
     }
 
     /// Repeatedly called by our main loop to stay in sync with bitcoind.
@@ -588,6 +530,7 @@ impl BitcoinD {
         deposits_utxos: &HashMap<OutPoint, UtxoInfo>,
         db_tip: &BlockchainTip,
         min_conf: u32,
+        deposit_desc: String,
     ) -> Result<DepositsState, BitcoindError> {
         let (mut new_unconf, mut new_conf, mut new_spent) =
             (HashMap::new(), HashMap::new(), HashMap::new());
@@ -632,7 +575,7 @@ impl BitcoinD {
         }
 
         // Second, we scan for new ones.
-        let utxos = self.list_deposits_since_block(db_tip)?;
+        let utxos = self.list_deposits_since_block(db_tip, deposit_desc)?;
         for utxo in utxos {
             if utxo.is_receive && deposits_utxos.get(&utxo.outpoint).is_none() {
                 new_unconf.insert(
@@ -827,13 +770,15 @@ impl BitcoinD {
             block_hash
         ));
 
+        // Get the spent txid to ignore the entries about this transaction
+        let spent_txid = spent_outpoint.txid.to_string();
+        // We use a cache to avoid needless iterations, since listsinceblock returns an entry
+        // per transaction output, not per transaction.
+        let mut visited_txs = HashSet::new();
         for transaction in transactions {
             if transaction.get("category").map(|c| c.as_str()).flatten() != Some("send") {
                 continue;
             }
-
-            // TODO: i think we can also filter out the entries *with* a "revault-somthing" label,
-            // but we need to be sure.
 
             let spending_txid = transaction
                 .get("txid")
@@ -843,6 +788,12 @@ impl BitcoinD {
                     "API break: no or invalid 'txid' in 'listsinceblock' entry (blockhash: {})",
                     block_hash
                 ));
+
+            if visited_txs.contains(&spending_txid) || &spent_txid == spending_txid {
+                continue;
+            } else {
+                visited_txs.insert(spending_txid);
+            }
 
             let gettx_res = self.make_watchonly_request(
                 "gettransaction",
@@ -1145,7 +1096,7 @@ pub struct ListSinceBlockTransaction {
     pub outpoint: OutPoint,
     pub txo: TxOut,
     pub is_receive: bool,
-    pub label: Option<String>,
+    pub wallet_descs: Vec<String>,
     pub confirmations: i32,
     pub blockheight: Option<u32>,
 }
@@ -1201,11 +1152,23 @@ impl From<&Json> for ListSinceBlockTransaction {
             .map(|a| a.as_u64())
             .flatten()
             .map(|b| b as u32);
-        let label = j
-            .get("label")
-            .map(|l| l.as_str())
-            .flatten()
-            .map(|l| l.to_string());
+        // FIXME: allocs
+        let wallet_descs = j
+            .get("wallet_descs")
+            .map(|l| {
+                l.as_array()
+                    .expect(
+                        "API break, 'listsinceblock' entry didn't contain a valid 'wallet_descs'.",
+                    )
+                    .iter()
+                    .map(|desc| {
+                        desc.as_str()
+                            .expect("Invalid desc string in 'listsinceblock'.")
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| Vec::new());
 
         ListSinceBlockTransaction {
             outpoint: OutPoint {
@@ -1213,7 +1176,7 @@ impl From<&Json> for ListSinceBlockTransaction {
                 vout: vout as u32, // Bitcoin makes this safe
             },
             is_receive,
-            label,
+            wallet_descs,
             txo: TxOut {
                 value,
                 script_pubkey,

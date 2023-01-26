@@ -68,9 +68,9 @@ task:
 
     # Download the bitcoind binary
     ARCHIVE_NAME="$BITCOIND_DIR_NAME.tar.gz"
-    curl https://bitcoincore.org/bin/bitcoin-core-$BITCOIND_VERSION/bitcoin-$BITCOIND_VERSION-x86_64-linux-gnu.tar.gz -o $ARCHIVE_NAME
+    curl http://download.darosior.ninja/dump/bitcoind-patched-for-revaultd.tar.gz -o $ARCHIVE_NAME
     tar -xzf $ARCHIVE_NAME
-    export BITCOIND_PATH=$BITCOIND_DIR_NAME/bin/bitcoind
+    export BITCOIND_PATH=bitcoind-patched-for-revaultd/bin/bitcoind
 
     # Setup the postgres instance for the servers
     pg_ctlcluster 13 main start
